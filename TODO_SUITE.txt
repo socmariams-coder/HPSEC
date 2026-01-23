@@ -2,11 +2,23 @@
 TODO - SUITE HPSEC
 ================================================================================
 
-[ ] CONSOLIDACIO: Verificar fitxers
+[x] CONSOLIDACIO: Verificar fitxers (IMPLEMENTAT)
     - Al consolidar, comptar quants fitxers hi ha al directori origen
     - Comptar quants s'han utilitzat/processat
     - Alertar si hi ha discrepancia (ex: R12 en lloc de R2, fitxers orfes, etc.)
     - Cas detectat: FR2395_273_BP tenia R1 i R12 (error nomenclatura)
+
+    [x] Detecció discrepàncies a hpsec_consolidate.py:
+        - Retorna files_found, files_used, files_orphan al result["file_check"]
+        - Detecta anomalies nomenclatura (R12 → R2)
+        - Genera proposed_renames amb raó i confiança
+        - Guarda a HPSEC_QAQC/File_Check_[SEQ].json si hi ha problemes
+        - Funció apply_renames() preparada per aplicar canvis
+
+    [ ] GUI per gestionar renames (quan s'integri a Suite):
+        - Taula amb Original | Proposta | Acció
+        - Opcions: Rename / Ignorar / Editar manualment
+        - Botó aplicar canvis
 
 --------------------------------------------------------------------------------
 ORGANITZACIO CODI
@@ -23,6 +35,52 @@ ORGANITZACIO CODI
     - detect_batman (pics dobles coeluits - columna)
     - seleccionar_carpeta, obtenir_seq, normalize_key
     - is_khp, extract_khp_conc
+
+[x] hpsec_reports.py - Mòdul generació PDFs professional:
+    - generate_consolidation_report(): Resum + taula punts Direct/UIB/DAD
+    - generate_chromatograms_report(): Rèpliques R1|R2 juntes, ordenat
+    - Ordenació: Mostres → KHP → Controls (MQ/NaOH)
+    - Format científic: logo, capçalera minimalista, peu de pàgina
+    - 4 parells per pàgina, eixos etiquetats
+    [x] Integrar a HPSEC_Suite.py (substituir funcions actuals)
+
+[x] hpsec_consolidate.py - Mòdul consolidació extret de Suite:
+    - Funcions lectura: llegir_doc_uib, llegir_dad_export3d, trobar_excel_mestre
+    - Funcions processament: process_dad, detect_main_peak, analyze_sample_areas
+    - Funció principal: consolidate_sequence(seq_path, config, progress_callback)
+    - Funció escriptura: write_consolidated_excel()
+    [x] DUAL PROTOCOL: Extreu DOC de UIB (CSV) i Direct (Excel mestre)
+        - Output: time, DOC (Direct), DOC_UIB
+        - Escala temps: Direct (~4 sec, real) vs UIB (~0.32 sec, fictícia)
+    [x] ALINEACIÓ:
+        - BP: Alinea pel màxim de cada mostra individualment
+        - COLUMN: Alinea amb KHP + A254 com a referència
+    [x] LOG QAQC (HPSEC_QAQC/Alignment_History.json):
+        - Guarda shifts d'alineació per cada SEQ COLUMN
+        - Fallback: si no hi ha KHP, usa alignment de SEQ propera en el temps
+        - Camps: timestamp, seq_name, seq_date, method, shifts, khp_file, details
+
+[x] Integrar hpsec_consolidate.py a HPSEC_Suite.py
+    - Substituir codi inline per import del mòdul
+    - Eliminar funcions duplicades de la Suite
+
+[!] IMPORTANT - CALIBRACIÓ afectada per origen DOC:
+    - Si hi ha DUAL (Direct + UIB): usar Direct com a principal
+    - Si només hi ha UIB (sense Direct): usar UIB com a fallback
+    - AFECTA CALIBRACIÓ: els factors són diferents!
+      * Direct: 0.82
+      * UIB < SEQ 275: 0.84
+      * UIB >= SEQ 275: 0.87
+    - El camp DOC_MODE a ID indica l'origen usat (DUAL, UIB, DIRECT)
+    - La Suite ha de llegir DOC_MODE per aplicar el factor correcte!
+
+[x] hpsec_calibrate.py - Mòdul calibració standalone:
+    - Anàlisi KHP: analizar_khp_consolidado, analizar_khp_lote
+    - Cerca KHP: buscar_khp_consolidados (LOCAL → SIBLINGS → MANUAL)
+    - Gestió historial: CALDATA local + KHP_History global
+    - Registre: register_calibration, mark_calibration_as_outlier
+    - Funció principal: calibrate_sequence(seq_path, config, callbacks)
+    [x] Integrar a HPSEC_Suite.py (substituir funcions actuals)
 
 [ ] Considerar fusionar hpsec_utils i hpsec_core en un sol modul
     - Renombrar detect_batman per clarificar:
