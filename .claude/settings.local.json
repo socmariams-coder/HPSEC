@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(powershell -Command:*)",
+      "Bash(python -m py_compile:*)",
+      "Bash(python -c:*)",
+      "Bash(dir:*)",
+      "Bash(del \"C:\\\\Users\\\\Lequia\\\\Desktop\\\\HPSEC\\\\CHECK\\\\TEST_PDF.pdf\")",
+      "Bash(python:*)",
+      "Bash(cmd /c type:*)",
+      "Bash(cmd /c if exist \"C:\\\\Users\\\\Lequia\\\\Desktop\\\\HPSEC\\\\test_sigma_from_middle.png\" echo File exists)",
+      "Bash(cmd.exe /c \"cd /d C:\\\\Users\\\\Lequia\\\\Desktop\\\\HPSEC && python calibrate_factor.py\")",
+      "Bash(cd:*)",
+      "Bash(ls:*)",
+      "Bash(where:*)",
+      "Bash(findstr:*)",
+      "Bash(grep:*)"
+    ]
+  }
+}

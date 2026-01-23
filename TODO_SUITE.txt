@@ -1,0 +1,71 @@
+================================================================================
+TODO - SUITE HPSEC
+================================================================================
+
+[ ] CONSOLIDACIO: Verificar fitxers
+    - Al consolidar, comptar quants fitxers hi ha al directori origen
+    - Comptar quants s'han utilitzat/processat
+    - Alertar si hi ha discrepancia (ex: R12 en lloc de R2, fitxers orfes, etc.)
+    - Cas detectat: FR2395_273_BP tenia R1 i R12 (error nomenclatura)
+
+--------------------------------------------------------------------------------
+ORGANITZACIO CODI
+--------------------------------------------------------------------------------
+[x] hpsec_core.py - Funcions compartides BP:
+    - bigaussian, fit_bigaussian, check_asymmetry
+    - detect_batman (artefactes al cim del pic)
+    - repair_with_parabola, find_tangents_and_anchors
+    - calc_snr, calc_peak_area, calc_pearson, calibrate_factor
+    - Constants globals (THRESH_R2_*, REPAIR_*, ASYM_*)
+
+[x] hpsec_utils.py - Utilitats generals:
+    - baseline_stats, detect_main_peak
+    - detect_batman (pics dobles coeluits - columna)
+    - seleccionar_carpeta, obtenir_seq, normalize_key
+    - is_khp, extract_khp_conc
+
+[ ] Considerar fusionar hpsec_utils i hpsec_core en un sol modul
+    - Renombrar detect_batman per clarificar:
+      * detect_peak_notch (artefactes BP)
+      * detect_double_peak (pics coeluits columna)
+
+--------------------------------------------------------------------------------
+FILTRES IMPLEMENTATS (DOCtor_BP v1.6)
+--------------------------------------------------------------------------------
+[x] Bi-Gaussiana (sigma_left != sigma_right)
+[x] Deteccio Batman (valls al cim del pic)
+[x] Reparacio parabola amb factor 0.85
+[x] Filtre R2 >= 0.98 per reparar (exclou pics escombraries)
+[x] Filtre asimetria 0.33-3.0 (detecta errors detector DOC)
+[x] Mostra R2 i dH abans/despres de reparacio
+
+--------------------------------------------------------------------------------
+LLINDARS ACTUALS
+--------------------------------------------------------------------------------
+THRESH_R2_VALID = 0.987      # R2 >= 0.987 -> VALID
+THRESH_R2_CHECK = 0.980      # 0.980 <= R2 < 0.987 -> CHECK
+REPAIR_MIN_R2 = 0.980        # No reparar si R2 < 0.98
+ASYM_MIN = 0.33              # Asimetria minima acceptable
+ASYM_MAX = 3.0               # Asimetria maxima acceptable
+REPAIR_FACTOR = 0.85         # Factor correccio tangent
+
+--------------------------------------------------------------------------------
+ANOMALIES A REVISAR
+--------------------------------------------------------------------------------
+[ ] KHP2_284_BP te altura anomalament alta (242 mAU) vs KHP2_277 (149) i KHP2_281 (183)
+    - Mateixa concentracio, mateixa sensibilitat (UIB>=275)
+    - Possible canvi de fungible DOC entre seqüències?
+    - Revisar historial de manteniment del detector
+
+--------------------------------------------------------------------------------
+NOTES
+--------------------------------------------------------------------------------
+- Directes son diferents de UIB
+- UIB te canvi sensibilitat a seq 275 (700 ppb -> 1000 ppb)
+- Factor calibracio: Directe=0.82, UIB<275=0.84, UIB>=275=0.87
+
+================================================================================
+
+Revisio de Doctor_C
+
+EX1L2503_258 R1 Amorphous OK R2 Amorphous per raó incorrecte. Ho es per la base a la pujada, no pel màxim del pic. 

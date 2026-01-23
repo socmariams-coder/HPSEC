@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.so
+
+# Build outputs
+build/
+dist/
+*.exe
+*.spec
+
+# Generated debug/analysis images
+*.png
+
+# Backup files
+*.backup_*
+
+# Windows artifacts
+nul
+
+# IDE
+.vscode/
+.idea/
+
+# Output directories
+CHECK/
