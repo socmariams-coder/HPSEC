@@ -122,8 +122,133 @@ NOTES
 - UIB te canvi sensibilitat a seq 275 (700 ppb -> 1000 ppb)
 - Factor calibracio: Directe=0.82, UIB<275=0.84, UIB>=275=0.87
 
+--------------------------------------------------------------------------------
+PENDENT - REVISIO FULL ID CONSOLIDATS
+--------------------------------------------------------------------------------
+[ ] Reestructurar fulla ID dels fitxers consolidats:
+    - Esborrar full ID si existeix i crear des de zero
+    - Camps d'identificació (del mestre):
+      * Date, SEQ, Mostra, Replica (extreure del fitxer mestre)
+      * INJ_Volum (nou - s'afegirà als mestres)
+      * UIB_range (nou - s'afegirà als mestres)
+      * Fitxer_Mestre: nom del fitxer Excel origen
+    - Method: auto-detect (COLUMN/BP) però permetre canvi manual
+    - Mode: auto-detect (UIB/DIRECT/DUAL)
+    - Camps de consolidació (a definir)
+    - UIB_Offset: raw/final + warning a columna C si cal
+    - Camps de resultats: a definir posteriorment
+
+    PROPOSTA: L'usuari crearà Excel amb estructura proposada
+
+[ ] JSON per SEQ amb detalls tècnics de transformació:
+    - Offsets, shifts, baselines, etc.
+    - Info que no cal a cada consolidat individual
+
+--------------------------------------------------------------------------------
+PENDENT - GESTIO OFFSET UIB (Anàlisi completada 2025-01-24)
+--------------------------------------------------------------------------------
+[ ] Implementar monitoratge offset UIB:
+    - Offset normal: -3.637 min (±0.1s entre mostres)
+    - Llindars:
+      * OK: offset entre [-3.65, -3.62] min
+      * WARNING: diff 0.015-0.1 min
+      * ERROR: diff > 0.1 min
+    - Anomalies detectades: 279B_SEQ (+35min), 283_SEQ FR2606_R1 (0.005)
+
+[ ] Implementar alineació DAD-DOC:
+    - Corregir SEMPRE (eliminar tolerància 2s actual)
+    - Shift esperat: ~-0.5s (DAD-DOC)
+    - Llindars:
+      * OK: |shift + 0.5| < 1.5s
+      * WARNING: 1.5s < |shift| < 5s
+      * ERROR: |shift| > 5s
+    - Cas 272_SEQ: KHP incorrecte (shift 40s) → usar fallback
+
+[ ] Protocol fallback quan KHP invàlid:
+    - Usar SEQ anterior (BP o COLUMN, és igual per offset)
+    - WARNING si SEQ anterior > 30 dies
+    - ERROR si SEQ anterior > 90 dies
+
+[ ] Documentació:
+    - JSON per SEQ: detalls transformació
+    - ID consolidat: UIB_Offset: raw/final + warning col C
+
+--------------------------------------------------------------------------------
+MASTERFILE - ESTRUCTURA CANONICA (Unificat 2025-01-24)
+--------------------------------------------------------------------------------
+[x] Estructura canònica unificada per tots els MasterFiles:
+    0-INFO:       Metadata + sincronització
+                  - SEQ-ID, Date, Method (COLUMN/BP)
+                  - Inj_Volume (100 BP, 400 COLUMN excepte 256-274)
+                  - UIB_range: None (sense UIB), 700 ppb (269-274), 1000 ppb (>=275)
+                  - Hora HPLC, Hora TOC, Desfase, Flush time, Net delay
+    1-HPLC-SEQ:   Injeccions + Inj_Index + Sample_Rep
+    2-TOC:        Dades DOC contínues (raw, intocable)
+    3-DAD_KHP:    Dades DAD només de KHP (opcional, si n'hi ha)
+    4-TOC_CALC:   Càlculs (TOC_Row, Sample, Temps_Relatiu, Inj_Index) - SEMPRE AL FINAL
+
+[x] Mòdul migració: hpsec_migrate_master.py
+    - Detecta Method per nom carpeta (_BP) o temps execució
+    - Extreu KHP amb sufixos _R1, _R2 per múltiples rèpliques
+    - Crea backup automàtic abans de migrar
+    - Suporta migració individual o en lot (--all)
+
+[x] Mòdul unificació: hpsec_unify_masterfiles.py (NOU 2025-01-24)
+    - Unifica tots els MasterFiles a l'estructura canònica
+    - Renombra fulls: TOC_CALC -> 4-TOC_CALC, DAD_KHP -> 3-DAD_KHP
+    - Reordena: TOC_CALC sempre al final
+    - Elimina fulls redundants (3-SEQ_DATA)
+    - Afegeix Sample_Rep a 1-HPLC-SEQ si falta
+    - Crea backup automàtic abans de modificar
+
+    Ús:
+      python hpsec_unify_masterfiles.py --scan        # Dry run
+      python hpsec_unify_masterfiles.py --apply       # Aplicar canvis
+
+    Estat unificació (2025-01-24):
+      - 38 fitxers MasterFile unificats
+      - 29 amb estructura completa (amb 3-DAD_KHP)
+      - 9 sense DAD_KHP (no tenien KHP)
+      - Backups creats a cada carpeta SEQ
+
+[ ] Actualitzar hpsec_consolidate.py per treballar amb nou MasterFile
+
 ================================================================================
 
 Revisio de Doctor_C
 
-EX1L2503_258 R1 Amorphous OK R2 Amorphous per raó incorrecte. Ho es per la base a la pujada, no pel màxim del pic. 
+EX1L2503_258 R1 Amorphous OK R2 Amorphous per raó incorrecte. Ho es per la base a la pujada, no pel màxim del pic.
+
+================================================================================
+CHANGELOG / HISTORIAL D'ACCIONS
+================================================================================
+
+2025-01-24 - UNIFICACIO MASTERFILES
+--------------------------------------------------------------------------------
+[DARRERA ACCIO]
+
+Objectiu: Unificar l'estructura de tots els MasterFiles existents a Dades2
+
+Problema detectat:
+  - 4 variants d'estructura diferents
+  - Noms de fulls inconsistents (TOC_CALC vs 3-TOC_CALC vs 4-TOC_CALC)
+  - Ordre de fulls variable (TOC_CALC abans o després de DAD_KHP)
+  - 2 fitxers amb 3-SEQ_DATA redundant
+
+Accions realitzades:
+  1. Anàlisi de 38 MasterFiles per identificar variants
+  2. Definició estructura canònica:
+     0-INFO, 1-HPLC-SEQ, 2-TOC, 3-DAD_KHP (opcional), 4-TOC_CALC (sempre al final)
+  3. Creació hpsec_unify_masterfiles.py
+  4. Execució unificació amb --apply (38 fitxers processats)
+  5. Regeneració 4-TOC_CALC per 265_SEQ i 277_SEQ_BP (no en tenien)
+
+Resultat:
+  - 29 fitxers: 0-INFO, 1-HPLC-SEQ, 2-TOC, 3-DAD_KHP, 4-TOC_CALC
+  - 9 fitxers:  0-INFO, 1-HPLC-SEQ, 2-TOC, 4-TOC_CALC (sense KHP)
+  - Backups creats a cada carpeta (*_backup_YYYYMMDD_HHMMSS.xlsx)
+
+Fitxers nous/modificats:
+  - hpsec_unify_masterfiles.py (NOU)
+  - 38 MasterFiles a Dades2/ (MODIFICATS)
+  - 38 backups creats 
