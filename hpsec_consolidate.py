@@ -1844,14 +1844,25 @@ def write_consolidated_excel(out_path, mostra, rep, seq_out, date_master,
     baseline_uib_val = float(np.mean(baseline_uib)) if baseline_uib is not None and len(baseline_uib) > 0 else 0.0
 
     # === 1. IDENTIFICACIÓ ===
+    inj_vol = master_info.get("Inj_Volume (uL)", "")
+    uib_range = master_info.get("UIB_range")
+    # Convertir NaN/None a valors per defecte
+    # Nota: "None" com a string es converteix a NaN per pandas, usem "-"
+    if pd.isna(inj_vol) or inj_vol is None:
+        inj_vol = ""
+    if pd.isna(uib_range) or uib_range is None:
+        uib_range = "-"
+    else:
+        uib_range = str(uib_range)
+
     id_rows = [
         ("Sample", mostra),
         ("Replica", rep),
         ("SEQ", seq_out),
         ("Method", method),
         ("Date", date_master),
-        ("Inj_Volume_uL", master_info.get("Inj_Volume (uL)", "")),
-        ("UIB_range", master_info.get("UIB_range", "None")),
+        ("Inj_Volume_uL", inj_vol),
+        ("UIB_range", uib_range),
     ]
 
     # === 2. FITXERS ===
