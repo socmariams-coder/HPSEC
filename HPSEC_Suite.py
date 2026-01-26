@@ -40,6 +40,11 @@ import platform
 import subprocess
 
 # Mòduls HPSEC
+from hpsec_replica import (
+    evaluate_replica as evaluate_replica_unified,
+    select_best_replica as select_best_replica_unified,
+    compare_replicas as compare_replicas_unified,
+)
 from hpsec_consolidate import (
     consolidate_sequence,
     normalize_key, is_khp, mode_robust, obtenir_seq,
@@ -2163,7 +2168,7 @@ def detect_main_peak(t, y, min_prominence_pct=5.0, is_bp=None):
 
 
 def detect_batman(t, y, config):
-    """Detecta doble pic (Batman) amb filtres robusts."""
+    """[DEPRECATED] Usar hpsec_replica.evaluate_replica() en lloc d'això."""
     t = np.asarray(t, dtype=float)
     y = np.asarray(y, dtype=float)
 
@@ -2228,7 +2233,7 @@ def detect_batman(t, y, config):
 
 
 def detect_timeout(t, y, config, is_bp=False):
-    """Detecta platós (TimeOUT) en el senyal."""
+    """[DEPRECATED] Usar hpsec_replica.evaluate_replica() - mètode dt intervals."""
     if len(t) < 20:
         return None
 
@@ -2298,7 +2303,7 @@ def detect_timeout(t, y, config, is_bp=False):
 
 
 def detect_ears(t, y, config):
-    """Detecta orelletes (violacions de monotonia)."""
+    """[DEPRECATED] No funciona bé - eliminat de hpsec_replica."""
     t = np.asarray(t, dtype=float)
     y = np.asarray(y, dtype=float)
 
@@ -5995,14 +6000,16 @@ class HPSECSuite:
             peak_info = detect_main_peak(t, y_clean)
             area = peak_info.get("area", 0) if peak_info["valid"] else 0
 
-            # Anomalies (finestra segons BP o COLUMN)
-            timeout_info = detect_timeout(t, y_clean, self.config, is_bp)
-            batman_info = detect_batman(t, y_clean, self.config)
-            ears = detect_ears(t, y_clean, self.config)
+            # Anomalies via hpsec_replica (unificat)
+            method = "BP" if is_bp else "COLUMN"
+            unified_eval = evaluate_replica_unified(t, y_clean, method=method)
 
-            has_timeout = timeout_info is not None
-            has_batman = batman_info is not None
-            n_ears = len(ears)
+            has_timeout = unified_eval.get("timeout", False)
+            has_batman = unified_eval.get("batman", False)
+            has_irr = unified_eval.get("irr", False)
+            timeout_info = unified_eval.get("timeout_info")
+            # NOTA: detect_ears eliminat - no funcionava bé
+            n_ears = 0
 
             # Score DOC
             score = (
@@ -6191,10 +6198,7 @@ class HPSECSuite:
         elif second_eval.get("has_batman") and not best_eval.get("has_batman"):
             reasons.insert(0, f"R{second_rep} té Batman")
 
-        n_ears_best = best_eval.get("n_ears", 0)
-        n_ears_second = second_eval.get("n_ears", 0)
-        if n_ears_best < n_ears_second:
-            reasons.append(f"Menys orelletes ({n_ears_best} vs {n_ears_second})")
+        # NOTA: detect_ears eliminat - ja no s'utilitza per selecció
 
         if not reasons:
             reasons.append(f"Score: {best_eval['score']:.1f} vs {second_eval['score']:.1f}")

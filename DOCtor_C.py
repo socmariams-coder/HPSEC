@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-DOCtor_C v1.2 - Detecció d'Anomalies en Cromatogrames HPSEC (COLUMN)
+DOCtor_C v1.3 - Detecció d'Anomalies en Cromatogrames HPSEC (COLUMN)
 ====================================================================
 
 Part de la SUITE HPSEC.
@@ -11,14 +11,11 @@ Detecció basada en:
 - IRR (irregularitats, smoothness < 18%) via detect_peak_anomaly()
 - TIMEOUT via dt intervals (hpsec_core.detect_timeout)
 
+v1.3: Usa hpsec_replica.py per selecció de rèpliques
+      - select_best_replica() mogut a hpsec_replica.py
+
 v1.2: Simplificació - només Batman + IRR + Timeout (dt intervals)
-      Eliminat:
-      - detect_timeout() local (mesetes) - ~145 línies
-      - detect_ears() - ~95 línies
-      - calc_monotonicity() - ~50 línies
-      - detect_peak_problem() - ~35 línies
-      - select_best_replica() simplificat
-      Total v1.1+v1.2: ~1000+ línies eliminades
+      Eliminat: detect_timeout local, detect_ears, calc_monotonicity, detect_peak_problem
 
 v1.1: Eliminada detecció AMORPHOUS (~685 línies)
 
@@ -46,6 +43,9 @@ from hpsec_core import (
     detect_peak_anomaly, calc_top_smoothness,
     detect_timeout, TIMEOUT_CONFIG,  # Timeout via dt intervals (el mètode bo)
     THRESH_R2_VALID, THRESH_R2_CHECK, ASYM_MIN, ASYM_MAX
+)
+from hpsec_replica import (
+    evaluate_replica, select_best_replica, compare_replicas
 )
 
 
@@ -262,78 +262,10 @@ def calc_pearson_replicates(t1, y1, t2, y2, window=None):
 # =============================================================================
 MAX_PEAKS_TO_ANALYZE = 5  # Analitzar fins a 5 pics principals
 
-# NOTA v1.2: Eliminats:
-# - MONOTONIC_MIN_PCT, calc_monotonicity() - no funciona bé
-# - detect_peak_problem() (Regla D) - no funciona bé
-# - calc_smoothness() eliminada (v1.1)
-# - select_best_replica() simplificada
-
-
-def select_best_replica(rep1, rep2):
-    """
-    Selecciona la millor rèplica basant-se en:
-    1. Batman - si una té Batman, l'altra és millor
-    2. Alçada - la de més alçada és millor
-
-    v1.2: Simplificat - eliminada Regla D (is_problem)
-
-    Args:
-        rep1, rep2: diccionaris amb info de rèplica
-
-    Returns:
-        dict: {"best": "R1"/"R2", "reason": str, "warning": str o None}
-    """
-    result = {"best": None, "reason": "", "warning": None}
-
-    # Si només hi ha una rèplica
-    if rep1 is None and rep2 is None:
-        result["warning"] = "CAP RÈPLICA DISPONIBLE"
-        return result
-
-    if rep1 is None:
-        result["best"] = "R2"
-        result["reason"] = "Única rèplica disponible"
-        if rep2.get("batman"):
-            result["warning"] = "WARNING: Única rèplica amb BATMAN"
-        return result
-
-    if rep2 is None:
-        result["best"] = "R1"
-        result["reason"] = "Única rèplica disponible"
-        if rep1.get("batman"):
-            result["warning"] = "WARNING: Única rèplica amb BATMAN"
-        return result
-
-    # Ambdues rèpliques existeixen
-    r1_batman = rep1.get("batman") is not None
-    r2_batman = rep2.get("batman") is not None
-
-    # 1. BATMAN - si una té Batman, triar l'altra
-    if r1_batman and not r2_batman:
-        result["best"] = "R2"
-        result["reason"] = "R1 té BATMAN"
-        return result
-
-    if r2_batman and not r1_batman:
-        result["best"] = "R1"
-        result["reason"] = "R2 té BATMAN"
-        return result
-
-    # 2. Alçada - triar la de més alçada
-    r1_height = max((pk.get("height", 0) for pk in rep1.get("peaks", [])), default=0)
-    r2_height = max((pk.get("height", 0) for pk in rep2.get("peaks", [])), default=0)
-
-    if r1_batman and r2_batman:
-        result["warning"] = "WARNING: Ambdues rèpliques amb BATMAN"
-
-    if r1_height >= r2_height:
-        result["best"] = "R1"
-        result["reason"] = f"Més alçada (R1:{r1_height:.1f} vs R2:{r2_height:.1f})"
-    else:
-        result["best"] = "R2"
-        result["reason"] = f"Més alçada (R2:{r2_height:.1f} vs R1:{r1_height:.1f})"
-
-    return result
+# NOTA v1.3: Selecció de rèpliques via hpsec_replica.py (Single Source of Truth)
+# - evaluate_replica() per avaluar cada rèplica
+# - select_best_replica() per triar la millor
+# - compare_replicas() per Pearson i diferència d'àrea
 
 
 def calc_asymmetry_factor(t, y, peak_idx, baseline, height_pct=10):
@@ -861,27 +793,25 @@ def process_seqs(base_dir, selected_seqs, progress_cb=None):
                         max_y = float(np.max(y))
                         sample_data["max_mau"] = max(sample_data["max_mau"], max_y)
 
-                        # Batman
-                        bat = detect_batman_signal(t, y)
-                        if bat:
+                        # === AVALUACIÓ UNIFICADA via hpsec_replica ===
+                        rep_eval = evaluate_replica(t, y, method="COLUMN")
+
+                        # Actualitzar sample_data amb anomalies detectades
+                        if rep_eval.get("batman"):
                             sample_data["batman"] = True
-                            sample_data["batman_drop"] = max(sample_data["batman_drop"], bat.get("max_depth", 0)*100)
+                            sample_data["batman_drop"] = max(sample_data["batman_drop"], 10)  # Placeholder
 
-                        # NOTA v1.2: detect_ears() eliminada - no funcionava bé
-
-                        # TimeOUT (via dt intervals - hpsec_core)
-                        timeout_result = detect_timeout(t)  # Usa el mètode dt intervals
-                        timeouts = timeout_result.get("timeouts", [])
-                        if timeouts:
+                        if rep_eval.get("timeout"):
                             sample_data["timeout"] = True
-                            sample_data["timeout_count"] = max(sample_data.get("timeout_count", 0), len(timeouts))
+                            timeout_info = rep_eval.get("timeout_info", {})
+                            sample_data["timeout_count"] = max(
+                                sample_data.get("timeout_count", 0),
+                                timeout_info.get("n_timeouts", 0)
+                            )
 
-                        # NOTA: Detecció AMORPHOUS eliminada (v1.1) - precària
-
-                        # Anàlisi de pics - només pic principal
+                        # Anàlisi de pics detallada (per visualització)
                         peak_analysis = analyze_peaks(t, y)
 
-                        # Extreure info
                         n_peaks = 0
                         n_with_issues = 0
                         peaks_with_issues = []
@@ -889,12 +819,13 @@ def process_seqs(base_dir, selected_seqs, progress_cb=None):
                         if peak_analysis and peak_analysis.get("status") != "LOW_SIGNAL":
                             n_peaks = peak_analysis.get("n_peaks", 0)
                             n_with_issues = peak_analysis.get("n_with_issues", 0)
-                            # Guardar pics amb problemes per marcar al gràfic
                             peaks_with_issues = [p for p in peak_analysis.get("peaks", []) if p["has_issues"]]
 
                         rep_data.append({
                             "rep": rep_id, "t": t, "y": y,
-                            "bat": bat, "timeouts": timeouts,  # NOTA v1.2: ears eliminat
+                            "eval": rep_eval,  # v1.3: Avaluació unificada
+                            "bat": rep_eval.get("batman"),
+                            "timeouts": rep_eval.get("timeout_info", {}).get("timeouts", []),
                             "peak_analysis": peak_analysis,
                             "n_peaks": n_peaks,
                             "n_with_issues": n_with_issues,
@@ -939,27 +870,21 @@ def process_seqs(base_dir, selected_seqs, progress_cb=None):
                     sample_data["peak_mismatch"] = False
                     sample_data["status"] = "SINGLE_REP"  # Warning: només una rèplica
 
-                # === DETERMINAR RÈPLICA TRIADA ===
-                # Usar la funció select_best_replica amb la nova lògica:
-                # 1. Batman prioritari
-                # 2. Regla D (problemes detectats)
-                # 3. Alçada
-                # 4. Soroll
+                # === DETERMINAR RÈPLICA TRIADA (v1.3: via hpsec_replica) ===
+                # Criteris COLUMN: Anomalies (Batman > Timeout > IRR) → Alçada
 
                 if len(rep_data) >= 2:
-                    # Preparar dades per select_best_replica
-                    rep1_info = {
-                        "batman": rep_data[0].get("bat"),
-                        "peaks": rep_data[0].get("all_peaks", []),
-                        "baseline_noise": rep_data[0].get("peak_analysis", {}).get("baseline_noise", 0)
-                    }
-                    rep2_info = {
-                        "batman": rep_data[1].get("bat"),
-                        "peaks": rep_data[1].get("all_peaks", []),
-                        "baseline_noise": rep_data[1].get("peak_analysis", {}).get("baseline_noise", 0)
-                    }
+                    # Usar avaluacions unificades
+                    eval1 = rep_data[0].get("eval")
+                    eval2 = rep_data[1].get("eval")
 
-                    selection = select_best_replica(rep1_info, rep2_info)
+                    # Comparació Pearson/àrea
+                    t1, y1 = rep_data[0]["t"], rep_data[0]["y"]
+                    t2, y2 = rep_data[1]["t"], rep_data[1]["y"]
+                    comparison = compare_replicas(t1, y1, t2, y2)
+
+                    # Seleccionar millor rèplica
+                    selection = select_best_replica(eval1, eval2, method="COLUMN", comparison=comparison)
 
                     best_idx = 0 if selection["best"] == "R1" else 1
                     motiu = selection["reason"]
@@ -968,7 +893,6 @@ def process_seqs(base_dir, selected_seqs, progress_cb=None):
                     for i, rep in enumerate(rep_data):
                         rep["triada"] = (i == best_idx)
                         rep["_motiu"] = motiu if i == best_idx else ""
-                        rep["_dominated"] = selection.get(f"r{i+1}_dominated", False)
 
                     # Afegir warning a sample_data si cal
                     if warning:
@@ -977,18 +901,12 @@ def process_seqs(base_dir, selected_seqs, progress_cb=None):
                             sample_data["status"] = "CHECK"
 
                 elif len(rep_data) == 1:
-                    # Una sola rèplica - comprovar si té problemes
-                    rep1_info = {
-                        "batman": rep_data[0].get("bat"),
-                        "peaks": rep_data[0].get("all_peaks", []),
-                        "baseline_noise": rep_data[0].get("peak_analysis", {}).get("baseline_noise", 0)
-                    }
-
-                    selection = select_best_replica(rep1_info, None)
+                    # Una sola rèplica
+                    eval1 = rep_data[0].get("eval")
+                    selection = select_best_replica(eval1, None, method="COLUMN")
 
                     rep_data[0]["triada"] = True
                     rep_data[0]["_motiu"] = selection["reason"]
-                    rep_data[0]["_dominated"] = selection.get("r1_dominated", False)
 
                     if selection.get("warning"):
                         sample_data["selection_warning"] = selection["warning"]
@@ -1397,7 +1315,7 @@ def process_seqs(base_dir, selected_seqs, progress_cb=None):
         # Info generació
         ax4 = fig.add_subplot(224)
         ax4.axis("off")
-        ax4.text(0.5, 0.5, f"DOCtor_C v1.2\nCOLUMN\n{datetime.now().strftime('%Y-%m-%d %H:%M')}",
+        ax4.text(0.5, 0.5, f"DOCtor_C v1.3\nCOLUMN\n{datetime.now().strftime('%Y-%m-%d %H:%M')}",
                 fontsize=14, ha="center", va="center", color="gray")
 
         plt.tight_layout()
@@ -1473,14 +1391,14 @@ def process_seqs(base_dir, selected_seqs, progress_cb=None):
 class DOCtorApp:
     def __init__(self):
         self.root = tk.Tk()
-        self.root.title("DOCtor_C v1.2 - Column")
+        self.root.title("DOCtor_C v1.3 - Column")
         self.root.geometry("400x220")
         self.root.resizable(False, False)
 
         main = ttk.Frame(self.root, padding=20)
         main.pack(fill=tk.BOTH, expand=True)
 
-        ttk.Label(main, text="DOCtor_C v1.2", font=("Segoe UI", 16, "bold")).pack()
+        ttk.Label(main, text="DOCtor_C v1.3", font=("Segoe UI", 16, "bold")).pack()
         ttk.Label(main, text="Anàlisi COLUMN - SUITE HPSEC", foreground="gray").pack()
         ttk.Label(main, text="(Per BP utilitzar DOCtor_BP.py)", foreground="gray", font=("Segoe UI", 8)).pack(pady=(0,15))
 

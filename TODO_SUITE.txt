@@ -360,9 +360,19 @@ ORGANITZACIO CODI
 [x] hpsec_core.py - Funcions compartides BP:
     - bigaussian, fit_bigaussian, check_asymmetry
     - detect_batman (artefactes al cim del pic)
+    - detect_timeout (dt intervals) - timeout TOC
+    - detect_peak_anomaly (batman + smoothness híbrid)
     - repair_with_parabola, find_tangents_and_anchors
     - calc_snr, calc_peak_area, calc_pearson, calibrate_factor
-    - Constants globals (THRESH_R2_*, REPAIR_*, ASYM_*)
+    - Constants globals (THRESH_R2_*, REPAIR_*, ASYM_*, TIMEOUT_CONFIG)
+
+[x] hpsec_replica.py - Selecció de rèpliques (NOU):
+    - evaluate_replica(t, y, method) - avaluació unificada
+    - select_best_replica(eval1, eval2, method) - selecció COLUMN/BP
+    - compare_replicas(t1, y1, t2, y2) - Pearson i àrea
+    - Criteris COLUMN: Batman > Timeout > IRR > Alçada
+    - Criteris BP: R² status > R² valor > SNR
+    - Usat per: DOCtor_C, HPSEC_Suite
 
 [x] hpsec_utils.py - Utilitats generals:
     - baseline_stats, detect_main_peak
@@ -567,6 +577,21 @@ REGISTRE DE SCRIPTS
 
 Format: [DATA HORA] script.py - Descripció breu
 
+[2026-01-26 xx:xx] hpsec_replica.py v1.0 - NOU MÒDUL SELECCIÓ RÈPLIQUES
+    Single Source of Truth per avaluar i seleccionar rèpliques.
+    Funcions:
+      - evaluate_replica(t, y, method) - avalua qualitat (batman, timeout, irr, r2, snr)
+      - select_best_replica(eval1, eval2, method) - selecciona millor
+      - compare_replicas(t1, y1, t2, y2) - Pearson i diferència àrea
+    Suporta COLUMN (Anomalies→Alçada) i BP (R²→SNR)
+    Usat per: DOCtor_C v1.3, HPSEC_Suite
+
+[2026-01-26 xx:xx] DOCtor_C.py v1.3 - USA HPSEC_REPLICA
+    Integració amb hpsec_replica.py per selecció de rèpliques.
+    - evaluate_replica() substitueix deteccions manuals
+    - select_best_replica() importat de hpsec_replica
+    - compare_replicas() per Pearson/àrea
+
 [2026-01-26 xx:xx] DOCtor_C.py v1.2 - SIMPLIFICACIÓ DETECCIÓ
     Eliminades deteccions que no funcionen bé:
     - detect_timeout() local (mesetes) -> ara usa hpsec_core.detect_timeout (dt intervals)
@@ -606,8 +631,16 @@ Format: [DATA HORA] script.py - Descripció breu
 [2025-01-24] regenerate_toc_calc.py - ELIMINAT (integrat a migrate_master)
     Regenerava full 4-TOC_CALC amb Sample mapping.
 
+[2026-01-26 xx:xx] HPSEC_Suite.py - USA HPSEC_REPLICA
+    _evaluate_replica() ara usa evaluate_replica_unified de hpsec_replica.
+    Funcions locals detect_timeout, detect_batman, detect_ears marcades DEPRECATED.
+    _select_best_replica() simplificat (eliminat n_ears comparison).
+
 [2025-01-xx] hpsec_calibrate.py - Calibració KHP
     Anàlisi KHP, cerca automàtica, gestió historial CALDATA.
+
+[2025-01-xx] hpsec_replica.py - Selecció de rèpliques
+    Single Source of Truth: evaluate_replica, select_best_replica, compare_replicas
 
 [2025-01-xx] hpsec_reports.py - Generació PDFs
     Reports consolidació i cromatogrames.
