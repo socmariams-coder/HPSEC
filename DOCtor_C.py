@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-DOCtor_C v1.0 - Detecció d'Anomalies en Cromatogrames HPSEC (COLUMN)
+DOCtor_C v1.1 - Detecció d'Anomalies en Cromatogrames HPSEC (COLUMN)
 ====================================================================
 
 Part de la SUITE HPSEC.
@@ -10,8 +10,15 @@ Detecció basada en:
 - PEARSON entre rèpliques
 - Batman estricte (pic-vall-pic al cim)
 - IRR (irregularitats, smoothness < 18%)
-- TimeOUT/STOP (saturació/mesetes)
+- TimeOUT/STOP (saturació/mesetes) - MÈTODE PRINCIPAL via dt intervals
 - Orelletes (pics secundaris propers)
+
+v1.1: Eliminada detecció AMORPHOUS (precària, molts FP)
+      - detect_amorphous() eliminada (~370 línies)
+      - detect_amorphous_on_peak() eliminada (~70 línies)
+      - validate_amorphous_with_replicates() eliminada (~190 línies)
+      - calc_smoothness() eliminada (~55 línies)
+      - Total: ~685 línies eliminades
 
 PDF compacte: múltiples mostres per pàgina + taula resum.
 """
@@ -97,12 +104,8 @@ TIMEOUT_MIN_EDGE_SLOPE = 6.0    # Pendent mínim als bordes
 TIMEOUT_MIN_LEVEL_FACTOR = 1.30 # Senyal > baseline * 1.30
 TIMEOUT_MAX_CV = 0.1            # CV màxim (%) - només parades reals (CV < 0.1%)
 
-# =============================================================================
-# AMORPHOUS (PICS/VALLS AMB SEGMENTS LINEALS I ANGLES BRUSCOS)
-# =============================================================================
-AMORPHOUS_MIN_SEGMENT_DURATION = 0.15  # Duració mínima segment lineal (min)
-                                       # Només angles entre segments prou llargs
-                                       # 0.15 min evita angles espuris en gaussianes amples
+# NOTA: Detecció AMORPHOUS eliminada (v1.1) - era precària i generava molts FP
+# Ara s'utilitza només detecció per timeout (dt intervals) que és més robusta
 
 
 # =============================================================================
@@ -341,70 +344,7 @@ def calc_monotonicity(y, left_idx, peak_idx, right_idx, noise_threshold=0.0):
     return mono_left_pct, mono_right_pct, mono_total_pct
 
 
-def calc_smoothness(y, left_idx, peak_idx, right_idx):
-    """
-    Mesura la regularitat dels increments (suavitat del pic).
-
-    En una gaussiana perfecta, els increments canvien de forma suau i consistent.
-    Salts bruscos en els increments indiquen irregularitats.
-
-    Calcula:
-    - 1a derivada (increments): np.diff(y)
-    - 2a derivada (canvis d'increment): np.diff(diff(y))
-    - Coeficient de variació de la 2a derivada (normalitzat)
-
-    Returns:
-        tuple: (smooth_left, smooth_right, smooth_total)
-        - 100% = perfectament suau (increments molt regulars)
-        - <70% = salts o irregularitats
-    """
-    def segment_smoothness(segment):
-        """Calcula smoothness per un segment."""
-        if len(segment) < 4:
-            return 100.0  # Massa curt per avaluar
-
-        d1 = np.diff(segment)  # Increments
-        d2 = np.diff(d1)       # Canvis d'increment (2a derivada)
-
-        if len(d2) == 0:
-            return 100.0
-
-        # Per una gaussiana, la 2a derivada hauria de ser consistent
-        # Mesurem quant varien els canvis d'increment
-        d2_std = np.std(d2)
-        d2_mean = np.mean(np.abs(d2))
-
-        if d2_mean < 1e-10:
-            return 100.0  # Pràcticament pla
-
-        # Coeficient de variació (més baix = més suau)
-        cv = d2_std / d2_mean
-
-        # Convertir a percentatge (cv=0 -> 100%, cv>=2 -> ~0%)
-        # Usem una funció que mapeja cv a [0, 100]
-        smoothness_pct = 100.0 * np.exp(-cv / 1.5)
-
-        return max(0.0, min(100.0, smoothness_pct))
-
-    # Costat esquerre
-    left_segment = y[left_idx:peak_idx+1]
-    smooth_left = segment_smoothness(left_segment)
-
-    # Costat dret
-    right_segment = y[peak_idx:right_idx+1]
-    smooth_right = segment_smoothness(right_segment)
-
-    # Total ponderat per nombre de punts
-    n_left = len(left_segment)
-    n_right = len(right_segment)
-    total_points = n_left + n_right
-
-    if total_points > 0:
-        smooth_total = (n_left * smooth_left + n_right * smooth_right) / total_points
-    else:
-        smooth_total = 100.0
-
-    return smooth_left, smooth_right, smooth_total
+# NOTA: calc_smoothness() eliminada (v1.1) - no s'utilitza després de treure amorphous
 
 
 def detect_peak_problem(as_33, as_66, as_divergence=None, pearson=1.0):
@@ -712,11 +652,7 @@ def analyze_peaks(t, y):
             is_batman = False
             is_irregular = False
 
-        # Detectar AMORPHOUS (segments lineals amb angles bruscos)
-        amorphous_result = detect_amorphous_on_peak(t, y, pk_idx, left_base, right_base)
-        is_amorphous = amorphous_result is not None
-        amorphous_angles = amorphous_result.get("n_angle_changes", 0) if amorphous_result else 0
-        amorphous_max_angle = amorphous_result.get("max_angle", 0) if amorphous_result else 0
+        # NOTA: Detecció AMORPHOUS eliminada (v1.1) - s'utilitza timeout per dt intervals
 
         # Comprovar si el pic conté o solapa amb mesetes STOP
         has_stop = False
@@ -758,8 +694,7 @@ def analyze_peaks(t, y):
         # Monotonia (ajustada per soroll)
         mono_left, mono_right, mono_total = calc_monotonicity(y, left_base, pk_idx, right_base, noise_threshold)
 
-        # Smoothness (regularitat dels increments)
-        smooth_left, smooth_right, smooth_total = calc_smoothness(y, left_base, pk_idx, right_base)
+        # NOTA: calc_smoothness eliminada (v1.1) - no necessària sense amorphous
 
         # Àrea total del pic (per ponderar)
         total_area = area_left + area_right
@@ -767,7 +702,7 @@ def analyze_peaks(t, y):
         # Indicadors de qualitat
         flags = []
 
-        # HÍBRID: Anomalies detectades (Batman, Irregular, Amorphous, STOP)
+        # HÍBRID: Anomalies detectades (Batman, Irregular, STOP)
         if is_anomaly:
             if is_batman:
                 n_valleys = anomaly.get("n_valleys", 0)
@@ -776,8 +711,7 @@ def analyze_peaks(t, y):
             if is_irregular:
                 flags.append(f"IRR({smoothness:.0f}%)")
 
-        if is_amorphous:
-            flags.append(f"AMORF({amorphous_angles}a,{amorphous_max_angle:.0f}°)")
+        # NOTA: AMORF flag eliminat (v1.1) - detecció precària
 
         if has_stop:
             flags.append(f"STOP(CV={stop_cv:.1f}%)")
@@ -786,7 +720,7 @@ def analyze_peaks(t, y):
             flags.append("no-mono")
 
         # Té algun flag?
-        has_issues = is_anomaly or is_amorphous or has_stop or mono_total < MONOTONIC_MIN_PCT
+        has_issues = is_anomaly or has_stop or mono_total < MONOTONIC_MIN_PCT
         if has_issues:
             any_timeout = True
 
@@ -814,11 +748,7 @@ def analyze_peaks(t, y):
             "smoothness": smoothness,
             "is_batman": is_batman,
             "is_irregular": is_irregular,
-            # Amorphous (segments lineals amb angles bruscos)
-            "is_amorphous": is_amorphous,
-            "amorphous_info": amorphous_result,
-            "amorphous_angles": amorphous_angles,
-            "amorphous_max_angle": amorphous_max_angle,
+            # NOTA: Camps amorphous eliminats (v1.1)
             # STOP/TimeOUT (mesetes en el pic)
             "has_stop": has_stop,
             "stop_cv": stop_cv,
@@ -827,9 +757,6 @@ def analyze_peaks(t, y):
             "mono_left": mono_left,
             "mono_right": mono_right,
             "mono_total": mono_total,
-            "smooth_left": smooth_left,
-            "smooth_right": smooth_right,
-            "smooth_total": smooth_total,
             "flags": flags,
             "has_issues": has_issues
         })
@@ -837,7 +764,6 @@ def analyze_peaks(t, y):
     # Comptar pics amb problemes
     n_with_issues = sum(1 for p in analyzed_peaks if p["has_issues"])
     n_batman = sum(1 for p in analyzed_peaks if p.get("is_batman"))
-    n_amorphous = sum(1 for p in analyzed_peaks if p.get("is_amorphous"))
     n_with_stop = sum(1 for p in analyzed_peaks if p.get("has_stop"))
 
     return {
@@ -846,7 +772,6 @@ def analyze_peaks(t, y):
         "n_peaks": len(analyzed_peaks),
         "n_with_issues": n_with_issues,
         "n_batman": n_batman,
-        "n_amorphous": n_amorphous,
         "n_with_stop": n_with_stop,
         "baseline_noise": baseline_noise,
         "global_timeouts": global_timeouts  # Per debug/visualització
@@ -861,85 +786,8 @@ def analyze_main_peak(t, y):
 # =============================================================================
 # DETECCIÓ BATMAN (VALLS AL CIM DEL PIC)
 # =============================================================================
-def detect_amorphous_on_peak(t, y, peak_idx, left_idx, right_idx):
-    """
-    Detecta si un pic individual té forma amorfa (segments lineals amb angles bruscos).
-
-    Analitza només el segment del pic, no tot el cromatograma.
-    Més selectiu i funciona amb pics curts (baixa resolució).
-
-    Parameters:
-        t, y: arrays de temps i senyal
-        peak_idx: índex del màxim del pic
-        left_idx, right_idx: límits del pic
-
-    Returns:
-        dict amb info Amorphous o None si no es detecta
-    """
-    if t is None or len(t) < 10:
-        return None
-
-    # PROTECCIÓ: Si el segment és massa llarg (>500 punts o >10 min),
-    # usar finestra fixa al voltant del màxim en lloc de left/right_base
-    # (find_peaks pot detectar bases incorrectes en baixa resolució)
-    t_peak = float(t[peak_idx])
-    segment_duration = float(t[right_idx]) - float(t[left_idx])
-
-    if (right_idx - left_idx) > 500 or segment_duration > 10.0:
-        # REC-1: Finestra harmonitzada amb validació (abans: 7.0/3.0)
-        # Finestra simètrica per evitar detecció d'angles fora del rang de validació
-        window_left = 2.0   # minuts abans del màxim (pujada)
-        window_right = 2.0  # minuts després del màxim (baixada)
-        mask = (t >= t_peak - window_left) & (t <= t_peak + window_right)
-        indices = np.where(mask)[0]
-
-        if len(indices) < 10:
-            return None
-
-        t_seg = np.asarray(t[indices], dtype=float)
-        y_seg = np.asarray(y[indices], dtype=float)
-    else:
-        # Usar bases detectades per find_peaks (normal)
-        t_seg = np.asarray(t[left_idx:right_idx+1], dtype=float)
-        y_seg = np.asarray(y[left_idx:right_idx+1], dtype=float)
-
-    if len(t_seg) < 10:
-        return None
-
-    # Detectar pic amorf al SEGMENT del pic
-    # REC-10: Sincronitzar estimació amb submostreig real de detect_amorphous
-    # Calcular punts reals que seran processats (mateix step que detect_amorphous usa)
-    if len(t_seg) > 200:
-        # S'aplicarà submostreig 1:5 (step=5) → calcular punts reals
-        expected_points = len(t_seg[::5])  # Mateix step que detect_amorphous
-    else:
-        expected_points = len(t_seg)
-
-    # Threshold adaptatiu basat en punts processats
-    # REC-2: Ajustat per reduir falsos positius en pics curts
-    # NOTA: Pics amorfes reals tenen 2-3 angles bruscos, 1 sol angle pot ser soroll
-    if expected_points < 200:
-        min_angles = 2      # Pics curts: 2 angles per més fiabilitat (abans: 1)
-        min_angle_threshold = 60  # Angle més estricte per pics curts
-    elif expected_points < 400:
-        min_angles = 2      # Pics mitjans: 2 angles
-        min_angle_threshold = 50  # Angle lleugerament més estricte
-    else:
-        min_angles = 3      # Pics llargs: 3 angles
-        min_angle_threshold = 45  # Angle estàndard
-
-    result = detect_amorphous(t_seg, y_seg, segment_size=None, min_r2=0.98,
-                             min_angle_deg=min_angle_threshold, min_angle_changes=min_angles,
-                             min_segment_duration=AMORPHOUS_MIN_SEGMENT_DURATION)
-
-    if result and result.get("is_amorphous"):
-        # Afegir info de context
-        result["t_peak"] = float(t[peak_idx])
-        result["peak_height"] = float(y[peak_idx]) - float(np.min(y_seg))
-        return result
-
-    return None
-
+# NOTA: detect_amorphous_on_peak() eliminada (v1.1) - precària i molts FP
+# Ara s'utilitza només detecció per timeout (dt intervals)
 
 def detect_batman_on_peak(t, y, peak_idx, left_idx, right_idx, top_pct=0.15, min_valley_depth=0.05):
     """
@@ -1129,377 +977,10 @@ def detect_ears(t, y):
 
 
 # =============================================================================
-# DETECCIÓ PICS/VALLS AMORFES (SEGMENTS LINEALS AMB ANGLES BRUSCOS)
+# NOTA: detect_amorphous() eliminada (v1.1) - ~370 línies
+# Era precària i generava molts falsos positius
+# Ara s'utilitza només detecció per timeout (dt intervals) que és més robusta
 # =============================================================================
-def detect_amorphous(t, y, segment_size=None, min_r2=0.98, min_angle_deg=45, min_angle_changes=3, min_segment_duration=0.15):
-    """
-    Detecta pics o valls amb forma amorfa (segments lineals amb angles bruscos).
-
-    Pics amorfes es caracteritzen per:
-    - Segments RECTES (R² > 0.98) en lloc de corbes suaus
-    - ANGLES BRUSCOS entre segments consecutius (>45°)
-    - Segments lineals PROU LLARGS (duració mínima en minuts)
-    - Patró típic: "escala", no corba Gaussiana
-
-    Usa estratègia similar a detect_timeout() amb chunks+islands, però busca
-    alta linearitat (R² alt) en lloc de pendent baixa.
-
-    NOTA: segment_size s'ajusta AUTOMÀTICAMENT segons el sampling rate del fitxer
-          per garantir duracions consistents (~0.20 min) independentment del fitxer.
-
-    Parameters:
-        t, y: arrays de temps i senyal
-        segment_size: mida segments (punts) - Si None, s'ajusta automàticament segons sampling rate
-        min_r2: R² mínim per considerar segment lineal (0.98 = molt recte)
-        min_angle_deg: angle mínim entre segments per comptar com "brusc" (graus)
-        min_angle_changes: nombre mínim de canvis bruscos per marcar com amorf
-        min_segment_duration: duració mínima dels segments lineals (minuts) per validar angle
-
-    Returns:
-        dict amb is_amorphous, n_linear_segments, n_angle_changes, max_angle, segments
-    """
-    from scipy.stats import linregress
-
-    t = np.asarray(t, dtype=float)
-    y = np.asarray(y, dtype=float)
-
-    # Validació inicial amb segment_size mínim
-    if len(t) < 20:
-        return {
-            "is_amorphous": False,
-            "n_linear_segments": 0,
-            "n_angle_changes": 0,
-            "max_angle": 0,
-            "reason": "too_short"
-        }
-
-    # SUBMOSTRAR si hi ha molts punts (redueix cost i soroll)
-    if len(t) > 200:
-        step = 5
-        t_work = t[::step]
-        y_work = y[::step]
-    else:
-        t_work = t
-        y_work = y
-
-    # CALCULAR segment_size ADAPTATIU segons sampling rate del fitxer
-    # Objectiu: segments de ~0.20 min per garantir consistència entre fitxers
-    if segment_size is None:
-        if len(t_work) < 2:
-            segment_size = 5  # Fallback si no es pot calcular
-        else:
-            dt_median = float(np.median(np.diff(t_work)))
-            if dt_median > 0:
-                target_duration = 0.20  # min - duració objectiu per segment
-                segment_size = max(5, int(target_duration / dt_median))
-                # Limitar a un rang raonable
-                segment_size = min(segment_size, 20)
-            else:
-                segment_size = 5  # Fallback si dt_median inválid
-
-    if len(t_work) < segment_size * 2:
-        return {
-            "is_amorphous": False,
-            "n_linear_segments": 0,
-            "n_angle_changes": 0,
-            "max_angle": 0,
-            "reason": "too_short_after_subsample"
-        }
-
-    # Dividir en segments solapats
-    linear_segments = []
-    slopes = []
-
-    for i in range(0, len(t_work) - segment_size, segment_size // 2):
-        t_seg = t_work[i:i+segment_size]
-        y_seg = y_work[i:i+segment_size]
-
-        if len(t_seg) < 3:
-            continue
-
-        # Regressió lineal
-        try:
-            slope, intercept, r_value, _, _ = linregress(t_seg, y_seg)
-            r2 = r_value ** 2
-
-            if r2 >= min_r2:
-                # Calcular CV del segment (artefactes UIB tenen CV baix)
-                y_mean = np.mean(y_seg)
-                y_std = np.std(y_seg)
-                cv = (y_std / y_mean * 100.0) if y_mean > 0 else 100.0
-
-                t_start = float(t_seg[0])
-                t_end = float(t_seg[-1])
-                duration = t_end - t_start
-                y_mean_seg = float(y_mean)
-
-                linear_segments.append({
-                    "start_idx": i,
-                    "end_idx": i + segment_size,
-                    "r2": r2,
-                    "slope": slope,
-                    "t_start": t_start,
-                    "t_end": t_end,
-                    "duration": duration,
-                    "cv": cv,
-                    "y_mean": y_mean_seg
-                })
-                slopes.append(slope)
-        except:
-            continue
-
-    # Calcular baseline i altura per determinar posició TOP
-    baseline = float(np.percentile(y_work, 10))
-    y_max = float(np.max(y_work))
-    height = y_max - baseline
-    top_threshold = baseline + 0.8 * height  # TOP = 80% altura o més
-
-    # Calcular ANGLES entre segments lineals consecutius
-    # NOMÉS comptar angles si AMBDÓS segments compleixen TOTS els criteris
-    angles = []
-    valid_angles = []  # Angles que compleixen tots els criteris
-    angle_positions = []  # Llista per rastrejar si angles són al TOP
-
-    CV_THRESHOLD = 20.0  # Artefactes UIB tenen CV < 20%
-
-    if len(slopes) > 1:
-        for i in range(len(slopes) - 1):
-            m1 = slopes[i]
-            m2 = slopes[i+1]
-
-            # Angle entre dues rectes: arctan(|(m2-m1)/(1+m1*m2)|)
-            denominator = 1 + m1 * m2
-            if abs(denominator) < 1e-6:
-                # Rectes perpendiculars (angle = 90°)
-                angle_deg = 90.0
-            else:
-                angle_rad = np.arctan(abs((m2 - m1) / denominator))
-                angle_deg = float(np.degrees(angle_rad))
-
-            angles.append(angle_deg)
-
-            # VALIDAR: Ambdós segments han de complir TOTS els criteris:
-            # 1. Duració suficient
-            # 2. CV < 20% (artefacte UIB, no variació natural)
-            seg1 = linear_segments[i]
-            seg2 = linear_segments[i+1]
-
-            duration_ok = seg1["duration"] >= min_segment_duration and seg2["duration"] >= min_segment_duration
-            cv_ok = seg1["cv"] < CV_THRESHOLD and seg2["cv"] < CV_THRESHOLD
-
-            if duration_ok and cv_ok:
-                # Aquest angle és vàlid
-                valid_angles.append(angle_deg)
-
-                # Determinar si l'angle està al TOP del pic
-                y_mid = (seg1["y_mean"] + seg2["y_mean"]) / 2
-                is_at_top = y_mid >= top_threshold
-                angle_positions.append(is_at_top)
-
-    # Comptar canvis d'angle > threshold NOMÉS dels angles vàlids
-    n_angle_changes = sum(1 for angle in valid_angles if angle > min_angle_deg)
-    n_total_angles = sum(1 for angle in angles if angle > min_angle_deg)
-    max_angle = max(angles) if angles else 0.0
-    max_valid_angle = max(valid_angles) if valid_angles else 0.0
-    n_linear = len(linear_segments)
-
-    # Calcular mínim i màxim dels angles SIGNIFICATIUS (>min_angle_deg)
-    significant_angles = [a for a in valid_angles if a > min_angle_deg]
-    min_significant_angle = min(significant_angles) if significant_angles else 0.0
-    max_significant_angle = max(significant_angles) if significant_angles else 0.0
-
-    # Calcular estadístiques CV i posició TOP
-    cv_values = [s["cv"] for s in linear_segments]
-    cv_mean = np.mean(cv_values) if cv_values else 100.0
-    cv_min = np.min(cv_values) if cv_values else 100.0
-    n_low_cv = sum(1 for cv in cv_values if cv < CV_THRESHOLD)
-
-    # Calcular concentració d'angles al TOP
-    n_angles_at_top = sum(1 for is_top in angle_positions if is_top) if angle_positions else 0
-    n_angles_total_positions = len(angle_positions)
-    top_concentration = (n_angles_at_top / n_angles_total_positions * 100.0) if n_angles_total_positions > 0 else 0.0
-
-    # CRITERI: Mínim N canvis d'angle bruscos (>45°) entre segments lineals prou llargs
-    is_amorphous = n_angle_changes >= min_angle_changes
-    rejection_reason = None
-
-    # FILTRE ADDICIONAL 1: Si només hi ha 1 angle vàlid i és molt extrem (>80°),
-    # probablement és un artifact numèric en un pic Gaussian suau
-    if is_amorphous and n_angle_changes == 1 and max_valid_angle > 80.0:
-        is_amorphous = False
-        rejection_reason = "single_extreme_angle"
-
-    # FILTRE ADDICIONAL 2: Si hi ha MASSA angles significatius (>3), indica
-    # sobre-segmentació d'un pic Gaussian suau, no estructura amorfa real.
-    # Pics amorfes reals tenen poques transicions brusques (1-3), no moltes (4+)
-    elif is_amorphous and n_angle_changes > 3:
-        is_amorphous = False
-        rejection_reason = "too_many_angles"
-
-    # FILTRE ADDICIONAL 3: Si >70% dels angles estan al TOP del pic,
-    # probablement són artefactes numèrics al cim, no glitches UIB reals
-    elif is_amorphous and top_concentration > 70.0:
-        is_amorphous = False
-        rejection_reason = "angles_concentrated_at_top"
-
-    # FILTRE ADDICIONAL 4: Si CV mitjà és massa alt (>10%),
-    # indica pic gaussià amb variabilitat natural, no artefacte UIB lineal
-    # Artefactes UIB reals tenen CV molt baix (<10%) per segments lineals
-    elif is_amorphous and cv_mean > 10.0:
-        is_amorphous = False
-        rejection_reason = "high_cv_gaussian_like"
-
-    # DETECCIÓ ALTERNATIVA: Artefactes UIB tipus "RAMPA"
-    # Si NO s'ha detectat per angles bruscos, comprovar segments lineals llargs amb CV molt baix
-    # Aquests són artefactes UIB que generen rampes/diagonals contínues sense angles bruscos
-    detection_type = "angles" if is_amorphous else None
-    CV_RAMP_THRESHOLD = 5.0  # CV molt baix = artefacte UIB continu
-
-    # Calcular segments amb CV extremadament baix (sempre, per debug)
-    very_low_cv_segments = [s for s in linear_segments
-                            if s["cv"] < CV_RAMP_THRESHOLD
-                            and s["duration"] >= min_segment_duration]
-    n_very_low_cv = len(very_low_cv_segments)
-
-    # NOVA ESTRATÈGIA: Agrupar segments en "ILLES" (com fa detect_timeout)
-    # Gaussianes amples generen molts segments dispersos (moltes illes curtes)
-    # Rampes reals generen segments consecutius (1-2 illes llargues)
-    n_ramp_islands = 0
-    ramp_islands = []
-    valid_islands = []
-    angles_between_islands = []
-    n_significant_island_angles = 0
-
-    if not is_amorphous and very_low_cv_segments:
-        # Ordenar segments per índex inicial
-        sorted_segments = sorted(very_low_cv_segments, key=lambda s: s["start_idx"])
-
-        # Agrupar segments consecutius/solapats en illes
-        current_island = [sorted_segments[0]]
-
-        for i in range(1, len(sorted_segments)):
-            seg = sorted_segments[i]
-            last_seg = current_island[-1]
-
-            # Segments consecutius si el següent comença abans que acabi l'anterior
-            # (considerant solapament de segment_size // 2)
-            if seg["start_idx"] <= last_seg["end_idx"] + segment_size // 2:
-                current_island.append(seg)
-            else:
-                # Tancar illa actual i començar-ne una de nova
-                if current_island:
-                    ramp_islands.append(current_island)
-                current_island = [seg]
-
-        # Afegir última illa
-        if current_island:
-            ramp_islands.append(current_island)
-
-        # Validar illes: durada total >= llindar
-        # Durada illa = temps entre primer i últim segment
-        MIN_ISLAND_DURATION = 0.4  # min - Rampes reals són llargues (>0.4 min)
-
-        valid_islands = []
-        for island in ramp_islands:
-            t_start = island[0]["t_start"]
-            t_end = island[-1]["t_end"]
-            island_duration = t_end - t_start
-
-            # Calcular pendent mitjà de l'illa (per detectar angles entre illes)
-            slopes_island = [seg["slope"] for seg in island]
-            mean_slope = np.mean(slopes_island) if slopes_island else 0.0
-
-            if island_duration >= MIN_ISLAND_DURATION:
-                valid_islands.append({
-                    "n_segments": len(island),
-                    "duration": island_duration,
-                    "t_start": t_start,
-                    "t_end": t_end,
-                    "mean_slope": mean_slope
-                })
-
-        n_ramp_islands = len(valid_islands)
-
-        # CRITERI ADDICIONAL: Calcular ANGLES entre illes consecutives
-        # Rampes reals: canvis de pendent entre illes (angles significatius)
-        # Gaussianes amples: pendent constant/progressiu (angles petits)
-        angles_between_islands = []
-        MIN_ANGLE_BETWEEN_ISLANDS = 20.0  # graus - angle mínim entre illes
-
-        if len(valid_islands) >= 2:
-            for i in range(len(valid_islands) - 1):
-                m1 = valid_islands[i]["mean_slope"]
-                m2 = valid_islands[i+1]["mean_slope"]
-
-                # Angle entre dues rectes: arctan(|(m2-m1)/(1+m1*m2)|)
-                denominator = 1 + m1 * m2
-                if abs(denominator) < 1e-6:
-                    angle_deg = 90.0  # Perpendiculars
-                else:
-                    angle_rad = np.arctan(abs((m2 - m1) / denominator))
-                    angle_deg = float(np.degrees(angle_rad))
-
-                angles_between_islands.append(angle_deg)
-
-        n_significant_island_angles = sum(1 for a in angles_between_islands if a > MIN_ANGLE_BETWEEN_ISLANDS)
-
-        # Criteris per rampa:
-        # OPCIÓ A: 1 illa molt llarga (>= 0.8 min) → rampa contínua sense angles
-        # OPCIÓ B: >= 2 illes amb angles entre elles → transicions abruptes
-        # OPCIÓ C: >= 3 illes → patró complex amb múltiples segments lineals
-        # Gaussianes amples: poques illes (1-2) sense angles (pendent constant)
-        # Rampes reals: 1 illa llarga O múltiples illes amb/sense angles
-
-        has_single_long_island = (n_ramp_islands == 1 and valid_islands[0]["duration"] >= 0.8)
-        has_multiple_islands_with_angles = (n_ramp_islands >= 2 and n_significant_island_angles >= 1)
-        has_many_islands = (n_ramp_islands >= 3)  # Patró complex
-
-        if has_single_long_island or has_multiple_islands_with_angles or has_many_islands:
-            is_amorphous = True
-            detection_type = "ramp"
-            rejection_reason = None
-        elif n_ramp_islands >= 1:
-            # Hi ha illes però sense angles significatius → gaussiana ampla
-            rejection_reason = "ramp_no_angles_between_islands"
-
-    return {
-        "is_amorphous": is_amorphous,
-        "n_linear_segments": n_linear,
-        "n_angle_changes": n_angle_changes,  # Angles VÀLIDS (entre segments llargs + CV < 20%)
-        "n_total_angles": n_total_angles,    # Angles TOTALS (sense validar duració/CV)
-        "max_angle": max_valid_angle,        # Màxim angle VÀLID
-        "max_angle_total": max_angle,        # Màxim angle TOTAL
-        "min_significant_angle": min_significant_angle,  # Mínim angle >min_angle_deg
-        "max_significant_angle": max_significant_angle,  # Màxim angle >min_angle_deg
-        "angles": valid_angles[:10] if valid_angles else [],  # Només angles vàlids
-        "all_angles": angles[:10] if angles else [],          # Tots els angles per debug
-        "max_r2": max([s["r2"] for s in linear_segments]) if linear_segments else 0.0,
-        "segments": linear_segments[:20] if linear_segments else [],  # Primers 20 segments per debug
-        "min_segment_duration": min_segment_duration,
-        # Estadístiques CV
-        "cv_mean": cv_mean,
-        "cv_min": cv_min,
-        "cv_threshold": CV_THRESHOLD,
-        "n_low_cv_segments": n_low_cv,
-        # Estadístiques posició TOP
-        "top_concentration": top_concentration,
-        "n_angles_at_top": n_angles_at_top,
-        "n_angles_total": n_angles_total_positions,
-        # Detecció tipus rampa
-        "detection_type": detection_type,  # "angles" o "ramp"
-        "n_very_low_cv_segments": n_very_low_cv,
-        "n_ramp_islands": n_ramp_islands,  # Nombre illes de segments CV<5% consecutius
-        "ramp_islands": valid_islands if valid_islands else [],  # Info detallada illes vàlides
-        "angles_between_islands": angles_between_islands if angles_between_islands else [],  # Angles entre illes
-        "n_significant_island_angles": n_significant_island_angles if n_ramp_islands >= 2 else 0,  # Angles >20° entre illes
-        "cv_ramp_threshold": CV_RAMP_THRESHOLD,
-        # Raó rebuig
-        "rejection_reason": rejection_reason,
-        "reason": f"valid_angles={n_angle_changes}/{n_total_angles}" if is_amorphous and detection_type == "angles" else (
-                  f"ramp_detection: {n_ramp_islands} islands, {n_significant_island_angles if n_ramp_islands >= 2 else 0} angles" if is_amorphous and detection_type == "ramp" else (
-                  rejection_reason or "insufficient_valid_angles"))
-    }
-
 
 # =============================================================================
 # DETECCIÓ TIMEOUT (SATURACIÓ/MESETES)
@@ -1651,201 +1132,9 @@ def detect_timeout(t, y):
 
 
 # =============================================================================
-# VALIDACIÓ AMORPHOUS AMB RÈPLIQUES
+# NOTA: validate_amorphous_with_replicates() eliminada (v1.1) - ~190 línies
+# Era necessària per amorphous detection, que ara està eliminada
 # =============================================================================
-def validate_amorphous_with_replicates(peaks_R1, peaks_R2, t_R1, y_R1, t_R2, y_R2,
-                                       time_tolerance=0.5, pearson_threshold=0.95, rmse_threshold=0.15):
-    """
-    Valida pics amorphous comparant rèpliques R1 i R2 amb Pearson + RMSE locals.
-
-    LÒGICA:
-    - Artefactes UIB (parades detector) són events ALEATORIS temporals
-      → Apareixen en temps DIFERENTS entre R1 i R2 (o només en una rèplica)
-      → Formes diferents (Pearson baix o RMSE alt)
-    - Falsos positius (pics complexos REALS de la mostra) són reproducibles
-      → Apareixen al MATEIX temps en R1 i R2
-      → Formes SIMILARS (Pearson alt i RMSE baix)
-
-    MÈTODE:
-    - Compara NOMÉS segments dels pics amorphous (no tot el cromatograma)
-    - Calcula Pearson i RMSE locals per cada parell de pics
-    - Rebutja si: temps similar (±tolerance) AND Pearson > threshold AND RMSE < threshold
-
-    Parameters:
-        peaks_R1, peaks_R2: llistes de pics (output de analyze_peaks)
-        t_R1, y_R1: arrays de temps i senyal de R1 (cromatograma complet)
-        t_R2, y_R2: arrays de temps i senyal de R2 (cromatograma complet)
-        time_tolerance: tolerància temporal en minuts (default 0.5)
-        pearson_threshold: correlació mínima per considerar "mateix pic" (default 0.95)
-        rmse_threshold: RMSE màxim normalitzat per considerar "mateix pic" (default 0.15)
-
-    Returns:
-        tuple (peaks_R1_validated, peaks_R2_validated) amb camps 'replicate_rejected',
-        'replicate_pearson', 'replicate_rmse' afegits
-    """
-    from scipy.stats import pearsonr
-    from scipy.interpolate import interp1d
-
-    if not peaks_R1 or not peaks_R2:
-        return peaks_R1, peaks_R2
-
-    t_R1 = np.asarray(t_R1, dtype=float)
-    y_R1 = np.asarray(y_R1, dtype=float)
-    t_R2 = np.asarray(t_R2, dtype=float)
-    y_R2 = np.asarray(y_R2, dtype=float)
-
-    # Extreure pics amorphous de cada rèplica
-    amorphous_R1 = [(i, pk) for i, pk in enumerate(peaks_R1) if pk.get('is_amorphous')]
-    amorphous_R2 = [(i, pk) for i, pk in enumerate(peaks_R2) if pk.get('is_amorphous')]
-
-    # REC-7: Gestió de matching múltiple - evitar que un pic s'emparelli múltiples vegades
-    matched_R2 = set()  # Índexs de pics R2 ja emparellats
-
-    # Comparar cada pic amorphous de R1 amb pics de R2
-    for idx1, pk1 in amorphous_R1:
-        t_peak_1 = pk1.get('t_peak', 0)
-
-        # REC-4: Finestra adaptativa segons amplada del pic
-        # Calcular amplada aproximada del pic (de les bases o width si disponible)
-        t_left = pk1.get('t_left', t_peak_1 - 1.0)
-        t_right = pk1.get('t_right', t_peak_1 + 1.0)
-        peak_width = abs(t_right - t_left)
-
-        # Finestra = 1.5x amplada pic, mínim 2.0 min, màxim 5.0 min
-        window = max(2.0, peak_width * 1.5)
-        window = min(window, 5.0)
-
-        mask_1 = (t_R1 >= t_peak_1 - window) & (t_R1 <= t_peak_1 + window)
-
-        if not np.any(mask_1) or np.sum(mask_1) < 10:
-            continue
-
-        t_seg_1 = t_R1[mask_1]
-        y_seg_1 = y_R1[mask_1]
-
-        # REC-6: Normalització robusta al soroll (percentil 95 vs màxim)
-        max_val_1 = np.percentile(y_seg_1, 95) if len(y_seg_1) > 0 else 0
-        y_seg_1_norm = y_seg_1 / max_val_1 if max_val_1 > 0 else y_seg_1
-
-        # Buscar millor candidat en R2 (dins de time_tolerance)
-        best_match_idx2 = None
-        best_match_score = -1  # Score combinat: pearson - rmse
-        best_match_data = None
-
-        for idx2, pk2 in amorphous_R2:
-            # REC-7: Saltar pics R2 ja emparellats
-            if idx2 in matched_R2:
-                continue
-
-            t_peak_2 = pk2.get('t_peak', 0)
-
-            # Filtrar per temps primer (eficiència)
-            if abs(t_peak_1 - t_peak_2) > time_tolerance:
-                continue
-
-            # Extreure segment del pic R2 (mateixa finestra temporal que R1)
-            mask_2 = (t_R2 >= t_peak_1 - window) & (t_R2 <= t_peak_1 + window)
-
-            if not np.any(mask_2) or np.sum(mask_2) < 10:
-                continue
-
-            t_seg_2 = t_R2[mask_2]
-            y_seg_2 = y_R2[mask_2]
-
-            # REC-6: Normalització robusta al soroll (percentil 95 vs màxim)
-            max_val_2 = np.percentile(y_seg_2, 95) if len(y_seg_2) > 0 else 0
-            y_seg_2_norm = y_seg_2 / max_val_2 if max_val_2 > 0 else y_seg_2
-
-            # INTERPOLAR R2 a la mateixa base temporal que R1 (per poder comparar)
-            try:
-                # REC-5: Validacions per evitar valors sospitosos
-                MIN_POINTS = 20  # Mínim de punts per càlcul fiable
-
-                # Validació 1: Segments massa curts
-                if len(y_seg_1_norm) < MIN_POINTS or len(y_seg_2) < MIN_POINTS:
-                    continue  # Saltar, segments massa curts
-
-                # Validació 2: Solapament temporal
-                if t_seg_1[-1] < t_seg_2[0] or t_seg_1[0] > t_seg_2[-1]:
-                    continue  # No hi ha solapament temporal
-
-                # Crear interpolador per R2
-                interp_func = interp1d(t_seg_2, y_seg_2_norm, kind='linear',
-                                      bounds_error=False, fill_value=0.0)
-
-                # Interpolar R2 als temps de R1
-                y_seg_2_interp = interp_func(t_seg_1)
-
-                # Validació 3: Interpolació ha funcionat correctament
-                if np.max(y_seg_2_interp) < 0.01:
-                    continue  # Interpolació ha fallat (tot zeros)
-
-                # Calcular PEARSON (correlació de formes)
-                if len(y_seg_1_norm) > 3 and len(y_seg_2_interp) > 3:
-                    pearson_corr, _ = pearsonr(y_seg_1_norm, y_seg_2_interp)
-                    pearson_corr = float(pearson_corr)
-                else:
-                    pearson_corr = 0.0
-
-                # Calcular RMSE normalitzat
-                rmse = np.sqrt(np.mean((y_seg_1_norm - y_seg_2_interp) ** 2))
-                rmse = float(rmse)
-
-                # REC-5: Logging opcional per debug (descomentar si cal investigar)
-                # if pearson_corr > 0.995:
-                #     print(f"DEBUG: R1@{t_peak_1:.2f} vs R2@{t_peak_2:.2f}")
-                #     print(f"  Punts: R1={len(y_seg_1_norm)}, R2={len(y_seg_2_interp)}")
-                #     print(f"  Pearson={pearson_corr:.6f}, RMSE={rmse:.6f}")
-
-                # REC-7: Guardar millor match en lloc de processar immediatament
-                # Verificar si és candidat per rebutjar (formes molt similars = pic real)
-                if pearson_corr > pearson_threshold and rmse < rmse_threshold:
-                    # Calcular score: millor si Pearson alt i RMSE baix
-                    match_score = pearson_corr - rmse
-                    if match_score > best_match_score:
-                        best_match_score = match_score
-                        best_match_idx2 = idx2
-                        best_match_data = {
-                            't_peak_2': t_peak_2,
-                            'pearson': pearson_corr,
-                            'rmse': rmse
-                        }
-
-            except Exception as e:
-                # Si interpolació falla, ignorar aquest parell
-                continue
-
-        # REC-7: Processar millor match si s'ha trobat
-        if best_match_idx2 is not None and best_match_data is not None:
-            idx2 = best_match_idx2
-            t_peak_2 = best_match_data['t_peak_2']
-            pearson_corr = best_match_data['pearson']
-            rmse = best_match_data['rmse']
-
-            # REBUTJAR ambdós: són pics complexos reals reproducibles
-            peaks_R1[idx1]['replicate_rejected'] = True
-            peaks_R1[idx1]['replicate_match_time'] = t_peak_2
-            peaks_R1[idx1]['replicate_pearson'] = pearson_corr
-            peaks_R1[idx1]['replicate_rmse'] = rmse
-            peaks_R1[idx1]['is_amorphous'] = False
-
-            peaks_R2[idx2]['replicate_rejected'] = True
-            peaks_R2[idx2]['replicate_match_time'] = t_peak_1
-            peaks_R2[idx2]['replicate_pearson'] = pearson_corr
-            peaks_R2[idx2]['replicate_rmse'] = rmse
-            peaks_R2[idx2]['is_amorphous'] = False
-
-            # Afegir raó de rebuig
-            if peaks_R1[idx1].get('amorphous_info'):
-                peaks_R1[idx1]['amorphous_info']['rejection_reason'] = f'replicate_match_P{pearson_corr:.3f}_R{rmse:.3f}'
-            if peaks_R2[idx2].get('amorphous_info'):
-                peaks_R2[idx2]['amorphous_info']['rejection_reason'] = f'replicate_match_P{pearson_corr:.3f}_R{rmse:.3f}'
-
-            # Marcar pic R2 com emparellat
-            matched_R2.add(idx2)
-
-    return peaks_R1, peaks_R2
-
 
 # =============================================================================
 # AGRUPACIÓ RÈPLIQUES
@@ -1997,8 +1286,7 @@ def process_seqs(base_dir, selected_seqs, progress_cb=None):
                     "ears": 0,
                     "timeout": False,
                     "timeout_count": 0,
-                    "amorphous": False,
-                    "amorphous_angles": 0,
+                    # NOTA: camps amorphous eliminats (v1.1)
                     "reps": []
                 }
 
@@ -2027,11 +1315,7 @@ def process_seqs(base_dir, selected_seqs, progress_cb=None):
                             sample_data["timeout"] = True
                             sample_data["timeout_count"] = max(sample_data.get("timeout_count", 0), len(timeouts))
 
-                        # AMORPHOUS (pics/valls amb segments lineals i angles bruscos)
-                        amorphous_result = detect_amorphous(t, y)
-                        if amorphous_result and amorphous_result.get("is_amorphous"):
-                            sample_data["amorphous"] = True
-                            sample_data["amorphous_angles"] = amorphous_result.get("n_angle_changes", 0)
+                        # NOTA: Detecció AMORPHOUS eliminada (v1.1) - precària
 
                         # Anàlisi de pics - només pic principal
                         peak_analysis = analyze_peaks(t, y)
@@ -2050,7 +1334,6 @@ def process_seqs(base_dir, selected_seqs, progress_cb=None):
                         rep_data.append({
                             "rep": rep_id, "t": t, "y": y,
                             "bat": bat, "ears": ears, "timeouts": timeouts,
-                            "amorphous": amorphous_result,
                             "peak_analysis": peak_analysis,
                             "n_peaks": n_peaks,
                             "n_with_issues": n_with_issues,
@@ -2070,27 +1353,7 @@ def process_seqs(base_dir, selected_seqs, progress_cb=None):
                     t2, y2 = rep_data[1]["t"], rep_data[1]["y"]
                     sample_data["pearson"], _ = calc_pearson_replicates(t1, y1, t2, y2)
 
-                    # Validar pics amorphous entre repliques (Pearson + RMSE locals)
-                    if rep_data[0].get("peak_analysis") and rep_data[1].get("peak_analysis"):
-                        peaks_R1 = rep_data[0].get("all_peaks", [])
-                        peaks_R2 = rep_data[1].get("all_peaks", [])
-
-                        if peaks_R1 and peaks_R2:
-                            # REC-3: Pearson relaxat de 0.95 a 0.90 per millor rebuig de pics reals complexos
-                            peaks_R1_validated, peaks_R2_validated = validate_amorphous_with_replicates(
-                                peaks_R1, peaks_R2, t1, y1, t2, y2,
-                                time_tolerance=0.5, pearson_threshold=0.90, rmse_threshold=0.15
-                            )
-
-                            # Actualitzar rep_data amb pics validats
-                            rep_data[0]["all_peaks"] = peaks_R1_validated
-                            rep_data[1]["all_peaks"] = peaks_R2_validated
-
-                            # Actualitzar comptador n_amorphous en peak_analysis
-                            n_amorphous_R1 = sum(1 for pk in peaks_R1_validated if pk.get('is_amorphous'))
-                            n_amorphous_R2 = sum(1 for pk in peaks_R2_validated if pk.get('is_amorphous'))
-                            rep_data[0]["peak_analysis"]["n_amorphous"] = n_amorphous_R1
-                            rep_data[1]["peak_analysis"]["n_amorphous"] = n_amorphous_R2
+                    # NOTA: validate_amorphous_with_replicates eliminada (v1.1)
 
                     # Re-avaluar problemes de pics amb el Pearson real (Asimetria + Pearson)
                     pearson_val = sample_data["pearson"] if not np.isnan(sample_data["pearson"]) else 1.0
@@ -2277,16 +1540,7 @@ def process_seqs(base_dir, selected_seqs, progress_cb=None):
                                        f"CV={cv_val:.1f}%", fontsize=6, color="#27ae60",
                                        verticalalignment="bottom")
 
-                            # Marcar AMORPHOUS (segments lineals amb angles bruscos) - marca vermella
-                            amorphous = rep.get("amorphous", {})
-                            if amorphous and amorphous.get("is_amorphous"):
-                                # Afegir text informatiu a la part superior del gràfic
-                                n_angles = amorphous.get("n_angle_changes", 0)
-                                max_angle = amorphous.get("max_angle", 0)
-                                ax.text(0.98, 0.98, f"AMORPHOUS: {n_angles} angles >{max_angle:.0f}°",
-                                       transform=ax.transAxes, fontsize=7, color="#e74c3c",
-                                       verticalalignment="top", horizontalalignment="right",
-                                       bbox=dict(boxstyle="round,pad=0.3", facecolor="white", edgecolor="#e74c3c", alpha=0.8))
+                            # NOTA: Visualització AMORPHOUS eliminada (v1.1)
 
                             # Mostrar info de TOTS els pics amb detecció híbrida
                             # Recollir etiquetes per mostrar a la llegenda
@@ -2299,7 +1553,6 @@ def process_seqs(base_dir, selected_seqs, progress_cb=None):
                                 is_anomaly = pk.get("is_anomaly", False)
                                 is_batman = pk.get("is_batman", False)
                                 is_irregular = pk.get("is_irregular", False)
-                                is_amorphous = pk.get("is_amorphous", False)
                                 has_stop = pk.get("has_stop", False)
                                 smoothness = pk.get("smoothness", 100)
                                 anomaly_info = pk.get("anomaly", {})
@@ -2317,7 +1570,7 @@ def process_seqs(base_dir, selected_seqs, progress_cb=None):
                                                           edgecolors="darkred", linewidths=1.5)
 
                                 # Color segons si té anomalia
-                                has_any_anomaly = is_anomaly or is_amorphous or has_stop
+                                has_any_anomaly = is_anomaly or has_stop
                                 if has_any_anomaly:
                                     txt_color = "red"
                                     marker_style = "x"
@@ -2333,15 +1586,7 @@ def process_seqs(base_dir, selected_seqs, progress_cb=None):
                                 labels = []
                                 if is_batman:
                                     labels.append("BAT")
-                                if is_amorphous:
-                                    amorf_angles = pk.get("amorphous_angles", 0)
-                                    labels.append(f"AMORF({amorf_angles}a)")
-                                # Mostrar pics amorphous rebutjats per validació de rèpliques
-                                # REC-5: Format millorat amb 3 decimals per veure valors reals
-                                if pk.get("replicate_rejected"):
-                                    pearson_val = pk.get("replicate_pearson", 0)
-                                    rmse_val = pk.get("replicate_rmse", 0)
-                                    labels.append(f"REJ(P={pearson_val:.3f},R={rmse_val:.3f})")
+                                # NOTA: Etiquetes AMORF i replicate_rejected eliminades (v1.1)
                                 if has_stop:
                                     stop_cv = pk.get("stop_cv", 0)
                                     labels.append(f"STOP({stop_cv:.1f}%)")
@@ -2360,7 +1605,7 @@ def process_seqs(base_dir, selected_seqs, progress_cb=None):
 
                                 # Guardar info per zoom si és anomalia
                                 if has_any_anomaly:
-                                    anom_type = "BAT" if is_batman else ("AMORF" if is_amorphous else ("STOP" if has_stop else "IRR"))
+                                    anom_type = "BAT" if is_batman else ("STOP" if has_stop else "IRR")
                                     peak_labels.append({
                                         "t_pk": t_pk, "h_pk": h_pk + baseline_pk,
                                         "left": pk["left_base"], "right": pk["right_base"],
@@ -2598,7 +1843,6 @@ def process_seqs(base_dir, selected_seqs, progress_cb=None):
         n_batman = sum(1 for s in all_samples if s["batman"])
         n_ears = sum(1 for s in all_samples if s["ears"] > 0)
         n_timeout = sum(1 for s in all_samples if s.get("timeout"))
-        n_amorphous = sum(1 for s in all_samples if s.get("amorphous"))
 
         pct = lambda n: f"{100*n/n_total:.1f}%" if n_total > 0 else "0%"
 
@@ -2615,7 +1859,6 @@ def process_seqs(base_dir, selected_seqs, progress_cb=None):
             f"  Batman:             {n_batman} ({pct(n_batman)})\n"
             f"  Orelletes:          {n_ears} ({pct(n_ears)})\n"
             f"  TimeOUT (STOP):     {n_timeout} ({pct(n_timeout)})\n"
-            f"  Amorphous:          {n_amorphous} ({pct(n_amorphous)})\n"
         )
         ax3.text(0.05, 0.5, summary, fontsize=11, family="monospace",
                 verticalalignment="center", transform=ax3.transAxes,
