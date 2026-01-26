@@ -473,6 +473,14 @@ DEFAULT_CONSOLIDATE_CONFIG = {
     "target_wavelengths": [220, 252, 254, 272, 290, 362],
     "dad_subsample": 5,
     "peak_min_prominence_pct": 5.0,
+    # Fraccions de temps per integració parcial (Column mode)
+    "time_fractions": {
+        "BioP": [0, 18],
+        "HS": [18, 23],
+        "BB": [23, 30],
+        "SB": [30, 40],
+        "LMW": [40, 70],
+    },
 }
 
 
@@ -1621,6 +1629,154 @@ def detect_main_peak(t, y, min_prominence_pct=5.0, is_bp=None):
     }
 
 
+def calcular_fraccions_temps(t, y, config=None):
+    """
+    Calcula àrees per fraccions de temps (integració parcial).
+
+    Args:
+        t: Array de temps (minuts)
+        y: Array de senyal (mAU, ja amb baseline restada)
+        config: Configuració amb time_fractions
+
+    Returns:
+        Dict amb àrees per fracció: {BioP, HS, BB, SB, LMW, total, *_pct}
+    """
+    t = np.asarray(t, dtype=float)
+    y = np.asarray(y, dtype=float)
+
+    if len(t) < 2 or len(y) < 2:
+        return {"total": 0.0}
+
+    # Assegurar que y no té valors negatius (baseline ja restada)
+    y_clean = np.maximum(y, 0)
+
+    # Àrea total del cromatograma
+    kpis = {"total": float(trapezoid(y_clean, t))}
+
+    # Obtenir fraccions de la config
+    if config is None:
+        config = DEFAULT_CONSOLIDATE_CONFIG
+    fractions = config.get("time_fractions", DEFAULT_CONSOLIDATE_CONFIG["time_fractions"])
+
+    # Calcular àrea per cada fracció
+    for nom, (t_ini, t_fi) in fractions.items():
+        mask = (t >= t_ini) & (t < t_fi)
+        if np.sum(mask) > 1:
+            kpis[nom] = float(trapezoid(y_clean[mask], t[mask]))
+        else:
+            kpis[nom] = 0.0
+
+    # Calcular percentatges
+    if kpis["total"] > 0:
+        for nom in fractions.keys():
+            kpis[f"{nom}_pct"] = 100.0 * kpis[nom] / kpis["total"]
+    else:
+        for nom in fractions.keys():
+            kpis[f"{nom}_pct"] = 0.0
+
+    return kpis
+
+
+def detectar_tmax_senyals(t_doc, y_doc, df_dad, config=None):
+    """
+    Detecta el temps de retenció (tmax) per DOC i cada longitud d'ona DAD.
+
+    Args:
+        t_doc: Array temps DOC
+        y_doc: Array senyal DOC (net, amb baseline restada)
+        df_dad: DataFrame DAD amb columnes 'time (min)' i wavelengths
+        config: Configuració
+
+    Returns:
+        Dict amb tmax per cada senyal: {DOC: x, A220: y, A254: z, ...}
+    """
+    if config is None:
+        config = DEFAULT_CONSOLIDATE_CONFIG
+    target_wls = config.get('target_wavelengths', [220, 252, 254, 272, 290, 362])
+
+    result = {"DOC": 0.0}
+    for wl in target_wls:
+        result[f"A{wl}"] = 0.0
+
+    # tmax DOC
+    if t_doc is not None and y_doc is not None and len(t_doc) > 10:
+        t_doc = np.asarray(t_doc).flatten()
+        y_doc = np.asarray(y_doc).flatten()
+        idx_max = np.argmax(y_doc)
+        result["DOC"] = float(t_doc[idx_max])
+
+    # tmax per cada wavelength DAD
+    if df_dad is not None and not df_dad.empty and 'time (min)' in df_dad.columns:
+        t_dad = pd.to_numeric(df_dad['time (min)'], errors='coerce').to_numpy()
+
+        for wl in target_wls:
+            wl_str = str(wl)
+            if wl_str in df_dad.columns:
+                y_wl = pd.to_numeric(df_dad[wl_str], errors='coerce').to_numpy()
+                if len(y_wl) > 10 and not np.all(np.isnan(y_wl)):
+                    # Restar baseline (percentil 5)
+                    baseline = np.nanpercentile(y_wl, 5)
+                    y_wl_net = y_wl - baseline
+                    idx_max = np.nanargmax(y_wl_net)
+                    result[f"A{wl}"] = float(t_dad[idx_max])
+
+    return result
+
+
+def calcular_arees_fraccions_complet(t_doc, y_doc, df_dad, config=None):
+    """
+    Calcula àrees per fraccions de temps per DOC i totes les wavelengths DAD.
+
+    Args:
+        t_doc: Array temps DOC
+        y_doc: Array senyal DOC (net)
+        df_dad: DataFrame DAD
+        config: Configuració
+
+    Returns:
+        Dict amb estructura:
+        {
+            "DOC": {BioP: x, HS: y, ..., total: z},
+            "A220": {BioP: x, HS: y, ..., total: z},
+            ...
+        }
+    """
+    if config is None:
+        config = DEFAULT_CONSOLIDATE_CONFIG
+    target_wls = config.get('target_wavelengths', [220, 252, 254, 272, 290, 362])
+
+    result = {}
+
+    # Fraccions DOC
+    if t_doc is not None and y_doc is not None and len(t_doc) > 10:
+        result["DOC"] = calcular_fraccions_temps(t_doc, y_doc, config)
+    else:
+        result["DOC"] = {"total": 0.0}
+
+    # Fraccions per cada wavelength DAD
+    if df_dad is not None and not df_dad.empty and 'time (min)' in df_dad.columns:
+        t_dad = pd.to_numeric(df_dad['time (min)'], errors='coerce').to_numpy()
+
+        for wl in target_wls:
+            wl_str = str(wl)
+            if wl_str in df_dad.columns:
+                y_wl = pd.to_numeric(df_dad[wl_str], errors='coerce').to_numpy()
+                if len(y_wl) > 10 and not np.all(np.isnan(y_wl)):
+                    # Restar baseline
+                    baseline = np.nanpercentile(y_wl, 5)
+                    y_wl_net = np.maximum(y_wl - baseline, 0)
+                    result[f"A{wl}"] = calcular_fraccions_temps(t_dad, y_wl_net, config)
+                else:
+                    result[f"A{wl}"] = {"total": 0.0}
+            else:
+                result[f"A{wl}"] = {"total": 0.0}
+    else:
+        for wl in target_wls:
+            result[f"A{wl}"] = {"total": 0.0}
+
+    return result
+
+
 def analyze_sample_areas(t_doc, y_doc, df_dad, peak_info, config=None):
     """
     Analitza una mostra i calcula totes les àrees (DOC + DAD wavelengths).
@@ -1821,19 +1977,24 @@ def write_consolidated_excel(out_path, mostra, rep, seq_out, date_master,
                              # Info del MasterFile 0-INFO
                              master_info=None):
     """
-    Escriu fitxer Excel consolidat amb àrees calculades.
+    Escriu fitxer Excel consolidat amb àrees per fraccions de temps.
 
     Suporta dual protocol: DOC (Direct) + DOC_UIB quan ambdós estan disponibles.
     Sempre guarda dades RAW i documenta el processament aplicat.
 
-    Estructura fulla ID:
-      1. IDENTIFICACIÓ: Sample, Replica, SEQ, Method, Date, Inj_Volume, UIB_range
-      2. FITXERS: File_MasterFile, File_DAD, File_DOC_UIB
-      3. ESTAT: DOC_Mode, Status_DOC, Status_DAD, Peak_Valid
-      4. DOC: N_Points, tmax, t_start, t_end, Area, Row_Start, Row_End
-      5. PROCESSAMENT: Baseline_Method, Baseline_mAU, Smoothing, Shift_sec
-      6. UIB (si DUAL): Baseline_mAU, Shift_sec, Status
-      7. DAD (si processat): N_Points, àrees per longitud d'ona
+    Estructura fulls:
+      ID: Identificació, fitxers, estat, processament (sense àrees)
+      TMAX: Temps de retenció per DOC i cada wavelength DAD
+      AREAS: Àrees per fraccions de temps (BioP, HS, BB, SB, LMW, total)
+      DOC: Cromatograma DOC (net, raw, baseline)
+      DAD: Cromatograma DAD (totes les wavelengths)
+
+    Fraccions de temps:
+      - BioP: 0-18 min (Biopolímers)
+      - HS: 18-23 min (Àcids húmics)
+      - BB: 23-30 min (Building Blocks)
+      - SB: 30-40 min (Small Building blocks)
+      - LMW: 40-70 min (Low Molecular Weight)
     """
     sample_analysis = sample_analysis or {}
     master_info = master_info or {}
@@ -1879,14 +2040,8 @@ def write_consolidated_excel(out_path, mostra, rep, seq_out, date_master,
         ("Peak_Valid", peak_info.get("valid", False)),
     ])
 
-    # === 4. MESURES DOC ===
-    id_rows.extend([
-        ("DOC_N_Points", len(t_doc)),
-        ("DOC_tmax", round(sample_analysis.get("doc_t_retention", peak_info.get("t_max", 0.0)), 3)),
-        ("DOC_t_start", round(sample_analysis.get("doc_t_start", peak_info.get("t_start", 0.0)), 3)),
-        ("DOC_t_end", round(sample_analysis.get("doc_t_end", peak_info.get("t_end", 0.0)), 3)),
-        ("DOC_Area", round(sample_analysis.get("doc_area", peak_info.get("area", 0.0)), 3)),
-    ])
+    # === 4. MESURES DOC (simplificat - àrees i tmax van a fulls separats) ===
+    id_rows.append(("DOC_N_Points", len(t_doc)))
     if row_start is not None:
         id_rows.append(("DOC_Row_Start", row_start))
     if row_end is not None:
@@ -1908,19 +2063,50 @@ def write_consolidated_excel(out_path, mostra, rep, seq_out, date_master,
             id_rows.append(("UIB_Shift_sec", round(shift_uib * 60, 2)))
         id_rows.append(("UIB_Status", st_doc_uib or "OK"))
 
-    # === 7. DAD (només si processat i té àrees) ===
-    dad_processed = not df_dad.empty and any(
-        sample_analysis.get(f"a{wl}_area", 0.0) > 0
-        for wl in [220, 252, 254, 272, 290, 362]
-    )
-    if dad_processed:
+    # === 7. DAD N_Points (àrees van al full AREAS) ===
+    if not df_dad.empty:
         id_rows.append(("DAD_N_Points", len(df_dad)))
-        for wl in [220, 252, 254, 272, 290, 362]:
-            area = sample_analysis.get(f"a{wl}_area", 0.0)
-            if area > 0:
-                id_rows.append((f"DAD_A{wl}_Area", round(area, 3)))
 
-    df_id = pd.DataFrame(id_rows, columns=["Camp", "Valor"])
+    df_id = pd.DataFrame(id_rows, columns=["Field", "Value"])
+
+    # === TMAX SHEET: retention times for DOC and DAD ===
+    tmax_data = detectar_tmax_senyals(t_doc, y_doc_net, df_dad)
+    tmax_rows = [("Signal", "tmax (min)")]
+    for signal, tmax_val in tmax_data.items():
+        tmax_rows.append((signal, round(tmax_val, 3) if tmax_val > 0 else "-"))
+    df_tmax = pd.DataFrame(tmax_rows[1:], columns=tmax_rows[0])
+
+    # === AREAS SHEET: areas by time fractions ===
+    fraccions_data = calcular_arees_fraccions_complet(t_doc, y_doc_net, df_dad)
+    fractions_config = DEFAULT_CONSOLIDATE_CONFIG.get("time_fractions", {})
+    fraction_names = list(fractions_config.keys()) + ["total"]
+
+    # Build areas table
+    areas_rows = []
+    # Header: Fraction, Range, DOC, A220, A254, ...
+    header = ["Fraction", "Range (min)", "DOC"]
+    target_wls = DEFAULT_CONSOLIDATE_CONFIG.get("target_wavelengths", [220, 252, 254, 272, 290, 362])
+    for wl in target_wls:
+        header.append(f"A{wl}")
+
+    for frac_name in fraction_names:
+        if frac_name == "total":
+            rang = "0-70"
+        else:
+            t_ini, t_fi = fractions_config.get(frac_name, [0, 0])
+            rang = f"{t_ini}-{t_fi}"
+
+        row = [frac_name, rang]
+        # DOC
+        doc_area = fraccions_data.get("DOC", {}).get(frac_name, 0.0)
+        row.append(round(doc_area, 2) if doc_area > 0 else "-")
+        # DAD wavelengths
+        for wl in target_wls:
+            dad_area = fraccions_data.get(f"A{wl}", {}).get(frac_name, 0.0)
+            row.append(round(dad_area, 2) if dad_area > 0 else "-")
+        areas_rows.append(row)
+
+    df_areas = pd.DataFrame(areas_rows, columns=header)
 
     # Construir DataFrame DOC segons mode
     if is_dual:
@@ -1949,6 +2135,8 @@ def write_consolidated_excel(out_path, mostra, rep, seq_out, date_master,
 
     with pd.ExcelWriter(out_path, engine="openpyxl") as writer:
         df_id.to_excel(writer, sheet_name="ID", index=False)
+        df_tmax.to_excel(writer, sheet_name="TMAX", index=False)
+        df_areas.to_excel(writer, sheet_name="AREAS", index=False)
         df_doc_out.to_excel(writer, sheet_name="DOC", index=False)
         if not df_dad.empty:
             df_dad.to_excel(writer, sheet_name="DAD", index=False)
@@ -2215,19 +2403,23 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
 
                 # Llegir DOC UIB
                 df_doc_uib, st_doc_uib = llegir_doc_uib(f_doc_uib)
-                if df_doc_uib.empty:
-                    result["errors"].append(f"Error llegint DOC UIB: {nom_doc_uib}")
-                    continue
 
                 # Tracking UIB files utilitzats
                 used_uib_files.add(f_doc_uib)
 
-                t_uib = pd.to_numeric(df_doc_uib["time (min)"], errors="coerce").to_numpy()
-                y_uib_raw = pd.to_numeric(df_doc_uib["DOC"], errors="coerce").to_numpy()
-
-                base_uib = get_baseline_correction(t_uib, y_uib_raw, method, config)
-                y_uib_net = apply_smoothing(y_uib_raw - base_uib)
-                y_uib_net[y_uib_net < 0] = 0
+                # Determinar si tenim dades UIB
+                if df_doc_uib.empty or len(df_doc_uib) < 10:
+                    st_doc_uib = "NO_DATA"
+                    t_uib = np.array([0.0])
+                    y_uib_raw = np.array([0.0])
+                    y_uib_net = np.array([0.0])
+                    base_uib = np.array([0.0])
+                else:
+                    t_uib = pd.to_numeric(df_doc_uib["time (min)"], errors="coerce").to_numpy()
+                    y_uib_raw = pd.to_numeric(df_doc_uib["DOC"], errors="coerce").to_numpy()
+                    base_uib = get_baseline_correction(t_uib, y_uib_raw, method, config)
+                    y_uib_net = apply_smoothing(y_uib_raw - base_uib)
+                    y_uib_net[y_uib_net < 0] = 0
 
                 # Variables per DOC Direct (del mestre)
                 t_direct = None
@@ -2307,7 +2499,7 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
 
                 # Decidir quin temps i DOC usar per l'anàlisi principal
                 # Si tenim dual, usar el Direct com a principal (és el "oficial")
-                if t_direct is not None and len(t_direct) > 0:
+                if t_direct is not None and len(t_direct) > 1:
                     t_doc = t_direct
                     y_doc_net = y_direct_net
                     y_doc_raw = y_direct_raw
@@ -2315,14 +2507,23 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
                     nom_doc = nom_doc_direct
                     st_doc = st_doc_direct
                     doc_mode = "DUAL"
-                else:
-                    # Fallback a UIB si no hi ha Direct
+                elif st_doc_uib != "NO_DATA":
+                    # Fallback a UIB si no hi ha Direct però UIB és vàlid
                     t_doc = t_uib
                     y_doc_net = y_uib_net
                     y_doc_raw = y_uib_raw
                     base = base_uib
                     nom_doc = nom_doc_uib
                     st_doc = st_doc_uib
+                    doc_mode = "UIB"
+                else:
+                    # Ni Direct ni UIB tenen dades
+                    t_doc = t_uib
+                    y_doc_net = y_uib_net
+                    y_doc_raw = y_uib_raw
+                    base = base_uib
+                    nom_doc = nom_doc_uib
+                    st_doc = "NO_DATA"
                     doc_mode = "UIB"
 
                 # Buscar DAD
@@ -2338,11 +2539,13 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
                         df_dad = process_dad(df_dad_raw, config)
                         st_dad = "OK" if not df_dad.empty else "NO_DATA"
 
-                # Detectar pic (usar DOC principal)
-                peak_info = detect_main_peak(t_doc, y_doc_net, config["peak_min_prominence_pct"])
-
-                # Calcular àrees
-                sample_analysis = analyze_sample_areas(t_doc, y_doc_net, df_dad, peak_info, config)
+                # Detectar pic i calcular àrees (només si tenim dades)
+                if st_doc != "NO_DATA":
+                    peak_info = detect_main_peak(t_doc, y_doc_net, config["peak_min_prominence_pct"])
+                    sample_analysis = analyze_sample_areas(t_doc, y_doc_net, df_dad, peak_info, config)
+                else:
+                    peak_info = {"valid": False, "t_max": 0, "area": 0, "t_start": 0, "t_end": 0}
+                    sample_analysis = {}
 
                 # Guardar Excel
                 out_name = f"{mostra}_{seq_out}_R{rep}.xlsx"
@@ -2493,15 +2696,26 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
                         continue
 
                     df_doc = extract_doc_from_masterfile(df_toc, row_ini, row_fi, t_start)
-                    if df_doc.empty:
-                        continue
 
-                    t_doc = pd.to_numeric(df_doc["time (min)"], errors="coerce").to_numpy()
-                    y_doc = pd.to_numeric(df_doc["DOC"], errors="coerce").to_numpy()
-
-                    base_arr = get_baseline_correction(t_doc, y_doc, method, config)
-                    doc_net = apply_smoothing(y_doc - base_arr)
-                    doc_net[doc_net < 0] = 0
+                    # Determinar si tenim dades DOC
+                    if df_doc.empty or len(df_doc) < 10:
+                        # No hi ha dades DOC directe - crear fitxer amb NO_DATA
+                        st_doc = "NO_DATA"
+                        t_doc = np.array([0.0])
+                        y_doc = np.array([0.0])
+                        doc_net = np.array([0.0])
+                        base_arr = np.array([0.0])
+                        peak_info = {"valid": False, "t_max": 0, "area": 0, "t_start": 0, "t_end": 0}
+                        sample_analysis = {}
+                    else:
+                        st_doc = "OK"
+                        t_doc = pd.to_numeric(df_doc["time (min)"], errors="coerce").to_numpy()
+                        y_doc = pd.to_numeric(df_doc["DOC"], errors="coerce").to_numpy()
+                        base_arr = get_baseline_correction(t_doc, y_doc, method, config)
+                        doc_net = apply_smoothing(y_doc - base_arr)
+                        doc_net[doc_net < 0] = 0
+                        peak_info = detect_main_peak(t_doc, doc_net, config["peak_min_prominence_pct"])
+                        sample_analysis = {}  # Es calcularà després amb DAD
 
                     # Buscar DAD
                     dad_path, st_dad = choose_best_candidate(base_name, rep, dad_pool, used_dad_files)
@@ -2516,11 +2730,9 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
                             df_dad = process_dad(df_dad_raw, config)
                             st_dad = "OK" if not df_dad.empty else "NO_DATA"
 
-                    # Detectar pic
-                    peak_info = detect_main_peak(t_doc, doc_net, config["peak_min_prominence_pct"])
-
-                    # Calcular àrees
-                    sample_analysis = analyze_sample_areas(t_doc, doc_net, df_dad, peak_info, config)
+                    # Calcular àrees (només si tenim DOC)
+                    if st_doc == "OK":
+                        sample_analysis = analyze_sample_areas(t_doc, doc_net, df_dad, peak_info, config)
 
                     # Guardar Excel
                     out_name = f"{mostra_clean}_{seq_out}_R{rep}.xlsx"
@@ -2528,7 +2740,7 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
 
                     write_consolidated_excel(
                         out_path, mostra_clean, rep, seq_out, date_master, method, "DIRECT",
-                        os.path.basename(mestre), nom_dad, "OK", st_dad, t_doc, y_doc, doc_net, base_arr,
+                        os.path.basename(mestre), nom_dad, st_doc, st_dad, t_doc, y_doc, doc_net, base_arr,
                         df_dad, peak_info, sample_analysis,
                         master_file=mestre, row_start=row_ini, row_end=row_fi,
                         smoothing_applied=True,
@@ -2581,15 +2793,25 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
                         continue
 
                     df_doc = extract_doc_from_master(df_toc, row_ini, row_fi, row["START"])
-                    if df_doc.empty:
-                        continue
 
-                    t_doc = pd.to_numeric(df_doc["time (min)"], errors="coerce").to_numpy()
-                    y_doc = pd.to_numeric(df_doc["DOC"], errors="coerce").to_numpy()
-
-                    base_arr = get_baseline_correction(t_doc, y_doc, method, config)
-                    doc_net = apply_smoothing(y_doc - base_arr)
-                    doc_net[doc_net < 0] = 0
+                    # Determinar si tenim dades DOC
+                    if df_doc.empty or len(df_doc) < 10:
+                        st_doc = "NO_DATA"
+                        t_doc = np.array([0.0])
+                        y_doc = np.array([0.0])
+                        doc_net = np.array([0.0])
+                        base_arr = np.array([0.0])
+                        peak_info = {"valid": False, "t_max": 0, "area": 0, "t_start": 0, "t_end": 0}
+                        sample_analysis = {}
+                    else:
+                        st_doc = "OK"
+                        t_doc = pd.to_numeric(df_doc["time (min)"], errors="coerce").to_numpy()
+                        y_doc = pd.to_numeric(df_doc["DOC"], errors="coerce").to_numpy()
+                        base_arr = get_baseline_correction(t_doc, y_doc, method, config)
+                        doc_net = apply_smoothing(y_doc - base_arr)
+                        doc_net[doc_net < 0] = 0
+                        peak_info = detect_main_peak(t_doc, doc_net, config["peak_min_prominence_pct"])
+                        sample_analysis = {}
 
                     # Buscar DAD
                     dad_path, st_dad = choose_best_candidate(base_name, rep, dad_pool, used_dad_files)
@@ -2604,11 +2826,9 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
                             df_dad = process_dad(df_dad_raw, config)
                             st_dad = "OK" if not df_dad.empty else "NO_DATA"
 
-                    # Detectar pic
-                    peak_info = detect_main_peak(t_doc, doc_net, config["peak_min_prominence_pct"])
-
-                    # Calcular àrees
-                    sample_analysis = analyze_sample_areas(t_doc, doc_net, df_dad, peak_info, config)
+                    # Calcular àrees (només si tenim DOC)
+                    if st_doc == "OK":
+                        sample_analysis = analyze_sample_areas(t_doc, doc_net, df_dad, peak_info, config)
 
                     # Guardar Excel
                     out_name = f"{mostra_clean}_{seq_out}_R{rep}.xlsx"
@@ -2616,7 +2836,7 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
 
                     write_consolidated_excel(
                         out_path, mostra_clean, rep, seq_out, date_master, method, "DIRECT",
-                        os.path.basename(mestre), nom_dad, "OK", st_dad, t_doc, y_doc, doc_net, base_arr,
+                        os.path.basename(mestre), nom_dad, st_doc, st_dad, t_doc, y_doc, doc_net, base_arr,
                         df_dad, peak_info, sample_analysis,
                         master_file=mestre, row_start=row_ini, row_end=row_fi,
                         smoothing_applied=True,
