@@ -3,10 +3,72 @@ TODO - SUITE HPSEC
 ================================================================================
 
 ################################################################################
-SESSIO EN CURS - 2025-01-25 09:15
+ACCIONS PENDENTS STRS (Tècnics)
 ################################################################################
 
-TASCA ACTUAL: MasterFile - Template i estratègia de càlcul
+[ ] 261D_SEQ_BP - Revisar dades
+    PROBLEMA: La carpeta 261D_SEQ_BP conté fitxers incorrectes:
+      - 261C_SEQ_v11.xlsx (pertany a 261C, no 261D)
+      - 261_2_MasterFile.xlsx (no correspon a 261D)
+    ACCIÓ: Verificar si existeixen dades reals per 261D_SEQ_BP
+      - Si existeixen: crear MasterFile correcte (261D_MasterFile.xlsx)
+      - Si no existeixen: eliminar carpeta o documentar com a buida
+
+################################################################################
+SESSIO EN CURS - 2026-01-26
+################################################################################
+
+TASCA ACTUAL: Detecció automàtica de timeouts TOC
+
+COMPLETAT AVUI (2026-01-26):
+  [x] Anàlisi cicle recàrrega xeringues TOC:
+      - Cicle: 77.2 min (1140 mesures × ~4.06s)
+      - Timeout: 74 segons
+      - Durada mostra HPLC: 78.65 min
+      - Deriva per mostra: 1.45 min (timeout "retrocedeix")
+
+  [x] Model predictiu de timeouts:
+      - Fórmula: Pos_timeout(N) = T0 - (N-1) × 1.45 (mod 77.2)
+      - Verificat amb 6 seqüències: r = 0.9982, error mitjà 1.2%
+      - Documentat a: PROVES/dual_profiles/OPTIMITZACIO_SEQUENCIES_TOC.md
+
+  [x] Detecció automàtica timeouts a hpsec_consolidate.py:
+      - Nova configuració TIMEOUT_CONFIG (zones i severitats)
+      - Nova funció detect_doc_timeouts() - detecta per cadència dades
+      - Nova funció format_timeout_status()
+      - Modificades extract_doc_from_masterfile/master() - retornen timeout_info
+      - Modificada write_consolidated_excel() - escriu timeout info a ID
+      - Warnings durant consolidació per timeouts en zona crítica
+
+  [x] Nivells de severitat implementats:
+      | Zona      | Rang (min) | Severitat |
+      |-----------|------------|-----------|
+      | RUN_START | < 1        | INFO      |
+      | BioP      | 0-18       | WARNING   |
+      | HS        | 18-23      | CRITICAL  |
+      | BB        | 23-30      | WARNING   |
+      | SB        | 30-40      | WARNING   |
+      | LMW       | 40-70      | INFO      |
+      | POST_RUN  | > 70       | OK        |
+
+  [x] Output al full ID dels consolidats:
+      - TOC_Timeout_Detected: YES/NO
+      - TOC_Timeout_Count: nombre de timeouts
+      - TOC_Timeout_Severity: OK/INFO/WARNING/CRITICAL
+      - TOC_Timeout_N: detalls (posició, duració, zona)
+      - TOC_Zones_Affected: zones amb timeout
+      - TOC_Dt_Median_sec / TOC_Dt_Max_sec
+
+PENDENT:
+  [ ] Reconsolidar totes les seqüències per afegir info timeout
+  [ ] Generar report resum de timeouts per seqüència
+  [ ] Considerar canvi durada mostra a 77.2 min (elimina deriva)
+
+--------------------------------------------------------------------------------
+SESSIO ANTERIOR - 2025-01-25 09:15
+--------------------------------------------------------------------------------
+
+TASCA ANTERIOR: MasterFile - Template i estratègia de càlcul
 
 COMPLETAT:
   [x] 23:25 - Unificació estructura MasterFiles (38 fitxers)
@@ -48,16 +110,89 @@ PENDENT:
       - Cada pas reanomena el fitxer i afegeix full corresponent
       - Permet veure estat sense obrir el fitxer
 
-  [x] Reestructurar fulla ID consolidats (IMPLEMENTAT):
-      Nova estructura a write_consolidated_excel():
-        1. IDENTIFICACIÓ: Sample, Replica, SEQ, Method, Date, Inj_Volume_uL, UIB_range
-        2. FITXERS: File_MasterFile, File_DAD, File_DOC_UIB
-        3. ESTAT: DOC_Mode, Status_DOC, Status_DAD, Peak_Valid
-        4. DOC: N_Points, tmax, t_start, t_end, Area, Row_Start, Row_End
-        5. PROCESSAMENT: Baseline_Method, Baseline_mAU, Smoothing, Shift_sec
-        6. UIB (si DUAL): Baseline_mAU, Shift_sec, Status
-        7. DAD (si processat): N_Points, àrees per longitud d'ona
-      Afegit paràmetre master_info a write_consolidated_excel()
+  [x] Reestructurar fitxers consolidats (IMPLEMENTAT 2025-01-26):
+      Nova estructura Excel amb 5 fulls:
+        - ID: Identificació, fitxers, estat, processament (simplificat, sense àrees)
+        - TMAX: Temps de retenció per DOC i cada wavelength DAD
+        - AREAS: Àrees per fraccions de temps (BioP, HS, BB, SB, LMW, total)
+        - DOC: Cromatograma DOC (net, raw, baseline)
+        - DAD: Cromatograma DAD (totes les wavelengths)
+
+      Fraccions de temps (time_fractions):
+        - BioP: 0-18 min (Biopolímers)
+        - HS: 18-23 min (Àcids húmics)
+        - BB: 23-30 min (Building Blocks)
+        - SB: 30-40 min (Small Building blocks)
+        - LMW: 40-70 min (Low Molecular Weight)
+
+      Noms columnes en anglès: Field/Value, Signal, Fraction, Range
+
+  [ ] Revisar report consolidats (HPSEC_Suite.py)
+      - Adaptar generació PDF/reports a nova estructura (TMAX, AREAS)
+      - Verificar que llegeix correctament els nous fulls
+
+  [x] Reconsolidar totes les seqüències (COMPLETAT 2025-01-26)
+      - 32/33 seqüències OK (655 fitxers consolidats)
+      - ERROR: 261D_SEQ_BP (no té MasterFile propi, fitxers de 261C)
+      - Nova estructura amb fulls TMAX i AREAS aplicada
+      NOTA: Caldrà reprocessar quan s'estandarditzin temps i versions
+
+  [x] BUG CORREGIT + RECONSOLIDAT: Alineació DUAL (2026-01-26)
+      PROBLEMA ORIGINAL:
+        - calculate_column_alignment_shifts() buscava "DOC (mAU)"
+          però fitxers DUAL tenen "DOC_Direct (mAU)"
+
+      FIX IMPLEMENTAT (v2):
+        1. Afegit llegir_dad_1a() per format DAD1A (UTF-16, tab, sense capçalera)
+        2. Afegit llegir_dad_amb_fallback() amb prioritat Export3D -> DAD1A
+        3. Modificat alineació per suportar format MasterFile NEW i OLD
+        4. L'alineació ara usa DAD Export3D o fallback a DAD1A per A254
+
+      RECONSOLIDACIÓ FINAL (17 SEQs):
+        - Shifts calculats correctament amb Export3D com a font DAD
+        - 274_SEQ: shift_direct = -44.3s (abans era 0!)
+        - 275_SEQ: shift_direct = -49.3s (abans era 0!)
+
+      MILLORA QUALITAT PERFILS:
+        - 700 ppb: Pearson 0.9501 -> 0.9838 (+0.034)
+        - 1000 ppb: Pearson 0.9531 -> 0.9916 (+0.039)
+        - Mostres "dolentes" (r<0.95): 53 -> 14 (-74%)
+        - Correlació N_Points eliminada (r=-0.28 -> r=0.04)
+
+      - NOTA: 271_SEQ_BP té KHP anomal (4000+ mAU), usar SEQ propera per alineació
+
+  [ ] Estandarditzar límits temporals cromatogrames
+      - Truncar tots els cromatogrames a 70 min màxim
+      - Ara alguns arriben a 75 min → àrea "total" no coincideix amb suma fraccions
+      - Afecta: hpsec_consolidate.py (lectura DOC)
+
+  [ ] Afegir versionat als fitxers consolidats
+      - Incloure versió script a fulla ID: "Script_Version: hpsec_consolidate v1.0"
+      - Permet saber amb quina versió es van processar les dades
+      - Facilita reprocessament selectiu quan hi ha canvis
+
+  [ ] Sistema de versions pels scripts
+      - Definir __version__ a cada mòdul principal
+      - Format: MAJOR.MINOR (ex: 1.0, 1.1, 2.0)
+      - MAJOR: canvis incompatibles o estructura nova
+      - MINOR: millores, correccions
+      - Començar amb v1.0 per hpsec_consolidate.py
+
+  [ ] Documentar deriva DAD (QC opcional)
+      - Càlcul: mitjana(t>60) - mitjana(t<10) per cada wavelength
+      - Valors típics: 0.03-0.53 mAU (petits)
+      - A290 pot tenir deriva negativa
+      - Flag QC si deriva > llindar (a definir)
+      - Nota: deriva DOC a temps llargs pot ser senyal real (compostos)
+
+  [ ] PENDENT: Analitzar estructura final MasterFile abans d'implementar
+      - Definir fulls nous post-consolidació:
+        * 5-TMAX: temps retenció per mostra (format llarg)
+        * 6-AREAS: àrees per fracció (format llarg)
+        * 7-PROCESSING: baseline, deriva, versió, QC
+      - Decidir què es guarda vs què es recalcula
+      - Revisar mètodes baseline: mode_robust (DOC) vs percentile_5 (DAD)
+      - Documentar subsampling DAD (factor 5)
 
   [ ] Crear script importació per noves SEQs (usa Template)
   [ ] Commit canvis a git
@@ -172,10 +307,24 @@ REPAIR_FACTOR = 0.85         # Factor correccio tangent
 --------------------------------------------------------------------------------
 ANOMALIES A REVISAR
 --------------------------------------------------------------------------------
+[!] 271_SEQ_BP - KHP ANOMAL (NO USAR PER CALIBRACIO/ALINEACIO)
+    - KHP2_271_BP_R1: 4060 mAU
+    - KHP2_271_BP_R2: 4140 mAU
+    - Valors normals KHP2: 180-1000 mAU (mitjana ~450 mAU)
+    - Valores 271 són 4-6x superiors al normal
+    - EXCLOURE d'alineació i calibració
+
 [ ] KHP2_284_BP te altura anomalament alta (242 mAU) vs KHP2_277 (149) i KHP2_281 (183)
     - Mateixa concentracio, mateixa sensibilitat (UIB>=275)
     - Possible canvi de fungible DOC entre seqüències?
     - Revisar historial de manteniment del detector
+
+[ ] Implementar detecció anomalies KHP abans d'usar per alineació/calibració
+    - Calcular mitjana i desviació estàndard de tots els KHPs
+    - Marcar com a outlier si valor > mitjana + 3*std
+    - Afecta: calculate_column_alignment_shifts() a hpsec_consolidate.py
+    - Afecta: calibrate_sequence() a hpsec_calibrate.py
+    - Llista negra actual: 271_SEQ_BP
 
 --------------------------------------------------------------------------------
 NOTES
@@ -281,6 +430,13 @@ REGISTRE DE SCRIPTS
 
 Format: [DATA HORA] script.py - Descripció breu
 
+[2026-01-26 22:00] hpsec_consolidate.py - TIMEOUT DETECTION
+    Afegida detecció automàtica de timeouts TOC per cadència dades.
+    Noves funcions: detect_doc_timeouts(), format_timeout_status()
+    Modificades: extract_doc_from_masterfile/master(), write_consolidated_excel()
+    Output: TOC_Timeout_* camps al full ID dels consolidats
+    Warnings: alertes durant consolidació per timeouts en zona crítica
+
 [2026-01-26 04:15] hpsec_migrate_master.py - UNIFICAT
     Creació de MasterFiles des de rawdata v11/v12.
     API: migrate_single(), migrate_batch(), find_seq_folders()
@@ -322,9 +478,52 @@ EX1L2503_258 R1 Amorphous OK R2 Amorphous per raó incorrecte. Ho es per la base
 CHANGELOG / HISTORIAL D'ACCIONS
 ================================================================================
 
-2025-01-24 - UNIFICACIO MASTERFILES
+2026-01-26 - DETECCIO TIMEOUTS TOC
 --------------------------------------------------------------------------------
 [DARRERA ACCIO]
+
+Objectiu: Detectar automàticament els timeouts per recàrrega de xeringues TOC
+         i avisar quan afecten zones crítiques del cromatograma.
+
+Anàlisi prèvia:
+  - Cicle recàrrega: 77.2 min (verificat amb 6 seqüències)
+  - Timeout: ~74 segons
+  - Durada mostra: 78.65 min (constant, CV=0.013%)
+  - Deriva: 1.45 min per mostra (el timeout "retrocedeix")
+  - Model predictiu: r = 0.9982, error mitjà 1.2%
+
+Implementació a hpsec_consolidate.py (+426 línies):
+  1. TIMEOUT_CONFIG - Configuració zones i severitats
+  2. detect_doc_timeouts() - Detecta timeouts per cadència (dt > 60s)
+  3. format_timeout_status() - Formata estat per consolidat
+  4. extract_doc_from_masterfile() - Ara retorna (df, timeout_info)
+  5. extract_doc_from_master() - Ara retorna (df, timeout_info)
+  6. write_consolidated_excel() - Nou paràmetre timeout_info
+  7. Actualitzades totes les crides a funcions d'extracció
+
+Severitats per zona:
+  - CRITICAL: HS (18-23 min) - Zona substàncies húmiques
+  - WARNING: BioP, BB, SB (0-40 min) - Zones crítiques
+  - INFO: LMW (40-70 min), RUN_START (<1 min)
+  - OK: POST_RUN (>70 min) - Zona ideal
+
+Output al full ID:
+  TOC_Timeout_Detected, TOC_Timeout_Count, TOC_Timeout_Severity,
+  TOC_Timeout_N (detalls), TOC_Zones_Affected, TOC_Dt_Median/Max_sec
+
+Documentació generada:
+  - PROVES/dual_profiles/OPTIMITZACIO_SEQUENCIES_TOC.md
+  - PROVES/dual_profiles/MODEL_PREDICTIU_TIMEOUT.md
+  - PROVES/dual_profiles/analisi_completa_T0.png
+
+Recomanació operativa:
+  Si es canvia durada mostra a 77.2 min + espera 3-5 min post-flush:
+  → 100% timeouts en zona post-run (sense impacte)
+
+--------------------------------------------------------------------------------
+
+2025-01-24 - UNIFICACIO MASTERFILES
+--------------------------------------------------------------------------------
 
 Objectiu: Unificar l'estructura de tots els MasterFiles existents a Dades2
 

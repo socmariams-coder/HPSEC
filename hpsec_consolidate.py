@@ -483,6 +483,191 @@ DEFAULT_CONSOLIDATE_CONFIG = {
     },
 }
 
+# Configuració detecció de timeouts TOC
+TIMEOUT_CONFIG = {
+    "threshold_sec": 60,    # Considera timeout si dt > 60 segons
+    "major_timeout_sec": 70,  # Timeout major (recàrrega xeringues ~74s)
+    "zones": {
+        "RUN_START": [0, 0],      # Abans de BioP (inici run)
+        "BioP": [0, 18],          # Biopolímers - CRÍTIC
+        "HS": [18, 23],           # Substàncies húmiques - MOLT CRÍTIC
+        "BB": [23, 30],           # Building Blocks - CRÍTIC
+        "SB": [30, 40],           # Small Building blocks - CRÍTIC
+        "LMW": [40, 70],          # Low Molecular Weight - Acceptable
+        "POST_RUN": [70, 100],    # Post-run - IDEAL
+    },
+    "severity": {
+        "RUN_START": "INFO",      # Timeout a l'inici, abans de pics
+        "BioP": "WARNING",        # Pèrdua de biopolímers
+        "HS": "CRITICAL",         # Pèrdua de substàncies húmiques (zona més important)
+        "BB": "WARNING",          # Pèrdua de building blocks
+        "SB": "WARNING",          # Pèrdua de small building blocks
+        "LMW": "INFO",            # Zona de baix pes molecular, acceptable
+        "POST_RUN": "OK",         # Zona ideal, sense impacte
+    },
+}
+
+
+def detect_doc_timeouts(t_min, threshold_sec=None, major_threshold_sec=None):
+    """
+    Detecta timeouts en dades DOC Direct basant-se en la cadència temporal.
+
+    Analitza els intervals entre mesures consecutives. Un timeout es detecta
+    quan l'interval supera el llindar (per defecte 60 segons).
+
+    Args:
+        t_min: Array de temps en minuts
+        threshold_sec: Llindar per considerar timeout (defecte: 60s)
+        major_threshold_sec: Llindar per timeout major/recàrrega (defecte: 70s)
+
+    Returns:
+        dict amb:
+            - n_timeouts: nombre de timeouts detectats
+            - n_major_timeouts: nombre de timeouts majors (recàrrega xeringues)
+            - timeouts: llista de dicts amb info de cada timeout
+            - dt_median_sec: mediana d'intervals (cadència normal)
+            - dt_max_sec: interval màxim detectat
+            - zone_summary: resum per zones
+            - severity: severitat màxima detectada
+            - warning_message: missatge de warning formatat
+    """
+    if threshold_sec is None:
+        threshold_sec = TIMEOUT_CONFIG["threshold_sec"]
+    if major_threshold_sec is None:
+        major_threshold_sec = TIMEOUT_CONFIG["major_timeout_sec"]
+
+    t = np.asarray(t_min)
+    if len(t) < 2:
+        return {
+            "n_timeouts": 0,
+            "n_major_timeouts": 0,
+            "timeouts": [],
+            "dt_median_sec": 0,
+            "dt_max_sec": 0,
+            "zone_summary": {},
+            "severity": "OK",
+            "warning_message": ""
+        }
+
+    # Calcular intervals en segons
+    dt_sec = np.diff(t) * 60.0
+
+    # Estadístiques bàsiques
+    dt_median = float(np.median(dt_sec))
+    dt_max = float(np.max(dt_sec))
+
+    # Detectar timeouts
+    timeout_indices = np.where(dt_sec > threshold_sec)[0]
+    timeouts = []
+    zone_counts = {zone: 0 for zone in TIMEOUT_CONFIG["zones"].keys()}
+    max_severity = "OK"
+    severity_order = ["OK", "INFO", "WARNING", "CRITICAL"]
+
+    for idx in timeout_indices:
+        t_start = float(t[idx])
+        t_end = float(t[idx + 1])
+        duration_sec = float(dt_sec[idx])
+        is_major = duration_sec >= major_threshold_sec
+
+        # Determinar zona
+        zone = "POST_RUN"  # Per defecte
+        for zone_name, (t_ini, t_fi) in TIMEOUT_CONFIG["zones"].items():
+            if zone_name == "RUN_START":
+                continue  # Tractem apart
+            if t_ini <= t_start < t_fi:
+                zone = zone_name
+                break
+
+        # Cas especial: timeout a l'inici del run (t < 1 min)
+        if t_start < 1.0:
+            zone = "RUN_START"
+
+        zone_counts[zone] += 1
+        severity = TIMEOUT_CONFIG["severity"].get(zone, "INFO")
+
+        if severity_order.index(severity) > severity_order.index(max_severity):
+            max_severity = severity
+
+        timeouts.append({
+            "index": int(idx),
+            "t_start_min": round(t_start, 2),
+            "t_end_min": round(t_end, 2),
+            "duration_sec": round(duration_sec, 1),
+            "is_major": is_major,
+            "zone": zone,
+            "severity": severity,
+        })
+
+    # Generar missatge de warning
+    warning_parts = []
+    n_major = sum(1 for to in timeouts if to["is_major"])
+
+    if timeouts:
+        # Ordenar per severitat
+        critical_zones = [to for to in timeouts if to["severity"] == "CRITICAL"]
+        warning_zones = [to for to in timeouts if to["severity"] == "WARNING"]
+        info_zones = [to for to in timeouts if to["severity"] in ["INFO", "OK"]]
+
+        if critical_zones:
+            for to in critical_zones:
+                warning_parts.append(
+                    f"CRITICAL: Timeout {to['duration_sec']:.0f}s at {to['t_start_min']:.1f} min (HS zone)"
+                )
+
+        if warning_zones:
+            zones_affected = list(set(to["zone"] for to in warning_zones))
+            for to in warning_zones[:3]:  # Màxim 3
+                warning_parts.append(
+                    f"WARNING: Timeout {to['duration_sec']:.0f}s at {to['t_start_min']:.1f} min ({to['zone']})"
+                )
+
+        if info_zones and not critical_zones and not warning_zones:
+            for to in info_zones[:2]:
+                warning_parts.append(
+                    f"INFO: Timeout {to['duration_sec']:.0f}s at {to['t_start_min']:.1f} min ({to['zone']})"
+                )
+
+    warning_message = "; ".join(warning_parts) if warning_parts else ""
+
+    return {
+        "n_timeouts": len(timeouts),
+        "n_major_timeouts": n_major,
+        "timeouts": timeouts,
+        "dt_median_sec": round(dt_median, 2),
+        "dt_max_sec": round(dt_max, 2),
+        "zone_summary": {k: v for k, v in zone_counts.items() if v > 0},
+        "severity": max_severity,
+        "warning_message": warning_message
+    }
+
+
+def format_timeout_status(timeout_info):
+    """
+    Formata l'estat de timeout per al camp Status del consolidat.
+
+    Returns:
+        str: Estat formatat (OK, INFO, WARNING, CRITICAL)
+    """
+    if not timeout_info or timeout_info.get("n_timeouts", 0) == 0:
+        return "OK"
+
+    severity = timeout_info.get("severity", "OK")
+    n_timeouts = timeout_info.get("n_timeouts", 0)
+    n_major = timeout_info.get("n_major_timeouts", 0)
+
+    if severity == "OK":
+        return "OK"
+    elif severity == "INFO":
+        return f"INFO: {n_timeouts} timeout(s) in safe zone"
+    elif severity == "WARNING":
+        zones = timeout_info.get("zone_summary", {})
+        affected = [z for z in ["BioP", "BB", "SB"] if zones.get(z, 0) > 0]
+        return f"WARNING: timeout in {', '.join(affected)}"
+    elif severity == "CRITICAL":
+        return f"CRITICAL: timeout in HS zone ({n_major} major)"
+
+    return f"{severity}: {n_timeouts} timeout(s)"
+
 
 # =============================================================================
 # FUNCIONS UTILITAT
@@ -727,11 +912,15 @@ def calculate_column_alignment_shifts(khp_path, config=None, tolerance_sec=2.0):
         t = df_doc["time (min)"].values
 
         # Verificar que tenim les columnes necessàries
-        has_direct = "DOC (mAU)" in df_doc.columns
+        # Nota: DUAL mode usa "DOC_Direct (mAU)", mode simple usa "DOC (mAU)"
+        has_direct = "DOC (mAU)" in df_doc.columns or "DOC_Direct (mAU)" in df_doc.columns
         has_uib = "DOC_UIB (mAU)" in df_doc.columns
 
         if not has_direct and not has_uib:
             return result
+
+        # Determinar nom columna Direct
+        direct_col = "DOC_Direct (mAU)" if "DOC_Direct (mAU)" in df_doc.columns else "DOC (mAU)"
 
         # Llegir DAD per A254
         if "DAD" not in xls.sheet_names:
@@ -768,7 +957,7 @@ def calculate_column_alignment_shifts(khp_path, config=None, tolerance_sec=2.0):
 
         # Calcular shift per DOC_Direct
         if has_direct:
-            y_direct = df_doc["DOC (mAU)"].values
+            y_direct = df_doc[direct_col].values
             idx_max_direct = np.argmax(y_direct)
             t_max_direct = t[idx_max_direct]
 
@@ -939,6 +1128,76 @@ def llegir_dad_export3d(path):
         except Exception:
             continue
     return pd.DataFrame(), "Error"
+
+
+def llegir_dad_1a(path, wavelength="254"):
+    """
+    Llegeix fitxer DAD1A (format Agilent: UTF-16, tab-separated, sense capçalera).
+
+    El canal 1A correspon a 254nm. Altres canals:
+    - DAD1A = 254nm
+    - DAD1B = 220nm (si existeix)
+
+    Args:
+        path: Camí al fitxer DAD1A
+        wavelength: Nom de la columna de wavelength (default "254")
+
+    Returns:
+        (DataFrame, status): DataFrame amb columns ['time (min)', wavelength], status string
+    """
+    for enc in ["utf-16", "utf-16-le", "utf-8", "latin1"]:
+        try:
+            df = pd.read_csv(path, encoding=enc, sep="\t", header=None,
+                           names=["time (min)", wavelength])
+            # Verificar que tenim dades numèriques
+            df["time (min)"] = pd.to_numeric(df["time (min)"], errors="coerce")
+            df[wavelength] = pd.to_numeric(df[wavelength], errors="coerce")
+
+            # Filtrar NaN
+            df = df.dropna()
+
+            if len(df) < 10:
+                continue
+
+            return df, f"OK (DAD1A, {enc})"
+        except Exception:
+            continue
+    return pd.DataFrame(), "Error"
+
+
+def llegir_dad_amb_fallback(path_export3d, path_dad1a=None, wavelength="254"):
+    """
+    Llegeix DAD amb fallback: primer Export3D, després DAD1A.
+
+    Args:
+        path_export3d: Camí al fitxer Export3D (pot ser None)
+        path_dad1a: Camí al fitxer DAD1A (pot ser None)
+        wavelength: Wavelength a extreure (default "254")
+
+    Returns:
+        (t, y, source): Arrays de temps i senyal, i string indicant la font
+    """
+    # Primer intentar Export3D
+    if path_export3d and os.path.exists(path_export3d):
+        df, status = llegir_dad_export3d(path_export3d)
+        if status.startswith("OK") and not df.empty:
+            if wavelength in df.columns:
+                t = pd.to_numeric(df["time (min)"], errors="coerce").to_numpy()
+                y = pd.to_numeric(df[wavelength], errors="coerce").to_numpy()
+                valid = np.isfinite(t) & np.isfinite(y)
+                if np.sum(valid) > 10:
+                    return t[valid], y[valid], "Export3D"
+
+    # Fallback a DAD1A
+    if path_dad1a and os.path.exists(path_dad1a):
+        df, status = llegir_dad_1a(path_dad1a, wavelength)
+        if status.startswith("OK") and not df.empty:
+            t = df["time (min)"].to_numpy()
+            y = df[wavelength].to_numpy()
+            if len(t) > 10:
+                return t, y, "DAD1A"
+
+    return None, None, "NOT_FOUND"
 
 
 def netejar_nom_uib(nom_fitxer):
@@ -1253,7 +1512,7 @@ def build_sample_ranges_from_toc_calc(toc_calc_df, toc_df):
     return sample_ranges
 
 
-def extract_doc_from_masterfile(toc_df, row_start, row_end, t_start=None):
+def extract_doc_from_masterfile(toc_df, row_start, row_end, t_start=None, detect_timeouts=True):
     """
     Extreu segment DOC del nou MasterFile.
 
@@ -1262,11 +1521,21 @@ def extract_doc_from_masterfile(toc_df, row_start, row_end, t_start=None):
         row_start: Fila inicial (1-indexed, relatiu a fila 8 del TOC original)
         row_end: Fila final
         t_start: Timestamp d'inici (opcional, per calcular temps relatiu)
+        detect_timeouts: Si True, també detecta i retorna info de timeouts
 
     Returns:
-        DataFrame amb columns "time (min)" i "DOC"
+        Si detect_timeouts=False: DataFrame amb columns "time (min)" i "DOC"
+        Si detect_timeouts=True: tuple (DataFrame, timeout_info dict)
     """
+    empty_timeout = {
+        "n_timeouts": 0, "n_major_timeouts": 0, "timeouts": [],
+        "dt_median_sec": 0, "dt_max_sec": 0, "zone_summary": {},
+        "severity": "OK", "warning_message": ""
+    }
+
     if toc_df is None or toc_df.empty:
+        if detect_timeouts:
+            return pd.DataFrame(), empty_timeout
         return pd.DataFrame()
 
     # Trobar columnes de temps i senyal
@@ -1289,6 +1558,8 @@ def extract_doc_from_masterfile(toc_df, row_start, row_end, t_start=None):
         sig_col = toc_df.columns[5]
 
     if time_col is None or sig_col is None:
+        if detect_timeouts:
+            return pd.DataFrame(), empty_timeout
         return pd.DataFrame()
 
     # Extreure segment (ajustar índexs)
@@ -1316,6 +1587,11 @@ def extract_doc_from_masterfile(toc_df, row_start, row_end, t_start=None):
     })
     df_doc = df_doc.dropna(subset=["time (min)", "DOC"])
 
+    # Detectar timeouts si s'ha sol·licitat
+    if detect_timeouts:
+        timeout_info = detect_doc_timeouts(df_doc["time (min)"].values)
+        return df_doc, timeout_info
+
     return df_doc
 
 
@@ -1326,8 +1602,27 @@ def llegir_master_direct(mestre):
     return df_toc, df_seq
 
 
-def extract_doc_from_master(df_toc, row_ini, row_fi, start_dt):
-    """Extreu segment DOC del mestre."""
+def extract_doc_from_master(df_toc, row_ini, row_fi, start_dt, detect_timeouts=True):
+    """
+    Extreu segment DOC del mestre (format antic).
+
+    Args:
+        df_toc: DataFrame de 2-TOC
+        row_ini: Fila inicial
+        row_fi: Fila final
+        start_dt: Timestamp d'inici
+        detect_timeouts: Si True, també detecta i retorna info de timeouts
+
+    Returns:
+        Si detect_timeouts=False: DataFrame amb columns "time (min)" i "DOC"
+        Si detect_timeouts=True: tuple (DataFrame, timeout_info dict)
+    """
+    empty_timeout = {
+        "n_timeouts": 0, "n_major_timeouts": 0, "timeouts": [],
+        "dt_median_sec": 0, "dt_max_sec": 0, "zone_summary": {},
+        "severity": "OK", "warning_message": ""
+    }
+
     time_col = "Date Started" if "Date Started" in df_toc.columns else df_toc.columns[3]
     if "TOC(ppb)" in df_toc.columns:
         sig_col = "TOC(ppb)"
@@ -1346,6 +1641,12 @@ def extract_doc_from_master(df_toc, row_ini, row_fi, start_dt):
 
     df_doc = pd.DataFrame({"time (min)": t_min, "DOC": pd.to_numeric(seg[sig_col], errors="coerce")})
     df_doc = df_doc.dropna(subset=["time (min)", "DOC"])
+
+    # Detectar timeouts si s'ha sol·licitat
+    if detect_timeouts:
+        timeout_info = detect_doc_timeouts(df_doc["time (min)"].values)
+        return df_doc, timeout_info
+
     return df_doc
 
 
@@ -1975,7 +2276,9 @@ def write_consolidated_excel(out_path, mostra, rep, seq_out, date_master,
                              shift_uib=None, shift_direct=None,
                              smoothing_applied=True,
                              # Info del MasterFile 0-INFO
-                             master_info=None):
+                             master_info=None,
+                             # Detecció de timeouts TOC
+                             timeout_info=None):
     """
     Escriu fitxer Excel consolidat amb àrees per fraccions de temps.
 
@@ -2066,6 +2369,34 @@ def write_consolidated_excel(out_path, mostra, rep, seq_out, date_master,
     # === 7. DAD N_Points (àrees van al full AREAS) ===
     if not df_dad.empty:
         id_rows.append(("DAD_N_Points", len(df_dad)))
+
+    # === 8. TIMEOUT DETECTION (TOC syringe reload) ===
+    if timeout_info and timeout_info.get("n_timeouts", 0) > 0:
+        id_rows.append(("---", "---"))  # Separador visual
+        id_rows.append(("TOC_Timeout_Detected", "YES"))
+        id_rows.append(("TOC_Timeout_Count", str(timeout_info.get("n_timeouts", 0))))  # Forçar string per evitar conversió a bool
+        id_rows.append(("TOC_Timeout_Severity", timeout_info.get("severity", "OK")))
+
+        # Detalls dels timeouts
+        timeouts = timeout_info.get("timeouts", [])
+        for i, to in enumerate(timeouts[:3]):  # Màxim 3 timeouts detallats
+            zone = to.get("zone", "?")
+            t_min = to.get("t_start_min", 0)
+            dur = to.get("duration_sec", 0)
+            sev = to.get("severity", "INFO")
+            id_rows.append((f"TOC_Timeout_{i+1}", f"{t_min:.1f} min ({dur:.0f}s) - {zone} [{sev}]"))
+
+        # Zones afectades (resum)
+        zone_summary = timeout_info.get("zone_summary", {})
+        if zone_summary:
+            affected_zones = [f"{z}:{n}" for z, n in zone_summary.items() if n > 0]
+            id_rows.append(("TOC_Zones_Affected", ", ".join(affected_zones)))
+
+        # Cadència de mesures
+        id_rows.append(("TOC_Dt_Median_sec", timeout_info.get("dt_median_sec", 0)))
+        id_rows.append(("TOC_Dt_Max_sec", timeout_info.get("dt_max_sec", 0)))
+    else:
+        id_rows.append(("TOC_Timeout_Detected", "NO"))
 
     df_id = pd.DataFrame(id_rows, columns=["Field", "Value"])
 
@@ -2294,36 +2625,70 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
                         y_khp_uib_net = apply_smoothing(y_khp_uib - base_khp_uib)
                         y_khp_uib_net[y_khp_uib_net < 0] = 0
 
-                        # Llegir DOC Direct del KHP
-                        khp_match = match_uib_to_master(khp_mostra, khp_rep, master_index)
+                        # Llegir DOC Direct del KHP (suporta format antic i nou)
                         t_khp_direct = None
                         y_khp_direct_net = None
+                        df_khp_direct = pd.DataFrame()
 
-                        if khp_match:
-                            khp_row = khp_match["row"]
-                            khp_row_ini = int(float(khp_row["Row initial"]))
-                            khp_row_fi = int(float(khp_row["Row Final"]))
-                            df_khp_direct = extract_doc_from_master(df_toc, khp_row_ini, khp_row_fi, khp_row["START"])
+                        if master_index is not None:
+                            # FORMAT ANTIC: usar match_uib_to_master
+                            khp_match = match_uib_to_master(khp_mostra, khp_rep, master_index)
+                            if khp_match:
+                                khp_row = khp_match["row"]
+                                khp_row_ini = int(float(khp_row["Row initial"]))
+                                khp_row_fi = int(float(khp_row["Row Final"]))
+                                df_khp_direct = extract_doc_from_master(df_toc, khp_row_ini, khp_row_fi, khp_row["START"], detect_timeouts=False)
 
-                            if not df_khp_direct.empty:
-                                t_khp_direct = pd.to_numeric(df_khp_direct["time (min)"], errors="coerce").to_numpy()
-                                y_khp_direct = pd.to_numeric(df_khp_direct["DOC"], errors="coerce").to_numpy()
-                                base_khp_direct = get_baseline_correction(t_khp_direct, y_khp_direct, method, config)
-                                y_khp_direct_net = apply_smoothing(y_khp_direct - base_khp_direct)
-                                y_khp_direct_net[y_khp_direct_net < 0] = 0
+                        elif sample_ranges_new is not None:
+                            # FORMAT NOU: buscar en sample_ranges_new
+                            khp_key = f"{khp_mostra}_R{khp_rep}"
+                            khp_key_alt = f"{khp_mostra}_{khp_rep}"
+                            khp_range = sample_ranges_new.get(khp_key) or sample_ranges_new.get(khp_key_alt)
 
-                        # Buscar DAD del KHP per A254
-                        khp_dad_path, _ = choose_best_candidate(khp_mostra, khp_rep, dad_pool, set())
+                            # Buscar variants de KHP
+                            if not khp_range:
+                                for key in sample_ranges_new:
+                                    if is_khp(key) and (f"_{khp_rep}" in key or f"_R{khp_rep}" in key):
+                                        khp_range = sample_ranges_new[key]
+                                        break
+
+                            if khp_range:
+                                khp_row_ini = int(khp_range.get("row_start", 0))
+                                khp_row_fi = int(khp_range.get("row_end", 0))
+                                t_start = khp_range.get("t_start", 0)
+                                df_khp_direct = extract_doc_from_master(df_toc, khp_row_ini, khp_row_fi, t_start, detect_timeouts=False)
+
+                        # Processar DOC Direct si s'ha trobat
+                        if not df_khp_direct.empty:
+                            t_khp_direct = pd.to_numeric(df_khp_direct["time (min)"], errors="coerce").to_numpy()
+                            y_khp_direct = pd.to_numeric(df_khp_direct["DOC"], errors="coerce").to_numpy()
+                            base_khp_direct = get_baseline_correction(t_khp_direct, y_khp_direct, method, config)
+                            y_khp_direct_net = apply_smoothing(y_khp_direct - base_khp_direct)
+                            y_khp_direct_net[y_khp_direct_net < 0] = 0
+
+                        # Buscar DAD del KHP per A254 (amb fallback Export3D -> DAD1A)
                         t_khp_a254 = None
                         y_khp_a254 = None
+                        dad_source = "NOT_FOUND"
 
-                        if khp_dad_path:
-                            df_khp_dad, st = llegir_dad_export3d(khp_dad_path)
-                            if st.startswith("OK") and not df_khp_dad.empty:
-                                t_khp_a254 = pd.to_numeric(df_khp_dad["time (min)"], errors="coerce").to_numpy()
-                                a254_col = "254" if "254" in df_khp_dad.columns else "254.0" if "254.0" in df_khp_dad.columns else None
-                                if a254_col:
-                                    y_khp_a254 = pd.to_numeric(df_khp_dad[a254_col], errors="coerce").to_numpy()
+                        # Opció 1: Export3D (totes les wavelengths)
+                        khp_dad_path, _ = choose_best_candidate(khp_mostra, khp_rep, dad_pool, set())
+
+                        # Opció 2: DAD1A (només 254nm) - buscar a CSV folder
+                        khp_dad1a_path = None
+                        if path_csv and os.path.isdir(path_csv):
+                            # Buscar patró: KHP*_DAD1A.CSV
+                            import glob as glob_mod
+                            dad1a_candidates = glob_mod.glob(os.path.join(path_csv, f"{khp_mostra}*_DAD1A.*"))
+                            if not dad1a_candidates:
+                                dad1a_candidates = glob_mod.glob(os.path.join(path_csv, f"{khp_mostra}_{khp_rep}_DAD1A.*"))
+                            if dad1a_candidates:
+                                khp_dad1a_path = dad1a_candidates[0]
+
+                        # Llegir amb fallback
+                        t_khp_a254, y_khp_a254, dad_source = llegir_dad_amb_fallback(
+                            khp_dad_path, khp_dad1a_path, wavelength="254"
+                        )
 
                         # Calcular shifts: A254 és la referència
                         tolerance_min = 2.0 / 60.0  # 2 segons
@@ -2352,6 +2717,7 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
                                 "shift_uib": column_shift_uib,
                                 "shift_direct": column_shift_direct,
                                 "source": "KHP_LOCAL",
+                                "dad_source": dad_source,
                             }
                             result["alignment"] = alignment_info
 
@@ -2430,6 +2796,7 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
                 st_doc_direct = "NO_DATA"
                 row_ini = None
                 row_fi = None
+                timeout_info = None  # Info de timeouts detectats en DOC Direct
 
                 # Intentar obtenir DOC Direct del mestre (dual protocol)
                 if has_master:
@@ -2457,7 +2824,7 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
                                 t_start = match_info.get("t_start")
 
                                 if row_ini is not None and row_fi is not None:
-                                    df_doc_direct = extract_doc_from_masterfile(df_toc, row_ini, row_fi, t_start)
+                                    df_doc_direct, timeout_info = extract_doc_from_masterfile(df_toc, row_ini, row_fi, t_start, detect_timeouts=True)
 
                                     if not df_doc_direct.empty:
                                         t_direct = pd.to_numeric(df_doc_direct["time (min)"], errors="coerce").to_numpy()
@@ -2470,6 +2837,10 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
                                         nom_doc_direct = os.path.basename(mestre)
                                         st_doc_direct = "OK"
                                         matched = True
+
+                                        # Afegir warning si hi ha timeout en zona crítica
+                                        if timeout_info and timeout_info.get("severity") in ["WARNING", "CRITICAL"]:
+                                            result["errors"].append(f"TIMEOUT: {mostra} - {timeout_info.get('warning_message', '')}")
                             except Exception as e:
                                 result["errors"].append(f"WARN: Error extraient DOC Direct (NEW) per {mostra}: {e}")
 
@@ -2481,7 +2852,7 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
                             try:
                                 row_ini = int(float(row["Row initial"]))
                                 row_fi = int(float(row["Row Final"]))
-                                df_doc_direct = extract_doc_from_master(df_toc, row_ini, row_fi, row["START"])
+                                df_doc_direct, timeout_info = extract_doc_from_master(df_toc, row_ini, row_fi, row["START"], detect_timeouts=True)
 
                                 if not df_doc_direct.empty:
                                     t_direct = pd.to_numeric(df_doc_direct["time (min)"], errors="coerce").to_numpy()
@@ -2494,6 +2865,10 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
 
                                     nom_doc_direct = os.path.basename(mestre)
                                     st_doc_direct = "OK"
+
+                                    # Afegir warning si hi ha timeout en zona crítica
+                                    if timeout_info and timeout_info.get("severity") in ["WARNING", "CRITICAL"]:
+                                        result["errors"].append(f"TIMEOUT: {mostra} - {timeout_info.get('warning_message', '')}")
                             except Exception as e:
                                 result["errors"].append(f"WARN: Error extraient DOC Direct per {mostra}: {e}")
 
@@ -2618,7 +2993,9 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
                     shift_direct=applied_shift_direct,
                     smoothing_applied=True,
                     # Info del MasterFile
-                    master_info=master_info
+                    master_info=master_info,
+                    # Detecció de timeouts TOC
+                    timeout_info=timeout_info
                 )
 
                 result["files"].append(out_path)
@@ -2695,7 +3072,11 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
                     if row_ini is None or row_fi is None:
                         continue
 
-                    df_doc = extract_doc_from_masterfile(df_toc, row_ini, row_fi, t_start)
+                    df_doc, timeout_info = extract_doc_from_masterfile(df_toc, row_ini, row_fi, t_start, detect_timeouts=True)
+
+                    # Afegir warning si hi ha timeout en zona crítica
+                    if timeout_info and timeout_info.get("severity") in ["WARNING", "CRITICAL"]:
+                        result["errors"].append(f"TIMEOUT: {mostra_clean} - {timeout_info.get('warning_message', '')}")
 
                     # Determinar si tenim dades DOC
                     if df_doc.empty or len(df_doc) < 10:
@@ -2744,7 +3125,8 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
                         df_dad, peak_info, sample_analysis,
                         master_file=mestre, row_start=row_ini, row_end=row_fi,
                         smoothing_applied=True,
-                        master_info=master_info
+                        master_info=master_info,
+                        timeout_info=timeout_info
                     )
 
                     result["files"].append(out_path)
@@ -2792,7 +3174,11 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
                     except Exception:
                         continue
 
-                    df_doc = extract_doc_from_master(df_toc, row_ini, row_fi, row["START"])
+                    df_doc, timeout_info = extract_doc_from_master(df_toc, row_ini, row_fi, row["START"], detect_timeouts=True)
+
+                    # Afegir warning si hi ha timeout en zona crítica
+                    if timeout_info and timeout_info.get("severity") in ["WARNING", "CRITICAL"]:
+                        result["errors"].append(f"TIMEOUT: {mostra_clean} - {timeout_info.get('warning_message', '')}")
 
                     # Determinar si tenim dades DOC
                     if df_doc.empty or len(df_doc) < 10:
@@ -2840,7 +3226,8 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
                         df_dad, peak_info, sample_analysis,
                         master_file=mestre, row_start=row_ini, row_end=row_fi,
                         smoothing_applied=True,
-                        master_info={}  # Format antic no té 0-INFO
+                        master_info={},  # Format antic no té 0-INFO
+                        timeout_info=timeout_info
                     )
 
                     result["files"].append(out_path)
