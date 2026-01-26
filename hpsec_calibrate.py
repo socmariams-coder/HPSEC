@@ -6,9 +6,16 @@ Funcions per:
 - Cerca de KHP (buscar_khp_consolidados, find_khp_in_folder)
 - Gestió historial calibracions (CALDATA local, KHP_History global)
 - Càlcul de factors de calibració
+- Validació qualitat KHP (validate_khp_quality)
 
 Pot usar-se standalone o importat des de HPSEC_Suite.
+
+v1.1 - 2026-01-26: Refactor - funcions detecció mogudes a hpsec_core.py
+v1.0 - Versió inicial
 """
+
+__version__ = "1.1.0"
+__version_date__ = "2026-01-26"
 
 import os
 import re
@@ -17,8 +24,19 @@ import json
 import numpy as np
 import pandas as pd
 from datetime import datetime
-from scipy.signal import find_peaks, savgol_filter
+from scipy.signal import savgol_filter
 from scipy.integrate import trapezoid
+
+# Import funcions de detecció des de hpsec_core (Single Source of Truth)
+from hpsec_core import (
+    detect_timeout,
+    detect_batman,
+    detect_peak_anomaly,
+    detect_main_peak,
+    detect_all_peaks,
+    integrate_chromatogram,
+    TIMEOUT_CONFIG
+)
 
 # =============================================================================
 # CONSTANTS
@@ -185,116 +203,8 @@ def baseline_stats_time(t, y, t_start=0, t_end=2.0, fallback_pct=10):
     }
 
 
-# =============================================================================
-# DETECCIÓ DE PICS
-# =============================================================================
-
-def detect_main_peak(t, y, min_prominence_pct=5.0):
-    """
-    Detecta el pic principal d'un cromatograma.
-
-    Returns:
-        Dict amb valid, t_max, peak_idx, left_idx, right_idx, area, etc.
-    """
-    if t is None or y is None or len(t) < 20:
-        return {"valid": False}
-
-    y = np.asarray(y)
-    t = np.asarray(t)
-
-    # Calcular prominència mínima
-    y_range = np.max(y) - np.min(y)
-    min_prominence = y_range * min_prominence_pct / 100.0
-
-    # Trobar pics
-    peaks, properties = find_peaks(y, prominence=min_prominence, width=3)
-
-    if len(peaks) == 0:
-        # Fallback: usar màxim global
-        peak_idx = int(np.argmax(y))
-        return {
-            "valid": True,
-            "t_max": float(t[peak_idx]),
-            "peak_idx": peak_idx,
-            "left_idx": 0,
-            "right_idx": len(y) - 1,
-            "area": float(trapezoid(y, t)),
-            "height": float(y[peak_idx]),
-            "fallback": True,
-        }
-
-    # Seleccionar pic més alt
-    peak_heights = y[peaks]
-    main_peak_local_idx = int(np.argmax(peak_heights))
-    peak_idx = peaks[main_peak_local_idx]
-
-    # Obtenir límits del pic
-    left_bases = properties.get("left_bases", [0] * len(peaks))
-    right_bases = properties.get("right_bases", [len(y) - 1] * len(peaks))
-
-    left_idx = int(left_bases[main_peak_local_idx])
-    right_idx = int(right_bases[main_peak_local_idx])
-
-    # Assegurar límits vàlids
-    left_idx = max(0, left_idx)
-    right_idx = min(len(y) - 1, right_idx)
-
-    # Calcular àrea
-    area = float(trapezoid(y[left_idx:right_idx+1], t[left_idx:right_idx+1]))
-
-    return {
-        "valid": True,
-        "t_max": float(t[peak_idx]),
-        "t_start": float(t[left_idx]),
-        "t_end": float(t[right_idx]),
-        "peak_idx": peak_idx,
-        "left_idx": left_idx,
-        "right_idx": right_idx,
-        "area": area,
-        "height": float(y[peak_idx]),
-    }
-
-
-def detect_all_peaks(t, y, min_prominence_pct=5.0, is_bp=None):
-    """
-    Detecta tots els pics significatius d'un cromatograma.
-
-    Returns:
-        Llista de dicts amb info de cada pic
-    """
-    if t is None or y is None or len(t) < 20:
-        return []
-
-    y = np.asarray(y)
-    t = np.asarray(t)
-
-    y_range = np.max(y) - np.min(y)
-    min_prominence = y_range * min_prominence_pct / 100.0
-
-    peaks, properties = find_peaks(y, prominence=min_prominence, width=3)
-
-    if len(peaks) == 0:
-        return []
-
-    left_bases = properties.get("left_bases", [0] * len(peaks))
-    right_bases = properties.get("right_bases", [len(y) - 1] * len(peaks))
-    prominences = properties.get("prominences", [0] * len(peaks))
-
-    all_peaks = []
-    for i, peak_idx in enumerate(peaks):
-        left_idx = int(left_bases[i])
-        right_idx = int(right_bases[i])
-
-        all_peaks.append({
-            "idx": int(peak_idx),
-            "t": float(t[peak_idx]),
-            "height": float(y[peak_idx]),
-            "left_idx": left_idx,
-            "right_idx": right_idx,
-            "prominence": float(prominences[i]),
-        })
-
-    return all_peaks
+# NOTA: detect_main_peak i detect_all_peaks ara estan a hpsec_core.py
+# (Single Source of Truth per evitar duplicació)
 
 
 # =============================================================================
@@ -414,88 +324,113 @@ def expand_integration_limits_to_baseline(t, y, left_idx, right_idx, peak_idx,
     }
 
 
+# NOTA: detect_batman i detect_timeout ara estan a hpsec_core.py
+# (Single Source of Truth per evitar duplicació)
+# Usar: from hpsec_core import detect_batman, detect_timeout, detect_peak_anomaly
+
+
 # =============================================================================
-# DETECCIÓ D'ANOMALIES
+# VALIDACIÓ QUALITAT KHP
 # =============================================================================
 
-def detect_batman(t, y, config):
+def validate_khp_quality(khp_data, all_peaks, timeout_info, anomaly_info=None):
     """
-    Detecta artefacte "Batman" (doble pic o vall al cim).
+    Validació específica per KHP (no aplicable a mostres normals).
+
+    Criteris:
+    1. No múltiples pics significatius (>2 pics amb prominència >10%)
+    2. No timeout en zona del pic
+    3. No batman/irregular
+    4. Simetria acceptable (0.5-2.0)
+    5. SNR > 50 (KHP ha de ser senyal fort)
+
+    Args:
+        khp_data: Dict amb dades del KHP analitzat
+        all_peaks: Llista de pics detectats
+        timeout_info: Dict retornat per detect_timeout()
+        anomaly_info: Dict retornat per detect_peak_anomaly() (opcional)
 
     Returns:
-        Dict amb info de l'anomalia o None si no detectat
+        Dict amb:
+            - is_valid: bool (True si KHP és vàlid per calibració)
+            - issues: llista d'issues detectats
+            - warnings: llista de warnings (no invalidants)
+            - quality_score: puntuació (0 = perfecte, >100 = invàlid)
     """
-    if t is None or y is None or len(t) < 20:
-        return None
+    issues = []
+    warnings = []
+    quality_score = 0
 
-    max_sep = config.get("batman_max_sep_min", 0.5)
-    min_height_pct = config.get("batman_min_height_pct", 15.0)
+    # 1. Multi-pic
+    if all_peaks and len(all_peaks) > 2:
+        significant_peaks = [p for p in all_peaks if p.get('prominence', 0) > khp_data.get('height', 1) * 0.1]
+        if len(significant_peaks) > 2:
+            issues.append(f"MULTI_PEAK: {len(significant_peaks)} pics significatius detectats")
+            quality_score += 30 * (len(significant_peaks) - 2)
 
-    # Trobar màxim global
-    idx_max = int(np.argmax(y))
-    t_max = t[idx_max]
-    h_max = y[idx_max]
+    # 2. Timeout
+    if timeout_info:
+        severity = timeout_info.get('severity', 'OK')
+        if severity == 'CRITICAL':
+            issues.append(f"TIMEOUT_CRITICAL: timeout en zona HS")
+            quality_score += 150
+        elif severity == 'WARNING':
+            zones = timeout_info.get('zone_summary', {})
+            affected = [z for z in zones.keys() if zones[z] > 0]
+            warnings.append(f"TIMEOUT_WARNING: timeout en {', '.join(affected)}")
+            quality_score += 50
+        elif severity == 'INFO':
+            warnings.append(f"TIMEOUT_INFO: timeout en zona segura")
+            quality_score += 10
 
-    # Buscar mínim local al voltant del màxim
-    search_left = max(0, idx_max - 20)
-    search_right = min(len(y), idx_max + 20)
+    # 3. Anomalia de forma (batman/irregular)
+    if anomaly_info:
+        if anomaly_info.get('is_batman', False):
+            issues.append("BATMAN: detectat artefacte batman al pic")
+            quality_score += 50
+        if anomaly_info.get('is_irregular', False):
+            smoothness = anomaly_info.get('smoothness', 100)
+            warnings.append(f"IRREGULAR: smoothness baixa ({smoothness:.0f}%)")
+            quality_score += 30
 
-    # Buscar vall entre dos pics
-    min_prominence = h_max * min_height_pct / 100.0
+    # 4. Simetria
+    symmetry = khp_data.get('symmetry', 1.0)
+    if symmetry < 0.5 or symmetry > 2.0:
+        issues.append(f"ASYMMETRY: simetria fora de rang ({symmetry:.2f})")
+        quality_score += 20
+    elif symmetry < 0.7 or symmetry > 1.5:
+        warnings.append(f"ASYMMETRY_WARN: simetria límit ({symmetry:.2f})")
+        quality_score += 5
 
-    # Simplificat: buscar si hi ha una caiguda significativa prop del màxim
-    window = y[search_left:search_right]
-    if len(window) < 5:
-        return None
+    # 5. SNR
+    snr = khp_data.get('snr', 0)
+    if snr < 20:
+        issues.append(f"LOW_SNR: SNR massa baix ({snr:.1f})")
+        quality_score += 40
+    elif snr < 50:
+        warnings.append(f"SNR_WARN: SNR moderat ({snr:.1f})")
+        quality_score += 10
 
-    # Detectar si hi ha múltiples pics locals
-    peaks, _ = find_peaks(window, prominence=min_prominence)
+    # 6. Límits expandits excessivament
+    if khp_data.get('limits_expanded', False):
+        expansion_info = khp_data.get('expansion_info', {})
+        area_inc = expansion_info.get('area_increase_pct', 0)
+        if area_inc > 30:
+            issues.append(f"EXPANSION: límits expandits excessivament (+{area_inc:.0f}%)")
+            quality_score += 25
+        elif area_inc > 15:
+            warnings.append(f"EXPANSION_WARN: límits expandits (+{area_inc:.0f}%)")
+            quality_score += 10
 
-    if len(peaks) >= 2:
-        # Hi ha múltiples pics - possible batman
-        return {
-            "type": "BATMAN",
-            "t_max": t_max,
-            "n_peaks": len(peaks),
-        }
+    # Determinar validesa
+    is_valid = quality_score < 100 and len(issues) == 0
 
-    return None
-
-
-def detect_timeout(t, y, config, is_bp=False):
-    """
-    Detecta anomalia de timeout (plateau flat).
-
-    Returns:
-        Dict amb info de l'anomalia o None si no detectat
-    """
-    if t is None or y is None or len(t) < 50:
-        return None
-
-    min_height_frac = config.get("timeout_min_height_frac", 0.30)
-
-    # Buscar zones planes (CV molt baix)
-    window_size = 20
-    max_height = np.max(y)
-
-    for i in range(0, len(y) - window_size, window_size // 2):
-        window = y[i:i + window_size]
-        mean_w = np.mean(window)
-        std_w = np.std(window)
-
-        # CV molt baix i altura significativa
-        if mean_w > max_height * min_height_frac:
-            cv = std_w / mean_w if mean_w > 0 else 1.0
-            if cv < 0.001:  # CV < 0.1%
-                return {
-                    "type": "TIMEOUT",
-                    "t_start": float(t[i]),
-                    "t_end": float(t[min(i + window_size, len(t) - 1)]),
-                    "mean": float(mean_w),
-                    "cv": float(cv),
-                }
-
-    return None
+    return {
+        'is_valid': is_valid,
+        'issues': issues,
+        'warnings': warnings,
+        'quality_score': quality_score
+    }
 
 
 # =============================================================================
@@ -794,7 +729,13 @@ def analizar_khp_consolidado(khp_file, config=None):
 
         if "ID" in xls.sheet_names:
             df_id = pd.read_excel(xls, "ID", engine="openpyxl")
-            id_dict = dict(zip(df_id["Camp"], df_id["Valor"]))
+            # Compatible amb format antic (Camp/Valor) i nou (Field/Value)
+            if "Field" in df_id.columns:
+                id_dict = dict(zip(df_id["Field"], df_id["Value"]))
+            elif "Camp" in df_id.columns:
+                id_dict = dict(zip(df_id["Camp"], df_id["Valor"]))
+            else:
+                id_dict = {}
             doc_mode = str(id_dict.get("DOC_MODE", id_dict.get("Source", "N/A")))
             seq_date = str(id_dict.get("Date", ""))
             method_from_file = str(id_dict.get("Method", id_dict.get("MODE", ""))).upper()
@@ -899,9 +840,19 @@ def analizar_khp_consolidado(khp_file, config=None):
         symmetry = calculate_peak_symmetry(t_doc, doc_net, peak_idx, left_idx, right_idx)
         snr = calculate_peak_snr(doc_net, peak_idx, bl_stats["mean"], bl_stats["std"])
 
-        # Anomalies
-        has_batman = detect_batman(t_doc, doc_net, config) is not None
-        has_timeout = detect_timeout(t_doc, doc_net, config, is_bp=is_bp_chromato) is not None
+        # Anomalies - Usar funcions de hpsec_core
+        # Timeout (MILLOR MÈTODE: basat en intervals dt)
+        timeout_info = detect_timeout(t_doc)
+        has_timeout = timeout_info['n_timeouts'] > 0
+        timeout_severity = timeout_info.get('severity', 'OK')
+
+        # Batman/Anomalies de forma (usar segment del pic)
+        t_peak_seg = t_doc[left_idx:right_idx+1]
+        y_peak_seg = doc_net[left_idx:right_idx+1]
+        anomaly_info = detect_peak_anomaly(t_peak_seg, y_peak_seg)
+        has_batman = anomaly_info.get('is_batman', False)
+        has_irregular = anomaly_info.get('is_irregular', False)
+        smoothness = anomaly_info.get('smoothness', 100.0)
 
         # DAD 254nm
         shift_khp = 0.0
@@ -954,7 +905,7 @@ def analizar_khp_consolidado(khp_file, config=None):
                         dad_peak_info['a254_left_idx'] = dad_left_idx
                         dad_peak_info['a254_right_idx'] = dad_right_idx
 
-        # Qualitat
+        # Qualitat - Sistema millorat amb severitats
         quality_score = 0
         quality_issues = []
 
@@ -967,12 +918,27 @@ def analizar_khp_consolidado(khp_file, config=None):
         if snr < 10:
             quality_score += 20
             quality_issues.append(f"SNR baix ({snr:.1f})")
+
+        # Batman/Irregular (de hpsec_core.detect_peak_anomaly)
         if has_batman:
             quality_score += 50
             quality_issues.append("Doble pic (Batman)")
+        if has_irregular:
+            quality_score += 30
+            quality_issues.append(f"Pic irregular (smoothness={smoothness:.0f}%)")
+
+        # Timeout amb severitat (de hpsec_core.detect_timeout)
         if has_timeout:
-            quality_score += 100
-            quality_issues.append("TimeOUT detectat")
+            if timeout_severity == 'CRITICAL':
+                quality_score += 150
+                quality_issues.append("TIMEOUT CRÍTIC en zona HS")
+            elif timeout_severity == 'WARNING':
+                quality_score += 100
+                quality_issues.append(f"TimeOUT en zona crítica ({timeout_info.get('zone_summary', {})})")
+            else:
+                quality_score += 20
+                quality_issues.append("TimeOUT en zona segura")
+
         if len(all_peaks) > 3:
             quality_score += 5 * (len(all_peaks) - 3)
             quality_issues.append(f"Múltiples pics ({len(all_peaks)})")
@@ -1006,6 +972,11 @@ def analizar_khp_consolidado(khp_file, config=None):
             'quality_issues': quality_issues,
             'has_batman': has_batman,
             'has_timeout': has_timeout,
+            'timeout_info': timeout_info,
+            'timeout_severity': timeout_severity,
+            'anomaly_info': anomaly_info,
+            'has_irregular': has_irregular,
+            'smoothness': smoothness,
             'dad_peak_info': dad_peak_info,
             'peak_left_idx': left_idx,
             'peak_right_idx': right_idx,
@@ -1018,6 +989,7 @@ def analizar_khp_consolidado(khp_file, config=None):
             'expansion_info': expansion,
             'a254_area': a254_area,
             'a254_doc_ratio': a254_doc_ratio,
+            'height': float(doc_net[peak_idx]),  # Afegit per validate_khp_quality
         }
 
     except Exception as e:

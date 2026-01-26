@@ -3,14 +3,20 @@
 HPSEC Core - Funcions compartides per anàlisi de cromatogrames
 ==============================================================
 
-Mòdul amb funcions comunes per DOCtor_BP i DOCtor (columna):
-- Bi-Gaussiana (ajust asimètric)
-- Detecció Batman (valls al cim)
-- Reparació paràbola
-- Càlcul SNR
-- Filtres de qualitat
+Mòdul centralitzat amb TOTES les funcions de detecció i processament.
+Single Source of Truth per evitar duplicació de codi.
 
-v1.0 - 2026-01-22
+Funcions principals:
+- Bi-Gaussiana: fit_bigaussian, bigaussian, check_asymmetry
+- Detecció Batman: detect_batman, detect_peak_anomaly, calc_top_smoothness
+- Reparació: repair_with_parabola, find_tangents_and_anchors
+- Timeout TOC: detect_timeout, format_timeout_status (MILLOR MÈTODE: dt intervals)
+- Detecció pics: detect_main_peak, detect_all_peaks
+- Integració: integrate_chromatogram (mode='full'|'main_peak')
+- Utilitats: calc_snr, calc_peak_area, calc_pearson
+
+v1.1 - 2026-01-26: Afegides funcions timeout i detecció pics (migrades)
+v1.0 - 2026-01-22: Versió inicial
 """
 
 import numpy as np
@@ -781,3 +787,473 @@ def calibrate_factor(t, y):
         "r_left": tangent["r_L"],
         "r_right": tangent["r_R"],
     }
+
+
+# =============================================================================
+# TIMEOUT DETECTION (TOC Syringe Reload)
+# =============================================================================
+
+# Configuració detecció de timeouts TOC
+TIMEOUT_CONFIG = {
+    "threshold_sec": 60,        # Considera timeout si dt > 60 segons
+    "major_timeout_sec": 70,    # Timeout major (recàrrega xeringues ~74s)
+    "affected_zone_pre": 0.5,   # Minuts afectats ABANS del gap (~0.5 min)
+    "affected_zone_post": 1.0,  # Minuts afectats DESPRÉS del gap (~1.0 min)
+    "zones": {
+        "RUN_START": [0, 0],      # Abans de BioP (inici run)
+        "BioP": [0, 18],          # Biopolímers - CRÍTIC
+        "HS": [18, 23],           # Substàncies húmiques - MOLT CRÍTIC
+        "BB": [23, 30],           # Building Blocks - CRÍTIC
+        "SB": [30, 40],           # Small Building blocks - CRÍTIC
+        "LMW": [40, 70],          # Low Molecular Weight - Acceptable
+        "POST_RUN": [70, 100],    # Post-run - IDEAL
+    },
+    "severity": {
+        "RUN_START": "INFO",      # Timeout a l'inici, abans de pics
+        "BioP": "WARNING",        # Pèrdua de biopolímers
+        "HS": "CRITICAL",         # Pèrdua de substàncies húmiques (zona més important)
+        "BB": "WARNING",          # Pèrdua de building blocks
+        "SB": "WARNING",          # Pèrdua de small building blocks
+        "LMW": "INFO",            # Zona de baix pes molecular, acceptable
+        "POST_RUN": "OK",         # Zona ideal, sense impacte
+    },
+}
+
+
+def detect_timeout(t_min, threshold_sec=None, major_threshold_sec=None):
+    """
+    Detecta timeouts en dades DOC basant-se en la cadència temporal.
+
+    MÈTODE MÉS ROBUST per detectar pauses del TOC (recàrrega xeringues).
+    Un timeout es detecta quan l'interval entre mesures supera el llindar.
+
+    Args:
+        t_min: Array de temps en minuts
+        threshold_sec: Llindar per considerar timeout (defecte: 60s)
+        major_threshold_sec: Llindar per timeout major/recàrrega (defecte: 70s)
+
+    Returns:
+        dict amb:
+            - n_timeouts: nombre de timeouts detectats
+            - n_major_timeouts: nombre de timeouts majors (recàrrega xeringues)
+            - timeouts: llista de dicts amb info de cada timeout
+            - dt_median_sec: mediana d'intervals (cadència normal)
+            - dt_max_sec: interval màxim detectat
+            - zone_summary: resum per zones
+            - severity: severitat màxima detectada
+            - warning_message: missatge de warning formatat
+            - total_affected_min: duració total zona afectada (~2.5-3 min)
+    """
+    if threshold_sec is None:
+        threshold_sec = TIMEOUT_CONFIG["threshold_sec"]
+    if major_threshold_sec is None:
+        major_threshold_sec = TIMEOUT_CONFIG["major_timeout_sec"]
+
+    t = np.asarray(t_min)
+    if len(t) < 2:
+        return {
+            "n_timeouts": 0,
+            "n_major_timeouts": 0,
+            "timeouts": [],
+            "dt_median_sec": 0,
+            "dt_max_sec": 0,
+            "zone_summary": {},
+            "severity": "OK",
+            "warning_message": "",
+            "total_affected_min": 0
+        }
+
+    # Calcular intervals en segons
+    dt_sec = np.diff(t) * 60.0
+
+    # Estadístiques bàsiques
+    dt_median = float(np.median(dt_sec))
+    dt_max = float(np.max(dt_sec))
+
+    # Detectar timeouts
+    timeout_indices = np.where(dt_sec > threshold_sec)[0]
+    timeouts = []
+    zone_counts = {zone: 0 for zone in TIMEOUT_CONFIG["zones"].keys()}
+    max_severity = "OK"
+    severity_order = ["OK", "INFO", "WARNING", "CRITICAL"]
+
+    pre_zone = TIMEOUT_CONFIG["affected_zone_pre"]
+    post_zone = TIMEOUT_CONFIG["affected_zone_post"]
+
+    for idx in timeout_indices:
+        t_start = float(t[idx])
+        t_end = float(t[idx + 1])
+        duration_sec = float(dt_sec[idx])
+        is_major = duration_sec >= major_threshold_sec
+
+        # Zona afectada completa (PRE + gap + POST)
+        affected_start = t_start - pre_zone
+        affected_end = t_end + post_zone
+        affected_duration = affected_end - affected_start
+
+        # Determinar zona
+        zone = "POST_RUN"  # Per defecte
+        for zone_name, (t_ini, t_fi) in TIMEOUT_CONFIG["zones"].items():
+            if zone_name == "RUN_START":
+                continue  # Tractem apart
+            if t_ini <= t_start < t_fi:
+                zone = zone_name
+                break
+
+        # Cas especial: timeout a l'inici del run (t < 1 min)
+        if t_start < 1.0:
+            zone = "RUN_START"
+
+        zone_counts[zone] += 1
+        severity = TIMEOUT_CONFIG["severity"].get(zone, "INFO")
+
+        if severity_order.index(severity) > severity_order.index(max_severity):
+            max_severity = severity
+
+        timeouts.append({
+            "index": int(idx),
+            "t_start_min": round(t_start, 2),
+            "t_end_min": round(t_end, 2),
+            "duration_sec": round(duration_sec, 1),
+            "is_major": is_major,
+            "zone": zone,
+            "severity": severity,
+            "affected_start_min": round(affected_start, 2),
+            "affected_end_min": round(affected_end, 2),
+            "affected_duration_min": round(affected_duration, 2),
+        })
+
+    # Calcular duració total afectada
+    total_affected = sum(to["affected_duration_min"] for to in timeouts)
+
+    # Generar missatge de warning
+    warning_parts = []
+    n_major = sum(1 for to in timeouts if to["is_major"])
+
+    if timeouts:
+        critical_zones = [to for to in timeouts if to["severity"] == "CRITICAL"]
+        warning_zones = [to for to in timeouts if to["severity"] == "WARNING"]
+        info_zones = [to for to in timeouts if to["severity"] in ["INFO", "OK"]]
+
+        if critical_zones:
+            for to in critical_zones:
+                warning_parts.append(
+                    f"CRITICAL: Timeout {to['duration_sec']:.0f}s at {to['t_start_min']:.1f} min (HS zone)"
+                )
+
+        if warning_zones:
+            for to in warning_zones[:3]:
+                warning_parts.append(
+                    f"WARNING: Timeout {to['duration_sec']:.0f}s at {to['t_start_min']:.1f} min ({to['zone']})"
+                )
+
+        if info_zones and not critical_zones and not warning_zones:
+            for to in info_zones[:2]:
+                warning_parts.append(
+                    f"INFO: Timeout {to['duration_sec']:.0f}s at {to['t_start_min']:.1f} min ({to['zone']})"
+                )
+
+    warning_message = "; ".join(warning_parts) if warning_parts else ""
+
+    return {
+        "n_timeouts": len(timeouts),
+        "n_major_timeouts": n_major,
+        "timeouts": timeouts,
+        "dt_median_sec": round(dt_median, 2),
+        "dt_max_sec": round(dt_max, 2),
+        "zone_summary": {k: v for k, v in zone_counts.items() if v > 0},
+        "severity": max_severity,
+        "warning_message": warning_message,
+        "total_affected_min": round(total_affected, 2)
+    }
+
+
+def format_timeout_status(timeout_info):
+    """
+    Formata l'estat de timeout per al camp Status del consolidat.
+
+    Args:
+        timeout_info: Dict retornat per detect_timeout()
+
+    Returns:
+        str: Estat formatat (OK, INFO, WARNING, CRITICAL)
+    """
+    if not timeout_info or timeout_info.get("n_timeouts", 0) == 0:
+        return "OK"
+
+    severity = timeout_info.get("severity", "OK")
+    n_timeouts = timeout_info.get("n_timeouts", 0)
+    n_major = timeout_info.get("n_major_timeouts", 0)
+
+    if severity == "OK":
+        return "OK"
+    elif severity == "INFO":
+        return f"INFO: {n_timeouts} timeout(s) in safe zone"
+    elif severity == "WARNING":
+        zones = timeout_info.get("zone_summary", {})
+        affected = [z for z in ["BioP", "BB", "SB"] if zones.get(z, 0) > 0]
+        return f"WARNING: timeout in {', '.join(affected)}"
+    elif severity == "CRITICAL":
+        return f"CRITICAL: timeout in HS zone ({n_major} major)"
+
+    return f"{severity}: {n_timeouts} timeout(s)"
+
+
+# =============================================================================
+# PEAK DETECTION
+# =============================================================================
+
+def detect_main_peak(t, y, min_prominence_pct=5.0):
+    """
+    Detecta el pic principal d'un cromatograma.
+
+    Troba el pic més alt amb prominència suficient i retorna els seus límits.
+    Usat per:
+    - KHP Column: integrar NOMÉS el pic principal
+    - Identificar zona d'interès
+
+    Args:
+        t: Array de temps
+        y: Array de senyal
+        min_prominence_pct: Prominència mínima com a % del rang (defecte: 5%)
+
+    Returns:
+        Dict amb:
+            - valid: bool
+            - t_max: temps al màxim
+            - peak_idx: índex del màxim
+            - left_idx, right_idx: límits del pic
+            - t_start, t_end: temps dels límits
+            - area: àrea del pic
+            - height: altura del pic
+            - fallback: True si s'ha usat màxim global
+    """
+    if t is None or y is None or len(t) < 20:
+        return {"valid": False}
+
+    y = np.asarray(y)
+    t = np.asarray(t)
+
+    # Calcular prominència mínima
+    y_range = np.max(y) - np.min(y)
+    min_prominence = y_range * min_prominence_pct / 100.0
+
+    # Trobar pics
+    peaks, properties = find_peaks(y, prominence=min_prominence, width=3)
+
+    if len(peaks) == 0:
+        # Fallback: usar màxim global
+        peak_idx = int(np.argmax(y))
+        return {
+            "valid": True,
+            "t_max": float(t[peak_idx]),
+            "peak_idx": peak_idx,
+            "left_idx": 0,
+            "right_idx": len(y) - 1,
+            "t_start": float(t[0]),
+            "t_end": float(t[-1]),
+            "area": float(trapezoid(y, t)),
+            "height": float(y[peak_idx]),
+            "fallback": True,
+        }
+
+    # Seleccionar pic més alt
+    peak_heights = y[peaks]
+    main_peak_local_idx = int(np.argmax(peak_heights))
+    peak_idx = peaks[main_peak_local_idx]
+
+    # Obtenir límits del pic
+    left_bases = properties.get("left_bases", [0] * len(peaks))
+    right_bases = properties.get("right_bases", [len(y) - 1] * len(peaks))
+
+    left_idx = int(left_bases[main_peak_local_idx])
+    right_idx = int(right_bases[main_peak_local_idx])
+
+    # Assegurar límits vàlids
+    left_idx = max(0, left_idx)
+    right_idx = min(len(y) - 1, right_idx)
+
+    # Calcular àrea
+    area = float(trapezoid(y[left_idx:right_idx+1], t[left_idx:right_idx+1]))
+
+    return {
+        "valid": True,
+        "t_max": float(t[peak_idx]),
+        "t_start": float(t[left_idx]),
+        "t_end": float(t[right_idx]),
+        "peak_idx": peak_idx,
+        "left_idx": left_idx,
+        "right_idx": right_idx,
+        "area": area,
+        "height": float(y[peak_idx]),
+        "fallback": False,
+    }
+
+
+def detect_all_peaks(t, y, min_prominence_pct=5.0):
+    """
+    Detecta TOTS els pics significatius d'un cromatograma.
+
+    Usat per:
+    - Validació KHP (no hauria de tenir múltiples pics significatius)
+    - Detecció d'interferències
+
+    Args:
+        t: Array de temps
+        y: Array de senyal
+        min_prominence_pct: Prominència mínima com a % del rang (defecte: 5%)
+
+    Returns:
+        Llista de dicts amb info de cada pic:
+            - idx: índex del pic
+            - t: temps del màxim
+            - height: altura
+            - left_idx, right_idx: límits
+            - prominence: prominència del pic
+    """
+    if t is None or y is None or len(t) < 20:
+        return []
+
+    y = np.asarray(y)
+    t = np.asarray(t)
+
+    y_range = np.max(y) - np.min(y)
+    min_prominence = y_range * min_prominence_pct / 100.0
+
+    peaks, properties = find_peaks(y, prominence=min_prominence, width=3)
+
+    if len(peaks) == 0:
+        return []
+
+    left_bases = properties.get("left_bases", [0] * len(peaks))
+    right_bases = properties.get("right_bases", [len(y) - 1] * len(peaks))
+    prominences = properties.get("prominences", [0] * len(peaks))
+
+    all_peaks = []
+    for i, peak_idx in enumerate(peaks):
+        left_idx = int(left_bases[i])
+        right_idx = int(right_bases[i])
+
+        all_peaks.append({
+            "idx": int(peak_idx),
+            "t": float(t[peak_idx]),
+            "height": float(y[peak_idx]),
+            "left_idx": left_idx,
+            "right_idx": right_idx,
+            "prominence": float(prominences[i]),
+        })
+
+    return all_peaks
+
+
+# =============================================================================
+# INTEGRATION
+# =============================================================================
+
+def integrate_chromatogram(t, y, left_idx=None, right_idx=None,
+                           baseline=None, mode='full'):
+    """
+    Integra un cromatograma amb mode seleccionable.
+
+    Args:
+        t: Array de temps
+        y: Array de senyal
+        left_idx: Índex inicial (opcional, defecte: 0)
+        right_idx: Índex final (opcional, defecte: len-1)
+        baseline: Valor baseline (opcional, calcula si None)
+        mode: Mode d'integració:
+            - 'full': Integra tota l'àrea del segment
+            - 'main_peak': Detecta i integra només el pic principal
+
+    Returns:
+        Dict amb:
+            - area: àrea integrada
+            - baseline: valor baseline usat
+            - left_idx, right_idx: límits d'integració
+            - t_start, t_end: temps dels límits
+            - mode: mode utilitzat
+            - peak_info: info del pic (si mode='main_peak')
+    """
+    t = np.asarray(t)
+    y = np.asarray(y)
+
+    if len(t) < 5 or len(y) < 5:
+        return {
+            'area': 0.0,
+            'baseline': 0.0,
+            'left_idx': 0,
+            'right_idx': 0,
+            't_start': 0.0,
+            't_end': 0.0,
+            'mode': mode,
+            'error': 'insufficient_data'
+        }
+
+    if left_idx is None:
+        left_idx = 0
+    if right_idx is None:
+        right_idx = len(y) - 1
+
+    # Assegurar límits vàlids
+    left_idx = max(0, min(left_idx, len(y) - 1))
+    right_idx = max(0, min(right_idx, len(y) - 1))
+
+    if right_idx <= left_idx:
+        right_idx = len(y) - 1
+
+    # Baseline
+    if baseline is None:
+        segment = y[left_idx:right_idx+1]
+        baseline = float(np.percentile(segment, 10))
+
+    if mode == 'full':
+        # Integrar tot el segment
+        t_seg = t[left_idx:right_idx+1]
+        y_seg = y[left_idx:right_idx+1] - baseline
+        y_seg = np.maximum(y_seg, 0)  # No negatius
+        area = float(trapezoid(y_seg, t_seg))
+
+        return {
+            'area': area,
+            'baseline': baseline,
+            'left_idx': left_idx,
+            'right_idx': right_idx,
+            't_start': float(t[left_idx]),
+            't_end': float(t[right_idx]),
+            'mode': 'full'
+        }
+
+    elif mode == 'main_peak':
+        # Detectar i integrar només pic principal
+        peak_info = detect_main_peak(t, y)
+
+        if not peak_info.get('valid', False):
+            # Fallback a full
+            return integrate_chromatogram(t, y, left_idx, right_idx,
+                                          baseline, mode='full')
+
+        p_left = peak_info['left_idx']
+        p_right = peak_info['right_idx']
+
+        # Calcular baseline específic del pic
+        peak_segment = y[p_left:p_right+1]
+        peak_baseline = float(np.percentile(peak_segment, 10))
+
+        t_peak = t[p_left:p_right+1]
+        y_peak = y[p_left:p_right+1] - peak_baseline
+        y_peak = np.maximum(y_peak, 0)
+        area = float(trapezoid(y_peak, t_peak))
+
+        return {
+            'area': area,
+            'baseline': peak_baseline,
+            'left_idx': p_left,
+            'right_idx': p_right,
+            't_start': float(t[p_left]),
+            't_end': float(t[p_right]),
+            'mode': 'main_peak',
+            'peak_info': peak_info
+        }
+
+    else:
+        raise ValueError(f"Mode desconegut: {mode}. Usar 'full' o 'main_peak'.")

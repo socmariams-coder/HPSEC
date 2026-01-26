@@ -64,6 +64,125 @@ PENDENT:
   [ ] Generar report resum de timeouts per seqüència
   [ ] Considerar canvi durada mostra a 77.2 min (elimina deriva)
 
+  [ ] AFEGIR SNR i LOD A CONSOLIDATS:
+      Anàlisi realitzada (156 mostres DUAL):
+        - Direct té millor LOD que UIB (1.24 vs 1.85 mAU a 700 ppb)
+        - 700 ppb té millor LOD que 1000 ppb (1.85 vs 3.47 mAU)
+        - El canvi a 1000 ppb (SEQ≥275) va augmentar soroll 2.4x
+
+      Per mostra (afegir al full ID del consolidat):
+        - SNR_UIB, SNR_Direct
+        - Baseline_Noise_UIB, Baseline_Noise_Direct (mAU)
+
+      Per seqüència (afegir a MasterFile o JSON):
+        - LOD_UIB, LOD_Direct (= 3 × median baseline noise)
+        - LOQ_UIB, LOQ_Direct (= 10 × median baseline noise)
+        - Sensitivity_ppb (700 o 1000)
+
+      Documentació:
+        - PROVES/uib_sensitivity/comparacio_700_vs_1000.png
+        - PROVES/uib_sensitivity/lod_snr_comparison.png
+        - PROVES/uib_sensitivity/uib_sensitivity_metrics.csv
+
+  [ ] DOCUMENTAR CANVIS SIMULTANIS SEQ 275:
+      A partir de SEQ 275 es van fer DOS canvis alhora:
+        1. Volum injecció Column: 100 µL → 400 µL (4x)
+        2. Sensibilitat UIB: 700 ppb → 1000 ppb
+
+      EFECTE COMBINAT OBSERVAT (no es poden separar):
+        | Mètrica      | UIB    | Direct | Teòric si només volum |
+        |--------------|--------|--------|----------------------|
+        | Peak         | 2.24x  | 3.20x  | 4x                   |
+        | Area         | 1.54x  | 2.27x  | 4x                   |
+        | Baseline     | 1.89x  | 2.79x  | ~1x                  |
+        | SNR          | 1.08x  | 1.02x  | 4x                   |
+
+      Senyal normalitzat per µL (UIB): 0.56x
+        → Menys senyal per µL injectat amb nova configuració
+
+      CONCLUSIONS:
+        - El SNR NO millora malgrat 4x més volum
+        - El baseline també augmenta (~2-3x), cancel·lant benefici
+        - No es pot saber si és pel volum, sensibilitat, o ambdós
+        - Direct escala millor que UIB (3.2x vs 2.2x)
+
+      RECOMANACIÓ FUTURA:
+        - Si es vol comparar efecte volum vs sensibilitat, caldria
+          fer experiments separats (un canvi a la vegada)
+
+      Documentació:
+        - PROVES/uib_sensitivity/injection_volume_comparison.png
+        - PROVES/uib_sensitivity/injection_volume_metrics.csv
+
+  [ ] REFACTORITZAR DETECCIÓ ANOMALIES (PLAN_REFACTOR_DETECCIO.md):
+      Objectiu: Unificar tota la lògica de detecció en hpsec_core.py
+
+      PROBLEMA ACTUAL:
+        - detect_batman() duplicat a hpsec_core.py i hpsec_calibrate.py
+        - detect_timeout() duplicat a hpsec_consolidate.py i hpsec_calibrate.py
+        - Versions diferents amb criteris inconsistents
+        - Difícil de mantenir i testejar
+
+      ARQUITECTURA OBJECTIU:
+        hpsec_core.py (SINGLE SOURCE OF TRUTH):
+          ├── detect_timeout()        ← MOURE des de consolidate (millor mètode: dt intervals)
+          ├── detect_batman()         ← Ja existeix (mantenir)
+          ├── detect_peak_anomaly()   ← Ja existeix (híbrid)
+          ├── detect_main_peak()      ← MOURE des de calibrate
+          ├── detect_all_peaks()      ← MOURE des de calibrate
+          └── integrate_chromatogram() ← NOU: mode='full'|'main_peak'
+
+        hpsec_calibrate.py:
+          └── validate_khp_quality()  ← NOU: validació específica KHP
+              - Multi-pic (>2 pics significatius)
+              - Outlier estadístic vs històric
+              - Integració KHP Column: mode='main_peak'
+
+        hpsec_consolidate.py, DOCtor_BP.py, DOCtor_C.py:
+          └── import detect_* from hpsec_core
+
+      FASES EXECUCIÓ:
+        Fase 1: Preparació (backup, git branch)
+        Fase 2: Migració funcions a hpsec_core.py
+        Fase 3: Actualitzar hpsec_consolidate.py (eliminar + imports)
+        Fase 4: Actualitzar hpsec_calibrate.py (eliminar + imports + validació KHP)
+        Fase 5: Actualitzar DOCtor_BP.py i DOCtor_C.py
+        Fase 6: Testing exhaustiu
+        Fase 7: Documentació
+
+      DETALL COMPLET: veure PLAN_REFACTOR_DETECCIO.md
+
+  [ ] OPTIMITZAR CROMATOGRAMES SEGONS TIMEOUT TOC:
+      Basat en l'anàlisi de 331 mostres DUAL (Direct vs UIB):
+
+      DURACIO ZONA AFECTADA PEL TIMEOUT:
+        - PRE-timeout:  ~0.5 min (xeringa buidant-se, mesures inestables)
+        - Timeout gap:  ~1.2 min (74s, sense dades)
+        - POST-timeout: ~1.0 min (estabilització després recàrrega)
+        - TOTAL:        ~2.5-3 min afectats
+
+      ACCIONS A IMPLEMENTAR:
+        a) Revisar hpsec_consolidate.py per marcar zona afectada completa
+           - Afegir camps: TOC_Affected_Zone_Start, TOC_Affected_Zone_End
+           - Calcular: t_start - 0.5 min fins t_end + 1.0 min
+
+        b) Afegir warning si zona afectada solapa amb pics crítics
+           - Usar integració d'àrea a zona afectada vs àrea total
+           - Flag si àrea_afectada / àrea_total > llindar (ex: 5%)
+
+        c) Generar mètriques de qualitat per zona afectada:
+           - Pearson local a la zona PRE/POST
+           - RMSE a la zona afectada
+
+      RECOMANACIÓ OPERATIVA (per tècnics):
+        - Canviar durada mètode HPLC de 78.65 min a 77.2 min
+        - Esperar 3-5 min després del flush abans d'iniciar seqüència
+        - Resultat: 100% timeouts en zona post-run (sense impacte)
+
+      DOCUMENTACIÓ:
+        - PROVES/dual_profiles/OPTIMITZACIO_SEQUENCIES_TOC.md
+        - PROVES/timeout_impact/informe_timeout_*.png
+
 --------------------------------------------------------------------------------
 SESSIO ANTERIOR - 2025-01-25 09:15
 --------------------------------------------------------------------------------
@@ -476,9 +595,39 @@ EX1L2503_258 R1 Amorphous OK R2 Amorphous per raó incorrecte. Ho es per la base
 CHANGELOG / HISTORIAL D'ACCIONS
 ================================================================================
 
-2026-01-26 - DETECCIO TIMEOUTS TOC
+2026-01-26 - ANALISI IMPACTE TIMEOUT TOC (COMPLETAT)
 --------------------------------------------------------------------------------
 [DARRERA ACCIO]
+
+Objectiu: Quantificar l'impacte real dels timeouts en la qualitat de les dades.
+
+Anàlisi realitzada (331 mostres DUAL: 178 Column + 153 BP):
+  - Mostres amb timeout: 198 (60%)
+  - CRITICAL (zona HS): 11
+  - WARNING (BioP/BB/SB): 109
+  - INFO (LMW/post-run): 78
+
+Resultats principals:
+  - Pearson Direct vs UIB global: 0.988-0.993 (excel·lent)
+  - Zona HS (més sensible): r = 0.983
+  - Els timeouts NO invaliden les dades
+
+Durada zona afectada (RMSE analysis):
+  - PRE-timeout: ~0.5 min (RMSE elevat 41%)
+  - Timeout: ~1.2 min (74s gap)
+  - POST-timeout: ~1.0 min (estabilització)
+  - TOTAL: ~2.5-3 min afectats
+
+Fitxers generats:
+  - PROVES/timeout_impact/all_samples_v3.pdf (331 pàgines, totes les mostres)
+  - PROVES/timeout_impact/informe_timeout_resum.png
+  - PROVES/timeout_impact/informe_timeout_perfil.png
+  - PROVES/timeout_impact/informe_timeout_duracio.png
+  - PROVES/timeout_impact/timeout_impact_metrics.csv
+
+--------------------------------------------------------------------------------
+
+2026-01-26 - DETECCIO TIMEOUTS TOC
 
 Objectiu: Detectar automàticament els timeouts per recàrrega de xeringues TOC
          i avisar quan afecten zones crítiques del cromatograma.

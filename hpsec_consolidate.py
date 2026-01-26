@@ -11,8 +11,9 @@ Conté tota la lògica per:
 Usat per HPSEC_Suite.py i batch_process.py
 """
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 __version_date__ = "2026-01-26"
+# v1.2.0: Refactor - timeout detection mogut a hpsec_core.py
 
 import os
 import re
@@ -23,6 +24,13 @@ import numpy as np
 import pandas as pd
 from scipy.signal import find_peaks, savgol_filter
 from scipy.integrate import trapezoid
+
+# Import funcions de detecció des de hpsec_core (Single Source of Truth)
+from hpsec_core import (
+    detect_timeout,
+    format_timeout_status,
+    TIMEOUT_CONFIG
+)
 
 
 # =============================================================================
@@ -488,190 +496,8 @@ DEFAULT_CONSOLIDATE_CONFIG = {
     },
 }
 
-# Configuració detecció de timeouts TOC
-TIMEOUT_CONFIG = {
-    "threshold_sec": 60,    # Considera timeout si dt > 60 segons
-    "major_timeout_sec": 70,  # Timeout major (recàrrega xeringues ~74s)
-    "zones": {
-        "RUN_START": [0, 0],      # Abans de BioP (inici run)
-        "BioP": [0, 18],          # Biopolímers - CRÍTIC
-        "HS": [18, 23],           # Substàncies húmiques - MOLT CRÍTIC
-        "BB": [23, 30],           # Building Blocks - CRÍTIC
-        "SB": [30, 40],           # Small Building blocks - CRÍTIC
-        "LMW": [40, 70],          # Low Molecular Weight - Acceptable
-        "POST_RUN": [70, 100],    # Post-run - IDEAL
-    },
-    "severity": {
-        "RUN_START": "INFO",      # Timeout a l'inici, abans de pics
-        "BioP": "WARNING",        # Pèrdua de biopolímers
-        "HS": "CRITICAL",         # Pèrdua de substàncies húmiques (zona més important)
-        "BB": "WARNING",          # Pèrdua de building blocks
-        "SB": "WARNING",          # Pèrdua de small building blocks
-        "LMW": "INFO",            # Zona de baix pes molecular, acceptable
-        "POST_RUN": "OK",         # Zona ideal, sense impacte
-    },
-}
-
-
-def detect_doc_timeouts(t_min, threshold_sec=None, major_threshold_sec=None):
-    """
-    Detecta timeouts en dades DOC Direct basant-se en la cadència temporal.
-
-    Analitza els intervals entre mesures consecutives. Un timeout es detecta
-    quan l'interval supera el llindar (per defecte 60 segons).
-
-    Args:
-        t_min: Array de temps en minuts
-        threshold_sec: Llindar per considerar timeout (defecte: 60s)
-        major_threshold_sec: Llindar per timeout major/recàrrega (defecte: 70s)
-
-    Returns:
-        dict amb:
-            - n_timeouts: nombre de timeouts detectats
-            - n_major_timeouts: nombre de timeouts majors (recàrrega xeringues)
-            - timeouts: llista de dicts amb info de cada timeout
-            - dt_median_sec: mediana d'intervals (cadència normal)
-            - dt_max_sec: interval màxim detectat
-            - zone_summary: resum per zones
-            - severity: severitat màxima detectada
-            - warning_message: missatge de warning formatat
-    """
-    if threshold_sec is None:
-        threshold_sec = TIMEOUT_CONFIG["threshold_sec"]
-    if major_threshold_sec is None:
-        major_threshold_sec = TIMEOUT_CONFIG["major_timeout_sec"]
-
-    t = np.asarray(t_min)
-    if len(t) < 2:
-        return {
-            "n_timeouts": 0,
-            "n_major_timeouts": 0,
-            "timeouts": [],
-            "dt_median_sec": 0,
-            "dt_max_sec": 0,
-            "zone_summary": {},
-            "severity": "OK",
-            "warning_message": ""
-        }
-
-    # Calcular intervals en segons
-    dt_sec = np.diff(t) * 60.0
-
-    # Estadístiques bàsiques
-    dt_median = float(np.median(dt_sec))
-    dt_max = float(np.max(dt_sec))
-
-    # Detectar timeouts
-    timeout_indices = np.where(dt_sec > threshold_sec)[0]
-    timeouts = []
-    zone_counts = {zone: 0 for zone in TIMEOUT_CONFIG["zones"].keys()}
-    max_severity = "OK"
-    severity_order = ["OK", "INFO", "WARNING", "CRITICAL"]
-
-    for idx in timeout_indices:
-        t_start = float(t[idx])
-        t_end = float(t[idx + 1])
-        duration_sec = float(dt_sec[idx])
-        is_major = duration_sec >= major_threshold_sec
-
-        # Determinar zona
-        zone = "POST_RUN"  # Per defecte
-        for zone_name, (t_ini, t_fi) in TIMEOUT_CONFIG["zones"].items():
-            if zone_name == "RUN_START":
-                continue  # Tractem apart
-            if t_ini <= t_start < t_fi:
-                zone = zone_name
-                break
-
-        # Cas especial: timeout a l'inici del run (t < 1 min)
-        if t_start < 1.0:
-            zone = "RUN_START"
-
-        zone_counts[zone] += 1
-        severity = TIMEOUT_CONFIG["severity"].get(zone, "INFO")
-
-        if severity_order.index(severity) > severity_order.index(max_severity):
-            max_severity = severity
-
-        timeouts.append({
-            "index": int(idx),
-            "t_start_min": round(t_start, 2),
-            "t_end_min": round(t_end, 2),
-            "duration_sec": round(duration_sec, 1),
-            "is_major": is_major,
-            "zone": zone,
-            "severity": severity,
-        })
-
-    # Generar missatge de warning
-    warning_parts = []
-    n_major = sum(1 for to in timeouts if to["is_major"])
-
-    if timeouts:
-        # Ordenar per severitat
-        critical_zones = [to for to in timeouts if to["severity"] == "CRITICAL"]
-        warning_zones = [to for to in timeouts if to["severity"] == "WARNING"]
-        info_zones = [to for to in timeouts if to["severity"] in ["INFO", "OK"]]
-
-        if critical_zones:
-            for to in critical_zones:
-                warning_parts.append(
-                    f"CRITICAL: Timeout {to['duration_sec']:.0f}s at {to['t_start_min']:.1f} min (HS zone)"
-                )
-
-        if warning_zones:
-            zones_affected = list(set(to["zone"] for to in warning_zones))
-            for to in warning_zones[:3]:  # Màxim 3
-                warning_parts.append(
-                    f"WARNING: Timeout {to['duration_sec']:.0f}s at {to['t_start_min']:.1f} min ({to['zone']})"
-                )
-
-        if info_zones and not critical_zones and not warning_zones:
-            for to in info_zones[:2]:
-                warning_parts.append(
-                    f"INFO: Timeout {to['duration_sec']:.0f}s at {to['t_start_min']:.1f} min ({to['zone']})"
-                )
-
-    warning_message = "; ".join(warning_parts) if warning_parts else ""
-
-    return {
-        "n_timeouts": len(timeouts),
-        "n_major_timeouts": n_major,
-        "timeouts": timeouts,
-        "dt_median_sec": round(dt_median, 2),
-        "dt_max_sec": round(dt_max, 2),
-        "zone_summary": {k: v for k, v in zone_counts.items() if v > 0},
-        "severity": max_severity,
-        "warning_message": warning_message
-    }
-
-
-def format_timeout_status(timeout_info):
-    """
-    Formata l'estat de timeout per al camp Status del consolidat.
-
-    Returns:
-        str: Estat formatat (OK, INFO, WARNING, CRITICAL)
-    """
-    if not timeout_info or timeout_info.get("n_timeouts", 0) == 0:
-        return "OK"
-
-    severity = timeout_info.get("severity", "OK")
-    n_timeouts = timeout_info.get("n_timeouts", 0)
-    n_major = timeout_info.get("n_major_timeouts", 0)
-
-    if severity == "OK":
-        return "OK"
-    elif severity == "INFO":
-        return f"INFO: {n_timeouts} timeout(s) in safe zone"
-    elif severity == "WARNING":
-        zones = timeout_info.get("zone_summary", {})
-        affected = [z for z in ["BioP", "BB", "SB"] if zones.get(z, 0) > 0]
-        return f"WARNING: timeout in {', '.join(affected)}"
-    elif severity == "CRITICAL":
-        return f"CRITICAL: timeout in HS zone ({n_major} major)"
-
-    return f"{severity}: {n_timeouts} timeout(s)"
+# NOTA: TIMEOUT_CONFIG, detect_timeout i format_timeout_status ara estan a hpsec_core.py
+# (Single Source of Truth per evitar duplicació)
 
 
 # =============================================================================
@@ -1619,7 +1445,7 @@ def extract_doc_from_masterfile(toc_df, row_start, row_end, t_start=None, detect
 
     # Detectar timeouts si s'ha sol·licitat
     if detect_timeouts:
-        timeout_info = detect_doc_timeouts(df_doc["time (min)"].values)
+        timeout_info = detect_timeout(df_doc["time (min)"].values)
         return df_doc, timeout_info
 
     return df_doc
@@ -1674,7 +1500,7 @@ def extract_doc_from_master(df_toc, row_ini, row_fi, start_dt, detect_timeouts=T
 
     # Detectar timeouts si s'ha sol·licitat
     if detect_timeouts:
-        timeout_info = detect_doc_timeouts(df_doc["time (min)"].values)
+        timeout_info = detect_timeout(df_doc["time (min)"].values)
         return df_doc, timeout_info
 
     return df_doc
