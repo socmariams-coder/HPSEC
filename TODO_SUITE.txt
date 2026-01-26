@@ -48,19 +48,16 @@ PENDENT:
       - Cada pas reanomena el fitxer i afegeix full corresponent
       - Permet veure estat sense obrir el fitxer
 
-  [ ] Reestructurar fulla ID consolidats (PROPOSTA):
-      Ordre: Sample, Replica, SEQ, Method, Date
-      Camps pendents d'afegir:
-        - Inj_Volume (del MasterFile 0-INFO)
-        - UIB_range (del MasterFile 0-INFO)
-      Revisar:
-        - Estructura per DIRECT vs DUAL vs UIB
-        - File_MasterFile, File_DAD (no File_DAD_Original)
-        - DOC_tmax (no DOC_T_RETENTION)
-        - Agrupar camps DOC i DAD separats
-        - DOC_Baseline_Method (nom del mètode)
-        - Peak_Valid com a flag QC
-        - No incloure àrees DAD si no s'han processat
+  [x] Reestructurar fulla ID consolidats (IMPLEMENTAT):
+      Nova estructura a write_consolidated_excel():
+        1. IDENTIFICACIÓ: Sample, Replica, SEQ, Method, Date, Inj_Volume_uL, UIB_range
+        2. FITXERS: File_MasterFile, File_DAD, File_DOC_UIB
+        3. ESTAT: DOC_Mode, Status_DOC, Status_DAD, Peak_Valid
+        4. DOC: N_Points, tmax, t_start, t_end, Area, Row_Start, Row_End
+        5. PROCESSAMENT: Baseline_Method, Baseline_mAU, Smoothing, Shift_sec
+        6. UIB (si DUAL): Baseline_mAU, Shift_sec, Status
+        7. DAD (si processat): N_Points, àrees per longitud d'ona
+      Afegit paràmetre master_info a write_consolidated_excel()
 
   [ ] Crear script importació per noves SEQs (usa Template)
   [ ] Commit canvis a git

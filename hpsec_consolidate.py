@@ -828,14 +828,58 @@ def apply_smoothing(y):
 # =============================================================================
 # FUNCIONS LECTURA FITXERS
 # =============================================================================
+
+def detect_master_format(filepath):
+    """
+    Detecta el format del fitxer mestre.
+
+    Returns:
+        "NEW" si és nou MasterFile (0-INFO, 1-HPLC-SEQ, 2-TOC, 4-TOC_CALC)
+        "OLD" si és format antic (0-CHECK, 2-TOC, 4-SEQ_DATA)
+        None si no és reconegut
+    """
+    try:
+        xl = pd.ExcelFile(filepath, engine="openpyxl")
+        sheets = set(xl.sheet_names)
+
+        # Format nou: té 0-INFO i 4-TOC_CALC (o 1-HPLC-SEQ)
+        if "0-INFO" in sheets and ("4-TOC_CALC" in sheets or "1-HPLC-SEQ" in sheets):
+            return "NEW"
+
+        # Format antic: té 0-CHECK i 4-SEQ_DATA
+        if any(s.lower() == "0-check" for s in sheets) and "4-SEQ_DATA" in sheets:
+            return "OLD"
+
+        # Compatibilitat: si té 2-TOC i 4-SEQ_DATA, és antic
+        if "2-TOC" in sheets and "4-SEQ_DATA" in sheets:
+            return "OLD"
+
+        return None
+    except Exception:
+        return None
+
+
 def read_master_date(seq_folder):
-    """Llegeix data del fitxer mestre."""
+    """Llegeix data del fitxer mestre (compatible amb format antic i nou)."""
     xls = glob.glob(os.path.join(seq_folder, "*.xlsx"))
     for f in xls:
         if "~$" in os.path.basename(f):
             continue
         try:
             xf = pd.ExcelFile(f, engine="openpyxl")
+
+            # Primer intentar format nou (0-INFO)
+            if "0-INFO" in xf.sheet_names:
+                df = pd.read_excel(xf, sheet_name="0-INFO", header=None, engine="openpyxl")
+                # Buscar fila "Date"
+                for i, row in df.iterrows():
+                    if str(row.iloc[0]).strip().lower() == "date":
+                        val = row.iloc[1]
+                        if pd.notna(val):
+                            return str(val)
+                continue
+
+            # Fallback format antic (0-CHECK)
             sheet = None
             for s in xf.sheet_names:
                 if str(s).strip().lower() == "0-check":
@@ -916,22 +960,355 @@ def netejar_nom_uib(nom_fitxer):
     return mostra, rep
 
 
-def trobar_excel_mestre(folder_seq):
-    """Troba Excel mestre amb sheets 2-TOC i 4-SEQ_DATA."""
+def trobar_excel_mestre(folder_seq, prefer_new=True):
+    """
+    Troba Excel mestre (compatible amb format antic i nou).
+
+    Args:
+        folder_seq: Carpeta de la seqüència
+        prefer_new: Si True, prioritza MasterFile nou sobre format antic
+
+    Returns:
+        Tuple (path, format) on format és "NEW" o "OLD", o (None, None) si no es troba
+    """
     candidats = []
     for ext in ("*.xlsx", "*.XLSX", "*.xlsm", "*.XLSM"):
         candidats.extend(glob.glob(os.path.join(folder_seq, ext)))
     candidats = [p for p in candidats if not os.path.basename(p).startswith("~$")]
 
+    # Separar per tipus
+    new_format = []
+    old_format = []
+
     for p in sorted(candidats):
-        try:
-            xl = pd.ExcelFile(p, engine="openpyxl")
-            s = set(xl.sheet_names)
-            if "2-TOC" in s and "4-SEQ_DATA" in s:
-                return p
-        except Exception:
+        fmt = detect_master_format(p)
+        if fmt == "NEW":
+            new_format.append(p)
+        elif fmt == "OLD":
+            old_format.append(p)
+
+    # Prioritzar segons preferència
+    if prefer_new and new_format:
+        # Prioritzar fitxers amb "MasterFile" al nom
+        for p in new_format:
+            if "MasterFile" in os.path.basename(p):
+                return p, "NEW"
+        return new_format[0], "NEW"
+
+    if old_format:
+        return old_format[0], "OLD"
+
+    if new_format:
+        return new_format[0], "NEW"
+
+    return None, None
+
+
+def llegir_masterfile_nou(filepath):
+    """
+    Llegeix el nou format MasterFile.
+
+    Returns:
+        dict amb:
+            - info: dict amb metadata de 0-INFO
+            - hplc_seq: DataFrame de 1-HPLC-SEQ
+            - toc: DataFrame de 2-TOC
+            - toc_calc: DataFrame de 4-TOC_CALC
+            - dad_khp: DataFrame de 3-DAD_KHP (si existeix)
+    """
+    result = {
+        "info": {},
+        "hplc_seq": None,
+        "toc": None,
+        "toc_calc": None,
+        "dad_khp": None,
+    }
+
+    try:
+        xl = pd.ExcelFile(filepath, engine="openpyxl")
+
+        # 0-INFO
+        if "0-INFO" in xl.sheet_names:
+            df_info = pd.read_excel(xl, sheet_name="0-INFO", header=None, engine="openpyxl")
+            for _, row in df_info.iterrows():
+                key = str(row.iloc[0]).strip() if pd.notna(row.iloc[0]) else ""
+                val = row.iloc[1] if len(row) > 1 and pd.notna(row.iloc[1]) else None
+                if key:
+                    result["info"][key] = val
+
+        # 1-HPLC-SEQ
+        if "1-HPLC-SEQ" in xl.sheet_names:
+            result["hplc_seq"] = pd.read_excel(xl, sheet_name="1-HPLC-SEQ", engine="openpyxl")
+
+        # 2-TOC
+        if "2-TOC" in xl.sheet_names:
+            result["toc"] = pd.read_excel(xl, sheet_name="2-TOC", header=6, engine="openpyxl")
+
+        # 4-TOC_CALC
+        if "4-TOC_CALC" in xl.sheet_names:
+            result["toc_calc"] = pd.read_excel(xl, sheet_name="4-TOC_CALC", engine="openpyxl")
+
+        # 3-DAD_KHP (opcional)
+        if "3-DAD_KHP" in xl.sheet_names:
+            result["dad_khp"] = pd.read_excel(xl, sheet_name="3-DAD_KHP", header=1, engine="openpyxl")
+
+    except Exception as e:
+        result["error"] = str(e)
+
+    return result
+
+
+def calculate_toc_calc_on_the_fly(master_data):
+    """
+    Calcula 4-TOC_CALC al vol a partir de 1-HPLC-SEQ i 2-TOC.
+
+    Args:
+        master_data: Dict retornat per llegir_masterfile_nou()
+
+    Returns:
+        DataFrame amb columns TOC_Row, Sample, Temps_Relatiu, Inj_Index
+    """
+    FLUSH_TIME_MIN = 3.637
+    TOC_DATA_START_ROW = 8
+
+    df_hplc = master_data.get("hplc_seq")
+    df_toc = master_data.get("toc")
+
+    if df_hplc is None or df_hplc.empty or df_toc is None or df_toc.empty:
+        return None
+
+    # Trobar columnes HPLC
+    date_col = sample_col = sample_rep_col = None
+    for col in df_hplc.columns:
+        col_str = str(col).lower()
+        if 'injection' in col_str and 'date' in col_str:
+            date_col = col
+        elif 'sample' in col_str and 'name' in col_str:
+            sample_col = col
+        elif 'sample_rep' in col_str:
+            sample_rep_col = col
+
+    if not date_col or not sample_col:
+        return None
+
+    # Llegir HPLC
+    hplc_data = []
+    for _, row in df_hplc.iterrows():
+        date_val = row[date_col]
+        sample_val = row[sample_rep_col] if sample_rep_col and pd.notna(row.get(sample_rep_col)) else row[sample_col]
+        if pd.notna(date_val) and pd.notna(sample_val):
+            hplc_data.append({'date': pd.to_datetime(date_val), 'sample': str(sample_val)})
+
+    if not hplc_data:
+        return None
+
+    hplc_data = sorted(hplc_data, key=lambda x: x['date'])
+    hplc_times = [h['date'] for h in hplc_data]
+    hplc_samples = [h['sample'] for h in hplc_data]
+
+    # Trobar columna de temps a TOC
+    time_col = None
+    for col in df_toc.columns:
+        if 'date' in str(col).lower() and 'start' in str(col).lower():
+            time_col = col
+            break
+    if time_col is None and len(df_toc.columns) > 3:
+        time_col = df_toc.columns[3]
+
+    if time_col is None:
+        return None
+
+    # Llegir timestamps TOC
+    toc_data = []
+    for idx, row in df_toc.iterrows():
+        toc_row = TOC_DATA_START_ROW + idx  # Número de fila a l'Excel original
+        toc_time_val = row[time_col]
+        if pd.notna(toc_time_val):
+            try:
+                toc_time = pd.to_datetime(toc_time_val)
+                toc_data.append((toc_row, toc_time))
+            except:
+                pass
+
+    if not toc_data:
+        return None
+
+    # Calcular TOC_CALC
+    calc_rows = []
+    for toc_row, toc_time in toc_data:
+        hora_hplc = toc_time + pd.Timedelta(minutes=FLUSH_TIME_MIN)
+        inj_index = sum(1 for t in hplc_times if t <= hora_hplc)
+
+        if 0 < inj_index <= len(hplc_samples):
+            sample = hplc_samples[inj_index - 1]
+            temps_rel = (hora_hplc - hplc_times[inj_index - 1]).total_seconds() / 60.0
+        else:
+            sample = ''
+            temps_rel = None
+
+        calc_rows.append({
+            'TOC_Row': toc_row,
+            'Sample': sample,
+            'Temps_Relatiu (min)': round(temps_rel, 3) if temps_rel is not None else None,
+            'Inj_Index': inj_index
+        })
+
+    return pd.DataFrame(calc_rows)
+
+
+def build_sample_ranges_from_toc_calc(toc_calc_df, toc_df):
+    """
+    Construeix els rangs de files per cada mostra a partir de 4-TOC_CALC.
+
+    Args:
+        toc_calc_df: DataFrame de 4-TOC_CALC (TOC_Row, Sample, Temps_Relatiu, Inj_Index)
+        toc_df: DataFrame de 2-TOC
+
+    Returns:
+        Dict amb Sample_Rep -> {row_start, row_end, inj_index, t_start}
+    """
+    if toc_calc_df is None or toc_calc_df.empty:
+        return {}
+
+    # Trobar columnes
+    sample_col = None
+    toc_row_col = None
+    inj_idx_col = None
+
+    for col in toc_calc_df.columns:
+        col_lower = str(col).lower()
+        if 'sample' in col_lower:
+            sample_col = col
+        elif 'toc_row' in col_lower or 'toc row' in col_lower:
+            toc_row_col = col
+        elif 'inj' in col_lower and 'index' in col_lower:
+            inj_idx_col = col
+
+    if sample_col is None:
+        return {}
+
+    # Agrupar per Sample
+    sample_ranges = {}
+    current_sample = None
+    current_start = None
+
+    for _, row in toc_calc_df.iterrows():
+        sample = row.get(sample_col)
+        toc_row = row.get(toc_row_col) if toc_row_col else None
+        inj_idx = row.get(inj_idx_col) if inj_idx_col else None
+
+        if pd.isna(sample) or str(sample).strip() == "":
             continue
-    return None
+
+        sample = str(sample).strip()
+
+        if sample != current_sample:
+            # Tancar rang anterior
+            if current_sample is not None and current_start is not None:
+                sample_ranges[current_sample]["row_end"] = prev_toc_row
+
+            # Iniciar nou rang
+            current_sample = sample
+            current_start = toc_row
+            sample_ranges[sample] = {
+                "row_start": int(toc_row) if pd.notna(toc_row) else None,
+                "row_end": None,
+                "inj_index": int(inj_idx) if pd.notna(inj_idx) else None,
+            }
+
+        prev_toc_row = int(toc_row) if pd.notna(toc_row) else None
+
+    # Tancar últim rang
+    if current_sample is not None and current_start is not None:
+        sample_ranges[current_sample]["row_end"] = prev_toc_row
+
+    # Afegir t_start (timestamp de la primera fila) si tenim TOC
+    if toc_df is not None and not toc_df.empty:
+        time_col = None
+        for col in toc_df.columns:
+            if 'date' in str(col).lower() and 'start' in str(col).lower():
+                time_col = col
+                break
+        if time_col is None and len(toc_df.columns) > 3:
+            time_col = toc_df.columns[3]  # Columna D típicament
+
+        if time_col:
+            for sample, info in sample_ranges.items():
+                row_start = info.get("row_start")
+                if row_start is not None:
+                    # row_start és 1-indexed des de la fila 8 (després de header)
+                    idx = row_start - 8  # Ajustar a índex 0-based del DataFrame
+                    if 0 <= idx < len(toc_df):
+                        t_start = toc_df.iloc[idx][time_col]
+                        info["t_start"] = t_start
+
+    return sample_ranges
+
+
+def extract_doc_from_masterfile(toc_df, row_start, row_end, t_start=None):
+    """
+    Extreu segment DOC del nou MasterFile.
+
+    Args:
+        toc_df: DataFrame de 2-TOC
+        row_start: Fila inicial (1-indexed, relatiu a fila 8 del TOC original)
+        row_end: Fila final
+        t_start: Timestamp d'inici (opcional, per calcular temps relatiu)
+
+    Returns:
+        DataFrame amb columns "time (min)" i "DOC"
+    """
+    if toc_df is None or toc_df.empty:
+        return pd.DataFrame()
+
+    # Trobar columnes de temps i senyal
+    time_col = None
+    sig_col = None
+
+    for col in toc_df.columns:
+        col_str = str(col).lower()
+        if 'date' in col_str and 'start' in col_str:
+            time_col = col
+        elif 'toc' in col_str and 'ppb' in col_str:
+            sig_col = col
+        elif 'tc' in col_str and 'ppb' in col_str and sig_col is None:
+            sig_col = col
+
+    # Fallback a posició si no es troben
+    if time_col is None and len(toc_df.columns) > 3:
+        time_col = toc_df.columns[3]
+    if sig_col is None and len(toc_df.columns) > 5:
+        sig_col = toc_df.columns[5]
+
+    if time_col is None or sig_col is None:
+        return pd.DataFrame()
+
+    # Extreure segment (ajustar índexs)
+    # row_start/row_end són 1-indexed des de fila 8 del Excel
+    start_idx = max(int(row_start) - 8, 0)
+    end_idx = max(int(row_end) - 8, start_idx)
+
+    seg = toc_df.iloc[start_idx:end_idx + 1].copy()
+
+    # Calcular temps relatiu
+    seg_time = pd.to_datetime(seg[time_col], errors="coerce")
+    if t_start is not None:
+        t0 = pd.to_datetime(t_start, errors="coerce")
+    else:
+        t0 = seg_time.iloc[0] if len(seg_time) > 0 else None
+
+    if t0 is not None:
+        t_min = (seg_time - t0).dt.total_seconds() / 60.0
+    else:
+        t_min = pd.Series(range(len(seg))) * 0.1  # Fallback
+
+    df_doc = pd.DataFrame({
+        "time (min)": t_min.values,
+        "DOC": pd.to_numeric(seg[sig_col], errors="coerce").values
+    })
+    df_doc = df_doc.dropna(subset=["time (min)", "DOC"])
+
+    return df_doc
 
 
 def llegir_master_direct(mestre):
@@ -1440,70 +1817,97 @@ def write_consolidated_excel(out_path, mostra, rep, seq_out, date_master,
                              fitxer_doc_uib=None, st_doc_uib=None,
                              # Paràmetres de processament
                              shift_uib=None, shift_direct=None,
-                             smoothing_applied=True):
+                             smoothing_applied=True,
+                             # Info del MasterFile 0-INFO
+                             master_info=None):
     """
     Escriu fitxer Excel consolidat amb àrees calculades.
 
     Suporta dual protocol: DOC (Direct) + DOC_UIB quan ambdós estan disponibles.
     Sempre guarda dades RAW i documenta el processament aplicat.
+
+    Estructura fulla ID:
+      1. IDENTIFICACIÓ: Sample, Replica, SEQ, Method, Date, Inj_Volume, UIB_range
+      2. FITXERS: File_MasterFile, File_DAD, File_DOC_UIB
+      3. ESTAT: DOC_Mode, Status_DOC, Status_DAD, Peak_Valid
+      4. DOC: N_Points, tmax, t_start, t_end, Area, Row_Start, Row_End
+      5. PROCESSAMENT: Baseline_Method, Baseline_mAU, Smoothing, Shift_sec
+      6. UIB (si DUAL): Baseline_mAU, Shift_sec, Status
+      7. DAD (si processat): N_Points, àrees per longitud d'ona
     """
     sample_analysis = sample_analysis or {}
+    master_info = master_info or {}
     is_dual = y_doc_uib is not None and len(y_doc_uib) > 0
 
     # Calcular valors de baseline per documentar
     baseline_direct_val = float(np.mean(baseline)) if baseline is not None and len(baseline) > 0 else 0.0
     baseline_uib_val = float(np.mean(baseline_uib)) if baseline_uib is not None and len(baseline_uib) > 0 else 0.0
 
+    # === 1. IDENTIFICACIÓ ===
     id_rows = [
-        ("Date", date_master),
-        ("Method", method),
-        ("Mostra", mostra),
-        ("Rèplica", rep),
+        ("Sample", mostra),
+        ("Replica", rep),
         ("SEQ", seq_out),
-        ("DOC_MODE", doc_mode),
-        ("Fitxer_DOC_Direct", fitxer_doc),
-        ("Fitxer_DAD_Original", fitxer_dad),
-        ("Estat_DOC", st_doc),
-        ("Estat_DAD", st_dad),
-        ("DOC_N_POINTS", len(t_doc)),
-        ("DAD_N_POINTS", len(df_dad) if not df_dad.empty else 0),
-        ("PEAK_VALID", peak_info.get("valid", False)),
-        ("DOC_AREA", sample_analysis.get("doc_area", peak_info.get("area", 0.0))),
-        ("DOC_T_RETENTION", sample_analysis.get("doc_t_retention", peak_info.get("t_max", 0.0))),
-        ("DOC_T_START", sample_analysis.get("doc_t_start", peak_info.get("t_start", 0.0))),
-        ("DOC_T_END", sample_analysis.get("doc_t_end", peak_info.get("t_end", 0.0))),
-        ("A220_AREA", sample_analysis.get("a220_area", 0.0)),
-        ("A252_AREA", sample_analysis.get("a252_area", 0.0)),
-        ("A254_AREA", sample_analysis.get("a254_area", 0.0)),
-        ("A272_AREA", sample_analysis.get("a272_area", 0.0)),
-        ("A290_AREA", sample_analysis.get("a290_area", 0.0)),
-        ("A362_AREA", sample_analysis.get("a362_area", 0.0)),
+        ("Method", method),
+        ("Date", date_master),
+        ("Inj_Volume_uL", master_info.get("Inj_Volume (uL)", "")),
+        ("UIB_range", master_info.get("UIB_range", "None")),
     ]
 
-    # Info de processament
-    id_rows.append(("PROCESSING_BASELINE", "YES"))
-    id_rows.append(("BASELINE_Direct_mAU", round(baseline_direct_val, 3)))
-    id_rows.append(("PROCESSING_SMOOTHING", "YES" if smoothing_applied else "NO"))
+    # === 2. FITXERS ===
+    id_rows.append(("File_MasterFile", master_file or ""))
+    id_rows.append(("File_DAD", fitxer_dad or ""))
+    if is_dual and fitxer_doc_uib:
+        id_rows.append(("File_DOC_UIB", fitxer_doc_uib))
 
-    # Info adicional per DIRECT o DUAL
-    if doc_mode in ("DIRECT", "DUAL") and master_file:
-        id_rows.append(("Fitxer_Master", master_file))
-        if row_start is not None:
-            id_rows.append(("DOC_ROW_START", row_start))
-        if row_end is not None:
-            id_rows.append(("DOC_ROW_END", row_end))
+    # === 3. ESTAT ===
+    id_rows.extend([
+        ("DOC_Mode", doc_mode),
+        ("Status_DOC", st_doc),
+        ("Status_DAD", st_dad),
+        ("Peak_Valid", peak_info.get("valid", False)),
+    ])
 
-    # Info adicional per DUAL
+    # === 4. MESURES DOC ===
+    id_rows.extend([
+        ("DOC_N_Points", len(t_doc)),
+        ("DOC_tmax", round(sample_analysis.get("doc_t_retention", peak_info.get("t_max", 0.0)), 3)),
+        ("DOC_t_start", round(sample_analysis.get("doc_t_start", peak_info.get("t_start", 0.0)), 3)),
+        ("DOC_t_end", round(sample_analysis.get("doc_t_end", peak_info.get("t_end", 0.0)), 3)),
+        ("DOC_Area", round(sample_analysis.get("doc_area", peak_info.get("area", 0.0)), 3)),
+    ])
+    if row_start is not None:
+        id_rows.append(("DOC_Row_Start", row_start))
+    if row_end is not None:
+        id_rows.append(("DOC_Row_End", row_end))
+
+    # === 5. PROCESSAMENT DOC ===
+    id_rows.extend([
+        ("DOC_Baseline_Method", "percentile"),
+        ("DOC_Baseline_mAU", round(baseline_direct_val, 3)),
+        ("DOC_Smoothing", "YES" if smoothing_applied else "NO"),
+    ])
+    if shift_direct is not None:
+        id_rows.append(("DOC_Shift_sec", round(shift_direct * 60, 2)))
+
+    # === 6. UIB (només si DUAL) ===
     if is_dual:
-        if fitxer_doc_uib:
-            id_rows.append(("Fitxer_DOC_UIB", fitxer_doc_uib))
-            id_rows.append(("Estat_DOC_UIB", st_doc_uib or "OK"))
-        id_rows.append(("BASELINE_UIB_mAU", round(baseline_uib_val, 3)))
-        # Shifts d'alineació
+        id_rows.append(("UIB_Baseline_mAU", round(baseline_uib_val, 3)))
         if shift_uib is not None:
-            id_rows.append(("SHIFT_UIB_sec", round(shift_uib * 60, 2)))
-        if shift_direct is not None:
-            id_rows.append(("SHIFT_Direct_sec", round(shift_direct * 60, 2)))
+            id_rows.append(("UIB_Shift_sec", round(shift_uib * 60, 2)))
+        id_rows.append(("UIB_Status", st_doc_uib or "OK"))
+
+    # === 7. DAD (només si processat i té àrees) ===
+    dad_processed = not df_dad.empty and any(
+        sample_analysis.get(f"a{wl}_area", 0.0) > 0
+        for wl in [220, 252, 254, 272, 290, 362]
+    )
+    if dad_processed:
+        id_rows.append(("DAD_N_Points", len(df_dad)))
+        for wl in [220, 252, 254, 272, 290, 362]:
+            area = sample_analysis.get(f"a{wl}_area", 0.0)
+            if area > 0:
+                id_rows.append((f"DAD_A{wl}_Area", round(area, 3)))
 
     df_id = pd.DataFrame(id_rows, columns=["Camp", "Valor"])
 
@@ -1625,22 +2029,45 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
             total = len(uib_files)
 
             # Intentar llegir el mestre per dual protocol
-            mestre = trobar_excel_mestre(input_folder)
+            mestre, master_format = trobar_excel_mestre(input_folder)
             df_toc = None
             df_seq = None
             master_index = None
+            sample_ranges_new = None  # Per format nou
             has_master = False
+            master_info = {}  # Info de 0-INFO per passar a write_consolidated_excel
 
             if mestre:
-                try:
-                    df_toc, df_seq = llegir_master_direct(mestre)
-                    needed = ["SAMPLE_DESC", "START", "Row initial", "Row Final"]
-                    if all(col in df_seq.columns for col in needed):
-                        master_index = build_master_sample_index(df_seq)
-                        has_master = True
-                        result["mode"] = "DUAL"  # Canviar a DUAL si tenim mestre
-                except Exception as e:
-                    result["errors"].append(f"WARN: No s'ha pogut llegir mestre per dual: {e}")
+                result["master_format"] = master_format
+
+                if master_format == "NEW":
+                    # FORMAT NOU: MasterFile amb 4-TOC_CALC
+                    try:
+                        master_data = llegir_masterfile_nou(mestre)
+                        if "error" not in master_data:
+                            df_toc = master_data["toc"]
+                            df_toc_calc = master_data["toc_calc"]
+                            master_info = master_data.get("info", {})  # 0-INFO
+
+                            if df_toc is not None and df_toc_calc is not None:
+                                sample_ranges_new = build_sample_ranges_from_toc_calc(df_toc_calc, df_toc)
+                                if sample_ranges_new:
+                                    has_master = True
+                                    result["mode"] = "DUAL"
+                    except Exception as e:
+                        result["errors"].append(f"WARN: No s'ha pogut llegir MasterFile nou per dual: {e}")
+
+                else:
+                    # FORMAT ANTIC: Mestre amb 4-SEQ_DATA
+                    try:
+                        df_toc, df_seq = llegir_master_direct(mestre)
+                        needed = ["SAMPLE_DESC", "START", "Row initial", "Row Final"]
+                        if all(col in df_seq.columns for col in needed):
+                            master_index = build_master_sample_index(df_seq)
+                            has_master = True
+                            result["mode"] = "DUAL"  # Canviar a DUAL si tenim mestre
+                    except Exception as e:
+                        result["errors"].append(f"WARN: No s'ha pogut llegir mestre per dual: {e}")
 
             # ================================================================
             # PROTOCOL ALINEACIÓ COLUMN: Pre-processar KHP per calcular shifts
@@ -1802,28 +2229,70 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
                 row_fi = None
 
                 # Intentar obtenir DOC Direct del mestre (dual protocol)
-                if has_master and master_index:
-                    match = match_uib_to_master(mostra, rep, master_index)
-                    if match:
-                        row = match["row"]
-                        try:
-                            row_ini = int(float(row["Row initial"]))
-                            row_fi = int(float(row["Row Final"]))
-                            df_doc_direct = extract_doc_from_master(df_toc, row_ini, row_fi, row["START"])
+                if has_master:
+                    matched = False
 
-                            if not df_doc_direct.empty:
-                                t_direct = pd.to_numeric(df_doc_direct["time (min)"], errors="coerce").to_numpy()
-                                y_direct_raw = pd.to_numeric(df_doc_direct["DOC"], errors="coerce").to_numpy()
+                    # FORMAT NOU: Usar sample_ranges_new
+                    if sample_ranges_new and not matched:
+                        # Construir Sample_Rep per buscar
+                        sample_rep_key = f"{mostra}_R{rep}"
+                        # Buscar coincidència exacta o parcial
+                        match_info = None
+                        for sr, info in sample_ranges_new.items():
+                            if sr == sample_rep_key:
+                                match_info = info
+                                break
+                            # Buscar per coincidència parcial (mostra sense rep)
+                            if normalize_key(sr.split("_R")[0]) == normalize_key(mostra):
+                                if match_info is None:
+                                    match_info = info
 
-                                # Per BP Direct, usar el final del cromatograma per baseline
-                                base_direct = get_baseline_correction(t_direct, y_direct_raw, method, config, use_end=(method == "BP"))
-                                y_direct_net = apply_smoothing(y_direct_raw - base_direct)
-                                y_direct_net[y_direct_net < 0] = 0
+                        if match_info:
+                            try:
+                                row_ini = match_info.get("row_start")
+                                row_fi = match_info.get("row_end")
+                                t_start = match_info.get("t_start")
 
-                                nom_doc_direct = os.path.basename(mestre)
-                                st_doc_direct = "OK"
-                        except Exception as e:
-                            result["errors"].append(f"WARN: Error extraient DOC Direct per {mostra}: {e}")
+                                if row_ini is not None and row_fi is not None:
+                                    df_doc_direct = extract_doc_from_masterfile(df_toc, row_ini, row_fi, t_start)
+
+                                    if not df_doc_direct.empty:
+                                        t_direct = pd.to_numeric(df_doc_direct["time (min)"], errors="coerce").to_numpy()
+                                        y_direct_raw = pd.to_numeric(df_doc_direct["DOC"], errors="coerce").to_numpy()
+
+                                        base_direct = get_baseline_correction(t_direct, y_direct_raw, method, config, use_end=(method == "BP"))
+                                        y_direct_net = apply_smoothing(y_direct_raw - base_direct)
+                                        y_direct_net[y_direct_net < 0] = 0
+
+                                        nom_doc_direct = os.path.basename(mestre)
+                                        st_doc_direct = "OK"
+                                        matched = True
+                            except Exception as e:
+                                result["errors"].append(f"WARN: Error extraient DOC Direct (NEW) per {mostra}: {e}")
+
+                    # FORMAT ANTIC: Usar master_index
+                    if master_index and not matched:
+                        match = match_uib_to_master(mostra, rep, master_index)
+                        if match:
+                            row = match["row"]
+                            try:
+                                row_ini = int(float(row["Row initial"]))
+                                row_fi = int(float(row["Row Final"]))
+                                df_doc_direct = extract_doc_from_master(df_toc, row_ini, row_fi, row["START"])
+
+                                if not df_doc_direct.empty:
+                                    t_direct = pd.to_numeric(df_doc_direct["time (min)"], errors="coerce").to_numpy()
+                                    y_direct_raw = pd.to_numeric(df_doc_direct["DOC"], errors="coerce").to_numpy()
+
+                                    # Per BP Direct, usar el final del cromatograma per baseline
+                                    base_direct = get_baseline_correction(t_direct, y_direct_raw, method, config, use_end=(method == "BP"))
+                                    y_direct_net = apply_smoothing(y_direct_raw - base_direct)
+                                    y_direct_net[y_direct_net < 0] = 0
+
+                                    nom_doc_direct = os.path.basename(mestre)
+                                    st_doc_direct = "OK"
+                            except Exception as e:
+                                result["errors"].append(f"WARN: Error extraient DOC Direct per {mostra}: {e}")
 
                 # Decidir quin temps i DOC usar per l'anàlisi principal
                 # Si tenim dual, usar el Direct com a principal (és el "oficial")
@@ -1933,7 +2402,9 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
                     # Paràmetres de processament
                     shift_uib=applied_shift_uib,
                     shift_direct=applied_shift_direct,
-                    smoothing_applied=True
+                    smoothing_applied=True,
+                    # Info del MasterFile
+                    master_info=master_info
                 )
 
                 result["files"].append(out_path)
@@ -1941,93 +2412,208 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
 
         else:
             # MODE DIRECT: DOC des d'Excel mestre
-            mestre = trobar_excel_mestre(input_folder)
+            master_info = {}  # Inicialitzar per MODE DIRECT
+            mestre, master_format = trobar_excel_mestre(input_folder)
             if not mestre:
                 result["errors"].append("No s'ha trobat Excel mestre")
                 return result
 
-            df_toc, df_seq = llegir_master_direct(mestre)
+            result["master_format"] = master_format
 
-            needed = ["SAMPLE_DESC", "START", "Row initial", "Row Final"]
-            for col in needed:
-                if col not in df_seq.columns:
-                    result["errors"].append(f"Falta columna: {col}")
+            if master_format == "NEW":
+                # ============================================================
+                # FORMAT NOU: MasterFile amb 4-TOC_CALC
+                # ============================================================
+                master_data = llegir_masterfile_nou(mestre)
+                if "error" in master_data:
+                    result["errors"].append(f"Error llegint MasterFile: {master_data['error']}")
                     return result
 
-            df_seq2 = df_seq.copy()
-            df_seq2 = df_seq2[df_seq2["SAMPLE_DESC"].apply(lambda x: not skip_sample_direct(x))]
-            df_seq2 = df_seq2.dropna(subset=["Row initial", "Row Final"])
+                df_toc = master_data["toc"]
+                df_toc_calc = master_data["toc_calc"]
+                master_info = master_data.get("info", {})  # 0-INFO
 
-            total = len(df_seq2)
-            rep_counter = {}
+                if df_toc is None or df_toc.empty:
+                    result["errors"].append("MasterFile sense dades TOC")
+                    return result
 
-            for i, (_, row) in enumerate(df_seq2.iterrows()):
-                progress = int(100 * (i + 1) / max(total, 1))
-                sample_desc = str(row["SAMPLE_DESC"]).strip()
-                base_name, rep_explicit = split_sample_rep(sample_desc)
-                base_key = normalize_key(base_name)
+                # Si TOC_CALC buit, calcular al vol des de HPLC-SEQ i TOC
+                if df_toc_calc is None or df_toc_calc.empty:
+                    result["errors"].append("INFO: Calculant 4-TOC_CALC al vol")
+                    df_toc_calc = calculate_toc_calc_on_the_fly(master_data)
+                    if df_toc_calc is None or df_toc_calc.empty:
+                        result["errors"].append("No s'ha pogut calcular TOC_CALC")
+                        return result
 
-                if rep_explicit is None:
-                    rep_counter[base_key] = rep_counter.get(base_key, 0) + 1
-                    rep = str(rep_counter[base_key])
-                else:
-                    rep = str(rep_explicit)
+                # Construir rangs de mostres
+                sample_ranges = build_sample_ranges_from_toc_calc(df_toc_calc, df_toc)
 
-                mostra_clean = clean_sample_name(base_name)
+                if not sample_ranges:
+                    result["errors"].append("No s'han pogut extreure mostres de 4-TOC_CALC")
+                    return result
 
-                if progress_callback:
-                    progress_callback(progress, mostra_clean)
+                # Filtrar mostres a processar (excloure controls)
+                samples_to_process = {}
+                for sample_rep, info in sample_ranges.items():
+                    if skip_sample_direct(sample_rep):
+                        continue
+                    samples_to_process[sample_rep] = info
 
-                try:
-                    row_ini = int(float(row["Row initial"]))
-                    row_fi = int(float(row["Row Final"]))
-                except Exception:
-                    continue
+                total = len(samples_to_process)
 
-                df_doc = extract_doc_from_master(df_toc, row_ini, row_fi, row["START"])
-                if df_doc.empty:
-                    continue
+                for i, (sample_rep, info) in enumerate(samples_to_process.items()):
+                    progress = int(100 * (i + 1) / max(total, 1))
 
-                t_doc = pd.to_numeric(df_doc["time (min)"], errors="coerce").to_numpy()
-                y_doc = pd.to_numeric(df_doc["DOC"], errors="coerce").to_numpy()
+                    # Separar mostra i rèplica del Sample_Rep (ex: "FR2606_R1")
+                    base_name, rep = split_sample_rep(sample_rep)
+                    if rep is None:
+                        rep = "1"
 
-                base_arr = get_baseline_correction(t_doc, y_doc, method, config)
-                doc_net = apply_smoothing(y_doc - base_arr)
-                doc_net[doc_net < 0] = 0
+                    mostra_clean = clean_sample_name(base_name)
 
-                # Buscar DAD
-                dad_path, st_dad = choose_best_candidate(base_name, rep, dad_pool, used_dad_files)
-                df_dad = pd.DataFrame()
-                nom_dad = "NO_DATA"
+                    if progress_callback:
+                        progress_callback(progress, mostra_clean)
 
-                if dad_path:
-                    used_dad_files.add(dad_path)
-                    nom_dad = os.path.basename(dad_path)
-                    df_dad_raw, st_read = llegir_dad_export3d(dad_path)
-                    if st_read.startswith("OK") and not df_dad_raw.empty:
-                        df_dad = process_dad(df_dad_raw, config)
-                        st_dad = "OK" if not df_dad.empty else "NO_DATA"
+                    row_ini = info.get("row_start")
+                    row_fi = info.get("row_end")
+                    t_start = info.get("t_start")
 
-                # Detectar pic
-                peak_info = detect_main_peak(t_doc, doc_net, config["peak_min_prominence_pct"])
+                    if row_ini is None or row_fi is None:
+                        continue
 
-                # Calcular àrees
-                sample_analysis = analyze_sample_areas(t_doc, doc_net, df_dad, peak_info, config)
+                    df_doc = extract_doc_from_masterfile(df_toc, row_ini, row_fi, t_start)
+                    if df_doc.empty:
+                        continue
 
-                # Guardar Excel
-                out_name = f"{mostra_clean}_{seq_out}_R{rep}.xlsx"
-                out_path = os.path.join(path_out, out_name)
+                    t_doc = pd.to_numeric(df_doc["time (min)"], errors="coerce").to_numpy()
+                    y_doc = pd.to_numeric(df_doc["DOC"], errors="coerce").to_numpy()
 
-                write_consolidated_excel(
-                    out_path, mostra_clean, rep, seq_out, date_master, method, "DIRECT",
-                    os.path.basename(mestre), nom_dad, "OK", st_dad, t_doc, y_doc, doc_net, base_arr,
-                    df_dad, peak_info, sample_analysis,
-                    master_file=mestre, row_start=row_ini, row_end=row_fi,
-                    smoothing_applied=True
-                )
+                    base_arr = get_baseline_correction(t_doc, y_doc, method, config)
+                    doc_net = apply_smoothing(y_doc - base_arr)
+                    doc_net[doc_net < 0] = 0
 
-                result["files"].append(out_path)
-                processed_count += 1
+                    # Buscar DAD
+                    dad_path, st_dad = choose_best_candidate(base_name, rep, dad_pool, used_dad_files)
+                    df_dad = pd.DataFrame()
+                    nom_dad = "NO_DATA"
+
+                    if dad_path:
+                        used_dad_files.add(dad_path)
+                        nom_dad = os.path.basename(dad_path)
+                        df_dad_raw, st_read = llegir_dad_export3d(dad_path)
+                        if st_read.startswith("OK") and not df_dad_raw.empty:
+                            df_dad = process_dad(df_dad_raw, config)
+                            st_dad = "OK" if not df_dad.empty else "NO_DATA"
+
+                    # Detectar pic
+                    peak_info = detect_main_peak(t_doc, doc_net, config["peak_min_prominence_pct"])
+
+                    # Calcular àrees
+                    sample_analysis = analyze_sample_areas(t_doc, doc_net, df_dad, peak_info, config)
+
+                    # Guardar Excel
+                    out_name = f"{mostra_clean}_{seq_out}_R{rep}.xlsx"
+                    out_path = os.path.join(path_out, out_name)
+
+                    write_consolidated_excel(
+                        out_path, mostra_clean, rep, seq_out, date_master, method, "DIRECT",
+                        os.path.basename(mestre), nom_dad, "OK", st_dad, t_doc, y_doc, doc_net, base_arr,
+                        df_dad, peak_info, sample_analysis,
+                        master_file=mestre, row_start=row_ini, row_end=row_fi,
+                        smoothing_applied=True,
+                        master_info=master_info
+                    )
+
+                    result["files"].append(out_path)
+                    processed_count += 1
+
+            else:
+                # ============================================================
+                # FORMAT ANTIC: Mestre amb 4-SEQ_DATA (master_info buit)
+                # ============================================================
+                df_toc, df_seq = llegir_master_direct(mestre)
+
+                needed = ["SAMPLE_DESC", "START", "Row initial", "Row Final"]
+                for col in needed:
+                    if col not in df_seq.columns:
+                        result["errors"].append(f"Falta columna: {col}")
+                        return result
+
+                df_seq2 = df_seq.copy()
+                df_seq2 = df_seq2[df_seq2["SAMPLE_DESC"].apply(lambda x: not skip_sample_direct(x))]
+                df_seq2 = df_seq2.dropna(subset=["Row initial", "Row Final"])
+
+                total = len(df_seq2)
+                rep_counter = {}
+
+                for i, (_, row) in enumerate(df_seq2.iterrows()):
+                    progress = int(100 * (i + 1) / max(total, 1))
+                    sample_desc = str(row["SAMPLE_DESC"]).strip()
+                    base_name, rep_explicit = split_sample_rep(sample_desc)
+                    base_key = normalize_key(base_name)
+
+                    if rep_explicit is None:
+                        rep_counter[base_key] = rep_counter.get(base_key, 0) + 1
+                        rep = str(rep_counter[base_key])
+                    else:
+                        rep = str(rep_explicit)
+
+                    mostra_clean = clean_sample_name(base_name)
+
+                    if progress_callback:
+                        progress_callback(progress, mostra_clean)
+
+                    try:
+                        row_ini = int(float(row["Row initial"]))
+                        row_fi = int(float(row["Row Final"]))
+                    except Exception:
+                        continue
+
+                    df_doc = extract_doc_from_master(df_toc, row_ini, row_fi, row["START"])
+                    if df_doc.empty:
+                        continue
+
+                    t_doc = pd.to_numeric(df_doc["time (min)"], errors="coerce").to_numpy()
+                    y_doc = pd.to_numeric(df_doc["DOC"], errors="coerce").to_numpy()
+
+                    base_arr = get_baseline_correction(t_doc, y_doc, method, config)
+                    doc_net = apply_smoothing(y_doc - base_arr)
+                    doc_net[doc_net < 0] = 0
+
+                    # Buscar DAD
+                    dad_path, st_dad = choose_best_candidate(base_name, rep, dad_pool, used_dad_files)
+                    df_dad = pd.DataFrame()
+                    nom_dad = "NO_DATA"
+
+                    if dad_path:
+                        used_dad_files.add(dad_path)
+                        nom_dad = os.path.basename(dad_path)
+                        df_dad_raw, st_read = llegir_dad_export3d(dad_path)
+                        if st_read.startswith("OK") and not df_dad_raw.empty:
+                            df_dad = process_dad(df_dad_raw, config)
+                            st_dad = "OK" if not df_dad.empty else "NO_DATA"
+
+                    # Detectar pic
+                    peak_info = detect_main_peak(t_doc, doc_net, config["peak_min_prominence_pct"])
+
+                    # Calcular àrees
+                    sample_analysis = analyze_sample_areas(t_doc, doc_net, df_dad, peak_info, config)
+
+                    # Guardar Excel
+                    out_name = f"{mostra_clean}_{seq_out}_R{rep}.xlsx"
+                    out_path = os.path.join(path_out, out_name)
+
+                    write_consolidated_excel(
+                        out_path, mostra_clean, rep, seq_out, date_master, method, "DIRECT",
+                        os.path.basename(mestre), nom_dad, "OK", st_dad, t_doc, y_doc, doc_net, base_arr,
+                        df_dad, peak_info, sample_analysis,
+                        master_file=mestre, row_start=row_ini, row_end=row_fi,
+                        smoothing_applied=True,
+                        master_info={}  # Format antic no té 0-INFO
+                    )
+
+                    result["files"].append(out_path)
+                    processed_count += 1
 
         result["processed_count"] = processed_count
         result["success"] = processed_count > 0
