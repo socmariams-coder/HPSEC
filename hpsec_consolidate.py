@@ -11,6 +11,9 @@ Conté tota la lògica per:
 Usat per HPSEC_Suite.py i batch_process.py
 """
 
+__version__ = "1.1.0"
+__version_date__ = "2026-01-26"
+
 import os
 import re
 import glob
@@ -473,6 +476,8 @@ DEFAULT_CONSOLIDATE_CONFIG = {
     "target_wavelengths": [220, 252, 254, 272, 290, 362],
     "dad_subsample": 5,
     "peak_min_prominence_pct": 5.0,
+    # Límit temporal màxim per cromatogrames (truncar dades posteriors)
+    "max_time_min": 70.0,
     # Fraccions de temps per integració parcial (Column mode)
     "time_fractions": {
         "BioP": [0, 18],
@@ -672,6 +677,31 @@ def format_timeout_status(timeout_info):
 # =============================================================================
 # FUNCIONS UTILITAT
 # =============================================================================
+def truncate_chromatogram(t, y, max_time_min=None):
+    """
+    Trunca cromatograma a un temps màxim.
+
+    Args:
+        t: Array de temps en minuts
+        y: Array de senyal (o llista d'arrays)
+        max_time_min: Temps màxim (defecte: 70 min)
+
+    Returns:
+        t_trunc, y_trunc (o llista de y_trunc si y és llista)
+    """
+    if max_time_min is None:
+        max_time_min = DEFAULT_CONSOLIDATE_CONFIG.get("max_time_min", 70.0)
+
+    t = np.asarray(t)
+    mask = t <= max_time_min
+
+    if isinstance(y, (list, tuple)):
+        return t[mask], [np.asarray(yi)[mask] if yi is not None else None for yi in y]
+    else:
+        y = np.asarray(y)
+        return t[mask], y[mask]
+
+
 def normalize_key(s):
     """Normalitza string per matching."""
     return re.sub(r"[^A-Za-z0-9]+", "", str(s or "")).upper()
@@ -2303,6 +2333,23 @@ def write_consolidated_excel(out_path, mostra, rep, seq_out, date_master,
     master_info = master_info or {}
     is_dual = y_doc_uib is not None and len(y_doc_uib) > 0
 
+    # Truncar cromatogrames a 70 min per consistència
+    max_time = DEFAULT_CONSOLIDATE_CONFIG.get("max_time_min", 70.0)
+    if t_doc is not None and len(t_doc) > 0:
+        mask = np.asarray(t_doc) <= max_time
+        t_doc = np.asarray(t_doc)[mask]
+        y_doc_raw = np.asarray(y_doc_raw)[mask] if y_doc_raw is not None else None
+        y_doc_net = np.asarray(y_doc_net)[mask] if y_doc_net is not None else None
+        baseline = np.asarray(baseline)[mask] if baseline is not None else None
+        if is_dual:
+            y_doc_uib = np.asarray(y_doc_uib)[mask] if y_doc_uib is not None else None
+            y_doc_uib_raw = np.asarray(y_doc_uib_raw)[mask] if y_doc_uib_raw is not None else None
+            baseline_uib = np.asarray(baseline_uib)[mask] if baseline_uib is not None else None
+
+    # Truncar DAD també
+    if df_dad is not None and not df_dad.empty and "time (min)" in df_dad.columns:
+        df_dad = df_dad[df_dad["time (min)"] <= max_time].copy()
+
     # Calcular valors de baseline per documentar
     baseline_direct_val = float(np.mean(baseline)) if baseline is not None and len(baseline) > 0 else 0.0
     baseline_uib_val = float(np.mean(baseline_uib)) if baseline_uib is not None and len(baseline_uib) > 0 else 0.0
@@ -2320,6 +2367,9 @@ def write_consolidated_excel(out_path, mostra, rep, seq_out, date_master,
         uib_range = str(uib_range)
 
     id_rows = [
+        ("Script_Version", f"hpsec_consolidate v{__version__}"),
+        ("Consolidation_Date", datetime.now().strftime("%Y-%m-%d %H:%M")),
+        ("---", "---"),
         ("Sample", mostra),
         ("Replica", rep),
         ("SEQ", seq_out),

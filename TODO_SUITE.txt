@@ -161,22 +161,20 @@ PENDENT:
 
       - NOTA: 271_SEQ_BP té KHP anomal (4000+ mAU), usar SEQ propera per alineació
 
-  [ ] Estandarditzar límits temporals cromatogrames
+  [x] Estandarditzar límits temporals cromatogrames (IMPLEMENTAT 2026-01-26)
       - Truncar tots els cromatogrames a 70 min màxim
-      - Ara alguns arriben a 75 min → àrea "total" no coincideix amb suma fraccions
-      - Afecta: hpsec_consolidate.py (lectura DOC)
+      - Configurable via DEFAULT_CONSOLIDATE_CONFIG["max_time_min"]
+      - S'aplica a DOC i DAD a write_consolidated_excel()
 
-  [ ] Afegir versionat als fitxers consolidats
-      - Incloure versió script a fulla ID: "Script_Version: hpsec_consolidate v1.0"
+  [x] Afegir versionat als fitxers consolidats (IMPLEMENTAT 2026-01-26)
+      - Script_Version: hpsec_consolidate v1.1.0
+      - Consolidation_Date: timestamp de quan es va generar
       - Permet saber amb quina versió es van processar les dades
-      - Facilita reprocessament selectiu quan hi ha canvis
 
-  [ ] Sistema de versions pels scripts
-      - Definir __version__ a cada mòdul principal
-      - Format: MAJOR.MINOR (ex: 1.0, 1.1, 2.0)
-      - MAJOR: canvis incompatibles o estructura nova
-      - MINOR: millores, correccions
-      - Començar amb v1.0 per hpsec_consolidate.py
+  [x] Sistema de versions pels scripts (IMPLEMENTAT 2026-01-26)
+      - __version__ = "1.1.0" a hpsec_consolidate.py
+      - __version_date__ = "2026-01-26"
+      - Format: MAJOR.MINOR.PATCH
 
   [ ] Documentar deriva DAD (QC opcional)
       - Càlcul: mitjana(t>60) - mitjana(t<10) per cada wavelength
