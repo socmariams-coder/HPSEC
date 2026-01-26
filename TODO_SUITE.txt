@@ -114,41 +114,51 @@ PENDENT:
         - PROVES/uib_sensitivity/injection_volume_comparison.png
         - PROVES/uib_sensitivity/injection_volume_metrics.csv
 
-  [ ] REFACTORITZAR DETECCIÓ ANOMALIES (PLAN_REFACTOR_DETECCIO.md):
+  [x] REFACTORITZAR DETECCIÓ ANOMALIES (COMPLETAT 2026-01-26):
       Objectiu: Unificar tota la lògica de detecció en hpsec_core.py
 
-      PROBLEMA ACTUAL:
-        - detect_batman() duplicat a hpsec_core.py i hpsec_calibrate.py
-        - detect_timeout() duplicat a hpsec_consolidate.py i hpsec_calibrate.py
-        - Versions diferents amb criteris inconsistents
-        - Difícil de mantenir i testejar
-
-      ARQUITECTURA OBJECTIU:
+      FASE 1-4 COMPLETADES:
         hpsec_core.py (SINGLE SOURCE OF TRUTH):
-          ├── detect_timeout()        ← MOURE des de consolidate (millor mètode: dt intervals)
-          ├── detect_batman()         ← Ja existeix (mantenir)
-          ├── detect_peak_anomaly()   ← Ja existeix (híbrid)
-          ├── detect_main_peak()      ← MOURE des de calibrate
-          ├── detect_all_peaks()      ← MOURE des de calibrate
-          └── integrate_chromatogram() ← NOU: mode='full'|'main_peak'
+          ├── detect_timeout()         ← MOGUT des de consolidate
+          ├── detect_batman()          ← Ja existia (mantingut)
+          ├── detect_peak_anomaly()    ← Ja existia (híbrid batman+smoothness)
+          ├── detect_main_peak()       ← MOGUT des de calibrate
+          ├── detect_all_peaks()       ← MOGUT des de calibrate
+          ├── integrate_chromatogram() ← NOU: mode='full'|'main_peak'
+          ├── format_timeout_status()  ← MOGUT des de consolidate
+          └── TIMEOUT_CONFIG           ← MOGUT des de consolidate
 
         hpsec_calibrate.py:
-          └── validate_khp_quality()  ← NOU: validació específica KHP
+          └── validate_khp_quality()   ← NOU: validació específica KHP
               - Multi-pic (>2 pics significatius)
-              - Outlier estadístic vs històric
-              - Integració KHP Column: mode='main_peak'
+              - Timeout en zona del pic
+              - Batman/irregular
+              - Simetria acceptable (0.5-2.0)
+              - SNR > 50
 
-        hpsec_consolidate.py, DOCtor_BP.py, DOCtor_C.py:
-          └── import detect_* from hpsec_core
+        hpsec_consolidate.py:
+          └── import detect_timeout, format_timeout_status, TIMEOUT_CONFIG from hpsec_core
+              (-185 línies eliminades)
 
-      FASES EXECUCIÓ:
-        Fase 1: Preparació (backup, git branch)
-        Fase 2: Migració funcions a hpsec_core.py
-        Fase 3: Actualitzar hpsec_consolidate.py (eliminar + imports)
-        Fase 4: Actualitzar hpsec_calibrate.py (eliminar + imports + validació KHP)
-        Fase 5: Actualitzar DOCtor_BP.py i DOCtor_C.py
-        Fase 6: Testing exhaustiu
-        Fase 7: Documentació
+      FASE 5 PARCIALMENT COMPLETADA:
+        [x] DOCtor_C.py v1.1 - AMORPHOUS ELIMINAT (2026-01-26)
+            Detecció amorphous era precària i generava molts FP.
+            Timeout via dt intervals és més robust.
+
+            Eliminat (~685 línies):
+              - detect_amorphous() (~370 línies)
+              - detect_amorphous_on_peak() (~70 línies)
+              - validate_amorphous_with_replicates() (~190 línies)
+              - calc_smoothness() (~55 línies)
+              - Tots els camps is_amorphous, amorphous_info, etc.
+              - Visualització i estadístiques amorphous
+
+            Detecció ara basada en:
+              - Timeout via dt intervals (primari, més robust)
+              - Batman (pic-vall-pic al cim)
+              - Irregular (smoothness < 18%)
+
+        [ ] DOCtor_BP.py - Pendent actualitzar imports
 
       DETALL COMPLET: veure PLAN_REFACTOR_DETECCIO.md
 
@@ -547,6 +557,13 @@ REGISTRE DE SCRIPTS
 
 Format: [DATA HORA] script.py - Descripció breu
 
+[2026-01-26 23:30] DOCtor_C.py v1.1 - AMORPHOUS ELIMINAT
+    Eliminada detecció amorphous (precària, molts FP).
+    Eliminat: detect_amorphous(), detect_amorphous_on_peak(),
+              validate_amorphous_with_replicates(), calc_smoothness()
+    Total: ~685 línies eliminades (~757 línies netes)
+    Detecció ara: timeout (dt intervals), batman, irregular
+
 [2026-01-26 22:00] hpsec_consolidate.py - TIMEOUT DETECTION
     Afegida detecció automàtica de timeouts TOC per cadència dades.
     Noves funcions: detect_doc_timeouts(), format_timeout_status()
@@ -589,15 +606,54 @@ Format: [DATA HORA] script.py - Descripció breu
 
 Revisio de Doctor_C
 
-EX1L2503_258 R1 Amorphous OK R2 Amorphous per raó incorrecte. Ho es per la base a la pujada, no pel màxim del pic.
+[RESOLT 2026-01-26] EX1L2503_258 R1 Amorphous OK R2 Amorphous per raó incorrecte.
+  - Detecció amorphous era precària i generava molts falsos positius
+  - SOLUCIÓ: Eliminada detecció amorphous a DOCtor_C v1.1
+  - Ara s'utilitza només timeout via dt intervals (més robust)
 
 ================================================================================
 CHANGELOG / HISTORIAL D'ACCIONS
 ================================================================================
 
-2026-01-26 - ANALISI IMPACTE TIMEOUT TOC (COMPLETAT)
+2026-01-26 - ELIMINACIÓ DETECCIÓ AMORPHOUS (DOCtor_C v1.1)
 --------------------------------------------------------------------------------
 [DARRERA ACCIO]
+
+Objectiu: Simplificar DOCtor_C eliminant detecció amorphous precària.
+
+Problema:
+  - detect_amorphous() generava molts falsos positius
+  - Algoritme complex (segments lineals + angles) massa sensible
+  - validate_amorphous_with_replicates() afegia complexitat sense benefici
+  - Timeout via dt intervals és molt més robust i fiable
+
+Accions realitzades:
+  1. Creat branch refactor/remove-amorphous-column
+  2. Eliminades funcions (~685 línies):
+     - detect_amorphous() - ~370 línies
+     - detect_amorphous_on_peak() - ~70 línies
+     - validate_amorphous_with_replicates() - ~190 línies
+     - calc_smoothness() - ~55 línies
+  3. Eliminats camps: is_amorphous, amorphous_info, amorphous_angles, n_amorphous
+  4. Eliminada visualització AMORPHOUS (text box, labels)
+  5. Simplificat has_issues: ara is_anomaly OR has_stop OR mono_total < llindar
+  6. Actualitzat docstring a v1.1 amb changelog
+  7. Commit i merge a main
+
+Resultat:
+  - Net: 789 línies eliminades, 32 insercions
+  - DOCtor_C.py ara ~1900 línies (abans ~2650)
+  - Detecció més robusta i menys falsos positius
+
+Detecció ara basada en:
+  - Timeout via dt intervals (primari)
+  - Batman (pic-vall-pic al cim)
+  - Irregular (smoothness < 18% via detect_peak_anomaly)
+
+--------------------------------------------------------------------------------
+
+2026-01-26 - ANALISI IMPACTE TIMEOUT TOC (COMPLETAT)
+--------------------------------------------------------------------------------
 
 Objectiu: Quantificar l'impacte real dels timeouts en la qualitat de les dades.
 
