@@ -140,7 +140,7 @@ PENDENT:
           └── import detect_timeout, format_timeout_status, TIMEOUT_CONFIG from hpsec_core
               (-185 línies eliminades)
 
-      FASE 5 PARCIALMENT COMPLETADA:
+      FASE 5 COMPLETADA:
         [x] DOCtor_C.py v1.1 - AMORPHOUS ELIMINAT (2026-01-26)
             Detecció amorphous era precària i generava molts FP.
             Timeout via dt intervals és més robust.
@@ -153,12 +153,22 @@ PENDENT:
               - Tots els camps is_amorphous, amorphous_info, etc.
               - Visualització i estadístiques amorphous
 
-            Detecció ara basada en:
-              - Timeout via dt intervals (primari, més robust)
-              - Batman (pic-vall-pic al cim)
-              - Irregular (smoothness < 18%)
+        [x] DOCtor_C.py v1.2 - SIMPLIFICACIÓ DETECCIÓ (2026-01-26)
+            Eliminades deteccions que no funcionen bé.
 
-        [ ] DOCtor_BP.py - Pendent actualitzar imports
+            Eliminat (~325 línies addicionals):
+              - detect_timeout() local mesetes (~145 línies)
+              - detect_ears() (~95 línies)
+              - calc_monotonicity() (~50 línies)
+              - detect_peak_problem() (~35 línies)
+              - Camps: has_stop, stop_*, mono_*, ears
+
+            Detecció final basada en:
+              - Batman (via detect_peak_anomaly)
+              - IRR (smoothness < 18%)
+              - Timeout (via hpsec_core.detect_timeout - dt intervals)
+
+        [ ] DOCtor_BP.py - Pendent actualitzar imports (baixa prioritat)
 
       DETALL COMPLET: veure PLAN_REFACTOR_DETECCIO.md
 
@@ -557,6 +567,15 @@ REGISTRE DE SCRIPTS
 
 Format: [DATA HORA] script.py - Descripció breu
 
+[2026-01-26 xx:xx] DOCtor_C.py v1.2 - SIMPLIFICACIÓ DETECCIÓ
+    Eliminades deteccions que no funcionen bé:
+    - detect_timeout() local (mesetes) -> ara usa hpsec_core.detect_timeout (dt intervals)
+    - detect_ears() (orelletes) - ~95 línies
+    - calc_monotonicity() - ~50 línies
+    - detect_peak_problem() (Regla D) - ~35 línies
+    Simplificat select_best_replica(): només Batman + Alçada
+    Detecció final: Batman + IRR + Timeout (dt intervals hpsec_core)
+
 [2026-01-26 23:30] DOCtor_C.py v1.1 - AMORPHOUS ELIMINAT
     Eliminada detecció amorphous (precària, molts FP).
     Eliminat: detect_amorphous(), detect_amorphous_on_peak(),
@@ -615,9 +634,41 @@ Revisio de Doctor_C
 CHANGELOG / HISTORIAL D'ACCIONS
 ================================================================================
 
-2026-01-26 - ELIMINACIÓ DETECCIÓ AMORPHOUS (DOCtor_C v1.1)
+2026-01-26 - SIMPLIFICACIÓ DETECCIÓ (DOCtor_C v1.2)
 --------------------------------------------------------------------------------
 [DARRERA ACCIO]
+
+Objectiu: Mantenir només les deteccions que funcionen bé.
+
+Problema:
+  - detect_timeout() local (mesetes) era molt sensible a falsos positius
+  - detect_ears() no funcionava bé en la pràctica
+  - calc_monotonicity() i detect_peak_problem() (Regla D) no aporten valor
+  - El mètode dt intervals de hpsec_core és molt més robust per timeouts
+
+Accions realitzades:
+  1. Creat branch refactor/simplify-doctorc-detection
+  2. Eliminades funcions:
+     - detect_timeout() local (mesetes) - ~145 línies
+     - detect_ears() - ~95 línies
+     - calc_monotonicity() - ~50 línies
+     - detect_peak_problem() (Regla D) - ~35 línies
+  3. Eliminats camps: has_stop, stop_cv, stop_info, mono_*, ears
+  4. Actualitzat detect_timeout a usar hpsec_core.detect_timeout (dt intervals)
+  5. Simplificat select_best_replica(): només Batman + Alçada
+  6. Actualitzat docstring a v1.2 amb changelog
+
+Resultat:
+  - DOCtor_C.py ara ~1550 línies (abans ~1900 v1.1)
+  - Detecció molt més simple i robusta:
+    * Batman (via detect_peak_anomaly)
+    * IRR (smoothness < 18% via detect_peak_anomaly)
+    * Timeout (via hpsec_core.detect_timeout - dt intervals)
+
+--------------------------------------------------------------------------------
+
+2026-01-26 - ELIMINACIÓ DETECCIÓ AMORPHOUS (DOCtor_C v1.1)
+--------------------------------------------------------------------------------
 
 Objectiu: Simplificar DOCtor_C eliminant detecció amorphous precària.
 

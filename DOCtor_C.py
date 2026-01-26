@@ -1,24 +1,26 @@
 # -*- coding: utf-8 -*-
 """
-DOCtor_C v1.1 - Detecció d'Anomalies en Cromatogrames HPSEC (COLUMN)
+DOCtor_C v1.2 - Detecció d'Anomalies en Cromatogrames HPSEC (COLUMN)
 ====================================================================
 
 Part de la SUITE HPSEC.
 Per a anàlisi de BYPASS utilitzar DOCtor_BP.py
 
 Detecció basada en:
-- PEARSON entre rèpliques
-- Batman estricte (pic-vall-pic al cim)
-- IRR (irregularitats, smoothness < 18%)
-- TimeOUT/STOP (saturació/mesetes) - MÈTODE PRINCIPAL via dt intervals
-- Orelletes (pics secundaris propers)
+- BATMAN estricte (pic-vall-pic al cim) via detect_peak_anomaly()
+- IRR (irregularitats, smoothness < 18%) via detect_peak_anomaly()
+- TIMEOUT via dt intervals (hpsec_core.detect_timeout)
 
-v1.1: Eliminada detecció AMORPHOUS (precària, molts FP)
-      - detect_amorphous() eliminada (~370 línies)
-      - detect_amorphous_on_peak() eliminada (~70 línies)
-      - validate_amorphous_with_replicates() eliminada (~190 línies)
-      - calc_smoothness() eliminada (~55 línies)
-      - Total: ~685 línies eliminades
+v1.2: Simplificació - només Batman + IRR + Timeout (dt intervals)
+      Eliminat:
+      - detect_timeout() local (mesetes) - ~145 línies
+      - detect_ears() - ~95 línies
+      - calc_monotonicity() - ~50 línies
+      - detect_peak_problem() - ~35 línies
+      - select_best_replica() simplificat
+      Total v1.1+v1.2: ~1000+ línies eliminades
+
+v1.1: Eliminada detecció AMORPHOUS (~685 línies)
 
 PDF compacte: múltiples mostres per pàgina + taula resum.
 """
@@ -42,6 +44,7 @@ from hpsec_utils import baseline_stats
 from hpsec_core import (
     bigaussian, fit_bigaussian, detect_batman as detect_batman_top,
     detect_peak_anomaly, calc_top_smoothness,
+    detect_timeout, TIMEOUT_CONFIG,  # Timeout via dt intervals (el mètode bo)
     THRESH_R2_VALID, THRESH_R2_CHECK, ASYM_MIN, ASYM_MAX
 )
 
@@ -68,44 +71,17 @@ BATMAN_MIN_PROMINENCE = 0.05
 BATMAN_MIN_HEIGHT_RANGE_PCT = 15
 BATMAN_MIN_SIGMA = 3.0
 
-# Orelletes - pics secundaris molt propers a un pic més alt
-EAR_MAX_DISTANCE_MIN = 0.5      # Distància màxima al pic més alt (minuts)
-EAR_MIN_HEIGHT_FRAC = 0.10      # Només pics per sobre del 10% de l'altura
-EAR_MIN_PROMINENCE_PCT = 2.0    # Prominència mínima: 2% del pic principal
-
 # =============================================================================
-# REGLA ASIMETRIA - Detecció automàtica de pics problemàtics (Mode E)
-# =============================================================================
-# Regla: ((|As66 - As33| > 0.40) OR (As66 > 1.20)) AND (Pearson <= 0.997)
-THRESH_PEARSON = 0.997          # Pearson <= 0.997 = necessari per marcar
-THRESH_AS_DIVERGENCE = 0.40     # |As66 - As33| > 0.40 = divergència alta
-THRESH_AS66 = 1.20              # As66 > 1.20 = asimetria alta
-
-# =============================================================================
-# ZONA HÚMICS - Limitar Batman i Orelletes a aquesta franja
+# ZONA HÚMICS - Limitar Batman a aquesta franja
 # =============================================================================
 HUMIC_ZONE_ENABLED = True       # Activar filtre de zona
 HUMIC_ZONE_START = 18.0         # Inici zona húmics (minuts)
 HUMIC_ZONE_END = 23.0           # Final zona húmics (minuts)
 
-# =============================================================================
-# TIMEOUT (SATURACIÓ) - Detecció de mesetes/plateaus
-# =============================================================================
-TIMEOUT_ENABLED = True          # Activar detecció TimeOUT
-TIMEOUT_T_START = 15.0          # Inici finestra anàlisi (min)
-TIMEOUT_T_END = 35.0            # Final finestra anàlisi (min)
-TIMEOUT_FINE_RES = 0.1          # Resolució chunks (min)
-TIMEOUT_MIN_DUR = 0.8           # Duració mínima meseta (min)
-TIMEOUT_MAX_DUR = 3.5           # Duració màxima meseta (min)
-TIMEOUT_PERCENTILE = 30         # Percentil per filtre inicial
-TIMEOUT_EDGE_WINDOW = 0.3       # Finestra per calcular pendents bordes (min)
-TIMEOUT_MIN_CONTRAST = 3.0      # Ratio mínim bord/meseta
-TIMEOUT_MIN_EDGE_SLOPE = 6.0    # Pendent mínim als bordes
-TIMEOUT_MIN_LEVEL_FACTOR = 1.30 # Senyal > baseline * 1.30
-TIMEOUT_MAX_CV = 0.1            # CV màxim (%) - només parades reals (CV < 0.1%)
-
-# NOTA: Detecció AMORPHOUS eliminada (v1.1) - era precària i generava molts FP
-# Ara s'utilitza només detecció per timeout (dt intervals) que és més robusta
+# NOTA v1.2: Eliminats paràmetres EAR_*, TIMEOUT_* (mesetes), THRESH_AS_*
+# - Orelletes (detect_ears) eliminada
+# - Timeout via mesetes eliminat - ara usa dt intervals de hpsec_core
+# - Regla D (detect_peak_problem) eliminada
 
 
 # =============================================================================
@@ -286,130 +262,28 @@ def calc_pearson_replicates(t1, y1, t2, y2, window=None):
 # =============================================================================
 MAX_PEAKS_TO_ANALYZE = 5  # Analitzar fins a 5 pics principals
 
-# Altures per calcular As (factor asimetria)
-AS_HEIGHTS = [33, 66]  # Percentatges de l'altura del pic
-
-# Monotonia - % mínim de punts que han de ser monòtons
-MONOTONIC_MIN_PCT = 85.0  # 85% dels punts han de ser monòtons
-
-
-def calc_monotonicity(y, left_idx, peak_idx, right_idx, noise_threshold=0.0):
-    """
-    Calcula el % de monotonia a cada costat del pic, ajustat per soroll.
-
-    - Costat esquerre: hauria de ser monòton creixent (y[i+1] >= y[i])
-    - Costat dret: hauria de ser monòton decreixent (y[i+1] <= y[i])
-    - Només es compta com a violació si supera el llindar de soroll
-
-    Args:
-        y: senyal
-        left_idx, peak_idx, right_idx: índexs del pic
-        noise_threshold: només violacions > aquest valor compten (típic: 2*baseline_noise)
-
-    Returns:
-        tuple: (mono_left_pct, mono_right_pct, mono_total_pct)
-        - 100% = perfectament monòton
-        - <85% = possibles problemes (orelletes, etc.)
-    """
-    # Costat esquerre (ha de créixer)
-    left_segment = y[left_idx:peak_idx+1]
-    if len(left_segment) > 1:
-        diffs_left = np.diff(left_segment)
-        # Violació: decreix més que el soroll (diff < -noise_threshold)
-        n_ok = np.sum(diffs_left >= -noise_threshold)
-        mono_left_pct = 100.0 * n_ok / len(diffs_left)
-    else:
-        mono_left_pct = 100.0
-
-    # Costat dret (ha de decréixer)
-    right_segment = y[peak_idx:right_idx+1]
-    if len(right_segment) > 1:
-        diffs_right = np.diff(right_segment)
-        # Violació: creix més que el soroll (diff > noise_threshold)
-        n_ok = np.sum(diffs_right <= noise_threshold)
-        mono_right_pct = 100.0 * n_ok / len(diffs_right)
-    else:
-        mono_right_pct = 100.0
-
-    # Total ponderat per nombre de punts
-    n_left = len(left_segment) - 1
-    n_right = len(right_segment) - 1
-    total_points = n_left + n_right
-
-    if total_points > 0:
-        mono_total_pct = (n_left * mono_left_pct + n_right * mono_right_pct) / total_points
-    else:
-        mono_total_pct = 100.0
-
-    return mono_left_pct, mono_right_pct, mono_total_pct
-
-
-# NOTA: calc_smoothness() eliminada (v1.1) - no s'utilitza després de treure amorphous
-
-
-def detect_peak_problem(as_33, as_66, as_divergence=None, pearson=1.0):
-    """
-    Detecta si un pic és problemàtic usant asimetria i Pearson.
-
-    Regla: ((|As66 - As33| > 0.40) OR (As66 > 1.20)) AND (Pearson <= 0.997)
-
-    Un pic és problemàtic si:
-    1. Divergència alta (|As66-As33| > 0.40) O As66 alt (> 1.20)
-    2. I les rèpliques no correlacionen bé (Pearson ≤ 0.997)
-
-    Returns:
-        tuple: (is_problem, reason)
-    """
-    if as_divergence is None:
-        as_divergence = abs(as_66 - as_33)
-
-    # Primer: Pearson ha de ser baix (<=0.997)
-    if pearson > THRESH_PEARSON:
-        return False, ""  # Rèpliques correlacionen bé, no marcar
-
-    # Després: Δ alta O As66 alt
-    crit_div = as_divergence > THRESH_AS_DIVERGENCE
-    crit_as66 = as_66 > THRESH_AS66
-
-    if crit_div or crit_as66:
-        reasons = []
-        if crit_div:
-            reasons.append(f"D={as_divergence:.2f}")
-        if crit_as66:
-            reasons.append(f"As66={as_66:.2f}")
-        reasons.append(f"Pearson={pearson:.4f}")
-        return True, " + ".join(reasons)
-
-    return False, ""
+# NOTA v1.2: Eliminats:
+# - MONOTONIC_MIN_PCT, calc_monotonicity() - no funciona bé
+# - detect_peak_problem() (Regla D) - no funciona bé
+# - calc_smoothness() eliminada (v1.1)
+# - select_best_replica() simplificada
 
 
 def select_best_replica(rep1, rep2):
     """
     Selecciona la millor rèplica basant-se en:
-    1. Batman prioritari - si una té Batman, l'altra és millor
-    2. Problemes detectats (Regla D)
-    3. Alçada (la de més alçada és millor)
-    4. Soroll (menys soroll és millor)
+    1. Batman - si una té Batman, l'altra és millor
+    2. Alçada - la de més alçada és millor
+
+    v1.2: Simplificat - eliminada Regla D (is_problem)
 
     Args:
-        rep1, rep2: diccionaris amb info de rèplica (peaks, batman, baseline_noise, etc.)
+        rep1, rep2: diccionaris amb info de rèplica
 
     Returns:
-        dict: {
-            "best": "R1" o "R2",
-            "reason": explicació,
-            "r1_dominated": bool,  # R1 té problemes
-            "r2_dominated": bool,  # R2 té problemes
-            "warning": str o None
-        }
+        dict: {"best": "R1"/"R2", "reason": str, "warning": str o None}
     """
-    result = {
-        "best": None,
-        "reason": "",
-        "r1_dominated": False,
-        "r2_dominated": False,
-        "warning": None
-    }
+    result = {"best": None, "reason": "", "warning": None}
 
     # Si només hi ha una rèplica
     if rep1 is None and rep2 is None:
@@ -419,13 +293,8 @@ def select_best_replica(rep1, rep2):
     if rep1 is None:
         result["best"] = "R2"
         result["reason"] = "Única rèplica disponible"
-        # Comprovar si té problemes
         if rep2.get("batman"):
             result["warning"] = "WARNING: Única rèplica amb BATMAN"
-            result["r2_dominated"] = True
-        elif any(pk.get("is_problem") for pk in rep2.get("peaks", [])):
-            result["warning"] = "WARNING: Única rèplica amb pics problemàtics"
-            result["r2_dominated"] = True
         return result
 
     if rep2 is None:
@@ -433,84 +302,36 @@ def select_best_replica(rep1, rep2):
         result["reason"] = "Única rèplica disponible"
         if rep1.get("batman"):
             result["warning"] = "WARNING: Única rèplica amb BATMAN"
-            result["r1_dominated"] = True
-        elif any(pk.get("is_problem") for pk in rep1.get("peaks", [])):
-            result["warning"] = "WARNING: Única rèplica amb pics problemàtics"
-            result["r1_dominated"] = True
         return result
 
     # Ambdues rèpliques existeixen
     r1_batman = rep1.get("batman") is not None
     r2_batman = rep2.get("batman") is not None
 
-    # 1. BATMAN PRIORITARI - si una té Batman, triar l'altra
+    # 1. BATMAN - si una té Batman, triar l'altra
     if r1_batman and not r2_batman:
         result["best"] = "R2"
         result["reason"] = "R1 té BATMAN"
-        result["r1_dominated"] = True
         return result
 
     if r2_batman and not r1_batman:
         result["best"] = "R1"
         result["reason"] = "R2 té BATMAN"
-        result["r2_dominated"] = True
         return result
 
-    if r1_batman and r2_batman:
-        # Ambdues tenen Batman - triar per alçada
-        r1_height = max((pk.get("height", 0) for pk in rep1.get("peaks", [])), default=0)
-        r2_height = max((pk.get("height", 0) for pk in rep2.get("peaks", [])), default=0)
-        if r1_height >= r2_height:
-            result["best"] = "R1"
-        else:
-            result["best"] = "R2"
-        result["reason"] = "Ambdues BATMAN, triat per alçada"
-        result["r1_dominated"] = True
-        result["r2_dominated"] = True
-        result["warning"] = "WARNING: Ambdues rèpliques amb BATMAN"
-        return result
-
-    # 2. Problemes detectats (Regla D)
-    r1_problems = sum(1 for pk in rep1.get("peaks", []) if pk.get("is_problem"))
-    r2_problems = sum(1 for pk in rep2.get("peaks", []) if pk.get("is_problem"))
-
-    result["r1_dominated"] = r1_problems > 0
-    result["r2_dominated"] = r2_problems > 0
-
-    if r1_problems > 0 and r2_problems == 0:
-        result["best"] = "R2"
-        result["reason"] = f"R1 té {r1_problems} pics problemàtics"
-        return result
-
-    if r2_problems > 0 and r1_problems == 0:
-        result["best"] = "R1"
-        result["reason"] = f"R2 té {r2_problems} pics problemàtics"
-        return result
-
-    # 3. Ambdues amb problemes o cap - triar per alçada
+    # 2. Alçada - triar la de més alçada
     r1_height = max((pk.get("height", 0) for pk in rep1.get("peaks", [])), default=0)
     r2_height = max((pk.get("height", 0) for pk in rep2.get("peaks", [])), default=0)
 
-    if r1_problems > 0 and r2_problems > 0:
-        # Ambdues problemàtiques - triar la de més alçada
-        if r1_height >= r2_height:
-            result["best"] = "R1"
-        else:
-            result["best"] = "R2"
-        result["reason"] = "Ambdues problemàtiques, triat per alçada"
-        result["warning"] = "WARNING: Ambdues rèpliques amb problemes"
-        return result
+    if r1_batman and r2_batman:
+        result["warning"] = "WARNING: Ambdues rèpliques amb BATMAN"
 
-    # 4. Cap problema - triar per soroll (menys soroll = millor)
-    r1_noise = rep1.get("baseline_noise", 0)
-    r2_noise = rep2.get("baseline_noise", 0)
-
-    if r1_noise <= r2_noise:
+    if r1_height >= r2_height:
         result["best"] = "R1"
-        result["reason"] = f"Menys soroll (R1:{r1_noise:.2f} vs R2:{r2_noise:.2f})"
+        result["reason"] = f"Més alçada (R1:{r1_height:.1f} vs R2:{r2_height:.1f})"
     else:
         result["best"] = "R2"
-        result["reason"] = f"Menys soroll (R2:{r2_noise:.2f} vs R1:{r1_noise:.2f})"
+        result["reason"] = f"Més alçada (R2:{r2_height:.1f} vs R1:{r1_height:.1f})"
 
     return result
 
@@ -606,8 +427,9 @@ def analyze_peaks(t, y):
     # Ordenar per temps d'aparició (no per prominència)
     top_indices = sorted(top_indices_by_prom, key=lambda i: t[peaks[i]])
 
-    # Detectar STOP/TimeOUT a nivell global (abans d'analitzar pics)
-    global_timeouts = detect_timeout(t, y) if TIMEOUT_ENABLED else []
+    # Detectar TIMEOUT a nivell global via dt intervals (hpsec_core)
+    timeout_info = detect_timeout(t)  # Usa el mètode dt intervals de hpsec_core
+    global_timeouts = timeout_info.get("timeouts", [])
 
     analyzed_peaks = []
     any_timeout = False
@@ -654,22 +476,18 @@ def analyze_peaks(t, y):
 
         # NOTA: Detecció AMORPHOUS eliminada (v1.1) - s'utilitza timeout per dt intervals
 
-        # Comprovar si el pic conté o solapa amb mesetes STOP
-        has_stop = False
-        stop_cv = 100.0
-        stop_info = None
+        # Comprovar si el pic solapa amb un timeout (dt intervals)
+        has_timeout = False
+        timeout_severity = "OK"
+        timeout_data = None
         for timeout in global_timeouts:
-            # Comprovar solapament: meseta dins del pic?
-            if timeout["t_start"] >= t_left and timeout["t_end"] <= t_right:
-                has_stop = True
-                stop_cv = min(stop_cv, timeout.get("cv", 100.0))
-                stop_info = timeout
-                break
-            # També comprovar solapament parcial
-            elif (timeout["t_start"] <= t_right and timeout["t_end"] >= t_left):
-                has_stop = True
-                stop_cv = min(stop_cv, timeout.get("cv", 100.0))
-                stop_info = timeout
+            to_start = timeout.get("t_start", 0)
+            to_end = timeout.get("t_end", 0)
+            # Comprovar solapament amb zona afectada del timeout
+            if (to_start <= t_right and to_end >= t_left):
+                has_timeout = True
+                timeout_severity = timeout.get("severity", "INFO")
+                timeout_data = timeout
                 break
 
         # === SIMETRIA (àrees) - mantingut per compatibilitat ===
@@ -691,10 +509,7 @@ def analyze_peaks(t, y):
         as_66 = calc_asymmetry_factor(t, y, pk_idx, baseline, height_pct=66)
         as_divergence = abs(as_33 - as_66)
 
-        # Monotonia (ajustada per soroll)
-        mono_left, mono_right, mono_total = calc_monotonicity(y, left_base, pk_idx, right_base, noise_threshold)
-
-        # NOTA: calc_smoothness eliminada (v1.1) - no necessària sense amorphous
+        # NOTA v1.2: calc_monotonicity eliminada - no funciona bé
 
         # Àrea total del pic (per ponderar)
         total_area = area_left + area_right
@@ -702,7 +517,7 @@ def analyze_peaks(t, y):
         # Indicadors de qualitat
         flags = []
 
-        # HÍBRID: Anomalies detectades (Batman, Irregular, STOP)
+        # Anomalies detectades (Batman, Irregular)
         if is_anomaly:
             if is_batman:
                 n_valleys = anomaly.get("n_valleys", 0)
@@ -711,16 +526,12 @@ def analyze_peaks(t, y):
             if is_irregular:
                 flags.append(f"IRR({smoothness:.0f}%)")
 
-        # NOTA: AMORF flag eliminat (v1.1) - detecció precària
+        # Timeout (via dt intervals)
+        if has_timeout:
+            flags.append(f"TIMEOUT({timeout_severity})")
 
-        if has_stop:
-            flags.append(f"STOP(CV={stop_cv:.1f}%)")
-
-        if mono_total < MONOTONIC_MIN_PCT:
-            flags.append("no-mono")
-
-        # Té algun flag?
-        has_issues = is_anomaly or has_stop or mono_total < MONOTONIC_MIN_PCT
+        # Té algun flag? (v1.2: només Batman/IRR + Timeout)
+        has_issues = is_anomaly or has_timeout
         if has_issues:
             any_timeout = True
 
@@ -748,15 +559,11 @@ def analyze_peaks(t, y):
             "smoothness": smoothness,
             "is_batman": is_batman,
             "is_irregular": is_irregular,
-            # NOTA: Camps amorphous eliminats (v1.1)
-            # STOP/TimeOUT (mesetes en el pic)
-            "has_stop": has_stop,
-            "stop_cv": stop_cv,
-            "stop_info": stop_info,
-            # Monotonia
-            "mono_left": mono_left,
-            "mono_right": mono_right,
-            "mono_total": mono_total,
+            # NOTA v1.2: Camps amorphous, stop_*, mono_* eliminats
+            # Timeout (via dt intervals hpsec_core)
+            "has_timeout": has_timeout,
+            "timeout_severity": timeout_severity,
+            "timeout_data": timeout_data,
             "flags": flags,
             "has_issues": has_issues
         })
@@ -764,7 +571,7 @@ def analyze_peaks(t, y):
     # Comptar pics amb problemes
     n_with_issues = sum(1 for p in analyzed_peaks if p["has_issues"])
     n_batman = sum(1 for p in analyzed_peaks if p.get("is_batman"))
-    n_with_stop = sum(1 for p in analyzed_peaks if p.get("has_stop"))
+    n_with_timeout = sum(1 for p in analyzed_peaks if p.get("has_timeout"))
 
     return {
         "status": "CHECK" if any_timeout else "OK",
@@ -772,7 +579,7 @@ def analyze_peaks(t, y):
         "n_peaks": len(analyzed_peaks),
         "n_with_issues": n_with_issues,
         "n_batman": n_batman,
-        "n_with_stop": n_with_stop,
+        "n_with_timeout": n_with_timeout,
         "baseline_noise": baseline_noise,
         "global_timeouts": global_timeouts  # Per debug/visualització
     }
@@ -878,262 +685,17 @@ def detect_batman_signal(t, y):
 
 
 # =============================================================================
-# DETECCIÓ ORELLETES (pics secundaris propers a un pic més alt)
-# =============================================================================
-def detect_ears(t, y):
-    """
-    Detecta orelletes = pics secundaris molt propers a un pic MÉS ALT.
-    Si HUMIC_ZONE_ENABLED, només busca a la zona dels húmics.
-
-    Un pic és "orelleta" si:
-    1. Hi ha un altre pic més alt a menys de EAR_MAX_DISTANCE_MIN minuts
-    2. Té prominència suficient (no és soroll)
-    3. Està per sobre del nivell mínim (% de l'altura màxima)
-
-    Returns:
-        list of dicts amb info de cada orelleta detectada
-    """
-    if t is None or len(t) < 20:
-        return []
-
-    t = np.asarray(t, float)
-    y = np.asarray(y, float)
-
-    # Filtrar a zona dels húmics si està activat
-    if HUMIC_ZONE_ENABLED:
-        mask = (t >= HUMIC_ZONE_START) & (t <= HUMIC_ZONE_END)
-        if not np.any(mask):
-            return []  # No hi ha dades a la zona húmica
-        t = t[mask]
-        y = y[mask]
-
-    # Baseline i màxim
-    baseline = float(np.percentile(y, 10))
-    y_max = float(np.max(y))
-    signal_range = y_max - baseline
-
-    if signal_range <= 0:
-        return []
-
-    # Prominència mínima per considerar un pic (% del rang)
-    min_prom = EAR_MIN_PROMINENCE_PCT / 100.0 * signal_range
-
-    # Trobar TOTS els pics amb prominència significativa
-    peaks, props = find_peaks(y, prominence=min_prom, width=2)
-
-    if len(peaks) < 2:
-        return []  # Cal almenys 2 pics per tenir orelletes
-
-    # Nivell mínim d'altura
-    min_level = baseline + EAR_MIN_HEIGHT_FRAC * signal_range
-
-    ears = []
-
-    # Per cada pic, mirar si té un pic més alt a prop
-    for i, pk_idx in enumerate(peaks):
-        pk_height = float(y[pk_idx])
-        pk_time = float(t[pk_idx])
-
-        if pk_height < min_level:
-            continue  # Massa baix per ser rellevant
-
-        # Buscar pics més alts dins la distància màxima
-        has_higher_neighbor = False
-        higher_peak_time = None
-
-        for j, other_idx in enumerate(peaks):
-            if i == j:
-                continue
-
-            other_height = float(y[other_idx])
-            other_time = float(t[other_idx])
-            distance = abs(pk_time - other_time)
-
-            # Si hi ha un pic més alt a menys de la distància màxima
-            if other_height > pk_height and distance <= EAR_MAX_DISTANCE_MIN:
-                has_higher_neighbor = True
-                higher_peak_time = other_time
-                break
-
-        if has_higher_neighbor:
-            # Aquest pic és una orelleta!
-            prom = float(props["prominences"][i])
-            prom_pct = 100.0 * prom / signal_range
-
-            ears.append({
-                "t": pk_time,
-                "idx": int(pk_idx),
-                "height": pk_height,
-                "prominence": prom,
-                "prom_pct": prom_pct,
-                "higher_peak_t": higher_peak_time,
-                "distance": abs(pk_time - higher_peak_time)
-            })
-
-    # Ordenar per altura (més altes primer)
-    ears.sort(key=lambda e: -e["height"])
-
-    return ears
-
-
-# =============================================================================
-# NOTA: detect_amorphous() eliminada (v1.1) - ~370 línies
-# Era precària i generava molts falsos positius
-# Ara s'utilitza només detecció per timeout (dt intervals) que és més robusta
+# NOTA v1.2: detect_ears() eliminada (~95 línies) - no funciona bé
 # =============================================================================
 
 # =============================================================================
-# DETECCIÓ TIMEOUT (SATURACIÓ/MESETES)
+# NOTA v1.1: detect_amorphous() eliminada (~370 línies) - precària
 # =============================================================================
-def detect_timeout(t, y):
-    """
-    Detecta events TimeOUT (mesetes/plateaus) que indiquen saturació del detector.
-
-    Busca regions planes amb:
-    1. Duració entre TIMEOUT_MIN_DUR i TIMEOUT_MAX_DUR
-    2. Contrast alt entre bordes i meseta (ratio > TIMEOUT_MIN_CONTRAST)
-    3. Pendents pronunciades als bordes (> TIMEOUT_MIN_EDGE_SLOPE)
-    4. Nivell per sobre de baseline * TIMEOUT_MIN_LEVEL_FACTOR
-
-    Returns:
-        list of dicts amb info de cada TimeOUT detectat, o llista buida
-    """
-    if not TIMEOUT_ENABLED:
-        return []
-
-    if t is None or len(t) < 20:
-        return []
-
-    t = np.asarray(t, dtype=float)
-    y = np.asarray(y, dtype=float)
-
-    # Filtrar a finestra d'anàlisi
-    mask = (t >= TIMEOUT_T_START) & (t <= TIMEOUT_T_END)
-    if not np.any(mask):
-        return []
-
-    t_win = t[mask]
-    y_win = y[mask]
-
-    if len(t_win) < 20:
-        return []
-
-    # Baseline (percentil 5 per robustesa)
-    baseline_val = float(np.percentile(y_win, 5))
-    min_required_y = baseline_val * TIMEOUT_MIN_LEVEL_FACTOR
-
-    # Helper per calcular pendent
-    def get_slope(t_seg, y_seg):
-        if len(t_seg) < 2:
-            return 0.0
-        slope, _ = np.polyfit(t_seg, y_seg, 1)
-        return abs(slope)
-
-    # Crear chunks de resolució fina
-    num_steps = int((t_win[-1] - t_win[0]) / TIMEOUT_FINE_RES)
-    chunks = []
-
-    for i in range(num_steps):
-        t_center = t_win[0] + i * TIMEOUT_FINE_RES
-        mask_c = (t_win >= t_center) & (t_win < t_center + TIMEOUT_FINE_RES)
-        if np.sum(mask_c) < 2:
-            continue
-        chunks.append({
-            'idx': i,
-            'slope_abs': get_slope(t_win[mask_c], y_win[mask_c]),
-            'indices': np.where(mask_c)[0],
-            't_start': float(t_win[mask_c][0]),
-            't_end': float(t_win[mask_c][-1])
-        })
-
-    if not chunks:
-        return []
-
-    # Trobar illes de baixa pendent (mesetes)
-    all_slopes = [c['slope_abs'] for c in chunks]
-    thresh = np.percentile(all_slopes, TIMEOUT_PERCENTILE)
-
-    islands = []
-    current_island = []
-    for c in chunks:
-        if c['slope_abs'] <= thresh:
-            current_island.append(c)
-        else:
-            if current_island:
-                islands.append(current_island)
-            current_island = []
-    if current_island:
-        islands.append(current_island)
-
-    # Avaluar candidats
-    candidates = []
-    for isl in islands:
-        first, last = isl[0], isl[-1]
-        t_s, t_e = first['t_start'], last['t_end']
-        dur = t_e - t_s
-
-        # Filtre duració
-        if not (TIMEOUT_MIN_DUR <= dur <= TIMEOUT_MAX_DUR):
-            continue
-
-        # Mètriques de la meseta
-        idx_s = first['indices'][0]
-        idx_e = last['indices'][-1]
-        y_plat = y_win[idx_s:idx_e+1]
-        t_plat = t_win[idx_s:idx_e+1]
-
-        if len(y_plat) < 2:
-            continue
-
-        y_mean = float(np.mean(y_plat))
-        slope_plat = get_slope(t_plat, y_plat)
-
-        # Pendents dels bordes
-        mask_pre = (t_win >= t_s - TIMEOUT_EDGE_WINDOW) & (t_win < t_s)
-        mask_post = (t_win > t_e) & (t_win <= t_e + TIMEOUT_EDGE_WINDOW)
-
-        slope_pre = get_slope(t_win[mask_pre], y_win[mask_pre]) if np.any(mask_pre) else 0
-        slope_post = get_slope(t_win[mask_post], y_win[mask_post]) if np.any(mask_post) else 0
-        max_edge = max(slope_pre, slope_post)
-
-        # Ratio contrast
-        ratio = max_edge / (slope_plat + 1e-6)
-
-        # CV (Coeficient de Variació) = std / mean
-        # CV baix = valors molt iguals = PLA
-        # CV alt = valors variables
-        y_std = float(np.std(y_plat))
-        cv_plat = (y_std / y_mean * 100) if y_mean > 1e-6 else 0  # en %
-
-        # Filtres
-        passes_edge = max_edge > TIMEOUT_MIN_EDGE_SLOPE
-        passes_level = y_mean > min_required_y
-        passes_contrast = ratio > TIMEOUT_MIN_CONTRAST
-        passes_cv = cv_plat < TIMEOUT_MAX_CV  # Només parades reals (CV molt baix)
-
-        if passes_edge and passes_level and passes_contrast and passes_cv:
-            candidates.append({
-                't_start': t_s,
-                't_end': t_e,
-                'duration': dur,
-                'y_mean': y_mean,
-                'y_std': y_std,
-                'cv': cv_plat,  # CV en % (baix = pla)
-                'slope_plat': slope_plat,
-                'max_edge': max_edge,
-                'ratio': ratio,
-                'baseline': baseline_val
-            })
-
-    # Ordenar per ratio (millor contrast primer)
-    candidates.sort(key=lambda x: -x['ratio'])
-
-    return candidates
-
 
 # =============================================================================
-# NOTA: validate_amorphous_with_replicates() eliminada (v1.1) - ~190 línies
-# Era necessària per amorphous detection, que ara està eliminada
+# NOTA v1.2: detect_timeout() local eliminada (~145 línies)
+# Ara s'usa detect_timeout() de hpsec_core.py (mètode dt intervals)
+# detect_ears() eliminada (~95 línies) - no funcionava bé
 # =============================================================================
 
 # =============================================================================
@@ -1283,7 +845,7 @@ def process_seqs(base_dir, selected_seqs, progress_cb=None):
                     "peak_mismatch": False,
                     "batman": False,
                     "batman_drop": 0,
-                    "ears": 0,
+                    # NOTA v1.2: ears eliminat (detect_ears no funciona bé)
                     "timeout": False,
                     "timeout_count": 0,
                     # NOTA: camps amorphous eliminats (v1.1)
@@ -1305,12 +867,11 @@ def process_seqs(base_dir, selected_seqs, progress_cb=None):
                             sample_data["batman"] = True
                             sample_data["batman_drop"] = max(sample_data["batman_drop"], bat.get("max_depth", 0)*100)
 
-                        # Orelletes
-                        ears = detect_ears(t, y)
-                        sample_data["ears"] = max(sample_data["ears"], len(ears))
+                        # NOTA v1.2: detect_ears() eliminada - no funcionava bé
 
-                        # TimeOUT (saturació/mesetes)
-                        timeouts = detect_timeout(t, y)
+                        # TimeOUT (via dt intervals - hpsec_core)
+                        timeout_result = detect_timeout(t)  # Usa el mètode dt intervals
+                        timeouts = timeout_result.get("timeouts", [])
                         if timeouts:
                             sample_data["timeout"] = True
                             sample_data["timeout_count"] = max(sample_data.get("timeout_count", 0), len(timeouts))
@@ -1333,7 +894,7 @@ def process_seqs(base_dir, selected_seqs, progress_cb=None):
 
                         rep_data.append({
                             "rep": rep_id, "t": t, "y": y,
-                            "bat": bat, "ears": ears, "timeouts": timeouts,
+                            "bat": bat, "timeouts": timeouts,  # NOTA v1.2: ears eliminat
                             "peak_analysis": peak_analysis,
                             "n_peaks": n_peaks,
                             "n_with_issues": n_with_issues,
@@ -1354,32 +915,7 @@ def process_seqs(base_dir, selected_seqs, progress_cb=None):
                     sample_data["pearson"], _ = calc_pearson_replicates(t1, y1, t2, y2)
 
                     # NOTA: validate_amorphous_with_replicates eliminada (v1.1)
-
-                    # Re-avaluar problemes de pics amb el Pearson real (Asimetria + Pearson)
-                    pearson_val = sample_data["pearson"] if not np.isnan(sample_data["pearson"]) else 1.0
-                    for rep in rep_data:
-                        n_issues = 0
-                        for pk in rep.get("all_peaks", []):
-                            as_33 = pk.get("as_33", 1.0)
-                            as_66 = pk.get("as_66", 1.0)
-                            as_divergence = pk.get("as_divergence", 0.0)
-                            is_problem, problem_reason = detect_peak_problem(as_33, as_66, as_divergence, pearson_val)
-                            pk["is_problem"] = is_problem
-                            pk["problem_reason"] = problem_reason
-                            # Actualitzar flags
-                            if is_problem and "PROBLEM" not in pk["flags"]:
-                                pk["flags"].append("PROBLEM")
-                                pk["has_issues"] = True
-                            elif not is_problem and "PROBLEM" in pk["flags"]:
-                                pk["flags"].remove("PROBLEM")
-                                pk["has_issues"] = len(pk["flags"]) > 0
-                            if pk["has_issues"]:
-                                n_issues += 1
-                        rep["n_with_issues"] = n_issues
-                        rep["peaks_with_issues"] = [p for p in rep.get("all_peaks", []) if p["has_issues"]]
-                        # Actualitzar peak_analysis si existeix
-                        if rep.get("peak_analysis"):
-                            rep["peak_analysis"]["n_with_issues"] = n_issues
+                    # NOTA v1.2: detect_peak_problem (Regla D) eliminada - no funciona bé
 
                     # Detectar peak mismatch (diferent nombre de pics)
                     n_peaks_r1 = rep_data[0].get("n_peaks", 0)
@@ -1525,20 +1061,19 @@ def process_seqs(base_dir, selected_seqs, progress_cb=None):
                                         ax.axhline(b["threshold"], color="red", linestyle=":",
                                                   alpha=0.3, linewidth=1)
 
-                            # Marcar Orelletes (triangles taronges)
-                            for e in rep["ears"][:5]:
-                                ax.scatter([e["t"]], [e["height"]],
-                                          c="orange", s=50, zorder=5, marker="^",
-                                          edgecolors="darkorange", linewidths=1.5)
+                            # NOTA v1.2: Orelletes (detect_ears) eliminada
 
-                            # Marcar TimeOUT (mesetes/saturació) - banda verda amb CV
+                            # Marcar TimeOUT (via dt intervals) - banda verda
                             for to in rep.get("timeouts", []):
-                                ax.axvspan(to["t_start"], to["t_end"], color="#2ecc71", alpha=0.3, zorder=1)
-                                # Mostrar CV petit a la part superior (baix = pla)
-                                cv_val = to.get("cv", 0)
-                                ax.text(to["t_start"] + 0.05, to["y_mean"] * 1.02,
-                                       f"CV={cv_val:.1f}%", fontsize=6, color="#27ae60",
-                                       verticalalignment="bottom")
+                                t_start = to.get("t_start", 0)
+                                t_end = to.get("t_end", 0)
+                                severity = to.get("severity", "INFO")
+                                color = "#27ae60" if severity == "INFO" else "#e74c3c"
+                                ax.axvspan(t_start, t_end, color=color, alpha=0.3, zorder=1)
+                                # Mostrar severitat
+                                ax.text(t_start + 0.05, np.max(rep["y"]) * 0.9,
+                                       f"TO:{severity}", fontsize=6, color=color,
+                                       verticalalignment="top")
 
                             # NOTA: Visualització AMORPHOUS eliminada (v1.1)
 
@@ -1553,7 +1088,7 @@ def process_seqs(base_dir, selected_seqs, progress_cb=None):
                                 is_anomaly = pk.get("is_anomaly", False)
                                 is_batman = pk.get("is_batman", False)
                                 is_irregular = pk.get("is_irregular", False)
-                                has_stop = pk.get("has_stop", False)
+                                has_timeout = pk.get("has_timeout", False)
                                 smoothness = pk.get("smoothness", 100)
                                 anomaly_info = pk.get("anomaly", {})
 
@@ -1570,7 +1105,7 @@ def process_seqs(base_dir, selected_seqs, progress_cb=None):
                                                           edgecolors="darkred", linewidths=1.5)
 
                                 # Color segons si té anomalia
-                                has_any_anomaly = is_anomaly or has_stop
+                                has_any_anomaly = is_anomaly or has_timeout
                                 if has_any_anomaly:
                                     txt_color = "red"
                                     marker_style = "x"
@@ -1587,9 +1122,9 @@ def process_seqs(base_dir, selected_seqs, progress_cb=None):
                                 if is_batman:
                                     labels.append("BAT")
                                 # NOTA: Etiquetes AMORF i replicate_rejected eliminades (v1.1)
-                                if has_stop:
-                                    stop_cv = pk.get("stop_cv", 0)
-                                    labels.append(f"STOP({stop_cv:.1f}%)")
+                                if has_timeout:
+                                    severity = pk.get("timeout_severity", "INFO")
+                                    labels.append(f"TO:{severity}")
                                 if is_irregular and not labels:
                                     labels.append(f"IRR:{smoothness:.0f}%")
 
@@ -1605,7 +1140,7 @@ def process_seqs(base_dir, selected_seqs, progress_cb=None):
 
                                 # Guardar info per zoom si és anomalia
                                 if has_any_anomaly:
-                                    anom_type = "BAT" if is_batman else ("STOP" if has_stop else "IRR")
+                                    anom_type = "BAT" if is_batman else ("TO" if has_timeout else "IRR")
                                     peak_labels.append({
                                         "t_pk": t_pk, "h_pk": h_pk + baseline_pk,
                                         "left": pk["left_base"], "right": pk["right_base"],
@@ -1677,12 +1212,10 @@ def process_seqs(base_dir, selected_seqs, progress_cb=None):
                             if rep["bat"]:
                                 bat_depth = rep['bat'].get('max_depth', 0) * 100
                                 rep_flags.append(f"BAT:{bat_depth:.0f}%")
-                            if rep["ears"]:
-                                rep_flags.append(f"EAR:{len(rep['ears'])}")
+                            # NOTA v1.2: Ears eliminat
                             if rep.get("timeouts"):
-                                # Mostrar CV del primer STOP (baix = pla)
-                                cv_stop = rep['timeouts'][0].get('cv', 0) if rep['timeouts'] else 0
-                                rep_flags.append(f"STOP(CV={cv_stop:.1f}%)")
+                                n_to = len(rep["timeouts"])
+                                rep_flags.append(f"TO:{n_to}")
 
                             rep_info = " | ".join(rep_flags)
 
@@ -1692,7 +1225,7 @@ def process_seqs(base_dir, selected_seqs, progress_cb=None):
                             if rep["bat"]:
                                 title_color = "red"
                             if rep.get("timeouts"):
-                                title_color = "#27ae60"  # Verd fosc per STOP
+                                title_color = "#e74c3c"  # Vermell per TIMEOUT
 
                             ax.set_title(f"R{rep['rep']}{triada_mark}: {rep_info}", fontsize=9,
                                         color=title_color, fontweight="bold" if rep.get("triada") else "normal")
@@ -1750,7 +1283,7 @@ def process_seqs(base_dir, selected_seqs, progress_cb=None):
                     ax.set_title("RESUM - Ordenat per Status (problemàtics primer)",
                                 fontsize=14, fontweight="bold", pad=20)
 
-                cols = ["SEQ", "Mostra", "Status", "Pearson", "Pics", "mAU", "Bat", "Ear", "STOP"]
+                cols = ["SEQ", "Mostra", "Status", "Pearson", "Pics", "mAU", "Bat", "TO"]
                 rows = []
                 cell_colors = []
 
@@ -1760,7 +1293,7 @@ def process_seqs(base_dir, selected_seqs, progress_cb=None):
                     "CHECK": "#fff3cd",          # Groc clar
                     "SINGLE_REP": "#e6ccff",     # Lila clar
                     "LOW_SIGNAL": "#e6e6e6",     # Gris clar
-                    "TIMEOUT": "#d5f5e3",        # Verd clar
+                    "TIMEOUT": "#ffe6e6",        # Vermell molt clar
                     "OK": "white"
                 }
 
@@ -1768,8 +1301,7 @@ def process_seqs(base_dir, selected_seqs, progress_cb=None):
                     pears = f"{s['pearson']:.3f}" if not np.isnan(s['pearson']) else "-"
                     n_p1 = str(s.get('n_peaks_r1', 0))
                     bat = f"{s['batman_drop']:.0f}%" if s['batman'] else "-"
-                    ears = str(s['ears']) if s['ears'] > 0 else "-"
-                    stop = str(s.get('timeout_count', 0)) if s.get('timeout') else "-"
+                    timeout = str(s.get('timeout_count', 0)) if s.get('timeout') else "-"
 
                     rows.append([
                         s['seq'][:12],
@@ -1778,7 +1310,7 @@ def process_seqs(base_dir, selected_seqs, progress_cb=None):
                         pears,
                         n_p1,
                         f"{s['max_mau']:.0f}",
-                        bat, ears, stop
+                        bat, timeout
                     ])
 
                     # Color per fila segons status
@@ -1814,17 +1346,17 @@ def process_seqs(base_dir, selected_seqs, progress_cb=None):
             ax1.set_title("Distribució Pearson")
             ax1.legend(fontsize=8)
 
-        # Max mAU vs Anomalies (Batman/Ears)
+        # Max mAU vs Anomalies (Batman/Timeout)
         ax2 = fig.add_subplot(222)
         max_vals_all = [s["max_mau"] for s in all_samples]
-        has_anomaly = [s["batman"] or s["ears"] > 0 for s in all_samples]
+        has_anomaly = [s["batman"] or s.get("timeout", False) for s in all_samples]
         if max_vals_all:
             colors = ["red" if a else "steelblue" for a in has_anomaly]
             y_pos = [1 if a else 0 for a in has_anomaly]
             ax2.scatter(max_vals_all, y_pos, c=colors, alpha=0.5, s=20)
             ax2.axvline(NOISE_THRESHOLD, color="gray", linestyle="--", label=f"Soroll ({NOISE_THRESHOLD})")
             ax2.set_xlabel("Max mAU")
-            ax2.set_ylabel("Anomalia (Batman/Ears)")
+            ax2.set_ylabel("Anomalia (Batman/Timeout)")
             ax2.set_yticks([0, 1])
             ax2.set_yticklabels(["No", "Sí"])
             ax2.set_title("Senyal màxim vs Anomalies")
@@ -1841,14 +1373,13 @@ def process_seqs(base_dir, selected_seqs, progress_cb=None):
         n_low = sum(1 for s in all_samples if s["status"] == "LOW_SIGNAL")
         n_ok = sum(1 for s in all_samples if s["status"] == "OK")
         n_batman = sum(1 for s in all_samples if s["batman"])
-        n_ears = sum(1 for s in all_samples if s["ears"] > 0)
         n_timeout = sum(1 for s in all_samples if s.get("timeout"))
 
         pct = lambda n: f"{100*n/n_total:.1f}%" if n_total > 0 else "0%"
 
         summary = (
-            f"RESUM PER STATUS [COLUMN]\n"
-            f"════════════════════════════\n\n"
+            f"RESUM PER STATUS [COLUMN] v1.2\n"
+            f"════════════════════════════════\n\n"
             f"  Mostres totals:     {n_total}\n"
             f"  SEQs processades:   {len(selected_seqs)}\n\n"
             f"  PEAK_MISMATCH:      {n_mismatch} ({pct(n_mismatch)})\n"
@@ -1857,8 +1388,7 @@ def process_seqs(base_dir, selected_seqs, progress_cb=None):
             f"  LOW_SIGNAL:         {n_low} ({pct(n_low)})\n"
             f"  OK:                 {n_ok} ({pct(n_ok)})\n\n"
             f"  Batman:             {n_batman} ({pct(n_batman)})\n"
-            f"  Orelletes:          {n_ears} ({pct(n_ears)})\n"
-            f"  TimeOUT (STOP):     {n_timeout} ({pct(n_timeout)})\n"
+            f"  TimeOUT (dt):       {n_timeout} ({pct(n_timeout)})\n"
         )
         ax3.text(0.05, 0.5, summary, fontsize=11, family="monospace",
                 verticalalignment="center", transform=ax3.transAxes,
@@ -1867,82 +1397,72 @@ def process_seqs(base_dir, selected_seqs, progress_cb=None):
         # Info generació
         ax4 = fig.add_subplot(224)
         ax4.axis("off")
-        ax4.text(0.5, 0.5, f"DOCtor_C v1.0\nCOLUMN\n{datetime.now().strftime('%Y-%m-%d %H:%M')}",
+        ax4.text(0.5, 0.5, f"DOCtor_C v1.2\nCOLUMN\n{datetime.now().strftime('%Y-%m-%d %H:%M')}",
                 fontsize=14, ha="center", va="center", color="gray")
 
         plt.tight_layout()
         pdf.savefig(fig, facecolor='white')
         plt.close(fig)
 
-        # === TAULA DETALL STOPS ===
-        # Recollir tots els STOP de totes les mostres
-        stop_rows = []
+        # === TAULA DETALL TIMEOUTS (via dt intervals) ===
+        # Recollir tots els TIMEOUT de totes les mostres
+        timeout_rows = []
         for s in all_samples:
             for rep in s.get("reps", []):
                 for to in rep.get("timeouts", []):
-                    stop_rows.append({
+                    timeout_rows.append({
                         "sample": s["sample"][:20],
                         "rep": rep.get("rep", "?"),
                         "t_start": to.get("t_start", 0),
                         "t_end": to.get("t_end", 0),
-                        "dur": to.get("duration", 0),
-                        "y_mean": to.get("y_mean", 0),
-                        "y_std": to.get("y_std", 0),
-                        "cv": to.get("cv", 0),
-                        "baseline": to.get("baseline", 0),
-                        "edge": to.get("max_edge", 0),
-                        "ratio": to.get("ratio", 0)
+                        "dt_sec": to.get("dt_sec", 0),
+                        "severity": to.get("severity", "INFO")
                     })
 
-        if stop_rows:
-            # Crear pàgina amb taula STOP
-            fig_stop = plt.figure(figsize=(11.69, 8.27))
-            ax_stop = fig_stop.add_subplot(111)
-            ax_stop.axis("off")
-            ax_stop.set_title("DETALL STOPS - Valors per afinar llindars (CV baix = pla)", fontsize=14, fontweight="bold", pad=20)
+        if timeout_rows:
+            # Crear pàgina amb taula TIMEOUT
+            fig_to = plt.figure(figsize=(11.69, 8.27))
+            ax_to = fig_to.add_subplot(111)
+            ax_to.axis("off")
+            ax_to.set_title("DETALL TIMEOUTS (dt intervals > 60s)", fontsize=14, fontweight="bold", pad=20)
 
             # Capçaleres
-            cols = ["Mostra", "R", "t_ini", "t_fi", "Dur", "y_mean", "std", "CV%", "Base", "Edge", "Ratio"]
+            cols = ["Mostra", "R", "t_ini", "t_fi", "dt (s)", "Severitat"]
 
             # Dades
             table_data = []
-            for r in stop_rows:
+            for r in timeout_rows:
                 table_data.append([
                     r["sample"],
                     r["rep"],
                     f"{r['t_start']:.2f}",
                     f"{r['t_end']:.2f}",
-                    f"{r['dur']:.2f}",
-                    f"{r['y_mean']:.1f}",
-                    f"{r['y_std']:.2f}",
-                    f"{r['cv']:.2f}",
-                    f"{r['baseline']:.1f}",
-                    f"{r['edge']:.2f}",
-                    f"{r['ratio']:.1f}"
+                    f"{r['dt_sec']:.0f}",
+                    r["severity"]
                 ])
 
             # Crear taula
-            tbl = ax_stop.table(cellText=table_data, colLabels=cols, loc="center", cellLoc="center")
+            tbl = ax_to.table(cellText=table_data, colLabels=cols, loc="center", cellLoc="center")
             tbl.auto_set_font_size(False)
             tbl.set_fontsize(8)
             tbl.scale(1.2, 1.4)
 
             # Estil capçalera
             for j in range(len(cols)):
-                tbl[(0, j)].set_facecolor("#27ae60")
+                tbl[(0, j)].set_facecolor("#e74c3c")
                 tbl[(0, j)].set_text_props(color="white", fontweight="bold")
 
-            # Afegir llindars actuals com a referència
-            thresholds_text = (
-                f"Llindars: DUR={TIMEOUT_MIN_DUR}-{TIMEOUT_MAX_DUR} | LEVEL>{TIMEOUT_MIN_LEVEL_FACTOR}x | "
-                f"EDGE>{TIMEOUT_MIN_EDGE_SLOPE} | RATIO>{TIMEOUT_MIN_CONTRAST} | CV<{TIMEOUT_MAX_CV}%"
+            # Afegir info llindars dt intervals
+            config_text = (
+                f"Llindars: dt > {TIMEOUT_CONFIG.get('threshold_sec', 60)}s (INFO), "
+                f"dt > {TIMEOUT_CONFIG.get('major_threshold_sec', 120)}s (MAJOR)"
             )
-            ax_stop.text(0.5, 0.02, thresholds_text, transform=ax_stop.transAxes,
-                        ha="center", fontsize=8, color="gray")
+            ax_to.text(0.5, 0.02, config_text, transform=ax_to.transAxes,
+                      ha="center", fontsize=8, color="gray")
 
             plt.tight_layout()
-            pdf.savefig(fig_stop, facecolor='white')
-            plt.close(fig_stop)
+            pdf.savefig(fig_to, facecolor='white')
+            plt.close(fig_to)
 
     return pdf_path, all_samples
 
@@ -1953,14 +1473,14 @@ def process_seqs(base_dir, selected_seqs, progress_cb=None):
 class DOCtorApp:
     def __init__(self):
         self.root = tk.Tk()
-        self.root.title("DOCtor_C v1.0 - Column")
+        self.root.title("DOCtor_C v1.2 - Column")
         self.root.geometry("400x220")
         self.root.resizable(False, False)
 
         main = ttk.Frame(self.root, padding=20)
         main.pack(fill=tk.BOTH, expand=True)
 
-        ttk.Label(main, text="DOCtor_C v1.0", font=("Segoe UI", 16, "bold")).pack()
+        ttk.Label(main, text="DOCtor_C v1.2", font=("Segoe UI", 16, "bold")).pack()
         ttk.Label(main, text="Anàlisi COLUMN - SUITE HPSEC", foreground="gray").pack()
         ttk.Label(main, text="(Per BP utilitzar DOCtor_BP.py)", foreground="gray", font=("Segoe UI", 8)).pack(pady=(0,15))
 
