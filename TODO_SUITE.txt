@@ -2,6 +2,71 @@
 TODO - SUITE HPSEC
 ================================================================================
 
+################################################################################
+SESSIO EN CURS - 2025-01-25 09:15
+################################################################################
+
+TASCA ACTUAL: MasterFile - Template i estratègia de càlcul
+
+COMPLETAT:
+  [x] 23:25 - Unificació estructura MasterFiles (38 fitxers)
+      - Estructura canònica: 0-INFO, 1-HPLC-SEQ, 2-TOC, 3-DAD_KHP, 4-TOC_CALC
+      - Script: hpsec_unify_masterfiles.py
+
+  [x] 23:45 - Actualització hpsec_consolidate.py per nou format MasterFile
+      - Backup: hpsec_consolidate_backup_20250124.py
+      - Compatible amb format antic (4-SEQ_DATA) i nou (4-TOC_CALC)
+      - 4-TOC_CALC es calcula al vol quan es consolida (no fórmules Excel)
+
+  [x] 09:15 - Creació Template a Dades2/Template/
+      - MasterFile_Template.xlsx: Plantilla buida amb estructura
+      - 256_MasterFile_EXEMPLE.xlsx: Exemple complet de referència
+
+ESTRATEGIA TOC_CALC:
+  - NO regenerar tots els MasterFiles existents
+  - 4-TOC_CALC es calcula sota demanda des de hpsec_consolidate.py
+  - Més eficient: càlcul Python vs fórmules Excel
+  - Noves SEQs: usar Template + script d'importació
+
+PENDENT:
+  [~] Verificació alineació DOC-DAD amb KHP (EN CURS)
+      - Usar 3-DAD_KHP del MasterFile
+      - Calcular shift temporal DOC vs A254
+      - Verificar impacte en mapping TOC→mostra
+
+  [ ] Propagar lògica nomenclatura Sample_Bx_Ry a tots els scripts
+      - Origen: _create_sample_rep() a hpsec_migrate_master.py
+      - Format: Sample_B1_R1, Sample_B1_R2, Sample_B2_R1... (quan hi ha duplicats)
+      - Format simple: Sample_R1, Sample_R2 (quan no hi ha duplicats)
+      - Afecta: hpsec_consolidate.py, DOCtor_BP.py, DOCtor_C.py, reports
+
+  [ ] Convenció noms MasterFile segons estat processament
+      - XXX_MasterFile.xlsx     → migrat (raw, fulls 0-4)
+      - XXX_MasterFile_C.xlsx   → consolidat (+ 5-SUMMARY)
+      - XXX_MasterFile_Cal.xlsx → calibrat (+ 6-CALIBRATION)
+      - XXX_MasterFile_P.xlsx   → processat DOCtor (+ 7-RESULTS?)
+      - Cada pas reanomena el fitxer i afegeix full corresponent
+      - Permet veure estat sense obrir el fitxer
+
+  [ ] Reestructurar fulla ID consolidats (PROPOSTA):
+      Ordre: Sample, Replica, SEQ, Method, Date
+      Camps pendents d'afegir:
+        - Inj_Volume (del MasterFile 0-INFO)
+        - UIB_range (del MasterFile 0-INFO)
+      Revisar:
+        - Estructura per DIRECT vs DUAL vs UIB
+        - File_MasterFile, File_DAD (no File_DAD_Original)
+        - DOC_tmax (no DOC_T_RETENTION)
+        - Agrupar camps DOC i DAD separats
+        - DOC_Baseline_Method (nom del mètode)
+        - Peak_Valid com a flag QC
+        - No incloure àrees DAD si no s'han processat
+
+  [ ] Crear script importació per noves SEQs (usa Template)
+  [ ] Commit canvis a git
+
+################################################################################
+
 [x] CONSOLIDACIO: Verificar fitxers (IMPLEMENTAT)
     - Al consolidar, comptar quants fitxers hi ha al directori origen
     - Comptar quants s'han utilitzat/processat
@@ -212,6 +277,43 @@ MASTERFILE - ESTRUCTURA CANONICA (Unificat 2025-01-24)
       - Backups creats a cada carpeta SEQ
 
 [ ] Actualitzar hpsec_consolidate.py per treballar amb nou MasterFile
+
+================================================================================
+REGISTRE DE SCRIPTS
+================================================================================
+
+Format: [DATA HORA] script.py - Descripció breu
+
+[2026-01-26 04:15] hpsec_migrate_master.py - UNIFICAT
+    Creació de MasterFiles des de rawdata v11/v12.
+    API: migrate_single(), migrate_batch(), find_seq_folders()
+    CLI: --all (totes), --list (llistar), <carpeta> (una)
+    Integra: regenerate_toc_calc.py + hpsec_unify_masterfiles.py (eliminats)
+
+[2025-01-24 23:45] hpsec_consolidate.py - Consolidació SEQ
+    Llegeix MasterFile + Export3D, genera fitxers consolidats.
+    Suporta DUAL (Direct+UIB), COLUMN i BP.
+
+[2025-01-24 23:25] hpsec_unify_masterfiles.py - ELIMINAT (integrat a migrate_master)
+    Unificava estructura de fulls a format canònic.
+
+[2025-01-24] regenerate_toc_calc.py - ELIMINAT (integrat a migrate_master)
+    Regenerava full 4-TOC_CALC amb Sample mapping.
+
+[2025-01-xx] hpsec_calibrate.py - Calibració KHP
+    Anàlisi KHP, cerca automàtica, gestió historial CALDATA.
+
+[2025-01-xx] hpsec_reports.py - Generació PDFs
+    Reports consolidació i cromatogrames.
+
+[2025-01-xx] hpsec_core.py - Funcions matemàtiques
+    Bi-gaussiana, detecció batman, reparació paràbola, SNR, R².
+
+[2025-01-xx] hpsec_utils.py - Utilitats generals
+    Baseline, detecció pics, normalització, helpers GUI.
+
+[2025-01-xx] analyze_khp_alignment.py - Anàlisi alineació KHP (WIP)
+    Compara shift DAD vs DOC per verificar FLUSH_TIME.
 
 ================================================================================
 
