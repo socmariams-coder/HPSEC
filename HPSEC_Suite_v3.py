@@ -1763,7 +1763,7 @@ class HPSECSuiteV3:
         messagebox.showerror("Error", f"Error durant la calibració:\n\n{error}")
 
     def _plot_calibration(self, result):
-        """Mostra gràfic de calibració amb cromatograma DOC i històric."""
+        """Mostra gràfic de calibració amb les dues rèpliques KHP i històric."""
         # Netejar canvas anterior
         for widget in self.cal_canvas_frame.winfo_children():
             widget.destroy()
@@ -1771,16 +1771,19 @@ class HPSECSuiteV3:
         khp_data = result.get('khp_data', {})
         calibration = result.get('calibration', {})
 
-        # Obtenir dades del cromatograma
-        t_doc = khp_data.get('t_doc')
-        y_doc = khp_data.get('y_doc')
-        t_dad = khp_data.get('t_dad')
-        y_dad = khp_data.get('y_dad_254')
-        peak_info = khp_data.get('peak_info', {})
+        # Obtenir rèpliques individuals
+        replicas = khp_data.get('replicas', [])
+        if not replicas:
+            # Si no hi ha replicas separades, usar all_khp_data
+            replicas = khp_data.get('all_khp_data', [])
+        if not replicas:
+            # Fallback: crear una sola "rèplica" amb les dades principals
+            replicas = [khp_data]
 
-        has_dad = t_dad is not None and y_dad is not None and len(t_dad) > 0
+        has_dad = any(r.get('t_dad') is not None and r.get('y_dad_254') is not None
+                     for r in replicas)
 
-        # Crear figura amb 3 subplots: DOC, DAD, Històric
+        # Crear figura amb 3 subplots: DOC (amb rèpliques), DAD, Històric
         fig = Figure(figsize=(10, 6), dpi=100)
 
         if has_dad:
@@ -1792,43 +1795,72 @@ class HPSECSuiteV3:
             ax2 = None
             ax3 = fig.add_subplot(122)  # Històric
 
-        # Plot DOC
-        if t_doc is not None and y_doc is not None and len(t_doc) > 0:
-            ax1.plot(t_doc, y_doc, color=COLORS["primary"], linewidth=1.2, label='DOC')
+        # Colors per rèpliques
+        rep_colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728']
 
-            # Marcar àrea del pic
-            left_idx = khp_data.get('peak_left_idx', peak_info.get('left_idx', 0))
-            right_idx = khp_data.get('peak_right_idx', peak_info.get('right_idx', len(y_doc)-1))
+        # Plot DOC - TOTES LES RÈPLIQUES
+        conc = khp_data.get('conc_ppm', 0)
+        areas_list = []
 
-            if 0 <= left_idx < len(t_doc) and 0 <= right_idx < len(t_doc):
-                ax1.fill_between(t_doc[left_idx:right_idx+1], y_doc[left_idx:right_idx+1],
-                                alpha=0.3, color=COLORS["success"], label='Àrea integrada')
+        for i, rep in enumerate(replicas):
+            t_doc = rep.get('t_doc')
+            y_doc = rep.get('y_doc')
 
-            # Marcar pic principal
-            t_max = peak_info.get('t_max', khp_data.get('t_doc_max', 0))
+            if t_doc is None or y_doc is None or len(t_doc) == 0:
+                continue
+
+            color = rep_colors[i % len(rep_colors)]
+            rep_name = rep.get('filename', f'R{i+1}')
+            # Simplificar nom
+            if '_R' in rep_name:
+                rep_name = 'R' + rep_name.split('_R')[-1].split('.')[0].split('_')[0]
+
+            area = rep.get('area', 0)
+            areas_list.append(area)
+
+            ax1.plot(t_doc, y_doc, color=color, linewidth=1.2,
+                    label=f'{rep_name}: {area:.1f}', alpha=0.8)
+
+            # Marcar pic principal de cada rèplica
+            t_max = rep.get('t_doc_max', 0)
             if t_max:
-                peak_idx = np.argmin(np.abs(t_doc - t_max))
-                ax1.plot(t_max, y_doc[peak_idx], 'o', color=COLORS["error"],
-                        markersize=8, label=f'Pic: {t_max:.2f} min')
+                peak_idx = np.argmin(np.abs(np.array(t_doc) - t_max))
+                ax1.plot(t_max, y_doc[peak_idx], 'o', color=color, markersize=6)
 
-            # Info al gràfic
-            area = khp_data.get('area', 0)
-            conc = khp_data.get('conc_ppm', 0)
-            ax1.set_title(f"Cromatograma KHP ({conc} ppm) - Àrea: {area:.1f}", fontsize=9)
-            ax1.set_xlabel("Temps (min)", fontsize=8)
-            ax1.set_ylabel("Senyal DOC (mV)", fontsize=8)
-            ax1.legend(loc='upper right', fontsize=7)
-            ax1.grid(True, alpha=0.3)
+        # Títol amb estadístiques
+        if len(areas_list) >= 2:
+            mean_area = np.mean(areas_list)
+            rsd = (np.std(areas_list) / mean_area * 100) if mean_area > 0 else 0
+            ax1.set_title(f"KHP{conc} - Mitjana: {mean_area:.1f} (RSD {rsd:.1f}%)", fontsize=9)
+        else:
+            ax1.set_title(f"KHP{conc} - Àrea: {areas_list[0]:.1f}" if areas_list else "KHP", fontsize=9)
 
-        # Plot DAD 254nm
+        ax1.set_xlabel("Temps (min)", fontsize=8)
+        ax1.set_ylabel("Senyal DOC (mV)", fontsize=8)
+        ax1.legend(loc='upper right', fontsize=7)
+        ax1.grid(True, alpha=0.3)
+
+        # Plot DAD 254nm - TOTES LES RÈPLIQUES
         if has_dad and ax2 is not None:
-            ax2.plot(t_dad, y_dad, color=COLORS["secondary"], linewidth=1.0, label='DAD 254nm')
+            for i, rep in enumerate(replicas):
+                t_dad = rep.get('t_dad')
+                y_dad = rep.get('y_dad_254')
 
-            t_dad_max = khp_data.get('t_dad_max', 0)
-            if t_dad_max:
-                dad_peak_idx = np.argmin(np.abs(t_dad - t_dad_max))
-                ax2.plot(t_dad_max, y_dad[dad_peak_idx], 'o', color=COLORS["error"],
-                        markersize=6, label=f'Pic: {t_dad_max:.2f} min')
+                if t_dad is None or y_dad is None or len(t_dad) == 0:
+                    continue
+
+                color = rep_colors[i % len(rep_colors)]
+                rep_name = rep.get('filename', f'R{i+1}')
+                if '_R' in rep_name:
+                    rep_name = 'R' + rep_name.split('_R')[-1].split('.')[0].split('_')[0]
+
+                ax2.plot(t_dad, y_dad, color=color, linewidth=1.0,
+                        label=rep_name, alpha=0.8)
+
+                t_dad_max = rep.get('t_dad_max', 0)
+                if t_dad_max and len(t_dad) > 0:
+                    dad_peak_idx = np.argmin(np.abs(np.array(t_dad) - t_dad_max))
+                    ax2.plot(t_dad_max, y_dad[dad_peak_idx], 'o', color=color, markersize=5)
 
             shift_sec = khp_data.get('shift_sec', 0)
             ax2.set_title(f"DAD 254nm - Shift: {shift_sec:.1f} s", fontsize=9)
