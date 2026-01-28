@@ -11,8 +11,9 @@ Conté tota la lògica per:
 Usat per HPSEC_Suite.py i batch_process.py
 """
 
-__version__ = "1.7.0"
+__version__ = "1.8.0"
 __version_date__ = "2026-01-28"
+# v1.8.0: Càlcul baseline amb finestres temporals (evita artefactes timeout)
 # v1.7.0: Estadístiques timing (HPLC + TOC + toc_settings) per planificació/QC
 # v1.6.0: Filtre injeccions control (MQ, NaOH) - configurable a hpsec_config.py
 # v1.5.0: Sistema de matching amb confiança (EXACT/NORMALIZED/FUZZY) + detecció orfes

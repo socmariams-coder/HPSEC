@@ -44,6 +44,8 @@ from hpsec_replica import (
     evaluate_replica as evaluate_replica_unified,
     select_best_replica as select_best_replica_unified,
     compare_replicas as compare_replicas_unified,
+    evaluate_dad, evaluate_dad_multi, compare_doc_dad,
+    compare_replicas_full,
 )
 from hpsec_consolidate import (
     consolidate_sequence,
@@ -60,6 +62,7 @@ from hpsec_reports import (
     generate_chromatograms_report,
     generate_all_reports,
 )
+from hpsec_utils import baseline_stats
 from hpsec_calibrate import (
     calibrate_sequence,
     analizar_khp_consolidado, analizar_khp_lote,
@@ -128,19 +131,6 @@ def avaluar_qualitat_doc(y):
     diffs = np.diff(y_clean)
     roughness = np.sum(np.abs(diffs))
     return roughness / area
-
-
-def avaluar_qualitat_dad(y):
-    """Avalua qualitat DAD - menor score = millor qualitat."""
-    if len(y) == 0:
-        return 999999
-    y = np.asarray(y, dtype=float)
-    negatius = y[y < 0]
-    score_negatius = np.sum(np.abs(negatius))
-    limit_baseline = np.percentile(y, 20)
-    baseline_points = y[y <= limit_baseline]
-    score_noise = np.std(baseline_points) * len(y) if len(baseline_points) > 0 else 0
-    return score_negatius + score_noise
 
 
 def alinear_senyals(t1, y1, t2, y2, t_min, t_max, threshold=0.0):
@@ -214,108 +204,20 @@ def calcular_estadistiques(t, y1, y2):
 
 
 # =============================================================================
-# MÈTRIQUES DAD - Avaluació individual de qualitat
+# MÈTRIQUES DAD - Usa hpsec_replica.evaluate_dad()
 # =============================================================================
 
-# Thresholds per DAD
+# Thresholds per DAD (compatibilitat amb codi antic)
 DAD_DERIVA_WARN = 10.0   # % deriva per WARN
 DAD_DERIVA_FAIL = 20.0   # % deriva per FAIL
 DAD_SOROLL_WARN = 2.0    # Soroll normalitzat per WARN
 DAD_SOROLL_FAIL = 5.0    # Soroll normalitzat per FAIL
 
 
-def calcular_deriva_baseline_dad(t, y, t_baseline_ini=0, t_baseline_fi=5, t_final_ini=50, t_final_fi=65):
-    """
-    Calcula la deriva de la línia base del DAD.
-
-    Compara la mitjana de la zona inicial (baseline) amb la zona final.
-    Retorna deriva com a percentatge del rang del senyal.
-
-    Args:
-        t: array de temps
-        y: array de senyal
-        t_baseline_ini, t_baseline_fi: rang temporal de la zona baseline inicial
-        t_final_ini, t_final_fi: rang temporal de la zona final
-
-    Returns:
-        deriva_pct: deriva relativa en percentatge (pot ser negatiu)
-    """
-    t = np.asarray(t, dtype=float)
-    y = np.asarray(y, dtype=float)
-
-    if len(t) < 10 or len(y) < 10:
-        return 0.0
-
-    # Zona inicial (baseline)
-    mask_ini = (t >= t_baseline_ini) & (t <= t_baseline_fi)
-    if np.sum(mask_ini) < 5:
-        mask_ini = np.arange(min(50, len(t)))  # Primers 50 punts
-    baseline_ini = np.mean(y[mask_ini]) if np.any(mask_ini) else 0
-
-    # Zona final
-    mask_fi = (t >= t_final_ini) & (t <= t_final_fi)
-    if np.sum(mask_fi) < 5:
-        mask_fi = np.arange(max(0, len(t)-50), len(t))  # Últims 50 punts
-    baseline_fi = np.mean(y[mask_fi]) if np.any(mask_fi) else 0
-
-    # Deriva absoluta
-    deriva = baseline_fi - baseline_ini
-
-    # Normalitzar pel rang del senyal
-    rang = np.max(y) - np.min(y)
-    if rang < 1e-6:
-        return 0.0
-
-    deriva_pct = (deriva / rang) * 100
-    return float(deriva_pct)
-
-
-def calcular_soroll_dad(t, y, t_baseline_ini=0, t_baseline_fi=5):
-    """
-    Calcula el soroll (roughness) del DAD a la zona de baseline.
-
-    Menor valor = menys soroll = millor qualitat.
-
-    Args:
-        t: array de temps
-        y: array de senyal
-        t_baseline_ini, t_baseline_fi: rang temporal de la zona baseline
-
-    Returns:
-        soroll: roughness normalitzat
-    """
-    t = np.asarray(t, dtype=float)
-    y = np.asarray(y, dtype=float)
-
-    if len(t) < 10 or len(y) < 10:
-        return 0.0
-
-    # Zona baseline
-    mask = (t >= t_baseline_ini) & (t <= t_baseline_fi)
-    if np.sum(mask) < 10:
-        mask = np.arange(min(100, len(t)))
-
-    y_baseline = y[mask]
-
-    if len(y_baseline) < 5:
-        return 0.0
-
-    # Roughness = suma de diferències absolutes consecutives
-    diffs = np.abs(np.diff(y_baseline))
-    roughness = np.mean(diffs)
-
-    # Normalitzar per l'amplitud del senyal complet
-    rang = np.max(y) - np.min(y)
-    if rang < 1e-6:
-        return 0.0
-
-    soroll_norm = (roughness / rang) * 100
-    return float(soroll_norm)
-
-
 def avaluar_qualitat_dad_replica(df_dad, wavelengths, is_bp=False):
     """
     Avalua la qualitat del DAD d'una rèplica individual.
+    Usa evaluate_dad de hpsec_replica internament.
 
     Args:
         df_dad: DataFrame amb columnes 'time (min)' i les wavelengths
@@ -343,16 +245,9 @@ def avaluar_qualitat_dad_replica(df_dad, wavelengths, is_bp=False):
 
     t = pd.to_numeric(df_dad[t_col[0]], errors='coerce').values
 
-    # Rangs segons mode
-    if is_bp:
-        t_bl_ini, t_bl_fi = 0, 3
-        t_fi_ini, t_fi_fi = 12, 18
-    else:
-        t_bl_ini, t_bl_fi = 0, 5
-        t_fi_ini, t_fi_fi = 50, 65
-
     derives = []
     sorolls = []
+    issues_all = []
 
     for wl in wavelengths:
         wl_str = str(wl)
@@ -364,18 +259,30 @@ def avaluar_qualitat_dad_replica(df_dad, wavelengths, is_bp=False):
         if len(y) < 10:
             continue
 
-        deriva = calcular_deriva_baseline_dad(t, y, t_bl_ini, t_bl_fi, t_fi_ini, t_fi_fi)
-        soroll = calcular_soroll_dad(t, y, t_bl_ini, t_bl_fi)
+        # Usar evaluate_dad de hpsec_replica
+        eval_result = evaluate_dad(t, y, wavelength=f"A{wl}")
 
-        result["per_wl"][wl] = {
-            "deriva": deriva,
-            "soroll": soroll,
-            "t": t,
-            "y": y
-        }
+        if eval_result.get("valid"):
+            # Convertir mAU a percentatge per compatibilitat
+            drift_mau = abs(eval_result.get("drift", 0))
+            drift_pct = eval_result.get("drift_pct", 0)
+            noise = eval_result.get("noise", 0)
 
-        derives.append(abs(deriva))
-        sorolls.append(soroll)
+            result["per_wl"][wl] = {
+                "deriva": drift_pct,
+                "soroll": noise,
+                "drift_mau": drift_mau,
+                "snr": eval_result.get("snr", 0),
+                "quality": eval_result.get("quality", "OK"),
+                "t": t,
+                "y": y
+            }
+
+            derives.append(drift_pct)
+            sorolls.append(noise)
+
+            if eval_result.get("issues"):
+                issues_all.extend(eval_result["issues"])
 
     if not derives:
         return result
@@ -383,14 +290,17 @@ def avaluar_qualitat_dad_replica(df_dad, wavelengths, is_bp=False):
     result["valid"] = True
     result["deriva_global"] = float(np.mean(derives))
     result["soroll_global"] = float(np.mean(sorolls))
+    result["issues"] = issues_all
 
-    # Determinar status
+    # Determinar status basat en hpsec_replica thresholds
     max_deriva = max(derives)
     max_soroll = max(sorolls)
 
+    # Usar thresholds de hpsec_replica (3.0 mAU critical, 1.0 warning)
+    # Però mantenir compatibilitat amb thresholds antics per %
     if max_deriva >= DAD_DERIVA_FAIL or max_soroll >= DAD_SOROLL_FAIL:
         result["status"] = "FAIL"
-    elif max_deriva >= DAD_DERIVA_WARN or max_soroll >= DAD_SOROLL_WARN:
+    elif max_deriva >= DAD_DERIVA_WARN or max_soroll >= DAD_SOROLL_WARN or issues_all:
         result["status"] = "WARN"
     else:
         result["status"] = "OK"
@@ -417,12 +327,20 @@ def seleccionar_millor_dad(qual_r1, qual_r2):
     if not qual_r2.get("valid"):
         return "1", "R2 no vàlid"
 
-    der1 = qual_r1["deriva_global"]
-    der2 = qual_r2["deriva_global"]
-    sroll1 = qual_r1["soroll_global"]
-    sroll2 = qual_r2["soroll_global"]
+    # Comparar status primer (FAIL < WARN < OK)
+    status_order = {"OK": 0, "WARN": 1, "FAIL": 2}
+    s1 = status_order.get(qual_r1.get("status", "OK"), 0)
+    s2 = status_order.get(qual_r2.get("status", "OK"), 0)
 
-    # Prioritzar menor deriva
+    if s1 < s2:
+        return "1", f"Millor qualitat DAD ({qual_r1['status']} vs {qual_r2['status']})"
+    if s2 < s1:
+        return "2", f"Millor qualitat DAD ({qual_r2['status']} vs {qual_r1['status']})"
+
+    # Si igual status, mirar deriva
+    der1 = qual_r1.get("deriva_global", 0)
+    der2 = qual_r2.get("deriva_global", 0)
+
     if abs(der1 - der2) > 3:  # Diferència significativa en deriva
         if der1 < der2:
             return "1", f"Menys deriva ({der1:.1f}% vs {der2:.1f}%)"
@@ -430,6 +348,9 @@ def seleccionar_millor_dad(qual_r1, qual_r2):
             return "2", f"Menys deriva ({der2:.1f}% vs {der1:.1f}%)"
 
     # Si deriva similar, mirar soroll
+    sroll1 = qual_r1.get("soroll_global", 0)
+    sroll2 = qual_r2.get("soroll_global", 0)
+
     if sroll1 < sroll2:
         return "1", f"Menys soroll ({sroll1:.2f} vs {sroll2:.2f})"
     elif sroll2 < sroll1:
@@ -441,7 +362,7 @@ def seleccionar_millor_dad(qual_r1, qual_r2):
 # =============================================================================
 # VERSIÓ I CONFIGURACIÓ
 # =============================================================================
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 APP_NAME = "HPSEC Suite"
 
 # Colors corporatius
@@ -832,96 +753,7 @@ def get_samples_stats(seq_path, mostra_name, mode=None):
     }
 
 
-def analyze_sample_areas(t_doc, y_doc, df_dad, peak_info, config=None):
-    """
-    Analitza una mostra i calcula totes les àrees (DOC + DAD wavelengths).
-
-    Args:
-        t_doc: Array de temps DOC (minuts)
-        y_doc: Array de senyal DOC (net, amb baseline corregida)
-        df_dad: DataFrame amb dades DAD (columnes: time (min), 210, 254, 280, etc.)
-        peak_info: Dict amb info del pic principal (de detect_main_peak)
-        config: Configuració (opcional)
-
-    Returns:
-        Dict amb totes les àrees calculades
-    """
-    from scipy.integrate import trapezoid
-
-    # Longituds d'ona objectiu (de la config)
-    target_wls = config.get('target_wavelengths', [220, 252, 254, 272, 290, 362]) if config else [220, 252, 254, 272, 290, 362]
-
-    result = {
-        'doc_area': 0.0,
-        'doc_t_retention': 0.0,
-        'doc_t_start': 0.0,
-        'doc_t_end': 0.0,
-        'dad_wavelengths': {},  # Per guardar totes les longituds d'ona
-        'valid': False,
-    }
-    # Inicialitzar àrees per cada longitud d'ona objectiu
-    for wl in target_wls:
-        result[f'a{wl}_area'] = 0.0
-
-    # Verificar que tenim dades
-    if t_doc is None or y_doc is None or len(t_doc) < 10:
-        return result
-
-    t_doc = np.asarray(t_doc).flatten()
-    y_doc = np.asarray(y_doc).flatten()
-
-    # Àrea DOC
-    if peak_info and peak_info.get('valid'):
-        result['doc_area'] = peak_info.get('area', 0.0)
-        result['doc_t_retention'] = peak_info.get('t_max', 0.0)
-        result['doc_t_start'] = peak_info.get('t_start', 0.0)
-        result['doc_t_end'] = peak_info.get('t_end', 0.0)
-        result['valid'] = True
-
-        # Usar límits del pic DOC per integrar DAD
-        t_start = result['doc_t_start']
-        t_end = result['doc_t_end']
-
-        # Àrees DAD per cada longitud d'ona
-        if df_dad is not None and not df_dad.empty and 'time (min)' in df_dad.columns:
-            t_dad = pd.to_numeric(df_dad['time (min)'], errors='coerce').to_numpy()
-
-            # Trobar índexs corresponents als límits del pic DOC
-            if t_start > 0 and t_end > t_start:
-                dad_left_idx = int(np.searchsorted(t_dad, t_start))
-                dad_right_idx = int(np.searchsorted(t_dad, t_end))
-
-                # Assegurar bounds vàlids
-                dad_left_idx = max(0, min(dad_left_idx, len(t_dad) - 1))
-                dad_right_idx = max(0, min(dad_right_idx, len(t_dad) - 1))
-
-                if dad_right_idx > dad_left_idx:
-                    # Calcular àrea per totes les longituds d'ona disponibles
-                    for col in df_dad.columns:
-                        if col == 'time (min)':
-                            continue
-                        try:
-                            wl_str = str(col)
-                            y_wl = pd.to_numeric(df_dad[col], errors='coerce').to_numpy()
-                            if len(y_wl) > dad_right_idx:
-                                area_wl = float(trapezoid(
-                                    y_wl[dad_left_idx:dad_right_idx+1],
-                                    t_dad[dad_left_idx:dad_right_idx+1]
-                                ))
-                                # Guardar amb clau a{wl}_area si és objectiu
-                                try:
-                                    wl_int = int(wl_str)
-                                    if wl_int in target_wls:
-                                        result[f'a{wl_int}_area'] = area_wl
-                                except ValueError:
-                                    pass
-                                # Guardar sempre al diccionari general
-                                result['dad_wavelengths'][wl_str] = area_wl
-                        except:
-                            continue
-
-    return result
-
+# NOTA: analyze_sample_areas importada de hpsec_consolidate
 
 def create_sample_entry(seq_path, mostra, replica, date, mode, doc_mode,
                         sample_analysis, calibration=None):
@@ -983,72 +815,7 @@ def create_sample_entry(seq_path, mostra, replica, date, mode, doc_mode,
     return entry
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# FUNCIONS STANDALONE PER COMPARTIR AMB BATCH
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def write_consolidated_excel(out_path, mostra, rep, seq_out, date_master,
-                             method, doc_mode, fitxer_doc, fitxer_dad,
-                             st_doc, st_dad, t_doc, y_doc_raw, y_doc_net,
-                             baseline, df_dad, peak_info, sample_analysis=None,
-                             master_file=None, row_start=None, row_end=None):
-    """
-    Escriu fitxer Excel consolidat amb àrees calculades.
-
-    Funció standalone que pot ser usada tant per la Suite com pel batch.
-    """
-    sample_analysis = sample_analysis or {}
-
-    id_rows = [
-        ("Date", date_master),
-        ("Method", method),
-        ("Mostra", mostra),
-        ("Rèplica", rep),
-        ("SEQ", seq_out),
-        ("DOC_MODE", doc_mode),
-        ("Fitxer_DOC_Original", fitxer_doc),
-        ("Fitxer_DAD_Original", fitxer_dad),
-        ("Estat_DOC", st_doc),
-        ("Estat_DAD", st_dad),
-        ("DOC_N_POINTS", len(t_doc)),
-        ("DAD_N_POINTS", len(df_dad) if not df_dad.empty else 0),
-        # Àrees DOC
-        ("PEAK_VALID", peak_info.get("valid", False)),
-        ("DOC_AREA", sample_analysis.get("doc_area", peak_info.get("area", 0.0))),
-        ("DOC_T_RETENTION", sample_analysis.get("doc_t_retention", peak_info.get("t_max", 0.0))),
-        ("DOC_T_START", sample_analysis.get("doc_t_start", peak_info.get("t_start", 0.0))),
-        ("DOC_T_END", sample_analysis.get("doc_t_end", peak_info.get("t_end", 0.0))),
-        # Àrees DAD (6 longituds d'ona)
-        ("A220_AREA", sample_analysis.get("a220_area", 0.0)),
-        ("A252_AREA", sample_analysis.get("a252_area", 0.0)),
-        ("A254_AREA", sample_analysis.get("a254_area", 0.0)),
-        ("A272_AREA", sample_analysis.get("a272_area", 0.0)),
-        ("A290_AREA", sample_analysis.get("a290_area", 0.0)),
-        ("A362_AREA", sample_analysis.get("a362_area", 0.0)),
-    ]
-
-    if doc_mode == "DIRECT" and master_file:
-        id_rows.append(("Fitxer_Master", master_file))
-        if row_start is not None:
-            id_rows.append(("DOC_ROW_START", row_start))
-        if row_end is not None:
-            id_rows.append(("DOC_ROW_END", row_end))
-
-    df_id = pd.DataFrame(id_rows, columns=["Camp", "Valor"])
-
-    df_doc_out = pd.DataFrame({
-        "time (min)": t_doc,
-        "DOC (mAU)": y_doc_net,
-        "DOC_RAW (mAU)": y_doc_raw,
-        "BASELINE (mAU)": baseline,
-    })
-
-    with pd.ExcelWriter(out_path, engine="openpyxl") as writer:
-        df_id.to_excel(writer, sheet_name="ID", index=False)
-        df_doc_out.to_excel(writer, sheet_name="DOC", index=False)
-        if not df_dad.empty:
-            df_dad.to_excel(writer, sheet_name="DAD", index=False)
-
+# NOTA: write_consolidated_excel importada de hpsec_consolidate
 
 def scan_seq_folders_for_khp(base_path, progress_callback=None):
     """
@@ -1685,26 +1452,7 @@ def clean_sample_name(sample_desc):
     return re.sub(r"[^A-Za-z0-9]+", "", s) or "SAMPLE"
 
 
-def get_baseline_correction(t, y, mode_type="COL", config=None):
-    """Correcció de baseline segons mode BP o COLUMN."""
-    config = config or DEFAULT_CONFIG
-    if mode_type == "BP":
-        mask = t < config["bp_baseline_win"]
-        val = mode_robust(y[mask]) if np.sum(mask) > 10 else float(np.nanmin(y))
-        return np.full_like(y, val)
-
-    mask = t < config["col_baseline_start"]
-    val = mode_robust(y[mask]) if np.sum(mask) > 10 else float(np.nanmin(y))
-    return np.full_like(y, val)
-
-
-def apply_smoothing(y):
-    """Aplica suavitzat Savgol."""
-    y = np.asarray(y)
-    if len(y) < 11:
-        return y
-    return savgol_filter(y, 11, 3)
-
+# NOTA: get_baseline_correction i apply_smoothing importades de hpsec_consolidate
 
 def read_master_date(seq_folder):
     """Llegeix data del fitxer mestre."""
@@ -1730,87 +1478,8 @@ def read_master_date(seq_folder):
     return ""
 
 
-def llegir_doc_uib(path):
-    """Llegeix fitxer DOC format UIB (CSV tab-separated)."""
-    for enc in ["utf-16", "utf-8"]:
-        try:
-            df = pd.read_csv(path, sep="\t", encoding=enc, header=None, engine="python")
-            df = df.iloc[:, [0, 1]]
-            df.columns = ["time (min)", "DOC"]
-            return df, f"OK{' (UTF-8)' if enc == 'utf-8' else ''}"
-        except Exception:
-            continue
-    return pd.DataFrame(), "Error"
-
-
-def llegir_dad_export3d(path):
-    """Llegeix fitxer DAD Export3D (CSV comma-separated)."""
-    for enc in ["utf-16", "utf-8"]:
-        try:
-            df = pd.read_csv(path, sep=",", encoding=enc, engine="python")
-            if df.shape[1] == 0:
-                return pd.DataFrame(), "Buit"
-            cols = list(df.columns)
-            cols[0] = "time (min)"
-            out_cols = [cols[0]]
-            for c in cols[1:]:
-                sc = str(c).strip()
-                try:
-                    v = float(sc)
-                    out_cols.append(str(int(v)) if v.is_integer() else str(v))
-                except Exception:
-                    out_cols.append(sc)
-            df.columns = out_cols
-            return df, f"OK{' (UTF-8)' if enc == 'utf-8' else ''}"
-        except Exception:
-            continue
-    return pd.DataFrame(), "Error"
-
-
-def netejar_nom_uib(nom_fitxer):
-    """Neteja nom de fitxer UIB i extreu mostra/rèplica."""
-    stem = os.path.splitext(nom_fitxer)[0]
-    stem = re.sub(r"UIB1B\d*", "", stem, flags=re.IGNORECASE)
-    tokens = [t for t in re.split(r"[_\-\s]+", stem) if t]
-
-    rep = None
-    if tokens:
-        last = tokens[-1]
-        if last.isdigit():
-            rep = last
-            tokens = tokens[:-1]
-        else:
-            m = re.fullmatch(r"R(\d+)", last, flags=re.IGNORECASE)
-            if m:
-                rep = m.group(1)
-                tokens = tokens[:-1]
-
-    if rep is None:
-        rep = "1"
-
-    mostra = "_".join(tokens).strip("_")
-    if not mostra:
-        mostra = os.path.splitext(nom_fitxer)[0]
-    return mostra, rep
-
-
-def trobar_excel_mestre(folder_seq):
-    """Troba Excel mestre amb sheets 2-TOC i 4-SEQ_DATA."""
-    candidats = []
-    for ext in ("*.xlsx", "*.XLSX", "*.xlsm", "*.XLSM"):
-        candidats.extend(glob.glob(os.path.join(folder_seq, ext)))
-    candidats = [p for p in candidats if not os.path.basename(p).startswith("~$")]
-
-    for p in sorted(candidats):
-        try:
-            xl = pd.ExcelFile(p, engine="openpyxl")
-            s = set(xl.sheet_names)
-            if "2-TOC" in s and "4-SEQ_DATA" in s:
-                return p
-        except Exception:
-            continue
-    return None
-
+# NOTA: llegir_doc_uib, llegir_dad_export3d, netejar_nom_uib, trobar_excel_mestre
+# importats de hpsec_consolidate (eliminades còpies locals)
 
 def llegir_master_direct(mestre):
     """Llegeix TOC i SEQ_DATA del mestre."""
@@ -1819,28 +1488,7 @@ def llegir_master_direct(mestre):
     return df_toc, df_seq
 
 
-def extract_doc_from_master(df_toc, row_ini, row_fi, start_dt):
-    """Extreu segment DOC del mestre."""
-    time_col = "Date Started" if "Date Started" in df_toc.columns else df_toc.columns[3]
-    if "TOC(ppb)" in df_toc.columns:
-        sig_col = "TOC(ppb)"
-    elif "TC(ppb)" in df_toc.columns:
-        sig_col = "TC(ppb)"
-    else:
-        sig_col = df_toc.columns[5]
-
-    start_idx = max(int(row_ini) - 1, 0)
-    end_idx = max(int(row_fi), start_idx)
-    seg = df_toc.iloc[start_idx:end_idx].copy()
-
-    seg_time = pd.to_datetime(seg[time_col], errors="coerce")
-    t0 = pd.to_datetime(start_dt, errors="coerce")
-    t_min = (seg_time - t0).dt.total_seconds() / 60.0
-
-    df_doc = pd.DataFrame({"time (min)": t_min, "DOC": pd.to_numeric(seg[sig_col], errors="coerce")})
-    df_doc = df_doc.dropna(subset=["time (min)", "DOC"])
-    return df_doc
-
+# NOTA: extract_doc_from_master importat de hpsec_consolidate
 
 def list_dad_files(folder_export3d, folder_csv):
     """Llista fitxers DAD disponibles."""
@@ -1993,367 +1641,14 @@ def choose_best_candidate(target_key, rep, dad_files, used_files=None):
     return None, "NO_DATA"
 
 
-def process_dad(df_dad, config=None):
-    """Processa DAD: extreu wavelengths i submostreig."""
-    config = config or DEFAULT_CONFIG
-    if df_dad is None or df_dad.empty:
-        return pd.DataFrame()
-
-    target_wls = config["target_wavelengths"]
-    cols_to_keep = ["time (min)"]
-
-    for wl in target_wls:
-        wl_str = str(wl)
-        if wl_str in df_dad.columns:
-            cols_to_keep.append(wl_str)
-
-    if len(cols_to_keep) == 1:
-        return pd.DataFrame()
-
-    df_filtered = df_dad[cols_to_keep].copy()
-
-    subsample = config["dad_subsample"]
-    indices = [0] + list(range(subsample, len(df_filtered), subsample))
-    df_sub = df_filtered.iloc[indices].reset_index(drop=True)
-
-    return df_sub
-
-
 # =============================================================================
-# FUNCIONS CORE (de hpsec_utils expandit)
+# NOTA: Funcions eliminades (importades de mòduls):
+# - process_dad -> hpsec_consolidate
+# - baseline_stats -> hpsec_utils
+# - baseline_stats_time -> hpsec_calibrate
+# - detect_main_peak -> hpsec_consolidate
+# - detect_batman, detect_timeout, detect_ears -> DEPRECATED (usar hpsec_replica)
 # =============================================================================
-def baseline_stats(y, pct_low=10, pct_high=30):
-    """Calcula estadístiques de la baseline usant percentils (mètode legacy)."""
-    y = np.asarray(y, dtype=float)
-    y = y[np.isfinite(y)]
-
-    if len(y) < 10:
-        return {"mean": 0.0, "std": 0.0, "threshold_3sigma": 0.0}
-
-    p_low = np.percentile(y, pct_low)
-    p_high = np.percentile(y, pct_high)
-    mask = (y >= p_low) & (y <= p_high)
-    baseline_points = y[mask]
-
-    if len(baseline_points) < 5:
-        baseline_points = y[y <= p_high]
-
-    if len(baseline_points) < 2:
-        return {"mean": float(p_low), "std": 0.0, "threshold_3sigma": float(p_low)}
-
-    mean_val = float(np.mean(baseline_points))
-    std_val = float(np.std(baseline_points))
-
-    return {
-        "mean": mean_val,
-        "std": std_val,
-        "threshold_3sigma": mean_val + 3.0 * std_val
-    }
-
-
-def baseline_stats_time(t, y, t_start=0, t_end=2.0, fallback_pct=10):
-    """
-    Calcula estadístiques de la baseline usant una finestra temporal específica.
-
-    Millor per BP on el pic ocupa gran part del cromatograma.
-
-    Args:
-        t: array de temps (min)
-        y: array de senyal
-        t_start: inici finestra baseline (min)
-        t_end: final finestra baseline (min)
-        fallback_pct: si no hi ha prou punts, usar primers X% del senyal
-
-    Returns:
-        dict amb mean, std, threshold_3sigma
-    """
-    t = np.asarray(t, dtype=float)
-    y = np.asarray(y, dtype=float)
-
-    # Filtrar NaN
-    valid = np.isfinite(t) & np.isfinite(y)
-    t, y = t[valid], y[valid]
-
-    if len(y) < 10:
-        return {"mean": 0.0, "std": 0.0, "threshold_3sigma": 0.0}
-
-    # Seleccionar punts dins la finestra temporal
-    mask = (t >= t_start) & (t <= t_end)
-    baseline_points = y[mask]
-
-    # Fallback: si no hi ha prou punts, usar primers X%
-    if len(baseline_points) < 10:
-        n_fallback = max(10, int(len(y) * fallback_pct / 100))
-        baseline_points = y[:n_fallback]
-
-    if len(baseline_points) < 2:
-        return {"mean": float(np.median(y)), "std": 0.0, "threshold_3sigma": float(np.median(y))}
-
-    mean_val = float(np.mean(baseline_points))
-    std_val = float(np.std(baseline_points))
-
-    # Evitar std = 0
-    if std_val < 1e-6:
-        std_val = 0.01 * abs(mean_val) if abs(mean_val) > 0 else 0.01
-
-    return {
-        "mean": mean_val,
-        "std": std_val,
-        "threshold_3sigma": mean_val + 3.0 * std_val
-    }
-
-
-def detect_main_peak(t, y, min_prominence_pct=5.0, is_bp=None):
-    """Detecta el pic principal en el senyal amb límits d'integració correctes."""
-    t = np.asarray(t, dtype=float)
-    y = np.asarray(y, dtype=float)
-
-    if len(t) < 10 or len(y) < 10:
-        return {"valid": False}
-
-    y_max = float(np.nanmax(y))
-    if y_max < 1e-6:
-        return {"valid": False}
-
-    # Detectar si és BP automàticament si no s'especifica
-    if is_bp is None:
-        t_max_chromato = float(np.max(t))
-        is_bp = t_max_chromato < 20  # Cromatograma curt = BP
-
-    min_prominence = y_max * (min_prominence_pct / 100.0)
-    peaks, props = find_peaks(y, prominence=min_prominence, width=3)
-
-    if len(peaks) == 0:
-        return {"valid": False}
-
-    idx = int(np.argmax(props["prominences"]))
-    main_peak = int(peaks[idx])
-
-    # Calcular baseline segons mode
-    n = len(y)
-    if is_bp:
-        # BP: baseline dels últims punts (després del pic)
-        n_edge = max(20, n // 5)
-        baseline_level = np.median(y[-n_edge:])
-    else:
-        n_edge = max(10, n // 10)
-        baseline_level = min(np.median(y[:n_edge]), np.median(y[-n_edge:]))
-
-    # Usar find_peak_boundaries per límits correctes
-    left_idx, right_idx = find_peak_boundaries(t, y, main_peak, baseline_level, threshold_pct=5.0, is_bp=is_bp)
-
-    # Assegurar rang vàlid
-    left_idx = max(0, left_idx)
-    right_idx = min(len(y) - 1, right_idx)
-
-    if right_idx > left_idx:
-        area = float(trapezoid(y[left_idx:right_idx + 1], t[left_idx:right_idx + 1]))
-    else:
-        area = 0.0
-
-    return {
-        "valid": True,
-        "area": area,
-        "t_start": float(t[left_idx]),
-        "t_max": float(t[main_peak]),
-        "t_end": float(t[right_idx]),
-        "height": float(y[main_peak]),
-        "prominence": float(props["prominences"][idx]),
-        "left_idx": left_idx,
-        "right_idx": right_idx,
-        "peak_idx": main_peak,
-        "is_bp": is_bp,
-        "baseline_level": float(baseline_level),
-    }
-
-
-def detect_batman(t, y, config):
-    """[DEPRECATED] Usar hpsec_replica.evaluate_replica() en lloc d'això."""
-    t = np.asarray(t, dtype=float)
-    y = np.asarray(y, dtype=float)
-
-    if t.size < 10 or y.size < 10:
-        return None
-
-    max_sep = config.get("batman_max_sep_min", 0.5)
-    min_height_pct = config.get("batman_min_height_pct", 15.0)
-    min_sigma = config.get("batman_min_sigma", 3.0)
-
-    bl_stats = baseline_stats(y)
-    threshold_sigma = bl_stats["mean"] + min_sigma * bl_stats["std"]
-
-    y_min, y_max = float(np.nanmin(y)), float(np.nanmax(y))
-    signal_range = y_max - y_min
-    if signal_range < 1e-6:
-        return None
-
-    min_height = y_min + (min_height_pct / 100.0) * signal_range
-
-    peaks, _ = find_peaks(y, prominence=0.05, distance=15)
-    if len(peaks) < 2:
-        return None
-
-    best = None
-    best_drop = -np.inf
-
-    for i in range(len(peaks) - 1):
-        left, right = int(peaks[i]), int(peaks[i + 1])
-        if right <= left + 2:
-            continue
-
-        sep_min = float(t[right] - t[left])
-        if sep_min > max_sep:
-            continue
-
-        avg_peak = float((y[left] + y[right]) / 2.0)
-        if avg_peak < min_height or y[left] < threshold_sigma or y[right] < threshold_sigma:
-            continue
-
-        seg = y[left:right + 1]
-        idx_v = left + int(np.argmin(seg))
-        val_v = float(y[idx_v])
-
-        if avg_peak <= 0:
-            continue
-
-        drop_pct = float((avg_peak - val_v) / avg_peak)
-        if drop_pct < 0.02 or drop_pct > 0.35:
-            continue
-
-        if drop_pct > best_drop:
-            best_drop = drop_pct
-            best = {
-                "drop_pct": drop_pct,
-                "t_left": float(t[left]),
-                "t_right": float(t[right]),
-                "t_valley": float(t[idx_v]),
-            }
-
-    return best
-
-
-def detect_timeout(t, y, config, is_bp=False):
-    """[DEPRECATED] Usar hpsec_replica.evaluate_replica() - mètode dt intervals."""
-    if len(t) < 20:
-        return None
-
-    w_start, w_end = (0.0, 10.0) if is_bp else (15.0, 35.0)
-    mask = (t >= w_start) & (t <= w_end)
-    if np.sum(mask) < 10:
-        return None
-
-    t_w, y_w = t[mask], y[mask]
-
-    baseline = float(np.percentile(y_w, 10))
-    peak_val = float(np.max(y_w))
-    peak_height = peak_val - baseline
-    if peak_height <= 0:
-        return None
-
-    min_height_frac = config.get("timeout_min_height_frac", 0.30)
-    min_plat_height = baseline + min_height_frac * peak_height
-
-    fine_res = 0.1
-    num_steps = int((t_w[-1] - t_w[0]) / fine_res)
-    chunks = []
-
-    for i in range(num_steps):
-        t_center = t_w[0] + i * fine_res
-        mask_c = (t_w >= t_center) & (t_w < t_center + fine_res)
-        if np.sum(mask_c) < 2:
-            continue
-        t_chunk, y_chunk = t_w[mask_c], y_w[mask_c]
-        if len(t_chunk) >= 2:
-            slope = abs(np.polyfit(t_chunk, y_chunk, 1)[0])
-            chunks.append({"slope": slope, "t_start": float(t_chunk[0]), "t_end": float(t_chunk[-1])})
-
-    if not chunks:
-        return None
-
-    all_slopes = [c["slope"] for c in chunks]
-    thresh = np.percentile(all_slopes, 30)
-
-    islands = []
-    current = []
-    for c in chunks:
-        if c["slope"] <= thresh:
-            current.append(c)
-        else:
-            if current:
-                islands.append(current)
-                current = []
-    if current:
-        islands.append(current)
-
-    for isl in islands:
-        t_s, t_e = isl[0]["t_start"], isl[-1]["t_end"]
-        dur = t_e - t_s
-        if not (0.8 <= dur <= 3.0):
-            continue
-
-        seg_mask = (t_w >= t_s) & (t_w <= t_e)
-        y_mean = float(np.mean(y_w[seg_mask]))
-
-        if y_mean < min_plat_height:
-            continue
-
-        return {"t_start": t_s, "t_end": t_e, "dur": dur, "y_mean": y_mean}
-
-    return None
-
-
-def detect_ears(t, y, config):
-    """[DEPRECATED] No funciona bé - eliminat de hpsec_replica."""
-    t = np.asarray(t, dtype=float)
-    y = np.asarray(y, dtype=float)
-
-    if t.size < 10:
-        return []
-
-    i_peak = int(np.argmax(y))
-    peak_val = float(y[i_peak])
-    baseline = float(np.percentile(y, 10))
-    peak_height = peak_val - baseline
-
-    if peak_height <= 0:
-        return []
-
-    min_frac = config.get("ear_min_height_frac", 0.05)
-    min_level = baseline + min_frac * peak_height
-
-    dy = np.diff(y)
-    ears = []
-
-    # Pujada
-    i = 0
-    while i < i_peak:
-        if y[i] < min_level:
-            i += 1
-            continue
-        if dy[i] < 0:
-            start_idx = i
-            while i < i_peak and dy[i] < 0:
-                i += 1
-            ears.append({"side": "pujada", "t_start": float(t[start_idx]), "t_end": float(t[i])})
-        else:
-            i += 1
-
-    # Baixada
-    i = i_peak
-    while i < len(dy):
-        if y[i] < min_level:
-            i += 1
-            continue
-        if dy[i] > 0:
-            start_idx = i
-            while i < len(dy) and dy[i] > 0:
-                i += 1
-            ears.append({"side": "baixada", "t_start": float(t[start_idx]), "t_end": float(t[i])})
-        else:
-            i += 1
-
-    return ears
-
 
 def calcular_kpis(t, y, config):
     """Calcula KPIs per fraccions de temps."""
@@ -2375,27 +1670,6 @@ def calcular_kpis(t, y, config):
             kpis[f"{nom}_pct"] = 100.0 * kpis[nom] / kpis["total"]
 
     return kpis
-
-
-def netejar_baseline(y):
-    """Neteja la baseline del senyal."""
-    if len(y) == 0:
-        return y
-    baseline = np.percentile(y, 1)
-    y_clean = y - baseline
-    y_clean[y_clean < 0] = 0
-    return y_clean
-
-
-def calcular_roughness(y):
-    """Calcula roughness normalitzat."""
-    if len(y) < 2:
-        return 999999
-    y_clean = netejar_baseline(y)
-    area = np.sum(y_clean)
-    if area < 1e-3:
-        return 999999
-    return np.sum(np.abs(np.diff(y_clean))) / area
 
 
 # =============================================================================
@@ -5929,9 +5203,14 @@ class HPSECSuite:
                         except Exception as e:
                             print(f"Error comparant DAD {wl}nm: {e}")
 
-                    # Scores de qualitat
-                    dad_quality_scores[rep_ids[0]].append(avaluar_qualitat_dad(y_dad1))
-                    dad_quality_scores[rep_ids[1]].append(avaluar_qualitat_dad(y_dad2))
+                    # Scores de qualitat (usant evaluate_dad de hpsec_replica)
+                    eval1 = evaluate_dad(t_dad1, y_dad1, wavelength=f"A{wl}")
+                    eval2 = evaluate_dad(t_dad2, y_dad2, wavelength=f"A{wl}")
+                    # Score combinat: drift + noise (menor = millor)
+                    score1 = (eval1.get("drift", 0) or 0) + (eval1.get("noise", 0) or 0) * 10
+                    score2 = (eval2.get("drift", 0) or 0) + (eval2.get("noise", 0) or 0) * 10
+                    dad_quality_scores[rep_ids[0]].append(score1)
+                    dad_quality_scores[rep_ids[1]].append(score2)
 
             # Seleccionar millor DAD (mitjana de scores menor = millor)
             if dad_quality_scores[rep_ids[0]] and dad_quality_scores[rep_ids[1]]:
@@ -5992,8 +5271,8 @@ class HPSECSuite:
 
             y_clean = netejar_baseline(y)
 
-            # Qualitat DOC
-            roughness = calcular_roughness(y)
+            # Qualitat DOC (roughness normalitzat)
+            roughness = avaluar_qualitat_doc(y)
             bl_stats = baseline_stats(y_clean)
 
             # Pic principal
