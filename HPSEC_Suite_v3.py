@@ -2062,6 +2062,21 @@ class HPSECSuiteV3:
                     t, y = self._read_doc_from_file(filepath)
                     evaluation = evaluate_replica(t, y, method=mode)
                     evaluation['filepath'] = filepath
+
+                    # Llegir àrea total de la fulla AREAS
+                    try:
+                        df_areas = pd.read_excel(filepath, sheet_name='AREAS')
+                        total_row = df_areas[df_areas['Fraction'] == 'total']
+                        if not total_row.empty:
+                            evaluation['area_total'] = float(total_row['DOC'].iloc[0])
+                            # Guardar també àrees per fraccions
+                            for _, row in df_areas.iterrows():
+                                frac = row['Fraction']
+                                if frac != 'total':
+                                    evaluation[f'area_{frac}'] = float(row['DOC'])
+                    except Exception:
+                        pass  # Si no hi ha AREAS, usar l'àrea calculada
+
                     evals[rep_id] = evaluation
                 except Exception as e:
                     evals[rep_id] = {'valid': False, 'error': str(e), 'filepath': filepath}
@@ -2119,6 +2134,25 @@ class HPSECSuiteV3:
             values = (sample_name, estat, doc_r_str, doc_diff_str,
                      f"R{sel_doc}", "-", f"R{sel_dad}")
 
+            # Obtenir àrea de la rèplica seleccionada (preferir area_total de AREAS sheet)
+            sel_area = None
+            sel_eval = evals.get(sel_doc, {})
+            if sel_eval.get('area_total'):
+                sel_area = sel_eval['area_total']
+            elif sel_eval.get('area'):
+                sel_area = sel_eval['area']
+
+            # Obtenir àrees per fraccions
+            areas_by_fraction = {}
+            for key in ['area_BioP', 'area_HS', 'area_BB', 'area_SB', 'area_LMW']:
+                if key in sel_eval:
+                    areas_by_fraction[key.replace('area_', '')] = sel_eval[key]
+
+            # Calcular concentració si tenim KHP
+            concentration = None
+            if sel_area and self.khp_area and self.khp_conc:
+                concentration = (sel_area / self.khp_area) * self.khp_conc
+
             # Guardar resultats
             self.selected_replicas[sample_name] = {
                 "sel_doc": sel_doc,
@@ -2127,6 +2161,9 @@ class HPSECSuiteV3:
                 "evals": evals,
                 "doc_r": doc_r,
                 "doc_diff": doc_diff,
+                "area": sel_area,
+                "areas_fraction": areas_by_fraction,
+                "concentration": concentration,
             }
 
             # Actualitzar taula
@@ -2343,19 +2380,42 @@ class HPSECSuiteV3:
         self.export_summary.configure(text=msg)
 
     def _export_excel(self, path):
-        """Exporta resultats a Excel."""
+        """Exporta resultats a Excel amb concentracions i àrees per fracció."""
         rows = []
         for name, data in self.selected_replicas.items():
-            rows.append({
+            row = {
                 "Mostra": name,
                 "Sel_DOC": f"R{data.get('sel_doc', '?')}",
                 "Sel_DAD": f"R{data.get('sel_dad', '?')}",
                 "Pearson_R": data.get('doc_r'),
                 "Diff_Pct": data.get('doc_diff'),
-            })
+                "Area_Total": data.get('area'),
+            }
+
+            # Afegir àrees per fracció
+            fractions = data.get('areas_fraction', {})
+            for frac in ['BioP', 'HS', 'BB', 'SB', 'LMW']:
+                row[f'Area_{frac}'] = fractions.get(frac)
+
+            # Afegir concentració si disponible
+            if data.get('concentration') is not None:
+                row["Conc_ppm"] = data.get('concentration')
+
+            rows.append(row)
 
         df = pd.DataFrame(rows)
-        df.to_excel(path, index=False)
+
+        # Afegir info KHP a la capçalera
+        with pd.ExcelWriter(path, engine='openpyxl') as writer:
+            # Escriure dades
+            df.to_excel(writer, index=False, sheet_name='Resultats', startrow=3)
+
+            # Afegir capçalera amb info KHP
+            ws = writer.sheets['Resultats']
+            ws['A1'] = f"SEQ: {os.path.basename(self.seq_path)}"
+            if self.khp_area and self.khp_conc:
+                ws['A2'] = f"KHP: Àrea={self.khp_area:.1f}, Conc={self.khp_conc} ppm"
+                ws['E2'] = f"Fórmula: Conc = (Àrea_mostra / {self.khp_area:.1f}) × {self.khp_conc}"
 
     def _export_done(self, check_folder):
         """Callback quan l'exportació acaba."""
