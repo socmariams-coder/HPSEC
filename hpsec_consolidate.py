@@ -37,7 +37,10 @@ from hpsec_core import (
     detect_timeout,
     format_timeout_status,
     TIMEOUT_CONFIG,
-    calc_snr
+    calc_snr,
+    detect_batman,
+    repair_with_parabola,
+    detect_main_peak,
 )
 from hpsec_utils import baseline_stats, baseline_stats_windowed
 from hpsec_config import get_config
@@ -163,9 +166,74 @@ def add_alignment_entry(base_folder, seq_name, seq_date, method, shift_uib, shif
     return entry
 
 
+def find_sibling_alignment(base_folder, seq_name, method):
+    """
+    Busca l'alineació d'una SEQ sibling (mateixa SEQ numèrica).
+
+    Siblings són carpetes amb el mateix prefix numèric:
+    - 256_SEQ, 256B_SEQ, 256C_SEQ són siblings
+    - 257_SEQ NO és sibling de 256_SEQ
+
+    Args:
+        base_folder: Carpeta base (Dades2)
+        seq_name: Nom de la SEQ actual (ex: "256B", "275")
+        method: "BP" o "COLUMN"
+
+    Returns:
+        Dict amb shift_uib, shift_direct, source_seq, khp_validation o None
+    """
+    log_data = load_alignment_log(base_folder)
+
+    # Extreure prefix numèric de la SEQ actual
+    match = re.match(r'^(\d+)', seq_name)
+    if not match:
+        return None
+
+    seq_num = match.group(1)
+
+    # Buscar siblings a l'historial (mateix prefix numèric, diferent nom)
+    candidates = []
+    for e in log_data.get("entries", []):
+        entry_seq = e.get("seq_name", "")
+        entry_method = e.get("method", "")
+
+        # Mateix mètode
+        if entry_method != method:
+            continue
+
+        # Mateix prefix numèric però diferent SEQ
+        entry_match = re.match(r'^(\d+)', entry_seq)
+        if entry_match and entry_match.group(1) == seq_num and entry_seq != seq_name:
+            # És un sibling!
+            candidates.append(e)
+
+    if not candidates:
+        return None
+
+    # Preferir el sibling amb KHP vàlid
+    valid_siblings = [c for c in candidates
+                      if c.get("details", {}).get("khp_validation", "").startswith("VALID")]
+
+    best = valid_siblings[0] if valid_siblings else candidates[0]
+
+    return {
+        "shift_uib": best.get("shift_uib_min", 0.0),
+        "shift_direct": best.get("shift_direct_min", 0.0),
+        "source_seq": best.get("seq_name", ""),
+        "source_date": best.get("seq_date", ""),
+        "source_khp": best.get("khp_file", ""),
+        "khp_validation": best.get("details", {}).get("khp_validation", "UNKNOWN"),
+        "khp_issues": best.get("details", {}).get("khp_issues", []),
+    }
+
+
 def find_nearest_alignment(base_folder, method, seq_date=None):
     """
+    DEPRECATED: No usar per shifts. Mantingut per compatibilitat.
+
     Busca l'alineació més propera en el temps per usar quan no hi ha KHP.
+    NOTA: Aquesta funció NO s'hauria d'usar per aplicar shifts.
+          Usar find_sibling_alignment() per siblings.
 
     Args:
         base_folder: Carpeta de la SEQ
@@ -206,6 +274,179 @@ def find_nearest_alignment(base_folder, method, seq_date=None):
             "source_seq": best.get("seq_name", ""),
             "source_date": best.get("seq_date", ""),
             "source_khp": best.get("khp_file", "")
+        }
+
+    return None
+
+
+# =============================================================================
+# HISTORIAL KHP (TRACKING QUALITAT)
+# =============================================================================
+KHP_HISTORY_FILE = "KHP_History.json"
+
+
+def get_khp_history_path(base_folder):
+    """Retorna el path al fitxer d'historial KHP."""
+    qaqc_path = get_qaqc_folder(base_folder)
+    return os.path.join(qaqc_path, KHP_HISTORY_FILE)
+
+
+def load_khp_history(base_folder):
+    """Carrega l'historial KHP."""
+    hist_path = get_khp_history_path(base_folder)
+    if os.path.exists(hist_path):
+        try:
+            with open(hist_path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {"entries": [], "version": "1.0", "stats": {}}
+
+
+def save_khp_history(base_folder, history_data):
+    """Guarda l'historial KHP."""
+    ensure_qaqc_folder(base_folder)
+    hist_path = get_khp_history_path(base_folder)
+    try:
+        with open(hist_path, 'w', encoding='utf-8') as f:
+            json.dump(history_data, f, indent=2, ensure_ascii=False)
+        return True
+    except Exception:
+        return False
+
+
+def add_khp_validation_entry(base_folder, khp_file, seq_name, method, validation_result, shift_info=None):
+    """
+    Afegeix una entrada a l'historial KHP.
+
+    Args:
+        base_folder: Carpeta de la SEQ
+        khp_file: Nom del fitxer KHP
+        seq_name: Nom de la SEQ
+        method: "BP" o "COLUMN"
+        validation_result: Dict retornat per validate_khp_for_alignment()
+        shift_info: Dict amb shifts calculats (opcional)
+
+    Returns:
+        Dict amb l'entrada creada
+    """
+    history = load_khp_history(base_folder)
+
+    entry = {
+        "timestamp": datetime.now().isoformat(),
+        "khp_file": khp_file,
+        "seq_name": seq_name,
+        "method": method,
+        "valid": validation_result.get("valid", False),
+        "issues": validation_result.get("issues", []),
+        "warnings": validation_result.get("warnings", []),
+        "metrics": validation_result.get("metrics", {}),
+    }
+
+    if shift_info:
+        entry["shifts"] = shift_info
+
+    # Evitar duplicats: actualitzar si ja existeix entrada per aquest KHP+SEQ
+    existing_idx = None
+    for i, e in enumerate(history["entries"]):
+        if e.get("khp_file") == khp_file and e.get("seq_name") == seq_name:
+            existing_idx = i
+            break
+
+    if existing_idx is not None:
+        history["entries"][existing_idx] = entry
+    else:
+        history["entries"].append(entry)
+
+    # Actualitzar estadístiques
+    _update_khp_stats(history)
+
+    save_khp_history(base_folder, history)
+    return entry
+
+
+def _update_khp_stats(history):
+    """Actualitza estadístiques globals de l'historial KHP."""
+    entries = history.get("entries", [])
+    if not entries:
+        history["stats"] = {}
+        return
+
+    valid_count = sum(1 for e in entries if e.get("valid", False))
+    invalid_count = len(entries) - valid_count
+
+    # Comptar issues
+    issue_counts = {}
+    for e in entries:
+        for issue in e.get("issues", []):
+            issue_type = issue.split(":")[0].strip()
+            issue_counts[issue_type] = issue_counts.get(issue_type, 0) + 1
+
+    # Estadístiques de mètriques
+    ratios = [e.get("metrics", {}).get("ratio_a254_doc") for e in entries
+              if e.get("metrics", {}).get("ratio_a254_doc") is not None]
+
+    history["stats"] = {
+        "total": len(entries),
+        "valid": valid_count,
+        "invalid": invalid_count,
+        "valid_percent": round(100 * valid_count / len(entries), 1) if entries else 0,
+        "issue_counts": issue_counts,
+        "ratio_mean": round(np.mean(ratios), 4) if ratios else None,
+        "ratio_std": round(np.std(ratios), 4) if ratios else None,
+        "last_updated": datetime.now().isoformat()
+    }
+
+
+def get_khp_stats_summary(base_folder):
+    """Retorna un resum de les estadístiques KHP."""
+    history = load_khp_history(base_folder)
+    return history.get("stats", {})
+
+
+def find_valid_khp_for_method(base_folder, method, seq_date=None):
+    """
+    Busca un KHP vàlid per al mètode especificat en l'historial.
+
+    Args:
+        base_folder: Carpeta de la SEQ
+        method: "BP" o "COLUMN"
+        seq_date: Data de la SEQ (per trobar el més proper)
+
+    Returns:
+        Dict amb informació del KHP més proper vàlid, o None
+    """
+    history = load_khp_history(base_folder)
+
+    # Filtrar per mètode i validesa
+    candidates = [e for e in history.get("entries", [])
+                  if e.get("method") == method and e.get("valid", False)]
+
+    if not candidates:
+        return None
+
+    # Si tenim data, ordenar per proximitat temporal
+    if seq_date:
+        try:
+            target_date = pd.to_datetime(seq_date)
+            for c in candidates:
+                c_timestamp = pd.to_datetime(c.get("timestamp", ""), errors='coerce')
+                if pd.notna(c_timestamp):
+                    c["_date_diff"] = abs((target_date - c_timestamp).days)
+                else:
+                    c["_date_diff"] = 9999
+            candidates.sort(key=lambda x: x.get("_date_diff", 9999))
+        except Exception:
+            pass
+
+    if candidates:
+        best = candidates[0]
+        return {
+            "khp_file": best.get("khp_file", ""),
+            "seq_name": best.get("seq_name", ""),
+            "valid": best.get("valid", False),
+            "metrics": best.get("metrics", {}),
+            "shifts": best.get("shifts", {})
         }
 
     return None
@@ -603,6 +844,218 @@ def normalize_key(s):
 def is_khp(name):
     """Detecta si és mostra KHP."""
     return "KHP" in str(name).upper()
+
+
+def validate_khp_for_alignment(t_doc, y_doc, t_dad, y_a254, t_uib=None, y_uib=None, method="COLUMN", repair_batman=True):
+    """
+    Valida si el KHP és adequat per calcular shifts d'alineament.
+
+    Criteris de validació:
+    1. RATIO_LOW: ratio A254/DOC < 0.015 indica contaminació
+    2. TIMEOUT_HS: timeout detectat a zona HS (18-23 min per COLUMN)
+    3. NO_PEAK: no es pot identificar pic clar
+    4. INTENSITY_EXTREME: intensitat molt diferent de l'esperat
+    5. BATMAN: pic amb valley al cim (artefacte detector)
+
+    Args:
+        t_doc, y_doc: Senyal DOC (Direct o UIB)
+        t_dad, y_a254: Senyal A254
+        t_uib, y_uib: Senyal UIB (opcional)
+        method: "COLUMN" o "BP"
+        repair_batman: Si True, repara pics Batman per millorar precisió t_max
+
+    Returns:
+        dict amb:
+            - valid: bool
+            - issues: list de problemes detectats
+            - warnings: list d'avisos
+            - metrics: dict amb mètriques calculades
+            - y_doc_clean: senyal DOC netejat (si Batman reparat)
+            - t_max_corrected: t_max corregit si Batman reparat
+    """
+    result = {
+        "valid": True,
+        "issues": [],
+        "warnings": [],
+        "metrics": {},
+        "y_doc_clean": None,
+        "t_max_corrected": None,
+    }
+
+    # Verificar dades mínimes
+    if t_doc is None or y_doc is None or len(t_doc) < 50:
+        result["valid"] = False
+        result["issues"].append("INSUFFICIENT_DOC_DATA")
+        return result
+
+    if t_dad is None or y_a254 is None or len(t_dad) < 50:
+        result["valid"] = False
+        result["issues"].append("INSUFFICIENT_DAD_DATA")
+        return result
+
+    # Netejar dades
+    t_doc = np.asarray(t_doc, dtype=float)
+    y_doc = np.asarray(y_doc, dtype=float)
+    y_a254 = np.asarray(y_a254, dtype=float)
+
+    # === 0. DETECTAR I REPARAR BATMAN (si activat) ===
+    # Extreure zona del pic principal per anàlisi Batman
+    if method == "COLUMN":
+        peak_zone = (t_doc >= 15) & (t_doc <= 30)
+    else:
+        peak_zone = (t_doc >= 0) & (t_doc <= 5)
+
+    t_peak_zone = t_doc[peak_zone]
+    y_peak_zone = y_doc[peak_zone]
+
+    batman_info = None
+    y_doc_working = y_doc.copy()
+
+    if len(t_peak_zone) > 20:
+        # Detectar Batman al pic principal
+        batman_info = detect_batman(t_peak_zone, y_peak_zone, top_pct=0.20, min_valley_depth=0.02)
+        result["metrics"]["batman_detected"] = batman_info.get("is_batman", False)
+
+        if batman_info.get("is_batman", False):
+            result["warnings"].append(
+                f"BATMAN: Detectat patró pic-vall-pic (profunditat {batman_info.get('max_depth', 0)*100:.1f}%)"
+            )
+
+            # Intentar reparar si està activat
+            if repair_batman:
+                try:
+                    y_repaired, repair_info, was_repaired = repair_with_parabola(t_peak_zone, y_peak_zone)
+                    if was_repaired:
+                        # Actualitzar senyal a la zona reparada
+                        y_doc_working[peak_zone] = y_repaired
+                        result["y_doc_clean"] = y_doc_working
+                        result["metrics"]["batman_repaired"] = True
+                        result["warnings"].append("BATMAN_REPAIRED: Pic reparat amb paràbola per millorar t_max")
+
+                        # Recalcular t_max amb senyal reparat
+                        idx_max_repaired = np.argmax(y_repaired)
+                        t_max_corrected = t_peak_zone[idx_max_repaired]
+                        result["t_max_corrected"] = float(t_max_corrected)
+                except Exception as e:
+                    result["metrics"]["batman_repair_error"] = str(e)
+
+    # Trobar pics (usar senyal original per consistència amb altres mètriques)
+    idx_max_doc = np.argmax(y_doc)
+    idx_max_a254 = np.argmax(y_a254)
+    t_max_doc = t_doc[idx_max_doc]
+    t_max_a254 = t_dad[idx_max_a254]
+
+    result["metrics"]["t_max_doc"] = float(t_max_doc)
+    result["metrics"]["t_max_a254"] = float(t_max_a254)
+    result["metrics"]["intensity_doc"] = float(np.max(y_doc))
+    result["metrics"]["intensity_a254"] = float(np.max(y_a254))
+
+    # === 1. VERIFICAR POSICIÓ PIC ===
+    if method == "COLUMN":
+        # Per COLUMN, el pic KHP hauria d'estar entre 18-25 min
+        if not (15 <= t_max_doc <= 28):
+            result["warnings"].append(f"PEAK_POSITION_UNUSUAL: t_max={t_max_doc:.1f} min (esperat 18-25)")
+        if not (15 <= t_max_a254 <= 28):
+            result["warnings"].append(f"A254_PEAK_POSITION_UNUSUAL: t_max={t_max_a254:.1f} min")
+    else:
+        # Per BP, el pic hauria d'estar entre 0.5-3 min
+        if not (0.3 <= t_max_doc <= 5):
+            result["warnings"].append(f"PEAK_POSITION_UNUSUAL: t_max={t_max_doc:.1f} min (esperat 0.5-3)")
+
+    # === 2. CALCULAR RATIO A254/DOC ===
+    # Integrar àrees al voltant del pic principal
+    if method == "COLUMN":
+        t_start = max(0, t_max_doc - 5)
+        t_end = t_max_doc + 8
+    else:
+        t_start = max(0, t_max_doc - 1)
+        t_end = t_max_doc + 2
+
+    # Àrea DOC
+    mask_doc = (t_doc >= t_start) & (t_doc <= t_end)
+    if np.sum(mask_doc) > 5:
+        baseline_doc = np.percentile(y_doc[mask_doc], 5)
+        y_doc_corr = y_doc[mask_doc] - baseline_doc
+        y_doc_corr[y_doc_corr < 0] = 0
+        area_doc = np.trapezoid(y_doc_corr, t_doc[mask_doc])
+    else:
+        area_doc = 0
+
+    # Àrea A254
+    mask_a254 = (t_dad >= t_start) & (t_dad <= t_end)
+    if np.sum(mask_a254) > 5:
+        baseline_a254 = np.percentile(y_a254[mask_a254], 5)
+        y_a254_corr = y_a254[mask_a254] - baseline_a254
+        y_a254_corr[y_a254_corr < 0] = 0
+        area_a254 = np.trapezoid(y_a254_corr, t_dad[mask_a254])
+    else:
+        area_a254 = 0
+
+    # Calcular ratio
+    if area_doc > 0:
+        ratio = area_a254 / area_doc
+        result["metrics"]["ratio_a254_doc"] = float(ratio)
+        result["metrics"]["area_doc"] = float(area_doc)
+        result["metrics"]["area_a254"] = float(area_a254)
+
+        # Threshold: ratio < 0.015 indica contaminació
+        if ratio < 0.015:
+            result["valid"] = False
+            result["issues"].append(f"RATIO_LOW: {ratio:.4f} < 0.015 (possible contaminació)")
+        elif ratio < 0.020:
+            result["warnings"].append(f"RATIO_BORDERLINE: {ratio:.4f}")
+    else:
+        result["valid"] = False
+        result["issues"].append("NO_DOC_AREA: No s'ha pogut calcular àrea DOC")
+
+    # === 3. DETECTAR TIMEOUT A ZONA HS (només COLUMN) ===
+    if method == "COLUMN":
+        # Usar detect_timeout de hpsec_core (més robust)
+        timeout_info = detect_timeout(t_doc)
+        result["metrics"]["timeout_info"] = {
+            "has_timeout": timeout_info.get("has_timeout", False),
+            "count": timeout_info.get("count", 0),
+        }
+
+        # Verificar si hi ha timeout a zona HS (18-23 min)
+        for to in timeout_info.get("timeouts", []):
+            t_start_to = to.get("t_start_min", 0)
+            t_end_to = to.get("t_end_min", 0)
+            # Timeout overlap amb zona HS?
+            if t_start_to <= 23 and t_end_to >= 18:
+                result["valid"] = False
+                result["issues"].append(
+                    f"TIMEOUT_HS: Timeout {to.get('duration_sec', 0):.0f}s a {t_start_to:.1f}-{t_end_to:.1f} min"
+                )
+                break
+
+    # === 4. VERIFICAR INTENSITAT ===
+    # Intensitats típiques (mAU):
+    # - KHP COLUMN: 400-1600 (segons tipus KHP)
+    # - KHP BP: 150-650
+    intensity = np.max(y_doc)
+    if method == "COLUMN":
+        if intensity < 50:
+            result["valid"] = False
+            result["issues"].append(f"INTENSITY_TOO_LOW: {intensity:.0f} mAU")
+        elif intensity > 5000:
+            result["warnings"].append(f"INTENSITY_HIGH: {intensity:.0f} mAU")
+    else:
+        if intensity < 20:
+            result["valid"] = False
+            result["issues"].append(f"INTENSITY_TOO_LOW: {intensity:.0f} mAU")
+        elif intensity > 2000:
+            result["warnings"].append(f"INTENSITY_HIGH: {intensity:.0f} mAU")
+
+    # === 5. VERIFICAR COHERÈNCIA PICS ===
+    # El pic DOC i A254 haurien d'estar a posicions similars (abans d'alinear, diferència < 2 min)
+    diff_peaks = abs(t_max_doc - t_max_a254)
+    result["metrics"]["peak_diff_min"] = float(diff_peaks)
+
+    if diff_peaks > 2.0:
+        result["warnings"].append(f"PEAK_MISMATCH: DOC i A254 difereixen {diff_peaks:.1f} min")
+
+    return result
 
 
 def mode_robust(data, bins=50):
@@ -1121,6 +1574,50 @@ def llegir_dad_amb_fallback(path_export3d, path_dad1a=None, wavelength="254"):
                 return t, y, "DAD1A"
 
     return None, None, "NOT_FOUND"
+
+
+def get_a254_for_alignment(df_dad_khp=None, path_export3d=None, path_dad1a=None):
+    """
+    Obté senyal A254 per alineament, amb prioritat:
+    1. MasterFile 3-DAD_KHP (si df_dad_khp proporcionat)
+    2. Export3D
+    3. DAD1A
+
+    Args:
+        df_dad_khp: DataFrame de la fulla 3-DAD_KHP del MasterFile (pot ser None)
+        path_export3d: Camí al fitxer Export3D (pot ser None)
+        path_dad1a: Camí al fitxer DAD1A (pot ser None)
+
+    Returns:
+        (t, y, source): Arrays de temps i senyal A254, i string indicant la font
+    """
+    # Prioritat 1: MasterFile 3-DAD_KHP
+    if df_dad_khp is not None and not df_dad_khp.empty:
+        try:
+            # Format típic: 'time (min)', 'value (mAU)' per cada KHP
+            # Usar la primera columna de temps i valors
+            cols = df_dad_khp.columns.tolist()
+            t_col = None
+            y_col = None
+
+            for c in cols:
+                c_lower = str(c).lower()
+                if 'time' in c_lower and t_col is None:
+                    t_col = c
+                elif ('value' in c_lower or 'mau' in c_lower) and y_col is None:
+                    y_col = c
+
+            if t_col and y_col:
+                t = pd.to_numeric(df_dad_khp[t_col], errors="coerce").to_numpy()
+                y = pd.to_numeric(df_dad_khp[y_col], errors="coerce").to_numpy()
+                valid = np.isfinite(t) & np.isfinite(y)
+                if np.sum(valid) > 10:
+                    return t[valid], y[valid], "MasterFile_3-DAD_KHP"
+        except Exception:
+            pass  # Fallback a altres fonts
+
+    # Prioritat 2 i 3: Export3D o DAD1A
+    return llegir_dad_amb_fallback(path_export3d, path_dad1a, wavelength="254")
 
 
 def netejar_nom_uib(nom_fitxer):
@@ -3188,6 +3685,7 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
             df_seq = None
             master_index = None
             sample_ranges_new = None  # Per format nou
+            df_dad_khp = None  # A254 del KHP per alineament (de 3-DAD_KHP)
             has_master = False
             master_info = {}  # Info de 0-INFO per passar a write_consolidated_excel
             valid_samples = set()  # Mostres vàlides de 1-HPLC-SEQ
@@ -3205,6 +3703,7 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
                         if "error" not in master_data:
                             df_toc = master_data["toc"]
                             df_toc_calc = master_data["toc_calc"]
+                            df_dad_khp = master_data.get("dad_khp")  # A254 del KHP (per alineament)
                             master_info = master_data.get("info", {})  # 0-INFO
 
                             # Obtenir mostres vàlides de 1-HPLC-SEQ
@@ -3252,12 +3751,15 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
 
             # ================================================================
             # PROTOCOL ALINEACIÓ COLUMN: Pre-processar KHP per calcular shifts
+            # Funciona tant per DUAL (has_master=True) com SINGLE (has_master=False)
+            # - DUAL: calcula shift_uib + shift_direct
+            # - SINGLE: calcula només shift_uib (DOC des de CSV)
             # ================================================================
             column_shift_uib = 0.0
             column_shift_direct = 0.0
             alignment_info = None
 
-            if method == "COLUMN" and has_master:
+            if method == "COLUMN":  # Alineament per COLUMN (DUAL i SINGLE)
                 # Identificar fitxer KHP UIB
                 khp_uib_files = [f for f in uib_files if is_khp(os.path.basename(f))]
 
@@ -3317,18 +3819,18 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
                             y_khp_direct_net = apply_smoothing(y_khp_direct - base_khp_direct)
                             y_khp_direct_net[y_khp_direct_net < 0] = 0
 
-                        # Buscar DAD del KHP per A254 (amb fallback Export3D -> DAD1A)
+                        # Buscar A254 del KHP per alineament
+                        # Prioritat: 1) MasterFile 3-DAD_KHP, 2) Export3D, 3) DAD1A
                         t_khp_a254 = None
                         y_khp_a254 = None
                         dad_source = "NOT_FOUND"
 
-                        # Opció 1: Export3D (totes les wavelengths)
+                        # Opció 2: Export3D (totes les wavelengths)
                         khp_dad_path, _ = choose_best_candidate(khp_mostra, khp_rep, dad_pool, set())
 
-                        # Opció 2: DAD1A (només 254nm) - buscar a CSV folder
+                        # Opció 3: DAD1A (només 254nm) - buscar a CSV folder
                         khp_dad1a_path = None
                         if path_csv and os.path.isdir(path_csv):
-                            # Buscar patró: KHP*_DAD1A.CSV
                             import glob as glob_mod
                             dad1a_candidates = glob_mod.glob(os.path.join(path_csv, f"{khp_mostra}*_DAD1A.*"))
                             if not dad1a_candidates:
@@ -3336,11 +3838,47 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
                             if dad1a_candidates:
                                 khp_dad1a_path = dad1a_candidates[0]
 
-                        # Llegir amb fallback
-                        t_khp_a254, y_khp_a254, dad_source = llegir_dad_amb_fallback(
-                            khp_dad_path, khp_dad1a_path, wavelength="254"
+                        # Obtenir A254 amb prioritat: MasterFile > Export3D > DAD1A
+                        t_khp_a254, y_khp_a254, dad_source = get_a254_for_alignment(
+                            df_dad_khp=df_dad_khp,
+                            path_export3d=khp_dad_path,
+                            path_dad1a=khp_dad1a_path
                         )
 
+                        # === VALIDAR QUALITAT KHP ABANS DE CALCULAR SHIFTS ===
+                        khp_validation = validate_khp_for_alignment(
+                            t_doc=t_khp_uib,
+                            y_doc=y_khp_uib_net,
+                            t_dad=t_khp_a254,
+                            y_a254=y_khp_a254,
+                            t_uib=t_khp_uib,  # El mateix per UIB
+                            y_uib=y_khp_uib_net,
+                            method=method
+                        )
+
+                        # Guardar validació a l'historial KHP
+                        add_khp_validation_entry(
+                            base_folder=input_folder,
+                            khp_file=khp_nom,
+                            seq_name=seq_out,
+                            method=method,
+                            validation_result=khp_validation
+                        )
+
+                        # Registrar si KHP és vàlid (només per tracking, sempre usem dades actuals)
+                        khp_is_valid = khp_validation.get("valid", False)
+
+                        if not khp_is_valid:
+                            issues_str = ", ".join(khp_validation.get("issues", []))
+                            result["warnings"].append(
+                                f"WARN: KHP {khp_nom} té problemes de qualitat: {issues_str}"
+                            )
+                            result["warnings"].append(
+                                f"INFO: Usant igualment les dades del MasterFile actual (no historic fallback)"
+                            )
+
+                        # SEMPRE calcular shifts des de les dades actuals del MasterFile
+                        # La validació serveix per tracking/QC, però confiem en les dades calculades
                         # Calcular shifts: A254 és la referència
                         tolerance_min = 2.0 / 60.0  # 2 segons
 
@@ -3348,31 +3886,69 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
                             t_max_a254 = t_khp_a254[np.argmax(y_khp_a254)]
 
                             # Shift per DOC_UIB
-                            t_max_uib = t_khp_uib[np.argmax(y_khp_uib_net)]
+                            # Usar t_max corregit si Batman va ser reparat
+                            if khp_validation.get("t_max_corrected") is not None:
+                                t_max_uib = khp_validation["t_max_corrected"]
+                                result["warnings"].append(
+                                    f"INFO: Usant t_max corregit ({t_max_uib:.3f} min) per KHP amb Batman reparat"
+                                )
+                            else:
+                                t_max_uib = t_khp_uib[np.argmax(y_khp_uib_net)]
+
                             shift_uib = t_max_a254 - t_max_uib
                             if abs(shift_uib) > tolerance_min:
                                 column_shift_uib = shift_uib
 
                             # Shift per DOC_Direct
+                            t_max_direct = None
                             if t_khp_direct is not None and y_khp_direct_net is not None:
                                 t_max_direct = t_khp_direct[np.argmax(y_khp_direct_net)]
                                 shift_direct = t_max_a254 - t_max_direct
                                 if abs(shift_direct) > tolerance_min:
                                     column_shift_direct = shift_direct
 
+                            # Determinar mode: DUAL si tenim DOC_Direct, SINGLE si només UIB
+                            align_mode = "DUAL" if t_khp_direct is not None else "SINGLE"
+
+                            # Determinar status de validació per tracking
+                            khp_status = "VALID" if khp_is_valid else "INVALID_USED"
+                            if khp_validation.get("warnings"):
+                                khp_status = "VALID_WITH_WARNINGS" if khp_is_valid else "INVALID_WITH_WARNINGS"
+
                             alignment_info = {
                                 "khp_file": khp_nom,
                                 "t_max_a254": t_max_a254,
                                 "t_max_uib": t_max_uib,
-                                "t_max_direct": t_max_direct if t_khp_direct is not None else None,
+                                "t_max_direct": t_max_direct,
                                 "shift_uib": column_shift_uib,
                                 "shift_direct": column_shift_direct,
                                 "source": "KHP_LOCAL",
                                 "dad_source": dad_source,
+                                "align_mode": align_mode,
+                                "khp_validation": khp_status,
+                                "khp_issues": khp_validation.get("issues", []),
+                                "khp_warnings": khp_validation.get("warnings", []),
+                                "khp_metrics": khp_validation.get("metrics", {}),
                             }
                             result["alignment"] = alignment_info
 
-                            # Guardar al log QAQC
+                            # Actualitzar entrada historial amb shifts
+                            add_khp_validation_entry(
+                                base_folder=input_folder,
+                                khp_file=khp_nom,
+                                seq_name=seq_out,
+                                method=method,
+                                validation_result=khp_validation,
+                                shift_info={
+                                    "shift_uib": column_shift_uib,
+                                    "shift_direct": column_shift_direct,
+                                    "t_max_a254": float(t_max_a254),
+                                    "t_max_uib": float(t_max_uib),
+                                    "t_max_direct": float(t_max_direct) if t_max_direct else None,
+                                }
+                            )
+
+                            # Guardar al log QAQC d'alineament
                             add_alignment_entry(
                                 base_folder=input_folder,
                                 seq_name=seq_out,
@@ -3382,32 +3958,75 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
                                 shift_direct=column_shift_direct,
                                 khp_file=khp_nom,
                                 details={
-                                    "t_max_a254": float(t_max_a254),
-                                    "t_max_uib": float(t_max_uib),
-                                    "t_max_direct": float(t_max_direct) if t_khp_direct is not None else None,
+                                "t_max_a254": float(t_max_a254),
+                                "t_max_uib": float(t_max_uib),
+                                "t_max_direct": float(t_max_direct) if t_max_direct else None,
+                                "align_mode": align_mode,
+                                "khp_validation": khp_status,
+                                "khp_issues": khp_validation.get("issues", []),
                                 }
                             )
+
+                            # Log informatiu del mode d'alineament
+                            validation_note = ""
+                            if not khp_is_valid:
+                                validation_note = " [KHP INVALID - usant igualment]"
+                            elif khp_validation.get("warnings"):
+                                validation_note = " [KHP amb warnings]"
+
+                            if align_mode == "SINGLE":
+                                result["errors"].append(
+                                    f"INFO: Alineament SINGLE (UIB→A254): shift={column_shift_uib*60:.1f}s{validation_note}"
+                                )
+                            else:
+                                result["errors"].append(
+                                    f"INFO: Alineament DUAL: UIB={column_shift_uib*60:.1f}s, Direct={column_shift_direct*60:.1f}s{validation_note}"
+                                )
 
                     except Exception as e:
                         result["errors"].append(f"WARN: Error calculant alignment amb KHP: {e}")
 
-                # Si no s'ha pogut calcular alignment amb KHP local, buscar en el log històric
+                # Si no s'ha pogut calcular alignment amb KHP local, buscar SIBLING
+                # NOTA: NO usar històric genèric per shifts
                 if alignment_info is None:
-                    nearest = find_nearest_alignment(input_folder, method, date_master)
-                    if nearest:
-                        column_shift_uib = nearest.get("shift_uib", 0.0)
-                        column_shift_direct = nearest.get("shift_direct", 0.0)
+                    # Buscar sibling amb KHP (mateixa SEQ numèrica)
+                    sibling = find_sibling_alignment(input_folder, seq_out, method)
+
+                    if sibling:
+                        # Usar shifts del sibling
+                        column_shift_uib = sibling.get("shift_uib", 0.0)
+                        column_shift_direct = sibling.get("shift_direct", 0.0)
                         alignment_info = {
-                            "khp_file": nearest.get("source_khp", ""),
+                            "khp_file": sibling.get("source_khp", ""),
                             "shift_uib": column_shift_uib,
                             "shift_direct": column_shift_direct,
-                            "source": f"HISTORIC:{nearest.get('source_seq', '')}",
-                            "source_date": nearest.get("source_date", ""),
+                            "source": f"SIBLING:{sibling.get('source_seq', '')}",
+                            "source_date": sibling.get("source_date", ""),
+                            "khp_validation": sibling.get("khp_validation", "UNKNOWN"),
+                            "khp_issues": sibling.get("khp_issues", []),
                         }
                         result["alignment"] = alignment_info
                         result["errors"].append(
-                            f"INFO: Usant alignment històric de SEQ {nearest.get('source_seq', '')} "
-                            f"(shift_uib={column_shift_uib*60:.1f}s, shift_direct={column_shift_direct*60:.1f}s)"
+                            f"INFO: Usant alignment de sibling SEQ {sibling.get('source_seq', '')} "
+                            f"(shift_uib={column_shift_uib*60:.1f}s, shift_direct={column_shift_direct*60:.1f}s) "
+                            f"[KHP: {sibling.get('khp_validation', 'UNKNOWN')}]"
+                        )
+                    else:
+                        # SENSE KHP (local ni sibling) -> shift = 0
+                        # Confiar en les hores dels equips + delay
+                        column_shift_uib = 0.0
+                        column_shift_direct = 0.0
+                        alignment_info = {
+                            "khp_file": "",
+                            "shift_uib": 0.0,
+                            "shift_direct": 0.0,
+                            "source": "NO_KHP",
+                            "khp_validation": "NO_KHP",
+                        }
+                        result["alignment"] = alignment_info
+                        result["warnings"].append(
+                            "AVÍS: No s'ha trobat KHP (local ni sibling). "
+                            "Usant shift=0 (confiant en hores equips + delay)."
                         )
 
             for i, f_doc_uib in enumerate(uib_files):
@@ -3574,13 +4193,18 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
                     doc_mode = "DUAL"
                 elif st_doc_uib != "NO_DATA":
                     # Fallback a UIB si no hi ha Direct però UIB és vàlid
-                    t_doc = t_uib
+                    t_doc = t_uib.copy()  # Copiar per no modificar l'original
                     y_doc_net = y_uib_net
                     y_doc_raw = y_uib_raw
                     base = base_uib
                     nom_doc = nom_doc_uib
                     st_doc = st_doc_uib
                     doc_mode = "UIB"
+
+                    # APLICAR SHIFT D'ALINEAMENT per MODE SINGLE (UIB sense Direct)
+                    # El shift alinea UIB amb A254: t_corregit = t_original + shift
+                    if method == "COLUMN" and column_shift_uib != 0.0:
+                        t_doc = t_doc + column_shift_uib
                 else:
                     # Ni Direct ni UIB tenen dades
                     t_doc = t_uib
@@ -3616,55 +4240,120 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
                 out_name = f"{mostra}_{seq_out}_R{rep}.xlsx"
                 out_path = os.path.join(path_out, out_name)
 
-                # Preparar DOC_UIB per dual (alinear i interpolar a escala de temps Direct)
+                # =============================================================
+                # ALINEAMENT TEMPORAL - A254 (DAD) ÉS LA REFERÈNCIA ABSOLUTA
+                # - MAI moure A254 ni DAD
+                # - DOC_Direct s'alinea a A254
+                # - DOC_UIB s'alinea a A254
+                # =============================================================
                 y_doc_uib_aligned = None
-                time_shift = 0.0
+                applied_shift_direct_sample = 0.0
+                applied_shift_uib_sample = 0.0
+
+                # Obtenir t_max de A254 si tenim DAD
+                t_max_a254_sample = None
+                if not df_dad.empty and '254' in df_dad.columns:
+                    try:
+                        t_dad_sample = df_dad['time (min)'].values
+                        y_a254_sample = pd.to_numeric(df_dad['254'], errors='coerce').to_numpy()
+                        if len(y_a254_sample) > 10 and np.nanmax(y_a254_sample) > 0:
+                            t_max_a254_sample = t_dad_sample[np.argmax(y_a254_sample)]
+                    except Exception:
+                        pass
+
                 if doc_mode == "DUAL" and len(y_uib_net) > 0:
                     try:
                         if method == "BP":
-                            # BP: alinear pel màxim de cada mostra
-                            y_doc_uib_aligned, time_shift = align_signals_by_max(
-                                t_doc, y_doc_net, t_uib, y_uib_net
-                            )
-                        else:
-                            # COLUMN: aplicar shifts calculats amb KHP (si n'hi ha)
-                            if column_shift_uib != 0.0:
-                                # Aplicar shift a UIB
-                                y_doc_uib_aligned = apply_shift(t_doc, t_uib, y_uib_net, column_shift_uib)
-                                time_shift = column_shift_uib
-                            else:
-                                # Sense shift, només interpolar
-                                y_doc_uib_aligned = np.interp(t_doc, t_uib, y_uib_net)
+                            # =========================================
+                            # BP: Alinear cada mostra individualment a A254
+                            # =========================================
+                            if t_max_a254_sample is not None:
+                                # Trobar màxims de DOC
+                                t_max_direct_sample = t_doc[np.argmax(y_doc_net)]
+                                t_max_uib_sample = t_uib[np.argmax(y_uib_net)]
 
-                            # Aplicar shift a Direct si cal (modifica y_doc_net)
+                                # Calcular shifts necessaris per alinear a A254
+                                shift_direct_bp = t_max_a254_sample - t_max_direct_sample
+                                shift_uib_bp = t_max_a254_sample - t_max_uib_sample
+
+                                tolerance_min = 2.0 / 60.0  # 2 segons
+
+                                # Aplicar shift a DOC_Direct si cal
+                                if abs(shift_direct_bp) > tolerance_min:
+                                    # Crear nova escala de temps alineada a A254
+                                    t_doc_shifted = t_doc + shift_direct_bp
+                                    # Interpolar a l'escala de temps de DAD
+                                    y_doc_net = np.interp(t_dad_sample, t_doc_shifted, y_doc_net, left=0, right=0)
+                                    y_doc_raw = np.interp(t_dad_sample, t_doc_shifted, y_doc_raw, left=0, right=0)
+                                    base = np.interp(t_dad_sample, t_doc_shifted, base, left=base[0], right=base[-1])
+                                    t_doc = t_dad_sample
+                                    applied_shift_direct_sample = shift_direct_bp
+
+                                # Aplicar shift a DOC_UIB si cal
+                                if abs(shift_uib_bp) > tolerance_min:
+                                    t_uib_shifted = t_uib + shift_uib_bp
+                                    y_doc_uib_aligned = np.interp(t_doc, t_uib_shifted, y_uib_net, left=0, right=0)
+                                    applied_shift_uib_sample = shift_uib_bp
+                                else:
+                                    # Sense shift, només interpolar a escala de temps Direct
+                                    y_doc_uib_aligned = np.interp(t_doc, t_uib, y_uib_net, left=0, right=0)
+                            else:
+                                # Sense A254: fallback a alinear UIB amb Direct (comportament anterior)
+                                # NOTA: Això no és ideal, caldria revisar si DAD està disponible
+                                y_doc_uib_aligned = np.interp(t_doc, t_uib, y_uib_net, left=0, right=0)
+                                result["warnings"].append(f"WARN: {mostra} sense A254 per alineament BP")
+                        else:
+                            # =========================================
+                            # COLUMN: Usar shifts calculats del KHP
+                            # =========================================
+                            # Aplicar shift a DOC_Direct si cal
                             if column_shift_direct != 0.0 and t_direct is not None:
-                                y_doc_net = apply_shift(t_doc, t_direct, y_direct_net, column_shift_direct)
-                    except Exception:
-                        # Fallback: interpolació simple
+                                t_direct_shifted = t_direct + column_shift_direct
+                                y_doc_net = np.interp(t_doc, t_direct_shifted, y_direct_net, left=0, right=0)
+                                applied_shift_direct_sample = column_shift_direct
+
+                            # Aplicar shift a DOC_UIB si cal
+                            if column_shift_uib != 0.0:
+                                t_uib_shifted = t_uib + column_shift_uib
+                                y_doc_uib_aligned = np.interp(t_doc, t_uib_shifted, y_uib_net, left=0, right=0)
+                                applied_shift_uib_sample = column_shift_uib
+                            else:
+                                # Sense shift UIB, només interpolar
+                                y_doc_uib_aligned = np.interp(t_doc, t_uib, y_uib_net, left=0, right=0)
+
+                    except Exception as e:
+                        # Fallback: interpolació simple sense shift
                         try:
-                            y_doc_uib_aligned = np.interp(t_doc, t_uib, y_uib_net)
+                            y_doc_uib_aligned = np.interp(t_doc, t_uib, y_uib_net, left=0, right=0)
+                            result["warnings"].append(f"WARN: Error alineament {mostra}: {e}")
                         except Exception:
                             y_doc_uib_aligned = None
 
-                # Preparar UIB RAW interpolat a l'escala de temps Direct
+                # Preparar UIB RAW interpolat a l'escala de temps (amb shift si s'ha aplicat)
                 y_uib_raw_interp = None
                 base_uib_interp = None
                 if doc_mode == "DUAL" and len(y_uib_raw) > 0:
                     try:
-                        y_uib_raw_interp = np.interp(t_doc, t_uib, y_uib_raw)
-                        base_uib_interp = np.interp(t_doc, t_uib, base_uib)
+                        # Aplicar el mateix shift que a y_uib_net
+                        if applied_shift_uib_sample != 0.0:
+                            t_uib_shifted = t_uib + applied_shift_uib_sample
+                            y_uib_raw_interp = np.interp(t_doc, t_uib_shifted, y_uib_raw, left=0, right=0)
+                            base_uib_interp = np.interp(t_doc, t_uib_shifted, base_uib, left=base_uib[0], right=base_uib[-1])
+                        else:
+                            y_uib_raw_interp = np.interp(t_doc, t_uib, y_uib_raw, left=0, right=0)
+                            base_uib_interp = np.interp(t_doc, t_uib, base_uib, left=base_uib[0], right=base_uib[-1])
                     except Exception:
                         pass
 
-                # Determinar shifts aplicats
+                # Determinar shifts aplicats (usant els valors calculats durant l'alineament)
                 applied_shift_uib = None
                 applied_shift_direct = None
                 if doc_mode == "DUAL":
-                    if method == "BP":
-                        applied_shift_uib = time_shift  # shift calculat per align_signals_by_max
-                    else:
-                        applied_shift_uib = column_shift_uib if column_shift_uib != 0.0 else None
-                        applied_shift_direct = column_shift_direct if column_shift_direct != 0.0 else None
+                    # Usar els shifts calculats per aquesta mostra específica
+                    if applied_shift_uib_sample != 0.0:
+                        applied_shift_uib = applied_shift_uib_sample
+                    if applied_shift_direct_sample != 0.0:
+                        applied_shift_direct = applied_shift_direct_sample
 
                 # Calcular SNR i baseline noise (amb finestres per evitar timeouts)
                 timeout_positions = []
@@ -3731,6 +4420,7 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
 
                 df_toc = master_data["toc"]
                 df_toc_calc = master_data["toc_calc"]
+                df_dad_khp_direct = master_data.get("dad_khp")  # A254 del KHP (per alineament)
                 master_info = master_data.get("info", {})  # 0-INFO
 
                 # Calcular timing stats (per planificació futures SEQs)
@@ -3763,6 +4453,186 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
                 if not sample_ranges:
                     result["errors"].append("No s'han pogut extreure mostres de 4-TOC_CALC")
                     return result
+
+                # ================================================================
+                # ALINEAMENT MODE DIRECT: Calcular shift DOC→A254 usant KHP
+                # ================================================================
+                direct_shift = 0.0
+                alignment_info_direct = None
+
+                if method == "COLUMN":
+                    # Buscar KHP a sample_ranges
+                    khp_keys = [k for k in sample_ranges.keys() if is_khp(k)]
+
+                    if khp_keys:
+                        khp_key = khp_keys[0]
+                        khp_range = sample_ranges[khp_key]
+                        khp_mostra, khp_rep = split_sample_rep(khp_key)
+                        if khp_rep is None:
+                            khp_rep = "1"
+
+                        try:
+                            # Extreure DOC del KHP des del MasterFile
+                            khp_row_ini = int(khp_range.get("row_start", 0))
+                            khp_row_fi = int(khp_range.get("row_end", 0))
+                            khp_t_start = khp_range.get("t_start", 0)
+                            df_khp_doc = extract_doc_from_masterfile(df_toc, khp_row_ini, khp_row_fi, khp_t_start, detect_timeouts=False)
+
+                            if not df_khp_doc.empty:
+                                t_khp_doc = pd.to_numeric(df_khp_doc["time (min)"], errors="coerce").to_numpy()
+                                y_khp_doc = pd.to_numeric(df_khp_doc["DOC"], errors="coerce").to_numpy()
+                                base_khp = get_baseline_correction(t_khp_doc, y_khp_doc, method, config)
+                                y_khp_net = apply_smoothing(y_khp_doc - base_khp)
+                                y_khp_net[y_khp_net < 0] = 0
+
+                                # Buscar A254 del KHP per alineament
+                                # Prioritat: 1) MasterFile 3-DAD_KHP, 2) Export3D, 3) DAD1A
+                                khp_dad_path, _ = choose_best_candidate(khp_mostra, khp_rep, dad_pool, set())
+
+                                # Buscar DAD1A com a fallback
+                                khp_dad1a_path = None
+                                if path_csv and os.path.isdir(path_csv):
+                                    import glob as glob_mod
+                                    dad1a_candidates = glob_mod.glob(os.path.join(path_csv, f"{khp_mostra}*_DAD1A.*"))
+                                    if dad1a_candidates:
+                                        khp_dad1a_path = dad1a_candidates[0]
+
+                                # Obtenir A254 amb prioritat: MasterFile > Export3D > DAD1A
+                                t_khp_a254, y_khp_a254, dad_source = get_a254_for_alignment(
+                                    df_dad_khp=df_dad_khp_direct,
+                                    path_export3d=khp_dad_path,
+                                    path_dad1a=khp_dad1a_path
+                                )
+
+                                # === VALIDAR QUALITAT KHP (MODE DIRECT) ===
+                                khp_validation_direct = validate_khp_for_alignment(
+                                    t_doc=t_khp_doc,
+                                    y_doc=y_khp_net,
+                                    t_dad=t_khp_a254,
+                                    y_a254=y_khp_a254,
+                                    method=method,
+                                    repair_batman=True
+                                )
+
+                                # Guardar validació a l'historial KHP
+                                add_khp_validation_entry(
+                                    base_folder=input_folder,
+                                    khp_file=khp_key,
+                                    seq_name=seq_out,
+                                    method=method,
+                                    validation_result=khp_validation_direct
+                                )
+
+                                khp_is_valid_direct = khp_validation_direct.get("valid", False)
+
+                                if not khp_is_valid_direct:
+                                    issues_str = ", ".join(khp_validation_direct.get("issues", []))
+                                    result["warnings"].append(
+                                        f"WARN: KHP {khp_key} té problemes de qualitat: {issues_str}"
+                                    )
+
+                                # Calcular shift
+                                if t_khp_a254 is not None and y_khp_a254 is not None:
+                                    tolerance_min = 2.0 / 60.0  # 2 segons
+                                    t_max_a254 = t_khp_a254[np.argmax(y_khp_a254)]
+                                    t_max_doc = t_khp_doc[np.argmax(y_khp_net)]
+                                    shift_calc = t_max_a254 - t_max_doc
+
+                                    if abs(shift_calc) > tolerance_min:
+                                        direct_shift = shift_calc
+
+                                    # Determinar status validació
+                                    khp_status_direct = "VALID" if khp_is_valid_direct else "INVALID_USED"
+                                    if khp_validation_direct.get("warnings"):
+                                        khp_status_direct = "VALID_WITH_WARNINGS" if khp_is_valid_direct else "INVALID_WITH_WARNINGS"
+
+                                    alignment_info_direct = {
+                                        "khp_file": khp_key,
+                                        "t_max_a254": t_max_a254,
+                                        "t_max_doc": t_max_doc,
+                                        "shift_direct": direct_shift,
+                                        "source": "KHP_LOCAL",
+                                        "dad_source": dad_source,
+                                        "align_mode": "DIRECT",
+                                        "khp_validation": khp_status_direct,
+                                        "khp_issues": khp_validation_direct.get("issues", []),
+                                        "khp_warnings": khp_validation_direct.get("warnings", []),
+                                        "khp_metrics": khp_validation_direct.get("metrics", {}),
+                                    }
+                                    result["alignment"] = alignment_info_direct
+
+                                    # Actualitzar historial amb shifts
+                                    add_khp_validation_entry(
+                                        base_folder=input_folder,
+                                        khp_file=khp_key,
+                                        seq_name=seq_out,
+                                        method=method,
+                                        validation_result=khp_validation_direct,
+                                        shift_info={
+                                            "shift_direct": direct_shift,
+                                            "t_max_a254": float(t_max_a254),
+                                            "t_max_doc": float(t_max_doc),
+                                        }
+                                    )
+
+                                    # Log QAQC
+                                    add_alignment_entry(
+                                        base_folder=input_folder,
+                                        seq_name=seq_out,
+                                        seq_date=date_master,
+                                        method=method,
+                                        shift_uib=0.0,
+                                        shift_direct=direct_shift,
+                                        khp_file=khp_key,
+                                        details={
+                                            "t_max_a254": float(t_max_a254),
+                                            "t_max_doc": float(t_max_doc),
+                                            "align_mode": "DIRECT",
+                                            "khp_validation": khp_status_direct,
+                                            "khp_issues": khp_validation_direct.get("issues", []),
+                                        }
+                                    )
+
+                                    result["errors"].append(
+                                        f"INFO: Alineament DIRECT (DOC→A254): shift={direct_shift*60:.1f}s"
+                                    )
+
+                        except Exception as e:
+                            result["errors"].append(f"WARN: Error calculant alignment DIRECT amb KHP: {e}")
+
+                    # Fallback a SIBLING si no s'ha pogut calcular
+                    # NOTA: NO usar històric genèric per shifts
+                    if alignment_info_direct is None:
+                        sibling = find_sibling_alignment(input_folder, seq_out, method)
+
+                        if sibling:
+                            # Usar shifts del sibling
+                            direct_shift = sibling.get("shift_direct", 0.0)
+                            alignment_info_direct = {
+                                "shift_direct": direct_shift,
+                                "source": f"SIBLING:{sibling.get('source_seq', '')}",
+                                "khp_validation": sibling.get("khp_validation", "UNKNOWN"),
+                                "khp_issues": sibling.get("khp_issues", []),
+                            }
+                            result["alignment"] = alignment_info_direct
+                            result["errors"].append(
+                                f"INFO: Usant alignment de sibling SEQ {sibling.get('source_seq', '')} "
+                                f"(shift_direct={direct_shift*60:.1f}s) "
+                                f"[KHP: {sibling.get('khp_validation', 'UNKNOWN')}]"
+                            )
+                        else:
+                            # SENSE KHP (local ni sibling) -> shift = 0
+                            direct_shift = 0.0
+                            alignment_info_direct = {
+                                "shift_direct": 0.0,
+                                "source": "NO_KHP",
+                                "khp_validation": "NO_KHP",
+                            }
+                            result["alignment"] = alignment_info_direct
+                            result["warnings"].append(
+                                "AVÍS: No s'ha trobat KHP (local ni sibling). "
+                                "Usant shift=0 (confiant en hores equips + delay)."
+                            )
 
                 # Filtrar mostres a processar (excloure controls)
                 samples_to_process = {}
@@ -3813,6 +4683,12 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
                         st_doc = "OK"
                         t_doc = pd.to_numeric(df_doc["time (min)"], errors="coerce").to_numpy()
                         y_doc = pd.to_numeric(df_doc["DOC"], errors="coerce").to_numpy()
+
+                        # APLICAR SHIFT D'ALINEAMENT (si calculat)
+                        # El shift alinea DOC amb A254: t_corregit = t_original + shift
+                        if direct_shift != 0.0:
+                            t_doc = t_doc + direct_shift
+
                         base_arr = get_baseline_correction(t_doc, y_doc, method, config)
                         doc_net = apply_smoothing(y_doc - base_arr)
                         doc_net[doc_net < 0] = 0
