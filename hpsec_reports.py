@@ -426,6 +426,7 @@ def generate_consolidation_report(seq_path, xlsx_files, info, output_path=None):
         to_data = [
             ["TIMEOUTS TOC", "N", "%"],
             ["OK", str(n_ok), f"{100*n_ok/max(len(samples_data),1):.0f}%"],
+            ["INFO", str(n_info), f"{100*n_info/max(len(samples_data),1):.0f}%"],
             ["WARNING", str(n_warn), f"{100*n_warn/max(len(samples_data),1):.0f}%"],
             ["CRITICAL", str(n_crit), f"{100*n_crit/max(len(samples_data),1):.0f}%"],
         ]
@@ -434,17 +435,19 @@ def generate_consolidation_report(seq_path, xlsx_files, info, output_path=None):
                              colWidths=[0.4, 0.3, 0.3])
         tbl_to.auto_set_font_size(False)
         tbl_to.set_fontsize(8)
-        tbl_to.scale(1.0, 1.6)
+        tbl_to.scale(1.0, 1.4)  # Ajustat per 5 files
 
         for j in range(3):
             tbl_to[(0, j)].set_facecolor(COLORS["dark"])
             tbl_to[(0, j)].set_text_props(color='white', fontweight='bold')
         # Colorar segons severitat
-        tbl_to[(1, 0)].set_facecolor('#c6efce')
+        tbl_to[(1, 0)].set_facecolor('#c6efce')  # OK - verd
+        if n_info > 0:
+            tbl_to[(2, 0)].set_facecolor('#cce5ff')  # INFO - blau clar
         if n_warn > 0:
-            tbl_to[(2, 0)].set_facecolor('#fff3cd')
+            tbl_to[(3, 0)].set_facecolor('#fff3cd')  # WARNING - groc
         if n_crit > 0:
-            tbl_to[(3, 0)].set_facecolor('#f8d7da')
+            tbl_to[(4, 0)].set_facecolor('#f8d7da')  # CRITICAL - vermell
 
         # Qualitat SNR/LOD (si tenim summary)
         quality = summary.get('quality', {})

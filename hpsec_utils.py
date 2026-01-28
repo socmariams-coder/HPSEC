@@ -168,7 +168,7 @@ def extract_khp_conc(name):
 # =============================================================================
 # ESTADÍSTIQUES DE BASELINE
 # =============================================================================
-def baseline_stats(y, pct_low=10, pct_high=30):
+def baseline_stats(y, pct_low=10, pct_high=30, min_noise=0.01):
     """
     Calcula estadístiques de la baseline usant percentils.
 
@@ -179,18 +179,19 @@ def baseline_stats(y, pct_low=10, pct_high=30):
         y: Array de valors del senyal
         pct_low: Percentil inferior (default: 10)
         pct_high: Percentil superior (default: 30)
+        min_noise: Soroll mínim (mAU) basat en precisió instrumental (default: 0.01)
 
     Returns:
         dict amb:
             - mean: mitjana de la baseline
-            - std: desviació estàndard de la baseline
+            - std: desviació estàndard de la baseline (mínim min_noise)
             - threshold_3sigma: mean + 3*std (llindar per pics significatius)
     """
     y = np.asarray(y, dtype=float)
     y = y[np.isfinite(y)]
 
     if len(y) < 10:
-        return {"mean": 0.0, "std": 0.0, "threshold_3sigma": 0.0}
+        return {"mean": 0.0, "std": min_noise, "threshold_3sigma": 3.0 * min_noise}
 
     p_low = np.percentile(y, pct_low)
     p_high = np.percentile(y, pct_high)
@@ -204,10 +205,14 @@ def baseline_stats(y, pct_low=10, pct_high=30):
         baseline_points = y[y <= p_high]
 
     if len(baseline_points) < 2:
-        return {"mean": float(p_low), "std": 0.0, "threshold_3sigma": float(p_low)}
+        return {"mean": float(p_low), "std": min_noise, "threshold_3sigma": float(p_low) + 3.0 * min_noise}
 
     mean_val = float(np.mean(baseline_points))
     std_val = float(np.std(baseline_points))
+
+    # Aplicar soroll mínim instrumental per evitar SNR artificials
+    # DAD típic: precisió ~0.01 mAU
+    std_val = max(std_val, min_noise)
 
     return {
         "mean": mean_val,
