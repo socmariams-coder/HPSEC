@@ -3660,24 +3660,24 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
                             validation_result=khp_validation
                         )
 
-                        # Registrar si KHP és vàlid (només per tracking, sempre usem dades actuals)
+                        # Verificar si KHP és vàlid per usar en alineament
                         khp_is_valid = khp_validation.get("valid", False)
+                        khp_issues = khp_validation.get("issues", [])
 
                         if not khp_is_valid:
-                            issues_str = ", ".join(khp_validation.get("issues", []))
+                            # KHP INVALID: NO usar per alineament, buscar SIBLING o NO_KHP
+                            issues_str = ", ".join(khp_issues)
                             result["warnings"].append(
-                                f"WARN: KHP {khp_nom} té problemes de qualitat: {issues_str}"
+                                f"WARN: KHP {khp_nom} INVALID - no s'usarà per alineament: {issues_str}"
                             )
                             result["warnings"].append(
-                                f"INFO: Usant igualment les dades del MasterFile actual (no historic fallback)"
+                                f"INFO: Buscant SIBLING o usant shift=0"
                             )
+                            # NO assignar alignment_info -> caurà al fallback SIBLING/NO_KHP
 
-                        # SEMPRE calcular shifts des de les dades actuals del MasterFile
-                        # La validació serveix per tracking/QC, però confiem en les dades calculades
-                        # Calcular shifts: A254 és la referència
-                        tolerance_min = 2.0 / 60.0  # 2 segons
-
-                        if t_khp_a254 is not None and y_khp_a254 is not None:
+                        elif t_khp_a254 is not None and y_khp_a254 is not None:
+                            # KHP VALID: Calcular shifts
+                            tolerance_min = 2.0 / 60.0  # 2 segons
                             t_max_a254 = t_khp_a254[np.argmax(y_khp_a254)]
 
                             # Shift per DOC_UIB
@@ -3706,9 +3706,8 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
                             align_mode = "DUAL" if t_khp_direct is not None else "SINGLE"
 
                             # Determinar status de validació per tracking
-                            khp_status = "VALID" if khp_is_valid else "INVALID_USED"
-                            if khp_validation.get("warnings"):
-                                khp_status = "VALID_WITH_WARNINGS" if khp_is_valid else "INVALID_WITH_WARNINGS"
+                            # (només arribem aquí si khp_is_valid == True)
+                            khp_status = "VALID_WITH_WARNINGS" if khp_validation.get("warnings") else "VALID"
 
                             alignment_info = {
                                 "khp_file": khp_nom,
@@ -4328,13 +4327,19 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
                                 khp_is_valid_direct = khp_validation_direct.get("valid", False)
 
                                 if not khp_is_valid_direct:
+                                    # KHP INVALID: NO usar per alineament
                                     issues_str = ", ".join(khp_validation_direct.get("issues", []))
                                     result["warnings"].append(
-                                        f"WARN: KHP {khp_key} té problemes de qualitat: {issues_str}"
+                                        f"WARN: KHP {khp_key} INVALID - no s'usarà per alineament: {issues_str}"
                                     )
+                                    result["warnings"].append(
+                                        f"INFO: Buscant SIBLING o usant shift=0"
+                                    )
+                                    # NO calcular shift ni assignar alignment_info_direct
+                                    # -> caurà al fallback SIBLING/NO_KHP
 
-                                # Calcular shift
-                                if t_khp_a254 is not None and y_khp_a254 is not None:
+                                elif t_khp_a254 is not None and y_khp_a254 is not None:
+                                    # KHP VALID: Calcular shift
                                     tolerance_min = 2.0 / 60.0  # 2 segons
                                     t_max_a254 = t_khp_a254[np.argmax(y_khp_a254)]
                                     t_max_doc = t_khp_doc[np.argmax(y_khp_net)]
@@ -4344,9 +4349,8 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
                                         direct_shift = shift_calc
 
                                     # Determinar status validació
-                                    khp_status_direct = "VALID" if khp_is_valid_direct else "INVALID_USED"
-                                    if khp_validation_direct.get("warnings"):
-                                        khp_status_direct = "VALID_WITH_WARNINGS" if khp_is_valid_direct else "INVALID_WITH_WARNINGS"
+                                    # (només arribem aquí si khp_is_valid_direct == True)
+                                    khp_status_direct = "VALID_WITH_WARNINGS" if khp_validation_direct.get("warnings") else "VALID"
 
                                     alignment_info_direct = {
                                         "khp_file": khp_key,
@@ -4510,6 +4514,34 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
                             df_dad = process_dad(df_dad_raw, config)
                             st_dad = "OK" if not df_dad.empty else "NO_DATA"
 
+                    # =========================================
+                    # BP MODE DIRECT (NEW): Alinear cada mostra a A254
+                    # =========================================
+                    if method == "BP" and st_doc == "OK" and not df_dad.empty and '254' in df_dad.columns:
+                        try:
+                            t_dad_sample = df_dad['time (min)'].values
+                            y_a254_sample = pd.to_numeric(df_dad['254'], errors='coerce').to_numpy()
+
+                            if len(y_a254_sample) > 10 and np.nanmax(y_a254_sample) > 0:
+                                t_max_a254_sample = t_dad_sample[np.argmax(y_a254_sample)]
+                                t_max_doc_sample = t_doc[np.argmax(doc_net)]
+
+                                shift_bp = t_max_a254_sample - t_max_doc_sample
+                                tolerance_min = 2.0 / 60.0  # 2 segons
+
+                                if abs(shift_bp) > tolerance_min:
+                                    # Aplicar shift: interpolar DOC a eix DAD
+                                    t_doc_shifted = t_doc + shift_bp
+                                    doc_net = np.interp(t_dad_sample, t_doc_shifted, doc_net, left=0, right=0)
+                                    y_doc = np.interp(t_dad_sample, t_doc_shifted, y_doc, left=0, right=0)
+                                    base_arr = np.interp(t_dad_sample, t_doc_shifted, base_arr, left=base_arr[0], right=base_arr[-1])
+                                    t_doc = t_dad_sample
+
+                                    # Recalcular peak_info amb dades alineades
+                                    peak_info = detect_main_peak(t_doc, doc_net, config["peak_min_prominence_pct"])
+                        except Exception as e:
+                            result["warnings"].append(f"WARN: Error alineament BP per {mostra_clean}: {e}")
+
                     # Calcular àrees (només si tenim DOC)
                     if st_doc == "OK":
                         sample_analysis = analyze_sample_areas(t_doc, doc_net, df_dad, peak_info, config)
@@ -4627,6 +4659,34 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
                         if st_read.startswith("OK") and not df_dad_raw.empty:
                             df_dad = process_dad(df_dad_raw, config)
                             st_dad = "OK" if not df_dad.empty else "NO_DATA"
+
+                    # =========================================
+                    # BP MODE DIRECT (ANTIC): Alinear cada mostra a A254
+                    # =========================================
+                    if method == "BP" and st_doc == "OK" and not df_dad.empty and '254' in df_dad.columns:
+                        try:
+                            t_dad_sample = df_dad['time (min)'].values
+                            y_a254_sample = pd.to_numeric(df_dad['254'], errors='coerce').to_numpy()
+
+                            if len(y_a254_sample) > 10 and np.nanmax(y_a254_sample) > 0:
+                                t_max_a254_sample = t_dad_sample[np.argmax(y_a254_sample)]
+                                t_max_doc_sample = t_doc[np.argmax(doc_net)]
+
+                                shift_bp = t_max_a254_sample - t_max_doc_sample
+                                tolerance_min = 2.0 / 60.0  # 2 segons
+
+                                if abs(shift_bp) > tolerance_min:
+                                    # Aplicar shift: interpolar DOC a eix DAD
+                                    t_doc_shifted = t_doc + shift_bp
+                                    doc_net = np.interp(t_dad_sample, t_doc_shifted, doc_net, left=0, right=0)
+                                    y_doc = np.interp(t_dad_sample, t_doc_shifted, y_doc, left=0, right=0)
+                                    base_arr = np.interp(t_dad_sample, t_doc_shifted, base_arr, left=base_arr[0], right=base_arr[-1])
+                                    t_doc = t_dad_sample
+
+                                    # Recalcular peak_info amb dades alineades
+                                    peak_info = detect_main_peak(t_doc, doc_net, config["peak_min_prominence_pct"])
+                        except Exception as e:
+                            result["warnings"].append(f"WARN: Error alineament BP per {mostra_clean}: {e}")
 
                     # Calcular àrees (només si tenim DOC)
                     if st_doc == "OK":
