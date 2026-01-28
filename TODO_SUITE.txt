@@ -72,6 +72,11 @@ PENDENT v3:
       - Fitxers com MQ1_UIB1B.CSV, MQ2_UIB1B.CSV no s'han de considerar orfes
       - Afegir a hpsec_config.py: CONTROL_INJECTIONS = ["MQ", "NAOH", "BLANK", ...]
       - Relacionat amb numeració de blocs als fitxers resultants
+  [ ] PLANNING: Simular seqüència òptima on timeouts cauen sempre a post-run
+      - Usar timing stats de consolidation.json (pre_injection_time, interval_mean)
+      - TOC_CYCLE = 77.2 min, timeout = 74 sec
+      - Objectiu: calcular durada mostra i delay inicial per evitar zona crítica
+      - Script draft: hpsec_planner.py
 
 --------------------------------------------------------------------------------
 COMPLETAT AVUI (2026-01-28) - ABANS DE v3

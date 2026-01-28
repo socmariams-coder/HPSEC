@@ -11,8 +11,9 @@ Conté tota la lògica per:
 Usat per HPSEC_Suite.py i batch_process.py
 """
 
-__version__ = "1.6.0"
+__version__ = "1.7.0"
 __version_date__ = "2026-01-28"
+# v1.7.0: Estadístiques timing (HPLC + TOC + toc_settings) per planificació/QC
 # v1.6.0: Filtre injeccions control (MQ, NaOH) - configurable a hpsec_config.py
 # v1.5.0: Sistema de matching amb confiança (EXACT/NORMALIZED/FUZZY) + detecció orfes
 # v1.4.0: Validació mostres contra 1-HPLC-SEQ, detecció fitxers orfes
@@ -1432,6 +1433,158 @@ def is_sample_in_seq(sample_name, valid_samples):
     return match_info["matched"] and match_info["confidence"] >= CONFIDENCE_THRESHOLD
 
 
+def calculate_timing_stats(master_data, timeout_info_list=None):
+    """
+    Calcula estadístiques de timing de la seqüència per a planificació.
+
+    Extreu timing de:
+    - 1-HPLC-SEQ: Intervals entre injeccions HPLC (per planificar futures SEQs)
+    - 2-TOC: Intervals entre mesures TOC (comportament real)
+
+    Args:
+        master_data: Dict retornat per llegir_masterfile_nou()
+        timeout_info_list: Llista de timeout_info per cada mostra (opcional)
+
+    Returns:
+        dict amb timing HPLC i TOC
+    """
+    result = {
+        "hplc": None,  # Timing injeccions HPLC
+        "toc": None,   # Timing mesures TOC
+        "t0_first_timeout_min": None,  # Posició primer timeout
+    }
+
+    # === TIMING HPLC (1-HPLC-SEQ) ===
+    df_hplc = master_data.get("hplc_seq")
+    if df_hplc is not None and not df_hplc.empty:
+        # Trobar columna de data d'injecció
+        date_col = None
+        for col in df_hplc.columns:
+            col_str = str(col).lower()
+            if 'injection' in col_str and 'date' in col_str:
+                date_col = col
+                break
+
+        if date_col:
+            timestamps = []
+            for _, row in df_hplc.iterrows():
+                date_val = row[date_col]
+                if pd.notna(date_val):
+                    try:
+                        timestamps.append(pd.to_datetime(date_val))
+                    except:
+                        pass
+
+            if len(timestamps) >= 2:
+                timestamps = sorted(timestamps)
+                intervals_min = [(timestamps[i] - timestamps[i-1]).total_seconds() / 60.0
+                                 for i in range(1, len(timestamps))]
+
+                result["hplc"] = {
+                    "t0_first": timestamps[0].isoformat(),
+                    "t0_last": timestamps[-1].isoformat(),
+                    "total_duration_min": round((timestamps[-1] - timestamps[0]).total_seconds() / 60.0, 2),
+                    "interval_mean_min": round(float(np.mean(intervals_min)), 2),
+                    "interval_std_min": round(float(np.std(intervals_min)), 2),
+                    "interval_min_min": round(min(intervals_min), 2),
+                    "interval_max_min": round(max(intervals_min), 2),
+                    "n_injections": len(timestamps),
+                }
+
+    # === TIMING TOC (2-TOC) ===
+    df_toc = master_data.get("toc")
+    if df_toc is not None and not df_toc.empty:
+        # Trobar columna de temps
+        time_col = None
+        for col in df_toc.columns:
+            col_str = str(col).lower()
+            if 'date' in col_str and 'start' in col_str:
+                time_col = col
+                break
+        if time_col is None and len(df_toc.columns) > 3:
+            time_col = df_toc.columns[3]
+
+        if time_col:
+            toc_times = []
+            for _, row in df_toc.iterrows():
+                time_val = row[time_col]
+                if pd.notna(time_val):
+                    try:
+                        toc_times.append(pd.to_datetime(time_val))
+                    except:
+                        pass
+
+            if len(toc_times) >= 2:
+                toc_times = sorted(toc_times)
+                # Calcular intervals (en segons per detectar timeouts)
+                intervals_sec = [(toc_times[i] - toc_times[i-1]).total_seconds()
+                                 for i in range(1, len(toc_times))]
+
+                # Separar intervals normals de timeouts
+                normal_intervals = [i for i in intervals_sec if i < 60]  # < 60s és normal
+                timeout_intervals = [i for i in intervals_sec if i >= 60]  # >= 60s és timeout
+
+                result["toc"] = {
+                    "t0_first": toc_times[0].isoformat(),
+                    "t0_last": toc_times[-1].isoformat(),
+                    "total_duration_min": round((toc_times[-1] - toc_times[0]).total_seconds() / 60.0, 2),
+                    "n_measurements": len(toc_times),
+                    "interval_normal_mean_sec": round(float(np.mean(normal_intervals)), 2) if normal_intervals else None,
+                    "n_timeouts_detected": len(timeout_intervals),
+                    "timeout_duration_mean_sec": round(float(np.mean(timeout_intervals)), 1) if timeout_intervals else None,
+                }
+
+        # === TOC SETTINGS (acid/oxidizer flow) ===
+        # Buscar columnes de flow rate
+        acid_col = oxidizer_col = None
+        for col in df_toc.columns:
+            col_str = str(col).lower()
+            if 'acid' in col_str and 'flow' in col_str:
+                acid_col = col
+            elif 'oxid' in col_str and 'flow' in col_str:
+                oxidizer_col = col
+
+        toc_settings = {}
+        if acid_col is not None:
+            acid_vals = pd.to_numeric(df_toc[acid_col], errors='coerce').dropna()
+            if len(acid_vals) > 0:
+                toc_settings["acid_flow_ul_min"] = round(float(acid_vals.median()), 2)
+                # Verificar si constant
+                if acid_vals.std() > 0.1:
+                    toc_settings["acid_flow_warning"] = f"Variabilitat detectada (std={acid_vals.std():.2f})"
+
+        if oxidizer_col is not None:
+            ox_vals = pd.to_numeric(df_toc[oxidizer_col], errors='coerce').dropna()
+            if len(ox_vals) > 0:
+                toc_settings["oxidizer_flow_ul_min"] = round(float(ox_vals.median()), 2)
+                if ox_vals.std() > 0.1:
+                    toc_settings["oxidizer_flow_warning"] = f"Variabilitat detectada (std={ox_vals.std():.2f})"
+
+        if toc_settings:
+            result["toc_settings"] = toc_settings
+
+    # === POSICIÓ PRIMER TIMEOUT ===
+    if timeout_info_list:
+        for to_info in timeout_info_list:
+            if to_info and to_info.get("detected", False):
+                timeouts = to_info.get("timeouts", [])
+                if timeouts:
+                    result["t0_first_timeout_min"] = round(timeouts[0].get("t_start_min", 0), 2)
+                    break
+
+    # === TEMPS PRE-INJECCIÓ (TOC abans de primera injecció HPLC) ===
+    if result["hplc"] and result["toc"]:
+        try:
+            toc_start = pd.to_datetime(result["toc"]["t0_first"])
+            hplc_start = pd.to_datetime(result["hplc"]["t0_first"])
+            pre_injection_min = (hplc_start - toc_start).total_seconds() / 60.0
+            result["pre_injection_time_min"] = round(pre_injection_min, 2)
+        except:
+            result["pre_injection_time_min"] = None
+
+    return result if (result["hplc"] or result["toc"]) else None
+
+
 def calculate_toc_calc_on_the_fly(master_data):
     """
     Calcula 4-TOC_CALC al vol a partir de 1-HPLC-SEQ i 2-TOC.
@@ -2505,13 +2658,14 @@ def _collect_sample_stats(mostra, rep, timeout_info, snr_info, peak_info, doc_mo
     return stats
 
 
-def generate_consolidation_summary(result, sample_stats):
+def generate_consolidation_summary(result, sample_stats, timing_stats=None):
     """
     Genera un resum JSON de la consolidació.
 
     Args:
         result: Diccionari resultat de consolidate_sequence
         sample_stats: Llista d'estadístiques per mostra
+        timing_stats: Dict amb estadístiques de timing (opcional)
 
     Returns:
         dict amb el resum complet
@@ -2602,6 +2756,10 @@ def generate_consolidation_summary(result, sample_stats):
         "errors": [e for e in result.get("errors", []) if not e.startswith("WARN:")],
         "samples": sample_stats,
     }
+
+    # Afegir timing stats si disponibles (per planificació seqüències)
+    if timing_stats:
+        summary["timing"] = timing_stats
 
     return summary
 
@@ -3018,6 +3176,11 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
                             valid_samples = get_valid_samples_from_hplc_seq(master_data)
                             if valid_samples:
                                 result["valid_samples"] = list(valid_samples)[:20]  # Guardar per debug
+
+                            # Calcular timing stats (per planificació futures SEQs)
+                            timing_stats = calculate_timing_stats(master_data)
+                            if timing_stats:
+                                result["timing_stats"] = timing_stats
 
                             if df_toc is not None:
                                 # Si no té TOC_CALC, calcular al vol
@@ -3526,6 +3689,11 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
                 df_toc_calc = master_data["toc_calc"]
                 master_info = master_data.get("info", {})  # 0-INFO
 
+                # Calcular timing stats (per planificació futures SEQs)
+                timing_stats = calculate_timing_stats(master_data)
+                if timing_stats:
+                    result["timing_stats"] = timing_stats
+
                 if df_toc is None or df_toc.empty:
                     result["errors"].append("MasterFile sense dades TOC")
                     return result
@@ -3871,7 +4039,8 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
         # === GENERAR JSON RESUM CONSOLIDACIÓ ===
         if result.get("sample_stats"):
             try:
-                summary = generate_consolidation_summary(result, result["sample_stats"])
+                timing_stats = result.get("timing_stats")
+                summary = generate_consolidation_summary(result, result["sample_stats"], timing_stats)
                 json_path = save_consolidation_summary(input_folder, summary)
                 if json_path:
                     result["consolidation_json"] = json_path
