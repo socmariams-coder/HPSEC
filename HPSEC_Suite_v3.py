@@ -313,8 +313,8 @@ class HPSECSuiteV3:
     def __init__(self, root):
         self.root = root
         self.root.title(f"{APP_NAME} v{VERSION}")
-        self.root.geometry("1100x750")
-        self.root.minsize(950, 650)
+        self.root.geometry("1100x900")
+        self.root.minsize(950, 800)
 
         # Configuració
         self.config = get_config()
@@ -363,10 +363,18 @@ class HPSECSuiteV3:
 
     def _build_gui(self):
         """Construeix la interfície gràfica."""
+        # IMPORTANT: Ordre de pack determina layout
+        # 1. Header (TOP)
+        # 2. Steps indicator (TOP)
+        # 3. Footer (BOTTOM) - ha d'anar ABANS del main_area
+        # 4. Action bar (BOTTOM) - botons d'acció fixos
+        # 5. Main area (FILL) - contingut scrollable
+
         self._build_header()
         self._build_steps_indicator()
-        self._build_main_area()
-        self._build_footer()
+        self._build_footer()      # Footer ABANS per fixar-lo al fons
+        self._build_action_bar()  # Barra d'accions fixa
+        self._build_main_area()   # Contingut scrollable al mig
 
         # Mostrar primer pas
         self._show_step(0)
@@ -452,13 +460,133 @@ class HPSECSuiteV3:
                 sep.pack(side=tk.LEFT, padx=5)
 
     # =========================================================================
-    # MAIN AREA
+    # ACTION BAR (Botons fixos)
+    # =========================================================================
+
+    def _build_action_bar(self):
+        """Construeix la barra d'accions fixa amb botons per cada pas."""
+        self.action_bar = tk.Frame(self.root, bg=COLORS["white"], height=80)
+        self.action_bar.pack(fill=tk.X, side=tk.BOTTOM)
+        self.action_bar.pack_propagate(False)
+
+        # Separador superior
+        ttk.Separator(self.action_bar, orient="horizontal").pack(fill=tk.X)
+
+        # Container pels botons
+        btn_container = tk.Frame(self.action_bar, bg=COLORS["white"])
+        btn_container.pack(expand=True, fill=tk.BOTH, pady=10)
+
+        # === Frame per cada pas (només un visible a la vegada) ===
+        self.action_frames = []
+
+        # Pas 1: Consolidar
+        frame1 = tk.Frame(btn_container, bg=COLORS["white"])
+        self.action_frames.append(frame1)
+
+        self.progress_con = ttk.Progressbar(frame1, mode='determinate', length=300)
+        self.progress_con.pack(side=tk.LEFT, padx=(20, 10))
+
+        self.lbl_con_progress = tk.Label(frame1, text="",
+                                         font=("Segoe UI", 9),
+                                         bg=COLORS["white"], fg=COLORS["text_light"],
+                                         width=30)
+        self.lbl_con_progress.pack(side=tk.LEFT, padx=10)
+
+        self.btn_consolidar = tk.Button(frame1, text="▶ Consolidar Dades",
+                                        command=self._run_consolidation,
+                                        bg=COLORS["primary"], fg=COLORS["white"],
+                                        font=("Segoe UI", 11, "bold"),
+                                        relief="flat", padx=25, pady=8,
+                                        state="disabled")
+        self.btn_consolidar.pack(side=tk.RIGHT, padx=20)
+
+        # Pas 2: Calibrar
+        frame2 = tk.Frame(btn_container, bg=COLORS["white"])
+        self.action_frames.append(frame2)
+
+        self.btn_calibrar = tk.Button(frame2, text="▶ Calibrar",
+                                      command=self._run_calibration,
+                                      bg=COLORS["primary"], fg=COLORS["white"],
+                                      font=("Segoe UI", 11, "bold"),
+                                      relief="flat", padx=25, pady=8,
+                                      state="disabled")
+        self.btn_calibrar.pack(side=tk.RIGHT, padx=20)
+
+        self.lbl_cal_status = tk.Label(frame2, text="",
+                                       font=("Segoe UI", 10),
+                                       bg=COLORS["white"], fg=COLORS["text_light"])
+        self.lbl_cal_status.pack(side=tk.LEFT, padx=20)
+
+        # Pas 3: QC
+        frame3 = tk.Frame(btn_container, bg=COLORS["white"])
+        self.action_frames.append(frame3)
+
+        self.btn_qc = tk.Button(frame3, text="▶ Analitzar Qualitat",
+                                command=self._run_qc,
+                                bg=COLORS["primary"], fg=COLORS["white"],
+                                font=("Segoe UI", 11, "bold"),
+                                relief="flat", padx=25, pady=8,
+                                state="disabled")
+        self.btn_qc.pack(side=tk.RIGHT, padx=20)
+
+        # Pas 4: Exportar
+        frame4 = tk.Frame(btn_container, bg=COLORS["white"])
+        self.action_frames.append(frame4)
+
+        self.btn_export = tk.Button(frame4, text="▶ Exportar Resultats",
+                                    command=self._run_export,
+                                    bg=COLORS["success"], fg=COLORS["white"],
+                                    font=("Segoe UI", 11, "bold"),
+                                    relief="flat", padx=25, pady=8,
+                                    state="disabled")
+        self.btn_export.pack(side=tk.RIGHT, padx=20)
+
+    def _show_action_bar(self, step_idx):
+        """Mostra els botons corresponents al pas actual."""
+        for i, frame in enumerate(self.action_frames):
+            if i == step_idx:
+                frame.pack(fill=tk.BOTH, expand=True)
+            else:
+                frame.pack_forget()
+
+    # =========================================================================
+    # MAIN AREA (Scrollable)
     # =========================================================================
 
     def _build_main_area(self):
-        """Construeix l'àrea principal."""
-        self.main_frame = tk.Frame(self.root, bg=COLORS["white"])
-        self.main_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
+        """Construeix l'àrea principal amb scroll."""
+        # Container principal
+        self.main_container = tk.Frame(self.root, bg=COLORS["white"])
+        self.main_container.pack(fill=tk.BOTH, expand=True)
+
+        # Canvas amb scrollbar per contingut
+        self.canvas = tk.Canvas(self.main_container, bg=COLORS["white"], highlightthickness=0)
+        self.scrollbar = ttk.Scrollbar(self.main_container, orient="vertical", command=self.canvas.yview)
+        self.scrollable_frame = tk.Frame(self.canvas, bg=COLORS["white"])
+
+        # Configurar scroll
+        self.scrollable_frame.bind(
+            "<Configure>",
+            lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        )
+
+        self.canvas_window = self.canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
+
+        # Fer que el frame interior s'expandeixi horitzontalment
+        self.canvas.bind("<Configure>", self._on_canvas_configure)
+
+        self.canvas.configure(yscrollcommand=self.scrollbar.set)
+
+        # Mousewheel scroll
+        self.canvas.bind_all("<MouseWheel>", self._on_mousewheel)
+
+        # Pack canvas i scrollbar
+        self.scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=20, pady=10)
+
+        # Main frame dins el scrollable
+        self.main_frame = tk.Frame(self.scrollable_frame, bg=COLORS["white"])
+        self.main_frame.pack(fill=tk.BOTH, expand=True)
 
         # Un frame per cada pas
         self.step_frames = []
@@ -471,6 +599,14 @@ class HPSECSuiteV3:
         self._build_step_calibrar(self.step_frames[1])
         self._build_step_qc(self.step_frames[2])
         self._build_step_exportar(self.step_frames[3])
+
+    def _on_canvas_configure(self, event):
+        """Ajusta l'amplada del frame interior al canvas."""
+        self.canvas.itemconfig(self.canvas_window, width=event.width)
+
+    def _on_mousewheel(self, event):
+        """Scroll amb roda del ratolí."""
+        self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
     # =========================================================================
     # PAS 1: CONSOLIDAR
@@ -582,6 +718,11 @@ class HPSECSuiteV3:
                                     bg=COLORS["white"])
         self.lbl_sum_lod.pack(anchor="w")
 
+        self.lbl_sum_generated = tk.Label(left_col, text="",
+                                          font=("Segoe UI", 9),
+                                          bg=COLORS["white"], fg=COLORS["text_light"])
+        self.lbl_sum_generated.pack(anchor="w", pady=(5, 0))
+
         # Columna dreta: Timeouts
         right_col = tk.Frame(summary_content, bg=COLORS["white"])
         right_col.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
@@ -627,24 +768,7 @@ class HPSECSuiteV3:
                                          wraplength=600, justify=tk.LEFT)
         self.lbl_sum_warnings.pack(anchor="w", padx=10, pady=5)
 
-        # === PROGRÉS I BOTÓ ===
-        # Progrés
-        self.progress_con = ttk.Progressbar(parent, mode='determinate', length=400)
-        self.progress_con.pack(pady=15)
-
-        self.lbl_con_progress = tk.Label(parent, text="",
-                                         font=("Segoe UI", 9),
-                                         bg=COLORS["white"], fg=COLORS["text_light"])
-        self.lbl_con_progress.pack()
-
-        # Botó
-        self.btn_consolidar = tk.Button(parent, text="Consolidar Dades",
-                                        command=self._run_consolidation,
-                                        bg=COLORS["primary"], fg=COLORS["white"],
-                                        font=("Segoe UI", 11, "bold"),
-                                        relief="flat", padx=30, pady=10,
-                                        state="disabled")
-        self.btn_consolidar.pack(pady=15)
+        # NOTA: Progress bar i botó "Consolidar" ara estan a la Action Bar (sempre visibles)
 
     # =========================================================================
     # PAS 2: CALIBRAR
@@ -755,17 +879,10 @@ class HPSECSuiteV3:
         self.cal_canvas_frame = tk.Frame(right_frame, bg=COLORS["light"])
         self.cal_canvas_frame.pack(fill=tk.BOTH, expand=True)
 
-        # Botons (a sota del gràfic)
+        # Botons secundaris (a sota del gràfic)
+        # NOTA: Botó principal "Calibrar" ara està a la Action Bar
         btn_frame = tk.Frame(parent, bg=COLORS["white"])
         btn_frame.pack(pady=10)
-
-        self.btn_calibrar = tk.Button(btn_frame, text="Executar Calibració",
-                                      command=self._run_calibration,
-                                      bg=COLORS["primary"], fg=COLORS["white"],
-                                      font=("Segoe UI", 11, "bold"),
-                                      relief="flat", padx=30, pady=10,
-                                      state="disabled")
-        self.btn_calibrar.pack(side=tk.LEFT, padx=10)
 
         self.btn_khp_history = tk.Button(btn_frame, text="Històric KHP",
                                          command=self._show_khp_history,
@@ -836,17 +953,10 @@ class HPSECSuiteV3:
         self.qc_menu.add_separator()
         self.qc_menu.add_command(label="Obrir gràfic QAQC", command=self._open_qaqc_plot)
 
-        # Progrés i botó
+        # Progrés
+        # NOTA: Botó principal "QC" ara està a la Action Bar
         self.progress_qc = ttk.Progressbar(parent, mode='determinate', length=400)
         self.progress_qc.pack(pady=10)
-
-        self.btn_qc = tk.Button(parent, text="Executar QC",
-                                command=self._run_qc,
-                                bg=COLORS["primary"], fg=COLORS["white"],
-                                font=("Segoe UI", 11, "bold"),
-                                relief="flat", padx=30, pady=10,
-                                state="disabled")
-        self.btn_qc.pack(pady=10)
 
     # =========================================================================
     # PAS 4: EXPORTAR
@@ -895,20 +1005,13 @@ class HPSECSuiteV3:
         self.export_summary.pack(anchor="w", pady=20)
 
         # Progrés
+        # NOTA: Botó principal "Exportar" ara està a la Action Bar
         self.progress_export = ttk.Progressbar(parent, mode='determinate', length=400)
         self.progress_export.pack(pady=10)
 
-        # Botons
+        # Botó secundari
         btn_frame = tk.Frame(parent, bg=COLORS["white"])
         btn_frame.pack(pady=20)
-
-        self.btn_exportar = tk.Button(btn_frame, text="Exportar Tot",
-                                      command=self._run_export,
-                                      bg=COLORS["success"], fg=COLORS["white"],
-                                      font=("Segoe UI", 11, "bold"),
-                                      relief="flat", padx=30, pady=10,
-                                      state="disabled")
-        self.btn_exportar.pack(side=tk.LEFT, padx=10)
 
         self.btn_open_folder = tk.Button(btn_frame, text="Obrir Carpeta CHECK",
                                          command=self._open_check_folder,
@@ -955,13 +1058,19 @@ class HPSECSuiteV3:
 
     def _show_step(self, step_idx):
         """Mostra un pas específic."""
-        # Amagar tots els frames
+        # Amagar tots els frames de contingut
         for frame in self.step_frames:
             frame.pack_forget()
 
         # Mostrar el frame seleccionat
         self.step_frames[step_idx].pack(fill=tk.BOTH, expand=True)
         self.current_step = step_idx
+
+        # Mostrar barra d'accions corresponent
+        self._show_action_bar(step_idx)
+
+        # Scroll al principi
+        self.canvas.yview_moveto(0)
 
         # Actualitzar indicadors
         for i, lbl in enumerate(self.step_labels):
@@ -1155,8 +1264,8 @@ class HPSECSuiteV3:
 
         def consolidate_thread():
             try:
-                def on_progress(current, total, item):
-                    pct = int(100 * current / total) if total > 0 else 0
+                def on_progress(pct, item):
+                    """Callback: pct=percentatge (0-100), item=nom mostra"""
                     self.root.after(0, lambda: self._update_consolidation_progress(pct, item))
 
                 result = consolidate_sequence(self.seq_path, progress_callback=on_progress)
@@ -1186,10 +1295,35 @@ class HPSECSuiteV3:
             mode = result.get('mode', 'N/A')
             is_bp = result.get('bp', False)
 
+            # Si no s'ha processat res, intentar carregar dades existents
+            if n_processed == 0:
+                check_folder = os.path.join(self.seq_path, "CHECK")
+                json_path = os.path.join(check_folder, "consolidation.json")
+                if os.path.exists(json_path):
+                    try:
+                        with open(json_path, 'r', encoding='utf-8') as f:
+                            existing = json.load(f)
+                        # Actualitzar amb dades existents
+                        mode = existing.get('meta', {}).get('mode', mode)
+                        is_bp = existing.get('meta', {}).get('method', '') == 'BP'
+                        n_files = existing.get('counts', {}).get('total_samples', 0)
+                        # Guardar summary per mostrar
+                        result['consolidation_summary'] = existing
+                        self.lbl_con_status.configure(
+                            text=f"Estat: Ja consolidat ({n_files} mostres)",
+                            fg=COLORS["success"])
+                    except Exception:
+                        pass
+                else:
+                    self.lbl_con_status.configure(
+                        text=f"Estat: Consolidat ({n_files} fitxers)",
+                        fg=COLORS["success"])
+            else:
+                self.lbl_con_status.configure(
+                    text=f"Estat: Consolidat ({n_files} fitxers)",
+                    fg=COLORS["success"])
+
             mode_text = f"{mode}" + (" BP" if is_bp else " COLUMN")
-            self.lbl_con_status.configure(
-                text=f"Estat: Consolidat ({n_files} fitxers)",
-                fg=COLORS["success"])
 
             con_folder = result.get('output_path', os.path.join(self.seq_path, "Resultats_Consolidats"))
             con_files = glob.glob(os.path.join(con_folder, "*.xlsx"))
@@ -1283,8 +1417,11 @@ class HPSECSuiteV3:
 
     def _show_consolidation_summary(self, summary):
         """Mostra el resum de consolidació a la GUI."""
-        # Mostrar el frame
-        self.summary_frame.pack(fill=tk.X, pady=10, before=self.progress_con)
+        # Mostrar el frame (ja no usem before= perquè progress està a action bar)
+        self.summary_frame.pack(fill=tk.X, pady=10)
+
+        # Scroll per mostrar el resum
+        self.root.after(100, lambda: self.canvas.yview_moveto(1.0))
 
         # Comptadors
         counts = summary.get('counts', {})
@@ -1324,6 +1461,24 @@ class HPSECSuiteV3:
             self.lbl_sum_lod.configure(text=lod_text)
         else:
             self.lbl_sum_lod.configure(text="LOD: -")
+
+        # Data generació i versió
+        meta = summary.get('meta', {})
+        generated_at = meta.get('generated_at', '')
+        script_version = meta.get('script_version', '')
+        if generated_at:
+            # Format: 2026-01-28T12:01:34.109120 -> 28/01/2026 12:01
+            try:
+                dt = datetime.fromisoformat(generated_at)
+                date_str = dt.strftime("%d/%m/%Y %H:%M")
+            except:
+                date_str = generated_at[:16] if len(generated_at) > 16 else generated_at
+            gen_text = f"Generat: {date_str}"
+            if script_version:
+                gen_text += f" (v{script_version})"
+            self.lbl_sum_generated.configure(text=gen_text)
+        else:
+            self.lbl_sum_generated.configure(text="")
 
         # Timeouts
         timeouts = summary.get('timeouts', {})
@@ -1775,7 +1930,7 @@ class HPSECSuiteV3:
         """Callback quan el QC acaba."""
         self.is_processing = False
         self.progress_qc['value'] = 100
-        self.btn_exportar.configure(state="normal")
+        self.btn_export.configure(state="normal")
 
         n_ok = sum(1 for k, v in self.selected_replicas.items()
                    if v.get('doc_r') and v['doc_r'] >= DEFAULT_MIN_CORR)
@@ -1864,7 +2019,7 @@ class HPSECSuiteV3:
             return
 
         self.is_processing = True
-        self.btn_exportar.configure(state="disabled")
+        self.btn_export.configure(state="disabled")
         self.progress_export['value'] = 0
 
         def export_thread():
@@ -1971,7 +2126,7 @@ class HPSECSuiteV3:
     def _export_error(self, error):
         """Callback quan hi ha error d'exportació."""
         self.is_processing = False
-        self.btn_exportar.configure(state="normal")
+        self.btn_export.configure(state="normal")
         messagebox.showerror("Error", f"Error durant l'exportació:\n\n{error}")
 
     def _open_check_folder(self):
