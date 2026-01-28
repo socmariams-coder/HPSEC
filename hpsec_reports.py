@@ -105,8 +105,9 @@ def is_control(name):
 def extract_sample_base(name):
     """Extreu nom base de mostra (sense rèplica)."""
     name = str(name).strip()
-    # Treure sufixos de rèplica
-    match = re.match(r"^(.+?)(?:[_\-\s]?R\d+)?$", name, re.IGNORECASE)
+    # Treure sufixos de rèplica (requereix separador _ - o espai abans de R)
+    # Això evita que FR2586 es confongui amb F + R2586
+    match = re.match(r"^(.+?)(?:[_\-\s]R\d{1,2})?$", name, re.IGNORECASE)
     if match:
         return match.group(1).strip()
     return name
@@ -211,16 +212,19 @@ def draw_header(fig, title, subtitle="", seq_name="", page_num=None, total_pages
                  fontsize=8, color='gray')
 
 
-def draw_footer(fig, text=""):
+def draw_footer(fig, text="", version=""):
     """Dibuixa peu de pàgina minimalista."""
     # Línia separadora
     fig.add_artist(plt.Line2D([0.05, 0.95], [0.02, 0.02],
                               color='lightgray', linewidth=0.5,
                               transform=fig.transFigure))
 
-    # Data i text
+    # Data i versió
     date_str = datetime.now().strftime("%d/%m/%Y %H:%M")
-    fig.text(0.05, 0.01, f"Generat: {date_str}", ha='left', va='bottom',
+    footer_left = f"Generat: {date_str}"
+    if version:
+        footer_left += f"  |  HPSEC Suite v{version}"
+    fig.text(0.05, 0.01, footer_left, ha='left', va='bottom',
              fontsize=6, color='gray')
 
     if text:
@@ -265,6 +269,11 @@ def generate_consolidation_report(seq_path, xlsx_files, info, output_path=None):
                 summary = json.load(f)
         except:
             pass
+
+    # Extreure metadades de consolidació
+    meta = summary.get('meta', {})
+    script_version = meta.get('script_version', '')
+    consolidation_date = meta.get('generated_at', '')
 
     # Llegir dades de tots els fitxers Excel
     samples_data = []
@@ -371,13 +380,23 @@ def generate_consolidation_report(seq_path, xlsx_files, info, output_path=None):
         control_count = sum(1 for s in samples_data if is_control(s['mostra']))
         sample_count = len(samples_data) - khp_count - control_count
 
+        # Formatar data consolidació (de ISO a DD/MM/YYYY HH:MM)
+        cons_date_str = "─"
+        if consolidation_date:
+            try:
+                from datetime import datetime as dt
+                cons_dt = dt.fromisoformat(consolidation_date)
+                cons_date_str = cons_dt.strftime("%d/%m/%Y %H:%M")
+            except:
+                cons_date_str = consolidation_date[:16] if len(consolidation_date) > 16 else consolidation_date
+
         info_data = [
             ["PARÀMETRE", "VALOR", "PARÀMETRE", "VALOR"],
             ["Mode DOC", mode_str, "Mostres", str(sample_count)],
             ["Mètode", method_str, "KHP (estàndard)", str(khp_count)],
             ["Data SEQ", date_str[:10] if len(date_str) > 10 else date_str,
              "Controls (MQ/NaOH)", str(control_count)],
-            ["Total injeccions", str(len(xlsx_files)), "─", "─"],
+            ["Total injeccions", str(len(xlsx_files)), "Consolidat", cons_date_str],
         ]
 
         tbl_info = ax_info.table(cellText=info_data, loc='center', cellLoc='center',
@@ -525,10 +544,10 @@ def generate_consolidation_report(seq_path, xlsx_files, info, output_path=None):
 
         # Processament aplicat
         fig.text(0.1, 0.15, "PROCESSAMENT:", fontsize=8, fontweight='bold')
-        fig.text(0.1, 0.12, "• Baseline: Moda robusta | Suavitzat: Savitzky-Golay (11,3) | "
+        fig.text(0.1, 0.12, "• Baseline: Finestres temporals (evita timeouts) | Suavitzat: Savitzky-Golay (11,3) | "
                 f"Alineació: {'Pel màxim (BP)' if info.get('bp') else 'KHP + A254'}", fontsize=7)
 
-        draw_footer(fig, "Serveis Tècnics de Recerca")
+        draw_footer(fig, "Serveis Tècnics de Recerca", script_version)
         pdf.savefig(fig, dpi=150)
         plt.close(fig)
 
@@ -620,7 +639,7 @@ def generate_consolidation_report(seq_path, xlsx_files, info, output_path=None):
             fig.text(0.02, 0.03, "● KHP  ○ Control  Groc=Warning  Vermell=Critical/Absent",
                     fontsize=6, style='italic')
 
-            draw_footer(fig)
+            draw_footer(fig, version=script_version)
             pdf.savefig(fig, dpi=150)
             plt.close(fig)
 
@@ -656,6 +675,18 @@ def generate_chromatograms_report(seq_path, xlsx_files, info, output_path=None):
     seq_name = info.get('seq', os.path.basename(seq_path))
     is_bp = info.get('bp', False)
     pdf_path = os.path.join(output_path, f"REPORT_Cromatogrames_{seq_name}.pdf")
+
+    # Llegir consolidation.json per obtenir versió
+    json_path = os.path.join(output_path, "consolidation.json")
+    script_version = ""
+    if os.path.exists(json_path):
+        try:
+            import json
+            with open(json_path, 'r', encoding='utf-8') as f:
+                summary = json.load(f)
+            script_version = summary.get('meta', {}).get('script_version', '')
+        except:
+            pass
 
     # Escala X segons mode
     if is_bp:
@@ -802,16 +833,16 @@ def generate_chromatograms_report(seq_path, xlsx_files, info, output_path=None):
 
                     t = rep_data['t_doc']
 
-                    # Plot DOC Direct (blau)
+                    # Plot DOC Direct (blau, línia sòlida)
                     if rep_data['y_direct'] is not None and len(rep_data['y_direct']) > 0:
                         ax.plot(t, rep_data['y_direct'], '-',
-                               color=COLORS["doc_direct"], linewidth=0.7,
+                               color=COLORS["doc_direct"], linewidth=0.8,
                                label='DOC Direct')
 
-                    # Plot DOC UIB (verd) si disponible i diferent
+                    # Plot DOC UIB (verd, línia discontínua per distingir quan es superposen)
                     if rep_data['y_uib'] is not None and len(rep_data['y_uib']) > 0:
-                        ax.plot(t, rep_data['y_uib'], '-',
-                               color=COLORS["doc_uib"], linewidth=0.5, alpha=0.7,
+                        ax.plot(t, rep_data['y_uib'], '--',
+                               color=COLORS["doc_uib"], linewidth=0.6,
                                label='DOC UIB')
 
                     ax.set_xlim(x_min, x_max)
@@ -852,15 +883,16 @@ def generate_chromatograms_report(seq_path, xlsx_files, info, output_path=None):
                                  fontsize=9, color='lightgray', style='italic')
                     ax_empty.axis('off')
 
-            # Llegenda al peu
+            # Llegenda al peu (desplaçada amunt per deixar espai al footer)
             legend_elements = [
                 mpatches.Patch(color=COLORS["doc_direct"], label='DOC Direct'),
                 mpatches.Patch(color=COLORS["doc_uib"], label='DOC UIB'),
                 mpatches.Patch(color=COLORS["dad_254"], label='A254 (DAD)'),
             ]
             fig.legend(handles=legend_elements, loc='lower center', ncol=3,
-                      fontsize=7, frameon=False, bbox_to_anchor=(0.5, 0.01))
+                      fontsize=7, frameon=False, bbox_to_anchor=(0.5, 0.035))
 
+            draw_footer(fig, version=script_version)
             pdf.savefig(fig, dpi=150)
             plt.close(fig)
 

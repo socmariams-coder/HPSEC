@@ -698,6 +698,29 @@ def generate_calibration_pdf(seq_path, cal_data, config=None, log_func=None, khp
             ax_table = fig.add_axes([0.1, 0.52, 0.8, 0.18])
             ax_table.axis('off')
 
+            # CR info
+            cr = cal_data.get('concentration_ratio', 0)
+            cr_pct = cr * 100 if cr else 0
+
+            # Determinar estat CR segons thresholds
+            is_bp = 'BP' in mode.upper()
+            if is_bp:
+                cr_status = "-"  # BP: CR no fiable
+            elif volume >= 400:
+                if cr >= 0.70:
+                    cr_status = f"{cr_pct:.1f}% (OK)"
+                elif cr >= 0.65:
+                    cr_status = f"{cr_pct:.1f}% (ALERTA)"
+                else:
+                    cr_status = f"{cr_pct:.1f}% (REVISAR)"
+            else:
+                if cr >= 0.55:
+                    cr_status = f"{cr_pct:.1f}% (OK)"
+                elif cr >= 0.45:
+                    cr_status = f"{cr_pct:.1f}% (ALERTA)"
+                else:
+                    cr_status = f"{cr_pct:.1f}% (REVISAR)"
+
             table_data = [
                 ['PARÀMETRE', 'VALOR'],
                 ['Mode cromatogràfic', mode],
@@ -705,6 +728,7 @@ def generate_calibration_pdf(seq_path, cal_data, config=None, log_func=None, khp
                 ['Volum injecció', f"{volume} µL"],
                 ['Concentració KHP', f"{conc} ppm"],
                 ['Àrea (seleccionada)', f"{area:.2f}"],
+                ['Conc. Ratio (CR)', cr_status],
                 ['Factor calibració', f"{factor:.6f}"],
                 ['Factor normalitzat (100µL)', f"{factor_norm:.6f}"],
             ]
@@ -731,7 +755,7 @@ def generate_calibration_pdf(seq_path, cal_data, config=None, log_func=None, khp
                 ax_reps.axis('off')
 
                 # Capçalera
-                rep_header = ['#', 'Fitxer', 'DOC', 'A254', 'Ratio', 'SNR', 'SHIFT(s)', 'Estat']
+                rep_header = ['#', 'Fitxer', 'DOC', 'CR%', 'A254', 'SNR', 'SHIFT(s)', 'Estat']
                 rep_data = [rep_header]
 
                 for i, rep in enumerate(replicas):
@@ -740,8 +764,9 @@ def generate_calibration_pdf(seq_path, cal_data, config=None, log_func=None, khp
                         fname = fname[:17] + '...'
 
                     rep_area = rep.get('area', 0)
+                    rep_cr = rep.get('concentration_ratio', 0)
+                    rep_cr_pct = rep_cr * 100 if rep_cr else 0
                     rep_a254 = rep.get('a254_area', 0)
-                    rep_ratio = rep.get('a254_doc_ratio', 0)
                     rep_snr = rep.get('snr', 0)
                     rep_shift = rep.get('shift_sec', rep.get('shift_min', 0) * 60)
 
@@ -769,8 +794,8 @@ def generate_calibration_pdf(seq_path, cal_data, config=None, log_func=None, khp
                         num,
                         fname,
                         f"{rep_area:.1f}",
+                        f"{rep_cr_pct:.0f}" if rep_cr_pct > 0 else "-",
                         f"{rep_a254:.1f}" if rep_a254 > 0 else "-",
-                        f"{rep_ratio:.3f}" if rep_ratio > 0 else "-",
                         f"{rep_snr:.1f}",
                         f"{rep_shift:.1f}",
                         estat
@@ -805,9 +830,9 @@ def generate_calibration_pdf(seq_path, cal_data, config=None, log_func=None, khp
 
             # Llegenda columnes
             fig.text(0.1, 0.16, "Llegenda:", fontsize=9, fontweight='bold')
-            fig.text(0.1, 0.13, "• DOC: Àrea integrada del pic DOC (carboni orgànic dissolt)", fontsize=8)
-            fig.text(0.1, 0.11, "• A254: Àrea integrada del pic DAD a 254nm (UV)", fontsize=8)
-            fig.text(0.1, 0.09, "• Ratio: DOC/A254 - validació creuada de la integració", fontsize=8)
+            fig.text(0.1, 0.13, "• DOC: Àrea integrada del pic DOC | CR%: Conc.Ratio (àrea pic / àrea total)", fontsize=8)
+            fig.text(0.1, 0.11, "• A254: Àrea DAD 254nm | CR thresholds: 400µL≥70%, 100µL≥55%", fontsize=8)
+            fig.text(0.1, 0.09, "• CR mesura puresa: 100%=tot senyal al pic, <threshold=possible contaminació", fontsize=8)
             fig.text(0.1, 0.07, "• * = Rèplica seleccionada quan RSD > 10%", fontsize=8, color='#0066cc')
 
             # Fórmula

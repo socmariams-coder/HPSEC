@@ -38,7 +38,7 @@ CANONICAL_SHEETS = ['0-INFO', '1-HPLC-SEQ', '2-TOC', '3-DAD_KHP', '4-TOC_CALC']
 # =============================================================================
 
 def migrate_single(seq_path: str, progress_callback: Optional[Callable] = None,
-                   force: bool = False) -> Dict[str, Any]:
+                   force: bool = False, rawdata_file: Optional[str] = None) -> Dict[str, Any]:
     """
     Migra una sola carpeta SEQ a MasterFile.
 
@@ -46,9 +46,10 @@ def migrate_single(seq_path: str, progress_callback: Optional[Callable] = None,
         seq_path: Ruta a la carpeta SEQ
         progress_callback: Opcional, funció(step, total, message) per reportar progrés
         force: Si True, sobreescriu MasterFile existent
+        rawdata_file: Opcional, ruta específica al fitxer rawdata (si no es vol autodetectar)
 
     Returns:
-        dict amb keys: status ('ok'|'error'|'skip'), file, rows, message
+        dict amb keys: status ('ok'|'error'|'skip'|'need_input'), file, rows, message, details
     """
     folder_name = os.path.basename(seq_path)
 
@@ -58,28 +59,69 @@ def migrate_single(seq_path: str, progress_callback: Optional[Callable] = None,
 
     report(0, 5, f"Cercant rawdata a {folder_name}...")
 
-    # 1. Trobar rawdata
-    rawdata_path = _find_rawdata(seq_path)
-    if not rawdata_path:
-        return {'status': 'skip', 'message': 'No rawdata (v11/v12) trobat'}
+    # 1. Trobar rawdata (o usar el proporcionat)
+    if rawdata_file:
+        rawdata_path = rawdata_file
+        if not os.path.exists(rawdata_path):
+            return {
+                'status': 'error',
+                'message': f'Fitxer rawdata no trobat: {os.path.basename(rawdata_file)}',
+                'details': {'path': rawdata_file}
+            }
+    else:
+        rawdata_path = _find_rawdata(seq_path)
+        if not rawdata_path:
+            # Llistar fitxers xlsx disponibles per selecció manual
+            xlsx_files = glob.glob(os.path.join(seq_path, '*.xlsx'))
+            xlsx_files = [f for f in xlsx_files if 'MasterFile' not in f and '~$' not in f]
+            return {
+                'status': 'need_input',
+                'message': 'No s\'ha trobat rawdata automàticament (v11/v12)',
+                'action': 'select_rawdata',
+                'details': {
+                    'available_files': [os.path.basename(f) for f in xlsx_files],
+                    'folder': seq_path
+                }
+            }
 
     # 2. Verificar si ja existeix MasterFile
     existing = glob.glob(os.path.join(seq_path, '*_MasterFile.xlsx'))
     existing = [f for f in existing if 'backup' not in f.lower()]
+
     if existing and not force:
-        return {'status': 'skip', 'message': 'MasterFile ja existeix', 'file': existing[0]}
+        return {
+            'status': 'exists',
+            'message': f'MasterFile ja existeix: {os.path.basename(existing[0])}',
+            'action': 'confirm_regenerate',
+            'file': existing[0],
+            'details': {
+                'existing_file': os.path.basename(existing[0]),
+                'created': datetime.fromtimestamp(os.path.getmtime(existing[0])).strftime('%Y-%m-%d %H:%M')
+            }
+        }
     elif existing and force:
-        # Eliminar existents per regenerar
+        # Fer backup i eliminar existents
         for f in existing:
-            os.remove(f)
+            backup_name = f.replace('.xlsx', f'_backup_{datetime.now().strftime("%Y%m%d_%H%M%S")}.xlsx')
+            os.rename(f, backup_name)
 
     report(1, 5, "Llegint dades...")
 
     # 3. Llegir dades
     try:
         data = _read_rawdata(rawdata_path)
+    except PermissionError as e:
+        return {
+            'status': 'error',
+            'message': f'Fitxer obert o sense permisos: {os.path.basename(rawdata_path)}',
+            'details': {'error_type': 'permission', 'file': rawdata_path, 'exception': str(e)}
+        }
     except Exception as e:
-        return {'status': 'error', 'message': f'Error llegint rawdata: {e}'}
+        return {
+            'status': 'error',
+            'message': f'Error llegint rawdata: {os.path.basename(rawdata_path)}',
+            'details': {'error_type': 'read', 'file': rawdata_path, 'exception': str(e)}
+        }
 
     report(2, 5, "Extraient metadata...")
 
@@ -91,18 +133,33 @@ def migrate_single(seq_path: str, progress_callback: Optional[Callable] = None,
     # 5. Crear MasterFile
     try:
         output_path, n_rows = _create_masterfile(data, info, seq_path)
+    except PermissionError as e:
+        return {
+            'status': 'error',
+            'message': f'No es pot escriure MasterFile (fitxer obert o sense permisos)',
+            'details': {'error_type': 'permission', 'folder': seq_path, 'exception': str(e)}
+        }
     except Exception as e:
-        return {'status': 'error', 'message': f'Error creant MasterFile: {e}'}
+        return {
+            'status': 'error',
+            'message': f'Error creant MasterFile: {type(e).__name__}',
+            'details': {'error_type': 'create', 'folder': seq_path, 'exception': str(e)}
+        }
 
     report(5, 5, "Completat")
 
     return {
         'status': 'ok',
+        'message': f'MasterFile creat correctament ({n_rows} files TOC)',
         'file': output_path,
         'rows': n_rows,
         'seq_id': info.get('seq_id'),
         'method': info.get('method'),
-        'has_khp': data.get('khp') is not None
+        'has_khp': data.get('khp') is not None,
+        'details': {
+            'output_file': os.path.basename(output_path),
+            'rawdata_used': os.path.basename(rawdata_path)
+        }
     }
 
 

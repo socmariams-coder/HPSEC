@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-DOCtor_BP v1.6 - HPSEC Chromatogram Anomaly Detection for BP Samples
+DOCtor_BP v1.7 - HPSEC Chromatogram Anomaly Detection for BP Samples
 ====================================================================
 
 Validation criteria for BP (Bypass) samples:
@@ -21,6 +21,7 @@ Validation criteria for BP (Bypass) samples:
 Selection: Replica with highest R² (3 decimal comparison), SNR as tiebreaker
 If no valid replica (R² < 0.980): No selection
 
+v1.7 - Uses hpsec_replica for replica selection
 v1.6 - Uses hpsec_core for shared functions
 """
 
@@ -44,6 +45,7 @@ from hpsec_core import (
     THRESH_R2_VALID, THRESH_R2_CHECK, REPAIR_MIN_R2, REPAIR_FACTOR,
     ASYM_MIN, ASYM_MAX, THRESH_SNR, MIN_VALLEY_DEPTH
 )
+from hpsec_replica import select_best_replica, compare_replicas
 
 
 # =============================================================================
@@ -521,21 +523,33 @@ def process_bp_samples(base_dir, selected_seqs, progress_cb=None):
                         if warn not in sample["warnings"]:
                             sample["warnings"].append(warn)
 
-                # === SELECT BEST REPLICA (highest R², then SNR as tiebreaker) ===
-                valid_reps = [r for r in rep_data if r.get("r2_status") in ["VALID", "CHECK"]]
+                # === SELECT BEST REPLICA via hpsec_replica (v1.7) ===
+                # Crear evals compatibles amb hpsec_replica
+                def make_eval(rep):
+                    analysis = rep.get("analysis", {})
+                    r2_status = rep.get("r2_status", "INVALID")
+                    return {
+                        "valid": r2_status in ["VALID", "CHECK"],
+                        "r2": rep.get("r2", 0),
+                        "r2_status": r2_status,
+                        "snr": analysis.get("snr", 0) if analysis else 0,
+                        "height": analysis.get("height", 0) if analysis else 0,
+                        "batman": analysis.get("is_batman", False) if analysis else False,
+                        "timeout": False,
+                        "irr": False
+                    }
 
-                if valid_reps:
-                    # Sort by R² rounded to 3 decimals (descending), then by SNR (descending)
-                    def sort_key(r):
-                        r2_rounded = round(r.get("r2", 0), 3)
-                        snr = r.get("analysis", {}).get("snr", 0) if r.get("analysis") else 0
-                        return (r2_rounded, snr)
+                eval1 = make_eval(rep_data[0]) if len(rep_data) > 0 else None
+                eval2 = make_eval(rep_data[1]) if len(rep_data) > 1 else None
 
-                    valid_reps.sort(key=sort_key, reverse=True)
-                    sample["best_rep"] = valid_reps[0]["rep"]
+                selection = select_best_replica(eval1, eval2, method="BP")
+
+                if selection["best"]:
+                    sample["best_rep"] = selection["best"][1]  # "R1" -> "1"
+                    sample["selection_reason"] = selection["reason"]
                 else:
-                    # No valid replica - no selection
                     sample["best_rep"] = None
+                    sample["selection_reason"] = selection.get("warning", "Cap rèplica vàlida")
 
                 # === DETERMINE SAMPLE STATUS ===
                 r2_statuses = [r.get("r2_status", "INVALID") for r in rep_data]

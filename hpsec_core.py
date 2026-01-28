@@ -1150,6 +1150,55 @@ def detect_all_peaks(t, y, min_prominence_pct=5.0):
 # INTEGRATION
 # =============================================================================
 
+def integrate_above_baseline(t, y, baseline_mean, baseline_std, threshold_sigma=3.0):
+    """
+    Integra només el senyal per sobre del baseline + threshold.
+
+    Mètode estàndard en cromatografia per:
+    - Evitar integrar soroll de baseline
+    - Obtenir àrees comparables entre runs
+    - Reduir variabilitat per baseline drift
+
+    Args:
+        t: Array de temps (min)
+        y: Array de senyal (mAU)
+        baseline_mean: Mitjana del baseline
+        baseline_std: Desviació estàndard del baseline (soroll)
+        threshold_sigma: Múltiple de sigma per sobre baseline (defecte: 3.0)
+
+    Returns:
+        Dict amb:
+            - area: àrea integrada sobre el threshold
+            - threshold: valor del threshold usat
+            - pct_above: percentatge de punts per sobre del threshold
+    """
+    t = np.asarray(t)
+    y = np.asarray(y)
+
+    if len(t) < 5 or len(y) < 5:
+        return {'area': 0.0, 'threshold': 0.0, 'pct_above': 0.0}
+
+    # Calcular threshold
+    threshold = baseline_mean + threshold_sigma * baseline_std
+
+    # Restar threshold i quedar-se només amb valors positius
+    y_above = np.maximum(y - threshold, 0)
+
+    # Integrar
+    area = float(trapezoid(y_above, t))
+
+    # Estadístiques
+    pct_above = float(np.sum(y > threshold) / len(y) * 100)
+
+    return {
+        'area': area,
+        'threshold': float(threshold),
+        'pct_above': pct_above,
+        'n_points_above': int(np.sum(y > threshold)),
+        'n_points_total': len(y)
+    }
+
+
 def integrate_chromatogram(t, y, left_idx=None, right_idx=None,
                            baseline=None, mode='full'):
     """
