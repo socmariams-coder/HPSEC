@@ -1076,15 +1076,15 @@ def validate_khp_for_alignment(t_doc, y_doc, t_dad, y_a254, t_uib=None, y_uib=No
                 except Exception as e:
                     result["metrics"]["batman_repair_error"] = str(e)
 
-    # Trobar pics
-    idx_max_doc = np.argmax(y_doc)
+    # Trobar pics - usar y_doc_working (reparat si Batman)
+    idx_max_doc = np.argmax(y_doc_working)
     idx_max_a254 = np.argmax(y_a254)
     t_max_doc = t_doc[idx_max_doc]
     t_max_a254 = t_dad[idx_max_a254]
 
     result["metrics"]["t_max_doc"] = float(t_max_doc)
     result["metrics"]["t_max_a254"] = float(t_max_a254)
-    result["metrics"]["intensity_doc"] = float(np.max(y_doc))
+    result["metrics"]["intensity_doc"] = float(np.max(y_doc_working))
     result["metrics"]["intensity_a254"] = float(np.max(y_a254))
 
     # === 1. VERIFICAR POSICIÓ PIC ===
@@ -1105,11 +1105,11 @@ def validate_khp_for_alignment(t_doc, y_doc, t_dad, y_a254, t_uib=None, y_uib=No
         t_start = max(0, t_max_doc - 1)
         t_end = t_max_doc + 2
 
-    # Àrea DOC
+    # Àrea DOC - usar y_doc_working (reparat si Batman)
     mask_doc = (t_doc >= t_start) & (t_doc <= t_end)
     if np.sum(mask_doc) > 5:
-        baseline_doc = np.percentile(y_doc[mask_doc], 5)
-        y_doc_corr = y_doc[mask_doc] - baseline_doc
+        baseline_doc = np.percentile(y_doc_working[mask_doc], 5)
+        y_doc_corr = y_doc_working[mask_doc] - baseline_doc
         y_doc_corr[y_doc_corr < 0] = 0
         area_doc = np.trapezoid(y_doc_corr, t_doc[mask_doc])
     else:
@@ -1202,9 +1202,9 @@ def validate_khp_for_alignment(t_doc, y_doc, t_dad, y_a254, t_uib=None, y_uib=No
     if seq_path and conc_ppm is not None and volume_uL is not None:
         try:
             # Calcular àrea del pic principal per comparar
-            # Usar mateixa lògica que a la secció 2 (ratio)
+            # Usar y_doc_working (reparat si Batman)
             area_doc = result["metrics"].get("area_doc", 0)
-            area_total = np.trapezoid(np.maximum(y_doc - np.percentile(y_doc, 5), 0), t_doc) if len(y_doc) > 5 else 0
+            area_total = np.trapezoid(np.maximum(y_doc_working - np.percentile(y_doc_working, 5), 0), t_doc) if len(y_doc_working) > 5 else 0
             concentration_ratio = area_doc / area_total if area_total > 0 else 0
 
             historical = compare_khp_historical(

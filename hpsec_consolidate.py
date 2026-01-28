@@ -3876,7 +3876,7 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
                             t_dad=t_khp_a254_bp if t_khp_a254_bp is not None else t_khp_bp,
                             y_a254=y_khp_a254_bp if y_khp_a254_bp is not None else np.zeros_like(y_khp_bp_net),
                             method="BP",
-                            repair_batman=False,
+                            repair_batman=True,  # Reparar Batman també per BP
                             seq_path=input_folder,
                             conc_ppm=khp_conc_bp,
                             volume_uL=khp_volume_bp
