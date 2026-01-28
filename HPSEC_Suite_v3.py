@@ -329,6 +329,8 @@ class HPSECSuiteV3:
         self.calibration_data = {}
         self.qc_results = {}
         self.selected_replicas = {}
+        self.khp_area = None  # Àrea KHP per càlcul concentració
+        self.khp_conc = None  # Concentració KHP (ppm)
 
         # Flags
         self.is_processing = False
@@ -722,6 +724,40 @@ class HPSECSuiteV3:
                                           font=("Segoe UI", 9),
                                           bg=COLORS["white"], fg=COLORS["text_light"])
         self.lbl_sum_generated.pack(anchor="w", pady=(5, 0))
+
+        # Columna central: Validació KHP
+        mid_col = tk.Frame(summary_content, bg=COLORS["white"])
+        mid_col.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 10))
+
+        tk.Label(mid_col, text="Validació KHP:",
+                font=("Segoe UI", 10, "bold"),
+                bg=COLORS["white"]).pack(anchor="w")
+
+        self.lbl_khp_status = tk.Label(mid_col, text="Status: -",
+                                       font=("Segoe UI", 10),
+                                       bg=COLORS["white"])
+        self.lbl_khp_status.pack(anchor="w")
+
+        self.lbl_khp_file = tk.Label(mid_col, text="Fitxer: -",
+                                     font=("Segoe UI", 9),
+                                     bg=COLORS["white"], fg=COLORS["text_light"])
+        self.lbl_khp_file.pack(anchor="w")
+
+        self.lbl_khp_area = tk.Label(mid_col, text="Àrea: -",
+                                     font=("Segoe UI", 9),
+                                     bg=COLORS["white"])
+        self.lbl_khp_area.pack(anchor="w")
+
+        self.lbl_khp_historical = tk.Label(mid_col, text="Històric: -",
+                                           font=("Segoe UI", 9),
+                                           bg=COLORS["white"])
+        self.lbl_khp_historical.pack(anchor="w")
+
+        self.lbl_khp_issues = tk.Label(mid_col, text="",
+                                       font=("Segoe UI", 9),
+                                       bg=COLORS["white"], fg=COLORS["error"],
+                                       wraplength=200)
+        self.lbl_khp_issues.pack(anchor="w")
 
         # Columna dreta: Timeouts
         right_col = tk.Frame(summary_content, bg=COLORS["white"])
@@ -1439,8 +1475,80 @@ class HPSECSuiteV3:
             source = alignment.get('source', 'N/A')
             self.lbl_sum_alignment.configure(
                 text=f"Alineació: UIB={shift_uib:.1f}s, Direct={shift_direct:.1f}s ({source})")
+
+            # === VALIDACIÓ KHP ===
+            khp_validation = alignment.get('khp_validation', 'N/A')
+            khp_file = alignment.get('khp_file', '-')
+            khp_metrics = alignment.get('khp_metrics', {})
+            khp_issues = alignment.get('khp_issues', [])
+            khp_warnings = alignment.get('khp_warnings', [])
+
+            # Status amb color
+            if khp_validation == 'VALID':
+                self.lbl_khp_status.configure(text=f"Status: ✓ {khp_validation}", fg=COLORS["success"])
+            elif khp_validation == 'INVALID':
+                self.lbl_khp_status.configure(text=f"Status: ✗ {khp_validation}", fg=COLORS["error"])
+            elif 'WARNING' in str(khp_validation):
+                self.lbl_khp_status.configure(text=f"Status: ⚠ {khp_validation}", fg=COLORS["warning"])
+            else:
+                self.lbl_khp_status.configure(text=f"Status: {khp_validation}", fg=COLORS["dark"])
+
+            # Fitxer KHP
+            self.lbl_khp_file.configure(text=f"Fitxer: {khp_file}")
+
+            # Àrea i intensitat
+            area_doc = khp_metrics.get('area_doc', 0)
+            intensity = khp_metrics.get('intensity_doc', 0)
+
+            # Extreure concentració KHP del nom del fitxer
+            from hpsec_calibrate import extract_khp_conc
+            khp_conc = extract_khp_conc(khp_file) if khp_file else None
+
+            if area_doc > 0:
+                conc_text = f" ({khp_conc} ppm)" if khp_conc else ""
+                self.lbl_khp_area.configure(text=f"Àrea: {area_doc:.1f}{conc_text} | Int: {intensity:.0f} mAU")
+                # Guardar àrea i concentració per càlcul de concentració mostres
+                self.khp_area = area_doc
+                self.khp_conc = khp_conc
+            else:
+                self.lbl_khp_area.configure(text="Àrea: -")
+                self.khp_area = None
+                self.khp_conc = None
+
+            # Comparació històrica
+            hist = khp_metrics.get('historical_comparison', {})
+            if hist:
+                hist_status = hist.get('status', 'N/A')
+                hist_dev = hist.get('area_deviation_pct', 0)
+                hist_n = hist.get('n_calibrations', 0)
+                hist_text = f"Històric: {hist_status} (desv. {hist_dev:.1f}%, n={hist_n})"
+                if hist_status == 'OK':
+                    self.lbl_khp_historical.configure(text=hist_text, fg=COLORS["success"])
+                elif hist_status == 'WARNING':
+                    self.lbl_khp_historical.configure(text=hist_text, fg=COLORS["warning"])
+                elif hist_status == 'INVALID':
+                    self.lbl_khp_historical.configure(text=hist_text, fg=COLORS["error"])
+                else:
+                    self.lbl_khp_historical.configure(text=hist_text, fg=COLORS["text_light"])
+            else:
+                self.lbl_khp_historical.configure(text="Històric: No disponible", fg=COLORS["text_light"])
+
+            # Issues i warnings
+            all_issues = khp_issues + khp_warnings
+            if all_issues:
+                self.lbl_khp_issues.configure(text=" | ".join(all_issues[:2]))
+            else:
+                self.lbl_khp_issues.configure(text="")
+
         else:
             self.lbl_sum_alignment.configure(text="Alineació: No aplicada")
+            self.lbl_khp_status.configure(text="Status: -", fg=COLORS["dark"])
+            self.lbl_khp_file.configure(text="Fitxer: -")
+            self.lbl_khp_area.configure(text="Àrea: -")
+            self.lbl_khp_historical.configure(text="Històric: -", fg=COLORS["text_light"])
+            self.lbl_khp_issues.configure(text="")
+            self.khp_area = None
+            self.khp_conc = None
 
         # SNR
         quality = summary.get('quality', {})
@@ -1655,7 +1763,7 @@ class HPSECSuiteV3:
         messagebox.showerror("Error", f"Error durant la calibració:\n\n{error}")
 
     def _plot_calibration(self, result):
-        """Mostra gràfic de calibració amb cromatograma DOC."""
+        """Mostra gràfic de calibració amb cromatograma DOC i històric."""
         # Netejar canvas anterior
         for widget in self.cal_canvas_frame.winfo_children():
             widget.destroy()
@@ -1672,15 +1780,17 @@ class HPSECSuiteV3:
 
         has_dad = t_dad is not None and y_dad is not None and len(t_dad) > 0
 
-        # Crear figura amb subplots
+        # Crear figura amb 3 subplots: DOC, DAD, Històric
+        fig = Figure(figsize=(10, 6), dpi=100)
+
         if has_dad:
-            fig = Figure(figsize=(8, 4), dpi=100)
-            ax1 = fig.add_subplot(211)
-            ax2 = fig.add_subplot(212)
+            ax1 = fig.add_subplot(221)  # DOC
+            ax2 = fig.add_subplot(223)  # DAD
+            ax3 = fig.add_subplot(122)  # Històric (gran, a la dreta)
         else:
-            fig = Figure(figsize=(8, 3), dpi=100)
-            ax1 = fig.add_subplot(111)
+            ax1 = fig.add_subplot(121)  # DOC
             ax2 = None
+            ax3 = fig.add_subplot(122)  # Històric
 
         # Plot DOC
         if t_doc is not None and y_doc is not None and len(t_doc) > 0:
@@ -1694,10 +1804,6 @@ class HPSECSuiteV3:
                 ax1.fill_between(t_doc[left_idx:right_idx+1], y_doc[left_idx:right_idx+1],
                                 alpha=0.3, color=COLORS["success"], label='Àrea integrada')
 
-                # Línies verticals als límits
-                ax1.axvline(t_doc[left_idx], color=COLORS["success"], linestyle='--', alpha=0.5)
-                ax1.axvline(t_doc[right_idx], color=COLORS["success"], linestyle='--', alpha=0.5)
-
             # Marcar pic principal
             t_max = peak_info.get('t_max', khp_data.get('t_doc_max', 0))
             if t_max:
@@ -1706,36 +1812,33 @@ class HPSECSuiteV3:
                         markersize=8, label=f'Pic: {t_max:.2f} min')
 
             # Info al gràfic
-            factor = calibration.get('factor', 0)
             area = khp_data.get('area', 0)
             conc = khp_data.get('conc_ppm', 0)
-
-            info_text = f"Factor: {factor:.6f}  |  Àrea: {area:.1f}  |  {conc} ppm"
-            ax1.set_title(f"Cromatograma KHP - {info_text}", fontsize=10)
-            ax1.set_xlabel("Temps (min)")
-            ax1.set_ylabel("Senyal DOC (mV)")
-            ax1.legend(loc='upper right', fontsize=8)
+            ax1.set_title(f"Cromatograma KHP ({conc} ppm) - Àrea: {area:.1f}", fontsize=9)
+            ax1.set_xlabel("Temps (min)", fontsize=8)
+            ax1.set_ylabel("Senyal DOC (mV)", fontsize=8)
+            ax1.legend(loc='upper right', fontsize=7)
             ax1.grid(True, alpha=0.3)
 
         # Plot DAD 254nm
         if has_dad and ax2 is not None:
             ax2.plot(t_dad, y_dad, color=COLORS["secondary"], linewidth=1.0, label='DAD 254nm')
 
-            # Marcar shift
-            shift_sec = khp_data.get('shift_sec', 0)
-            t_doc_max = khp_data.get('t_doc_max', 0)
             t_dad_max = khp_data.get('t_dad_max', 0)
-
             if t_dad_max:
                 dad_peak_idx = np.argmin(np.abs(t_dad - t_dad_max))
                 ax2.plot(t_dad_max, y_dad[dad_peak_idx], 'o', color=COLORS["error"],
-                        markersize=6, label=f'Pic DAD: {t_dad_max:.2f} min')
+                        markersize=6, label=f'Pic: {t_dad_max:.2f} min')
 
-            ax2.set_title(f"DAD 254nm - Shift: {shift_sec:.1f} s", fontsize=10)
-            ax2.set_xlabel("Temps (min)")
-            ax2.set_ylabel("Absorbància (mAU)")
-            ax2.legend(loc='upper right', fontsize=8)
+            shift_sec = khp_data.get('shift_sec', 0)
+            ax2.set_title(f"DAD 254nm - Shift: {shift_sec:.1f} s", fontsize=9)
+            ax2.set_xlabel("Temps (min)", fontsize=8)
+            ax2.set_ylabel("Absorbància (mAU)", fontsize=8)
+            ax2.legend(loc='upper right', fontsize=7)
             ax2.grid(True, alpha=0.3)
+
+        # Plot Històric KHP
+        self._plot_khp_history(ax3, khp_data)
 
         fig.tight_layout()
 
@@ -1743,10 +1846,153 @@ class HPSECSuiteV3:
         canvas.draw()
         canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
+    def _plot_khp_history(self, ax, current_khp_data):
+        """Mostra gràfic d'històric KHP amb àrees per SEQ."""
+        try:
+            # Carregar històric
+            history = load_khp_history(self.seq_path)
+            if not history:
+                ax.text(0.5, 0.5, "No hi ha històric disponible",
+                       ha='center', va='center', transform=ax.transAxes,
+                       fontsize=12, color='gray')
+                ax.set_title("Històric KHP")
+                return
+
+            # Filtrar per mode i concentració similar
+            current_conc = current_khp_data.get('conc_ppm', 2)
+            mode = "BP" if "BP" in os.path.basename(self.seq_path).upper() else "COLUMN"
+
+            # Filtrar calibracions vàlides
+            valid_cals = []
+            for cal in history:
+                if cal.get('mode') != mode:
+                    continue
+                if cal.get('is_outlier', False):
+                    continue
+                cal_conc = cal.get('conc_ppm', 0)
+                if abs(cal_conc - current_conc) > 0.5:
+                    continue
+                if cal.get('area', 0) <= 0:
+                    continue
+                valid_cals.append(cal)
+
+            if not valid_cals:
+                ax.text(0.5, 0.5, f"No hi ha històric per {mode} KHP{current_conc:.0f}",
+                       ha='center', va='center', transform=ax.transAxes,
+                       fontsize=10, color='gray')
+                ax.set_title("Històric KHP")
+                return
+
+            # Extreure número de SEQ per ordenar
+            def get_seq_num(cal):
+                seq_name = cal.get('seq_name', '')
+                match = re.search(r'(\d+)', seq_name)
+                return int(match.group(1)) if match else 0
+
+            # Ordenar per número de SEQ (ascendent = cronològic)
+            valid_cals.sort(key=get_seq_num)
+
+            # Preparar dades
+            seq_names = [cal.get('seq_name', 'N/A').replace('_SEQ', '').replace('_BP', '') for cal in valid_cals]
+            areas = [cal.get('area', 0) for cal in valid_cals]
+
+            # Identificar SEQ actual
+            current_seq = os.path.basename(self.seq_path)
+            current_seq_short = current_seq.replace('_SEQ', '').replace('_BP', '')
+
+            # Colors: vermell per actual, blau per resta
+            colors = [COLORS["error"] if current_seq_short in name else COLORS["primary"]
+                     for name in seq_names]
+
+            # Gràfic de barres
+            bars = ax.bar(range(len(seq_names)), areas, color=colors, alpha=0.7, edgecolor='black')
+
+            # Línia de mitjana
+            mean_area = np.mean(areas)
+            std_area = np.std(areas)
+            ax.axhline(mean_area, color='green', linestyle='--', linewidth=2,
+                      label=f'Mitjana: {mean_area:.1f}')
+            ax.axhspan(mean_area - std_area, mean_area + std_area, alpha=0.2,
+                      color='green', label=f'±1σ ({std_area:.1f})')
+
+            # Etiquetes
+            ax.set_xticks(range(len(seq_names)))
+            ax.set_xticklabels(seq_names, rotation=45, ha='right', fontsize=7)
+            ax.set_ylabel("Àrea KHP", fontsize=9)
+            ax.set_title(f"Històric {mode} KHP{current_conc:.0f} (n={len(valid_cals)})", fontsize=10)
+            ax.legend(loc='upper right', fontsize=7)
+            ax.grid(True, alpha=0.3, axis='y')
+
+            # Afegir valors a les barres
+            for bar, area in zip(bars, areas):
+                height = bar.get_height()
+                ax.annotate(f'{area:.0f}',
+                           xy=(bar.get_x() + bar.get_width() / 2, height),
+                           xytext=(0, 3), textcoords="offset points",
+                           ha='center', va='bottom', fontsize=6, rotation=90)
+
+        except Exception as e:
+            ax.text(0.5, 0.5, f"Error carregant històric:\n{str(e)[:50]}",
+                   ha='center', va='center', transform=ax.transAxes,
+                   fontsize=10, color='red')
+            ax.set_title("Històric KHP")
+
     def _show_khp_history(self):
-        """Mostra l'històric de KHP."""
-        # TODO: Implementar diàleg d'històric KHP
-        messagebox.showinfo("Històric KHP", "Funcionalitat pendent d'implementar.")
+        """Mostra diàleg amb l'històric complet de KHP."""
+        if not self.seq_path:
+            messagebox.showwarning("Avís", "Cal seleccionar una seqüència primer.")
+            return
+
+        try:
+            history = load_khp_history(self.seq_path)
+            if not history:
+                messagebox.showinfo("Històric KHP", "No hi ha històric disponible.")
+                return
+
+            # Crear finestra
+            dialog = tk.Toplevel(self.root)
+            dialog.title("Històric KHP")
+            dialog.geometry("800x500")
+
+            # Taula
+            columns = ("SEQ", "Mode", "KHP", "Àrea", "Factor", "Shift (s)", "SNR", "Status")
+            tree = ttk.Treeview(dialog, columns=columns, show='headings', height=20)
+
+            for col in columns:
+                tree.heading(col, text=col)
+                tree.column(col, width=90)
+
+            # Ordenar per número de SEQ
+            def get_seq_num(cal):
+                match = re.search(r'(\d+)', cal.get('seq_name', ''))
+                return int(match.group(1)) if match else 0
+
+            history.sort(key=get_seq_num)
+
+            for cal in history:
+                values = (
+                    cal.get('seq_name', 'N/A'),
+                    cal.get('mode', 'N/A'),
+                    f"KHP{cal.get('conc_ppm', 0):.0f}",
+                    f"{cal.get('area', 0):.1f}",
+                    f"{cal.get('factor', 0):.6f}" if cal.get('factor') else '-',
+                    f"{cal.get('shift_sec', 0):.1f}",
+                    f"{cal.get('snr', 0):.1f}" if cal.get('snr') else '-',
+                    cal.get('status', 'N/A')
+                )
+                tag = 'outlier' if cal.get('is_outlier') else ''
+                tree.insert('', 'end', values=values, tags=(tag,))
+
+            tree.tag_configure('outlier', foreground='gray')
+
+            scrollbar = ttk.Scrollbar(dialog, orient=tk.VERTICAL, command=tree.yview)
+            tree.configure(yscrollcommand=scrollbar.set)
+
+            tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+            scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Error carregant històric: {e}")
 
     def _mark_as_outlier(self):
         """Marca la calibració actual com a outlier."""
