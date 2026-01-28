@@ -76,7 +76,10 @@ from hpsec_calibrate import (
     get_injection_volume, get_caldata_path, ensure_caldata_folder,
     detect_all_peaks, baseline_stats_time,
     calculate_peak_symmetry, calculate_peak_snr,
+    calculate_integration_limits,
     expand_integration_limits_to_baseline,
+    validate_integration_baseline,
+    get_historical_khp_stats,
     detect_batman as detect_batman_cal,
     detect_timeout as detect_timeout_cal,
     DEFAULT_CONFIG as CAL_DEFAULT_CONFIG,
@@ -1119,279 +1122,17 @@ def get_equivalent_seqs_stats(seq_path, mode="COLUMN", doc_mode=None, conc_ppm=N
 
 
 # =============================================================================
-# FUNCIONS CALIBRACIÓ KHP (de CAL_v1.py)
+# FUNCIONS CALIBRACIÓ KHP - Importades de hpsec_calibrate.py
 # =============================================================================
-def calculate_integration_limits(t, y, peak_idx, min_width_min=1.0, max_width_min=6.0):
-    """
-    Calcula els límits d'integració d'un pic KHP usant mètode simplificat.
-
-    LÒGICA SIMPLIFICADA:
-    1. Baseline = MODA de tot el senyal (valor més freqüent)
-    2. Threshold = baseline + 3*sigma (estadístic)
-    3. Límits = des del pic fins que senyal ≤ threshold
-
-    Args:
-        t: Array de temps (minuts)
-        y: Array de senyal
-        peak_idx: Índex del màxim del pic
-        min_width_min: Amplada mínima en minuts (default 1.0)
-        max_width_min: Amplada màxima en minuts (default 6.0)
-
-    Returns:
-        Dict amb left_idx, right_idx, baseline, threshold, width_minutes, etc.
-    """
-    try:
-        t = np.asarray(t, dtype=float)
-        y = np.asarray(y, dtype=float)
-        n = len(y)
-
-        if n < 10:
-            return {
-                "left_idx": 0, "right_idx": n - 1,
-                "baseline": 0, "threshold": 0,
-                "width_minutes": float(t[-1] - t[0]) if n > 1 else 0,
-                "valid": False, "message": "Senyal massa curt"
-            }
-
-        # === 1. BASELINE = MODA de tot el senyal ===
-        baseline = mode_robust(y)
-
-        # === 2. STD dels punts propers a baseline ===
-        # Considerar "propers" els que estan dins del 20% del rang
-        y_range = float(np.max(y) - baseline)
-        if y_range <= 0:
-            return {
-                "left_idx": 0, "right_idx": n - 1,
-                "baseline": baseline, "threshold": baseline,
-                "width_minutes": float(t[-1] - t[0]),
-                "valid": False, "message": "Senyal sense pic"
-            }
-
-        mask_baseline = y < (baseline + 0.2 * y_range)
-        if np.sum(mask_baseline) > 5:
-            std_baseline = float(np.std(y[mask_baseline]))
-        else:
-            std_baseline = float(np.std(y)) * 0.1  # Fallback
-
-        # Evitar std = 0
-        if std_baseline < 1e-6:
-            std_baseline = 0.01 * y_range
-
-        # === 3. THRESHOLD = baseline + 3*sigma ===
-        threshold = baseline + 3 * std_baseline
-
-        # Calcular límits en índexs basats en temps
-        dt = np.mean(np.diff(t)) if n > 1 else 0.01
-        max_width_idx = int(max_width_min / dt) if dt > 0 else 300
-        min_width_idx = int(min_width_min / dt) if dt > 0 else 50
-
-        # === 4. BUSCAR LÍMIT ESQUERRE ===
-        left_idx = peak_idx
-        for i in range(peak_idx - 1, max(0, peak_idx - max_width_idx), -1):
-            if y[i] <= threshold:
-                left_idx = i
-                break
-            left_idx = i  # Continuar expandint
-        else:
-            left_idx = max(0, peak_idx - max_width_idx)
-
-        # === 5. BUSCAR LÍMIT DRET ===
-        right_idx = peak_idx
-        for i in range(peak_idx + 1, min(n, peak_idx + max_width_idx)):
-            if y[i] <= threshold:
-                right_idx = i
-                break
-            right_idx = i  # Continuar expandint
-        else:
-            right_idx = min(n - 1, peak_idx + max_width_idx)
-
-        # === 6. VALIDAR AMPLADA MÍNIMA ===
-        current_width_idx = right_idx - left_idx
-        if current_width_idx < min_width_idx:
-            expand_needed = (min_width_idx - current_width_idx) // 2 + 1
-            left_idx = max(0, left_idx - expand_needed)
-            right_idx = min(n - 1, right_idx + expand_needed)
-
-        # Assegurar que el pic està dins dels límits
-        left_idx = int(min(left_idx, peak_idx - 3))
-        right_idx = int(max(right_idx, peak_idx + 3))
-        left_idx = max(0, left_idx)
-        right_idx = min(n - 1, right_idx)
-
-        # Verificar si els límits arriben a baseline
-        left_at_baseline = y[left_idx] <= threshold
-        right_at_baseline = y[right_idx] <= threshold
-        width_minutes = float(t[right_idx] - t[left_idx])
-
-        return {
-            "left_idx": left_idx,
-            "right_idx": right_idx,
-            "baseline": baseline,
-            "std_baseline": std_baseline,
-            "threshold": threshold,
-            "width_minutes": width_minutes,
-            "left_at_baseline": left_at_baseline,
-            "right_at_baseline": right_at_baseline,
-            "valid": left_at_baseline and right_at_baseline,
-            "message": "OK" if (left_at_baseline and right_at_baseline) else "Límits no arriben a baseline"
-        }
-
-    except Exception as e:
-        print(f"Error calculant límits integració: {e}")
-        import traceback
-        traceback.print_exc()
-        return {
-            "left_idx": 0, "right_idx": len(y) - 1 if len(y) > 0 else 0,
-            "baseline": 0, "threshold": 0,
-            "width_minutes": 0, "valid": False,
-            "message": f"Error: {e}"
-        }
-
-
-# Mantenim funció antiga per compatibilitat (crida la nova)
-def expand_integration_limits_to_baseline(t, y, left_idx, right_idx, peak_idx,
-                                          baseline_threshold_pct=10,
-                                          min_width_minutes=1.0,
-                                          max_width_minutes=6.0,
-                                          is_bp=False):
-    """Wrapper per compatibilitat - crida la nova funció simplificada."""
-    result = calculate_integration_limits(t, y, peak_idx, min_width_minutes, max_width_minutes)
-
-    # Adaptar format de retorn per compatibilitat
-    expanded_left = max(0, left_idx - result["left_idx"])
-    expanded_right = max(0, result["right_idx"] - right_idx)
-
-    return {
-        "left_idx": result["left_idx"],
-        "right_idx": result["right_idx"],
-        "expanded_left": expanded_left,
-        "expanded_right": expanded_right,
-        "baseline": result["baseline"],
-        "threshold_value": result["threshold"],
-        "original_valid": (expanded_left == 0 and expanded_right == 0),
-        "left_at_baseline": result["left_at_baseline"],
-        "right_at_baseline": result["right_at_baseline"],
-        "width_minutes": result["width_minutes"],
-    }
-
-
-def validate_integration_baseline(t, y, left_idx, right_idx, peak_idx, baseline_threshold_pct=15):
-    """
-    Valida que els límits d'integració arribin a valors propers a la línia base.
-    """
-    try:
-        y = np.asarray(y)
-        peak_height = y[peak_idx]
-
-        # Calcular baseline
-        search_range = max(50, (right_idx - left_idx))
-        local_region = y[max(0, left_idx - search_range):min(len(y), right_idx + search_range)]
-        baseline = np.percentile(local_region, 5)
-
-        effective_height = peak_height - baseline
-        if effective_height <= 0:
-            return {"valid": True, "message": "Pic no detectat correctament"}
-
-        # Valors als límits
-        left_value = y[left_idx] - baseline
-        right_value = y[right_idx] - baseline
-
-        left_pct = (left_value / effective_height) * 100 if effective_height > 0 else 0
-        right_pct = (right_value / effective_height) * 100 if effective_height > 0 else 0
-
-        left_at_baseline = left_pct <= baseline_threshold_pct
-        right_at_baseline = right_pct <= baseline_threshold_pct
-        valid = left_at_baseline and right_at_baseline
-
-        if valid:
-            message = "OK"
-        else:
-            issues = []
-            if not left_at_baseline:
-                issues.append(f"límit esquerre alt ({left_pct:.0f}%)")
-            if not right_at_baseline:
-                issues.append(f"límit dret alt ({right_pct:.0f}%)")
-            message = "Límits integració estrets: " + ", ".join(issues)
-
-        return {
-            "valid": valid,
-            "left_at_baseline": left_at_baseline,
-            "right_at_baseline": right_at_baseline,
-            "left_value_pct": left_pct,
-            "right_value_pct": right_pct,
-            "message": message,
-        }
-
-    except Exception as e:
-        return {"valid": True, "message": f"Error validació: {e}"}
-
-
-def buscar_khp_consolidados_gui(input_folder):
-    """
-    Cerca KHP en tres fases: LOCAL → SIBLINGS → MANUAL
-    Retorna (llista_fitxers, origen)
-    """
-    # FASE 1: LOCAL (Resultats_Consolidats o Consolidat)
-    res_cons = os.path.join(input_folder, "Resultats_Consolidats")
-    khp_files = find_khp_in_folder(res_cons)
-
-    if khp_files:
-        return khp_files, "LOCAL"
-
-    # Fallback a carpeta antiga "Consolidat"
-    consolidat_old = os.path.join(input_folder, "Consolidat")
-    khp_files = find_khp_in_folder(consolidat_old)
-
-    if khp_files:
-        return khp_files, "LOCAL"
-
-    # FASE 2: SIBLINGS (carpetes germanes amb mateix prefix numèric)
-    folder_name = os.path.basename(input_folder)
-    parent_dir = os.path.dirname(input_folder)
-
-    match = re.match(r'^(\d+)', folder_name)
-    if match:
-        seq_id = match.group(1)
-
-        try:
-            all_folders = [d for d in os.listdir(parent_dir)
-                          if os.path.isdir(os.path.join(parent_dir, d))]
-
-            siblings = [d for d in all_folders
-                       if d.startswith(seq_id) and d != folder_name]
-
-            for sib in siblings:
-                sib_res_cons = os.path.join(parent_dir, sib, "Resultats_Consolidats")
-                khp_files = find_khp_in_folder(sib_res_cons)
-
-                if khp_files:
-                    return khp_files, f"SIBLING:{sib}"
-        except Exception:
-            pass
-
-    # FASE 3: MANUAL
-    if messagebox.askyesno("KHP NO TROBAT",
-                          "No s'ha trobat cap KHP.\n\nVols seleccionar manualment una carpeta amb KHP?"):
-        d = filedialog.askdirectory(title="Selecciona Carpeta SEQ amb KHP")
-        if d:
-            manual_res = os.path.join(d, "Resultats_Consolidats")
-            if os.path.exists(manual_res):
-                khp_files = find_khp_in_folder(manual_res)
-                if khp_files:
-                    return khp_files, "MANUAL"
-            khp_files = find_khp_in_folder(d)
-            if khp_files:
-                return khp_files, "MANUAL"
-
-    return [], "NONE"
-
-
-# analizar_khp_consolidado i analizar_khp_lote importats de hpsec_calibrate
-# buscar_khp_consolidados importat de hpsec_calibrate (usar amb gui_callbacks)
-
-
-# NOTA: Codi de analizar_khp_consolidado i analizar_khp_lote eliminat
-# Usar imports de hpsec_calibrate
+# Aquestes funcions ara estan centralitzades a hpsec_calibrate.py:
+# - calculate_integration_limits
+# - expand_integration_limits_to_baseline
+# - validate_integration_baseline
+# - get_historical_khp_stats
+# - buscar_khp_consolidados (amb gui_callbacks)
+# - analizar_khp_consolidado, analizar_khp_lote
+#
+# Usar directament els imports de hpsec_calibrate
 
 
 # =============================================================================
@@ -1751,11 +1492,11 @@ class KHPHistoryDialog:
             rb.pack(side=tk.LEFT, padx=5)
 
         # Treeview per l'històric
-        cols = ["Seqüència", "Data", "Mode", "Source", "Conc", "Vol", "t_max", "Àrea", "Factor", "SNR", "Sim", "SHIFT", "Estat"]
+        cols = ["Seqüència", "Data", "Mode", "Source", "Conc", "Vol", "t_max", "Àrea", "CR%", "Factor", "SNR", "Sim", "Estat"]
         self.tree = ttk.Treeview(main_frame, columns=cols, show='headings', height=15)
 
-        widths = {"Seqüència": 120, "Data": 75, "Mode": 50, "Source": 50, "Conc": 40, "Vol": 35,
-                  "t_max": 45, "Àrea": 55, "Factor": 75, "SNR": 40, "Sim": 40, "SHIFT": 45, "Estat": 55}
+        widths = {"Seqüència": 110, "Data": 70, "Mode": 45, "Source": 50, "Conc": 35, "Vol": 35,
+                  "t_max": 40, "Àrea": 50, "CR%": 40, "Factor": 70, "SNR": 40, "Sim": 35, "Estat": 50}
 
         for col in cols:
             self.tree.heading(col, text=col, command=lambda c=col: self._sort_by(c))
@@ -1880,6 +1621,10 @@ class KHPHistoryDialog:
             volume = cal.get("volume_uL", cal.get("volume", 0))
             t_retention = cal.get("t_retention", cal.get("t_doc_max", 0))
 
+            # CR% - Concentration Ratio
+            cr = cal.get("concentration_ratio", 0)
+            cr_pct = f"{cr*100:.0f}" if cr and cr < 1.01 else "-"
+
             values = (
                 cal.get("seq_name", ""),
                 cal.get("date", "")[:10] if cal.get("date") else "",
@@ -1889,10 +1634,10 @@ class KHPHistoryDialog:
                 volume,
                 f"{t_retention:.1f}",  # TEMPS RETENCIÓ
                 f"{area:.1f}",
+                cr_pct,  # CR%
                 f"{factor:.6f}",
                 f"{cal.get('snr', 0):.1f}",
                 f"{cal.get('symmetry', 1.0):.2f}",
-                f"{cal.get('shift_sec', 0):.1f}",
                 display_status,
             )
 
