@@ -648,6 +648,16 @@ def get_historical_khp_stats(seq_path, mode="COLUMN", conc_ppm=None, volume_uL=N
     valid_cals.sort(key=lambda x: x.get('date', ''), reverse=True)
     recent_cals = valid_cals[:n_recent]
 
+    # Filtrar outliers estadístics (IQR) si tenim prou dades
+    if exclude_outliers and len(recent_cals) >= 5:
+        areas_raw = np.array([cal['area'] for cal in recent_cals])
+        q1 = np.percentile(areas_raw, 25)
+        q3 = np.percentile(areas_raw, 75)
+        iqr = q3 - q1
+        lower_bound = q1 - 3.0 * iqr  # Usar 3x IQR per ser menys agressiu
+        upper_bound = q3 + 3.0 * iqr
+        recent_cals = [cal for cal in recent_cals if lower_bound <= cal['area'] <= upper_bound]
+
     # Calcular estadístiques
     areas = [cal['area'] for cal in recent_cals]
     concentration_ratios = [cal.get('concentration_ratio', 1.0) for cal in recent_cals]
@@ -968,7 +978,9 @@ def validate_khp_quality(khp_data, all_peaks, timeout_info, anomaly_info=None, s
     }
 
 
-def validate_khp_for_alignment(t_doc, y_doc, t_dad, y_a254, t_uib=None, y_uib=None, method="COLUMN", repair_batman=True):
+def validate_khp_for_alignment(t_doc, y_doc, t_dad, y_a254, t_uib=None, y_uib=None,
+                               method="COLUMN", repair_batman=True,
+                               seq_path=None, conc_ppm=None, volume_uL=None):
     """
     Valida si el KHP és adequat per calcular shifts d'alineament.
 
@@ -981,6 +993,7 @@ def validate_khp_for_alignment(t_doc, y_doc, t_dad, y_a254, t_uib=None, y_uib=No
     3. NO_PEAK: no es pot identificar pic clar
     4. INTENSITY_EXTREME: intensitat molt diferent de l'esperat
     5. BATMAN: pic amb valley al cim (artefacte detector)
+    6. HISTORICAL_DEVIATION: àrea desvia significativament de l'històric
 
     Args:
         t_doc, y_doc: Senyal DOC (Direct o UIB)
@@ -988,6 +1001,9 @@ def validate_khp_for_alignment(t_doc, y_doc, t_dad, y_a254, t_uib=None, y_uib=No
         t_uib, y_uib: Senyal UIB (opcional)
         method: "COLUMN" o "BP"
         repair_batman: Si True, repara pics Batman per millorar precisió t_max
+        seq_path: Path de la SEQ (per comparació històrica)
+        conc_ppm: Concentració KHP en ppm (per comparació històrica)
+        volume_uL: Volum d'injecció en µL (per comparació històrica)
 
     Returns:
         dict amb:
@@ -1144,18 +1160,35 @@ def validate_khp_for_alignment(t_doc, y_doc, t_dad, y_a254, t_uib=None, y_uib=No
                 break
 
     # === 4. VERIFICAR INTENSITAT ===
+    # Thresholds basats en valors típics per cada mode:
+    # COLUMN: KHP típic 400-800 mAU (volum 400µL), 100-200 mAU (volum 100µL)
+    # BP: KHP típic 150-300 mAU (volum 100µL)
     intensity = np.max(y_doc)
+    result["metrics"]["intensity_doc"] = float(intensity)
+
     if method == "COLUMN":
-        if intensity < 50:
+        # COLUMN: rang normal 100-1500, extrem >3000 o <30
+        if intensity < 30:
             result["valid"] = False
-            result["issues"].append(f"INTENSITY_TOO_LOW: {intensity:.0f} mAU")
-        elif intensity > 5000:
+            result["issues"].append(f"INTENSITY_TOO_LOW: {intensity:.0f} mAU (min 30)")
+        elif intensity < 80:
+            result["warnings"].append(f"INTENSITY_LOW: {intensity:.0f} mAU (típic >100)")
+        elif intensity > 3000:
+            result["valid"] = False
+            result["issues"].append(f"INTENSITY_EXTREME: {intensity:.0f} mAU (>3x normal, possible error concentració)")
+        elif intensity > 1500:
             result["warnings"].append(f"INTENSITY_HIGH: {intensity:.0f} mAU")
     else:
-        if intensity < 20:
+        # BP: rang normal 100-600, extrem >1500 o <30
+        if intensity < 30:
             result["valid"] = False
-            result["issues"].append(f"INTENSITY_TOO_LOW: {intensity:.0f} mAU")
-        elif intensity > 2000:
+            result["issues"].append(f"INTENSITY_TOO_LOW: {intensity:.0f} mAU (min 30)")
+        elif intensity < 80:
+            result["warnings"].append(f"INTENSITY_LOW: {intensity:.0f} mAU (típic >100)")
+        elif intensity > 1500:
+            result["valid"] = False
+            result["issues"].append(f"INTENSITY_EXTREME: {intensity:.0f} mAU (>3x normal, possible error concentració)")
+        elif intensity > 800:
             result["warnings"].append(f"INTENSITY_HIGH: {intensity:.0f} mAU")
 
     # === 5. VERIFICAR COHERÈNCIA PICS ===
@@ -1164,6 +1197,43 @@ def validate_khp_for_alignment(t_doc, y_doc, t_dad, y_a254, t_uib=None, y_uib=No
 
     if diff_peaks > 2.0:
         result["warnings"].append(f"PEAK_MISMATCH: DOC i A254 difereixen {diff_peaks:.1f} min")
+
+    # === 6. COMPARACIÓ HISTÒRICA (si tenim paràmetres) ===
+    if seq_path and conc_ppm is not None and volume_uL is not None:
+        try:
+            # Calcular àrea del pic principal per comparar
+            # Usar mateixa lògica que a la secció 2 (ratio)
+            area_doc = result["metrics"].get("area_doc", 0)
+            area_total = np.trapezoid(np.maximum(y_doc - np.percentile(y_doc, 5), 0), t_doc) if len(y_doc) > 5 else 0
+            concentration_ratio = area_doc / area_total if area_total > 0 else 0
+
+            historical = compare_khp_historical(
+                current_area=area_doc,
+                current_concentration_ratio=concentration_ratio,
+                seq_path=seq_path,
+                mode=method,
+                conc_ppm=conc_ppm,
+                volume_uL=volume_uL
+            )
+
+            result["metrics"]["historical_comparison"] = {
+                "status": historical.get("status", "UNKNOWN"),
+                "area_deviation_pct": historical.get("area_deviation_pct", 0),
+                "n_calibrations": historical.get("historical_stats", {}).get("n_calibrations", 0) if historical.get("historical_stats") else 0,
+            }
+
+            if historical.get("status") == "INVALID":
+                for issue in historical.get("issues", []):
+                    result["valid"] = False
+                    result["issues"].append(f"HISTORICAL: {issue}")
+            elif historical.get("status") == "WARNING":
+                for warn in historical.get("warnings", []):
+                    result["warnings"].append(f"HISTORICAL: {warn}")
+            elif historical.get("status") == "INSUFFICIENT_DATA":
+                result["warnings"].append(f"HISTORICAL: Dades insuficients per comparar ({method}, {conc_ppm}ppm, {volume_uL}µL)")
+
+        except Exception as e:
+            result["warnings"].append(f"HISTORICAL: Error en comparació: {e}")
 
     return result
 

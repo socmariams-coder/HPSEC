@@ -46,7 +46,7 @@ from hpsec_utils import baseline_stats, baseline_stats_windowed
 from hpsec_config import get_config
 
 # Import validació KHP des de hpsec_calibrate (Single Source of Truth)
-from hpsec_calibrate import validate_khp_for_alignment
+from hpsec_calibrate import validate_khp_for_alignment, extract_khp_conc, get_injection_volume
 
 
 # =============================================================================
@@ -3641,6 +3641,10 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
                         )
 
                         # === VALIDAR QUALITAT KHP ABANS DE CALCULAR SHIFTS ===
+                        # Obtenir paràmetres per comparació històrica
+                        khp_conc = extract_khp_conc(khp_nom)
+                        khp_volume = get_injection_volume(input_folder, is_bp=(method == "BP"))
+
                         khp_validation = validate_khp_for_alignment(
                             t_doc=t_khp_uib,
                             y_doc=y_khp_uib_net,
@@ -3648,7 +3652,10 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
                             y_a254=y_khp_a254,
                             t_uib=t_khp_uib,  # El mateix per UIB
                             y_uib=y_khp_uib_net,
-                            method=method
+                            method=method,
+                            seq_path=input_folder,
+                            conc_ppm=khp_conc,
+                            volume_uL=khp_volume
                         )
 
                         # Guardar validació a l'historial KHP
@@ -3822,6 +3829,103 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
                             "AVÍS: No s'ha trobat KHP (local ni sibling). "
                             "Usant shift=0 (confiant en hores equips + delay)."
                         )
+
+            # ================================================================
+            # VALIDACIÓ KHP PER BP (només QC, no s'usa per alineament)
+            # BP fa alineament per-sample, però validem KHP per detectar
+            # anomalies de concentració
+            # ================================================================
+            if method == "BP":
+                khp_uib_files_bp = [f for f in uib_files if is_khp(os.path.basename(f))]
+
+                if khp_uib_files_bp:
+                    khp_uib_file_bp = khp_uib_files_bp[0]
+                    khp_nom_bp = os.path.basename(khp_uib_file_bp)
+
+                    try:
+                        # Llegir DOC UIB del KHP
+                        df_khp_bp, _ = llegir_doc_uib(khp_uib_file_bp)
+                        t_khp_bp = pd.to_numeric(df_khp_bp["time (min)"], errors="coerce").to_numpy()
+                        y_khp_bp = pd.to_numeric(df_khp_bp["DOC"], errors="coerce").to_numpy()
+                        base_khp_bp = get_baseline_correction(t_khp_bp, y_khp_bp, method, config)
+                        y_khp_bp_net = apply_smoothing(y_khp_bp - base_khp_bp)
+                        y_khp_bp_net[y_khp_bp_net < 0] = 0
+
+                        # Buscar A254 del KHP
+                        khp_mostra_bp, khp_rep_bp = netejar_nom_uib(khp_nom_bp)
+                        khp_dad_path_bp, _ = choose_best_candidate(khp_mostra_bp, khp_rep_bp, dad_pool, set())
+
+                        t_khp_a254_bp = None
+                        y_khp_a254_bp = None
+
+                        if khp_dad_path_bp:
+                            df_dad_raw_bp, st_read_bp = llegir_dad_export3d(khp_dad_path_bp)
+                            if st_read_bp.startswith("OK") and not df_dad_raw_bp.empty:
+                                df_dad_bp = process_dad(df_dad_raw_bp, config)
+                                if not df_dad_bp.empty and '254' in df_dad_bp.columns:
+                                    t_khp_a254_bp = df_dad_bp['time (min)'].values
+                                    y_khp_a254_bp = pd.to_numeric(df_dad_bp['254'], errors='coerce').to_numpy()
+
+                        # Validar KHP BP (amb comparació històrica)
+                        khp_conc_bp = extract_khp_conc(khp_nom_bp)
+                        khp_volume_bp = get_injection_volume(input_folder, is_bp=True)
+
+                        khp_validation_bp = validate_khp_for_alignment(
+                            t_doc=t_khp_bp,
+                            y_doc=y_khp_bp_net,
+                            t_dad=t_khp_a254_bp if t_khp_a254_bp is not None else t_khp_bp,
+                            y_a254=y_khp_a254_bp if y_khp_a254_bp is not None else np.zeros_like(y_khp_bp_net),
+                            method="BP",
+                            repair_batman=False,
+                            seq_path=input_folder,
+                            conc_ppm=khp_conc_bp,
+                            volume_uL=khp_volume_bp
+                        )
+
+                        # Guardar validació a l'historial
+                        add_khp_validation_entry(
+                            base_folder=input_folder,
+                            khp_file=khp_nom_bp,
+                            seq_name=seq_out,
+                            method="BP",
+                            validation_result=khp_validation_bp
+                        )
+
+                        # Reportar problemes
+                        if not khp_validation_bp.get("valid", False):
+                            issues_bp = ", ".join(khp_validation_bp.get("issues", []))
+                            result["warnings"].append(
+                                f"WARN: KHP {khp_nom_bp} INVALID (QC): {issues_bp}"
+                            )
+                            result["alignment"] = {
+                                "khp_file": khp_nom_bp,
+                                "source": "KHP_QC_ONLY",
+                                "khp_validation": "INVALID",
+                                "khp_issues": khp_validation_bp.get("issues", []),
+                                "khp_metrics": khp_validation_bp.get("metrics", {}),
+                            }
+                        elif khp_validation_bp.get("warnings"):
+                            warnings_bp = ", ".join(khp_validation_bp.get("warnings", []))
+                            result["warnings"].append(
+                                f"INFO: KHP {khp_nom_bp} OK amb warnings: {warnings_bp}"
+                            )
+                            result["alignment"] = {
+                                "khp_file": khp_nom_bp,
+                                "source": "KHP_QC_ONLY",
+                                "khp_validation": "VALID_WITH_WARNINGS",
+                                "khp_warnings": khp_validation_bp.get("warnings", []),
+                                "khp_metrics": khp_validation_bp.get("metrics", {}),
+                            }
+                        else:
+                            result["alignment"] = {
+                                "khp_file": khp_nom_bp,
+                                "source": "KHP_QC_ONLY",
+                                "khp_validation": "VALID",
+                                "khp_metrics": khp_validation_bp.get("metrics", {}),
+                            }
+
+                    except Exception as e:
+                        result["warnings"].append(f"WARN: Error validant KHP BP: {e}")
 
             for i, f_doc_uib in enumerate(uib_files):
                 progress = int(100 * (i + 1) / max(total, 1))
@@ -4306,13 +4410,20 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
                                 )
 
                                 # === VALIDAR QUALITAT KHP (MODE DIRECT) ===
+                                # Obtenir paràmetres per comparació històrica
+                                khp_conc_direct = extract_khp_conc(khp_key)
+                                khp_volume_direct = get_injection_volume(input_folder, is_bp=(method == "BP"))
+
                                 khp_validation_direct = validate_khp_for_alignment(
                                     t_doc=t_khp_doc,
                                     y_doc=y_khp_net,
                                     t_dad=t_khp_a254,
                                     y_a254=y_khp_a254,
                                     method=method,
-                                    repair_batman=True
+                                    repair_batman=True,
+                                    seq_path=input_folder,
+                                    conc_ppm=khp_conc_direct,
+                                    volume_uL=khp_volume_direct
                                 )
 
                                 # Guardar validació a l'historial KHP
