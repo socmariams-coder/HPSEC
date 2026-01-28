@@ -221,6 +221,112 @@ def baseline_stats(y, pct_low=10, pct_high=30, min_noise=0.01):
     }
 
 
+def baseline_stats_windowed(t, y, method="column", timeout_positions=None, config=None):
+    """
+    Calcula estadístiques de baseline usant finestres temporals específiques.
+
+    Evita regions amb timeouts per obtenir estimacions de soroll consistents
+    entre rèpliques.
+
+    Args:
+        t: Array de temps (minuts)
+        y: Array de senyal (mAU)
+        method: "column" o "bp" - determina quines finestres usar
+        timeout_positions: Llista de posicions temporals (minuts) on hi ha timeouts
+        config: ConfigManager instance (opcional, usa global si None)
+
+    Returns:
+        dict amb:
+            - mean: mitjana de la baseline
+            - std: desviació estàndard (mínim min_noise)
+            - threshold_3sigma: mean + 3*std
+            - window_used: nom de la finestra utilitzada (o "percentile_fallback")
+    """
+    # Carregar configuració
+    if config is None:
+        from hpsec_config import get_config
+        config = get_config()
+
+    baseline_cfg = config.get("baseline", default={})
+
+    # Paràmetres
+    timeout_margin = baseline_cfg.get("timeout_margin_min", 1.5)
+    min_noise = baseline_cfg.get("min_noise_mau", 0.01)
+
+    # Seleccionar finestres segons mètode
+    if method.lower() == "bp":
+        windows = baseline_cfg.get("windows_bp", [{"start": 5.0, "end": 10.0, "name": "post-peak"}])
+    else:
+        windows = baseline_cfg.get("windows_column", [
+            {"start": 0.0, "end": 3.0, "name": "pre-peak"},
+            {"start": 55.0, "end": 65.0, "name": "LMW-stable"}
+        ])
+
+    # Convertir a numpy
+    t = np.asarray(t, dtype=float)
+    y = np.asarray(y, dtype=float)
+
+    # Preparar llista de timeouts
+    if timeout_positions is None:
+        timeout_positions = []
+
+    def window_has_timeout(w_start, w_end):
+        """Comprova si una finestra conté algun timeout (amb marge)."""
+        for t_pos in timeout_positions:
+            # Timeout afecta si cau dins la finestra expandida pel marge
+            if (t_pos - timeout_margin) < w_end and (t_pos + timeout_margin) > w_start:
+                return True
+        return False
+
+    def get_window_data(w_start, w_end):
+        """Extreu dades dins una finestra temporal."""
+        mask = (t >= w_start) & (t <= w_end)
+        return y[mask]
+
+    # Intentar cada finestra en ordre
+    for window in windows:
+        w_start = window.get("start", 0)
+        w_end = window.get("end", 10)
+        w_name = window.get("name", f"{w_start}-{w_end}")
+
+        # Verificar que la finestra no tingui timeout
+        if window_has_timeout(w_start, w_end):
+            continue
+
+        # Verificar que tenim prou dades
+        window_data = get_window_data(w_start, w_end)
+        if len(window_data) < 10:
+            continue
+
+        # Calcular estadístiques de la finestra
+        # Filtrar valors finits
+        window_data = window_data[np.isfinite(window_data)]
+        if len(window_data) < 5:
+            continue
+
+        mean_val = float(np.mean(window_data))
+        std_val = float(np.std(window_data))
+
+        # Aplicar soroll mínim
+        std_val = max(std_val, min_noise)
+
+        return {
+            "mean": mean_val,
+            "std": std_val,
+            "threshold_3sigma": mean_val + 3.0 * std_val,
+            "window_used": w_name
+        }
+
+    # Fallback: mètode percentil original
+    pct_low = baseline_cfg.get("fallback_percentile_low", 10)
+    pct_high = baseline_cfg.get("fallback_percentile_high", 30)
+
+    result = baseline_stats(y, pct_low=pct_low, pct_high=pct_high, min_noise=min_noise)
+    result["window_used"] = "percentile_fallback"
+
+    return result
+
+
 # =============================================================================
 # DETECCIÓ DE BATMAN (DOBLE PIC)
 # =============================================================================

@@ -43,6 +43,27 @@ DEFAULT_CONFIG = {
         "smoothing_order": 3,
     },
 
+    # --- CÀLCUL BASELINE/SOROLL ---
+    # Finestres temporals per calcular soroll baseline (evita timeouts)
+    "baseline": {
+        # Finestres per mode COLUMN (múltiples, es tria la primera sense timeout)
+        "windows_column": [
+            {"start": 0.0, "end": 3.0, "name": "pre-peak"},      # Abans dels pics
+            {"start": 55.0, "end": 65.0, "name": "LMW-stable"},  # Zona LMW estable
+        ],
+        # Finestres per mode BP (pic al principi, baseline després)
+        "windows_bp": [
+            {"start": 5.0, "end": 10.0, "name": "post-peak"},    # Després del pic BP
+        ],
+        # Marge al voltant del timeout a excloure (minuts)
+        "timeout_margin_min": 1.5,
+        # Soroll mínim instrumental (mAU)
+        "min_noise_mau": 0.01,
+        # Fallback: usar mètode percentil si no hi ha finestra vàlida
+        "fallback_percentile_low": 10,
+        "fallback_percentile_high": 30,
+    },
+
     # --- PLANIFICACIÓ SEQÜÈNCIES ---
     "sequence": {
         # Durada per mostra (cromatograma + post-run) en minuts

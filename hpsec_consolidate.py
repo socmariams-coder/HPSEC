@@ -38,7 +38,7 @@ from hpsec_core import (
     TIMEOUT_CONFIG,
     calc_snr
 )
-from hpsec_utils import baseline_stats
+from hpsec_utils import baseline_stats, baseline_stats_windowed
 from hpsec_config import get_config
 
 
@@ -2559,14 +2559,21 @@ def match_uib_to_master(mostra_uib, rep_uib, master_index):
 # =============================================================================
 # CÀLCUL SNR I BASELINE NOISE
 # =============================================================================
-def calculate_snr_info(y_doc_net, peak_info, y_doc_uib=None):
+def calculate_snr_info(y_doc_net, peak_info, y_doc_uib=None,
+                       t_min=None, method="column", timeout_positions=None):
     """
     Calcula SNR, LOD, LOQ i baseline noise per DOC Direct i UIB.
+
+    Usa finestres temporals específiques per evitar regions amb timeouts,
+    obtenint estimacions de soroll consistents entre rèpliques.
 
     Args:
         y_doc_net: Senyal DOC net (Direct)
         peak_info: Diccionari amb info del pic (height)
         y_doc_uib: Senyal DOC UIB (opcional, per DUAL)
+        t_min: Array de temps en minuts (opcional, per càlcul windowed)
+        method: "column" o "bp" - determina finestres de baseline
+        timeout_positions: Llista de posicions temporals (min) dels timeouts
 
     Returns:
         dict amb:
@@ -2574,13 +2581,27 @@ def calculate_snr_info(y_doc_net, peak_info, y_doc_uib=None):
             - baseline_noise_direct: Desviació estàndard baseline Direct (mAU)
             - lod_direct: Limit of Detection = 3 × noise (mAU)
             - loq_direct: Limit of Quantification = 10 × noise (mAU)
+            - baseline_window_direct: Finestra usada per calcular baseline
             - snr_uib, baseline_noise_uib, lod_uib, loq_uib (si DUAL)
     """
     result = {}
 
+    # Determinar si podem usar el mètode windowed
+    use_windowed = (t_min is not None and len(t_min) > 10)
+
     # Direct
     if y_doc_net is not None and len(y_doc_net) > 10:
-        bl_stats = baseline_stats(y_doc_net)
+        if use_windowed:
+            bl_stats = baseline_stats_windowed(
+                t_min, y_doc_net,
+                method=method,
+                timeout_positions=timeout_positions
+            )
+            result["baseline_window_direct"] = bl_stats.get("window_used", "unknown")
+        else:
+            bl_stats = baseline_stats(y_doc_net)
+            result["baseline_window_direct"] = "percentile"
+
         noise_direct = bl_stats.get("std", 0.0)
         result["baseline_noise_direct"] = noise_direct
         result["lod_direct"] = 3.0 * noise_direct
@@ -2595,7 +2616,17 @@ def calculate_snr_info(y_doc_net, peak_info, y_doc_uib=None):
 
     # UIB
     if y_doc_uib is not None and len(y_doc_uib) > 10:
-        bl_stats_uib = baseline_stats(y_doc_uib)
+        if use_windowed:
+            bl_stats_uib = baseline_stats_windowed(
+                t_min, y_doc_uib,
+                method=method,
+                timeout_positions=timeout_positions
+            )
+            result["baseline_window_uib"] = bl_stats_uib.get("window_used", "unknown")
+        else:
+            bl_stats_uib = baseline_stats(y_doc_uib)
+            result["baseline_window_uib"] = "percentile"
+
         noise_uib = bl_stats_uib.get("std", 0.0)
         result["baseline_noise_uib"] = noise_uib
         result["lod_uib"] = 3.0 * noise_uib
@@ -2654,6 +2685,9 @@ def _collect_sample_stats(mostra, rep, timeout_info, snr_info, peak_info, doc_mo
         stats["baseline_noise_uib"] = snr_info.get("baseline_noise_uib")
         stats["lod_direct"] = snr_info.get("lod_direct")
         stats["lod_uib"] = snr_info.get("lod_uib")
+        # Finestra de baseline usada (per diagnòstic)
+        stats["baseline_window_direct"] = snr_info.get("baseline_window_direct")
+        stats["baseline_window_uib"] = snr_info.get("baseline_window_uib")
 
     return stats
 
@@ -3631,9 +3665,18 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
                         applied_shift_uib = column_shift_uib if column_shift_uib != 0.0 else None
                         applied_shift_direct = column_shift_direct if column_shift_direct != 0.0 else None
 
-                # Calcular SNR i baseline noise
-                snr_info = calculate_snr_info(y_doc_net, peak_info,
-                                              y_doc_uib=y_doc_uib_aligned if doc_mode == "DUAL" else None)
+                # Calcular SNR i baseline noise (amb finestres per evitar timeouts)
+                timeout_positions = []
+                if timeout_info and timeout_info.get("timeouts"):
+                    timeout_positions = [to["t_start_min"] for to in timeout_info["timeouts"]]
+
+                snr_info = calculate_snr_info(
+                    y_doc_net, peak_info,
+                    y_doc_uib=y_doc_uib_aligned if doc_mode == "DUAL" else None,
+                    t_min=t_doc,
+                    method=method,
+                    timeout_positions=timeout_positions
+                )
 
                 write_consolidated_excel(
                     out_path, mostra, rep, seq_out, date_master, method, doc_mode,
@@ -3796,8 +3839,17 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
                     out_name = f"{mostra_clean}_{seq_out}_R{rep}.xlsx"
                     out_path = os.path.join(path_out, out_name)
 
-                    # Calcular SNR i baseline noise
-                    snr_info = calculate_snr_info(doc_net, peak_info)
+                    # Calcular SNR i baseline noise (amb finestres per evitar timeouts)
+                    timeout_positions = []
+                    if timeout_info and timeout_info.get("timeouts"):
+                        timeout_positions = [to["t_start_min"] for to in timeout_info["timeouts"]]
+
+                    snr_info = calculate_snr_info(
+                        doc_net, peak_info,
+                        t_min=t_doc,
+                        method=method,
+                        timeout_positions=timeout_positions
+                    )
 
                     write_consolidated_excel(
                         out_path, mostra_clean, rep, seq_out, date_master, method, "DIRECT",
@@ -3905,8 +3957,17 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
                     out_name = f"{mostra_clean}_{seq_out}_R{rep}.xlsx"
                     out_path = os.path.join(path_out, out_name)
 
-                    # Calcular SNR i baseline noise
-                    snr_info = calculate_snr_info(doc_net, peak_info)
+                    # Calcular SNR i baseline noise (amb finestres per evitar timeouts)
+                    timeout_positions = []
+                    if timeout_info and timeout_info.get("timeouts"):
+                        timeout_positions = [to["t_start_min"] for to in timeout_info["timeouts"]]
+
+                    snr_info = calculate_snr_info(
+                        doc_net, peak_info,
+                        t_min=t_doc,
+                        method=method,
+                        timeout_positions=timeout_positions
+                    )
 
                     write_consolidated_excel(
                         out_path, mostra_clean, rep, seq_out, date_master, method, "DIRECT",
