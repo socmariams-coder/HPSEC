@@ -4100,21 +4100,28 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
                         else:
                             # =========================================
                             # COLUMN: Usar shifts calculats del KHP
+                            # Interpolar a l'eix de temps DAD (com BP)
                             # =========================================
-                            # Aplicar shift a DOC_Direct si cal
-                            if column_shift_direct != 0.0 and t_direct is not None:
-                                t_direct_shifted = t_direct + column_shift_direct
-                                y_doc_net = np.interp(t_doc, t_direct_shifted, y_direct_net, left=0, right=0)
-                                applied_shift_direct_sample = column_shift_direct
+                            # Obtenir eix de temps DAD
+                            t_dad_sample = None
+                            if not df_dad.empty and 'time (min)' in df_dad.columns:
+                                t_dad_sample = df_dad['time (min)'].values
 
-                            # Aplicar shift a DOC_UIB si cal
+                            # Aplicar shift a DOC_Direct i interpolar a DAD
+                            if t_direct is not None and t_dad_sample is not None:
+                                t_direct_shifted = t_direct + column_shift_direct
+                                y_doc_net = np.interp(t_dad_sample, t_direct_shifted, y_direct_net, left=0, right=0)
+                                y_doc_raw = np.interp(t_dad_sample, t_direct_shifted, y_direct_raw, left=0, right=0)
+                                base = np.interp(t_dad_sample, t_direct_shifted, base_direct, left=base_direct[0], right=base_direct[-1])
+                                t_doc = t_dad_sample  # Usar eix DAD com a referència
+                                if column_shift_direct != 0.0:
+                                    applied_shift_direct_sample = column_shift_direct
+
+                            # Aplicar shift a DOC_UIB i interpolar a l'eix de temps actual (DAD o Direct)
+                            t_uib_shifted = t_uib + column_shift_uib
+                            y_doc_uib_aligned = np.interp(t_doc, t_uib_shifted, y_uib_net, left=0, right=0)
                             if column_shift_uib != 0.0:
-                                t_uib_shifted = t_uib + column_shift_uib
-                                y_doc_uib_aligned = np.interp(t_doc, t_uib_shifted, y_uib_net, left=0, right=0)
                                 applied_shift_uib_sample = column_shift_uib
-                            else:
-                                # Sense shift UIB, només interpolar
-                                y_doc_uib_aligned = np.interp(t_doc, t_uib, y_uib_net, left=0, right=0)
 
                     except Exception as e:
                         # Fallback: interpolació simple sense shift
