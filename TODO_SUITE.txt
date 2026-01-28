@@ -15,10 +15,341 @@ ACCIONS PENDENTS STRS (Tècnics)
       - Si no existeixen: eliminar carpeta o documentar com a buida
 
 ################################################################################
-SESSIO EN CURS - 2026-01-26
+SESSIO EN CURS - 2026-01-28
 ################################################################################
 
-TASCA ACTUAL: Detecció automàtica de timeouts TOC
+TASCA ACTUAL: HPSEC Suite v3 (wizard basat en v1 + backend modular)
+
+--------------------------------------------------------------------------------
+HPSEC SUITE v3 - NOVA VERSIÓ
+--------------------------------------------------------------------------------
+Decisió: Partir de v1 (wizard 4 passos) + backend modular de v2.
+
+FITXERS:
+  - HPSEC_Suite.py     = v1 original (6530 línies, monolítica)
+  - HPSEC_Suite_v2.py  = v2 (sidebar, modular però confusa)
+  - HPSEC_Suite_v3.py  = v3 NOVA (wizard + modular)
+
+ESTRUCTURA v3:
+  ┌─────────────────────────────────────────────────────────────┐
+  │  HPSEC Suite v3.0       [SEQ: xxx]    [Repositori] [⚙]     │
+  ├─────────────────────────────────────────────────────────────┤
+  │  [1. Consolidar] → [2. Calibrar] → [3. QC] → [4. Exportar] │
+  ├─────────────────────────────────────────────────────────────┤
+  │   [Contingut del pas actual - UI interactiva]              │
+  ├─────────────────────────────────────────────────────────────┤
+  │  [← Anterior]           Status                  [Següent →] │
+  └─────────────────────────────────────────────────────────────┘
+
+IMPLEMENTAT v3:
+  [x] Estructura wizard 4 passos
+  [x] Pas 1: Consolidar (info + progrés + botó)
+  [x] Pas 2: Calibrar (info detallada + gràfic cromatograma + botons)
+  [x] Pas 3: QC (taula interactiva + menú contextual)
+  [x] Pas 4: Exportar (opcions + resum + botons)
+  [x] Navegació (Anterior/Següent + clic passos)
+  [x] Detecció automàtica última SEQ
+  [x] Usa backend modular (hpsec_config, hpsec_consolidate, etc.)
+  [x] Pas 1: Mostra info detallada (fitxers .D, UIB, DAD, mode, orfes)
+  [x] Pas 1: Resum consolidació amb estadístiques (SNR, LOD, timeouts)
+  [x] Pas 1: Barres de severitat timeouts (OK/INFO/WARN/CRIT)
+  [x] Pas 2: Mostra info KHP completa (origen, concentració, rèpliques)
+  [x] Pas 2: Mostra resultats calibració (factor, àrea, RSD, shift)
+  [x] Pas 2: Mostra qualitat (simetria, SNR, issues amb colors)
+  [x] Pas 2: Gràfic cromatograma DOC amb àrea integrada + DAD 254nm
+  [x] Backend integration correcta (keys calibration.factor, khp_data.*, etc.)
+  [x] Generació CHECK/consolidation.json amb resum complet
+
+PENDENT v3:
+  [ ] Modal configuració (botó ⚙)
+  [ ] Finestra Repositori (Calibracions + Mostres)
+  [ ] Generació gràfics QAQC
+  [ ] Generació PDF informe
+  [ ] Testejar flux complet
+  [ ] Històric KHP funcional (botó existent, implementar diàleg)
+  [ ] CONFIG: Llista injeccions control (MQ, NaOH, etc.) amb nivell duplicats diferent
+      - Les injeccions control poden tenir patrons de rèplica/bloc diferents a les mostres
+      - Fitxers com MQ1_UIB1B.CSV, MQ2_UIB1B.CSV no s'han de considerar orfes
+      - Afegir a hpsec_config.py: CONTROL_INJECTIONS = ["MQ", "NAOH", "BLANK", ...]
+      - Relacionat amb numeració de blocs als fitxers resultants
+
+--------------------------------------------------------------------------------
+COMPLETAT AVUI (2026-01-28) - ABANS DE v3
+--------------------------------------------------------------------------------
+
+--------------------------------------------------------------------------------
+COMPLETAT AVUI (2026-01-28)
+--------------------------------------------------------------------------------
+[x] hpsec_consolidate.py v1.6.0 - VALIDACIÓ + FILTRE CONTROLS:
+    - v1.5.0: Sistema matching amb confiança (EXACT/NORMALIZED/FUZZY)
+    - v1.6.0: Filtre injeccions control (MQ, NaOH, BLANK, H2O, WASH)
+    - Configurable a hpsec_config.py: control_injections.patterns[]
+    - Controls no es marquen com a orfes (ignore_orphan: true)
+    - Testat en 17 SEQs: 0 falsos positius baixa confiança
+
+[x] hpsec_consolidate.py v1.4.0 - CONSOLIDATION.JSON:
+    Nova funcionalitat: Generació de CHECK/consolidation.json amb resum complet.
+
+    Noves funcions:
+      - _collect_sample_stats(): Recull estadístiques per mostra
+      - generate_consolidation_summary(): Genera diccionari resum
+      - save_consolidation_summary(): Guarda JSON a CHECK/
+
+    Contingut consolidation.json:
+      - meta: seq, date, method, mode, script_version
+      - counts: total_samples, khp_samples, control_samples, regular_samples
+      - alignment: shift_uib, shift_direct, source
+      - timeouts: severity_counts, critical_samples
+      - quality: snr_direct/uib (min/median/max), lod_direct/uib_mau
+      - samples: llista detallada per mostra
+
+    Millores:
+      - Filtre valors extrems SNR (>10000) i noise (<0.01)
+      - Corregit bug: result["processed"] -> result["processed_count"]
+
+[x] HPSEC_Suite_v3.py - GUI RESUM CONSOLIDACIÓ:
+    Nou frame "Resum Consolidació" al pas 1 amb:
+      - Comptadors: mostres, KHP, controls
+      - Alineació: shifts UIB/Direct, font
+      - SNR: mediana i mínim
+      - LOD: Direct i UIB (mAU)
+      - Barres timeouts per severitat amb colors
+      - Mostres crítiques (si CRITICAL)
+      - Avisos importants
+
+    Nova funció:
+      - _show_consolidation_summary(): Mostra resum a la GUI
+
+    Canvis:
+      - _consolidation_done(): Carrega i mostra resum
+      - _analyze_folder(): Carrega resum existent de consolidation.json
+
+[x] Afegir "paths" a hpsec_config.py:
+    - data_folder: "C:/Users/Lequia/Desktop/Dades2"
+    - Centralitza path del repositori
+
+[x] Actualitzar HPSEC_Suite_v2.py per usar config paths:
+    - Línia 2048: ara usa self.config.get("paths", "data_folder")
+
+[x] Afegir SNR, LOD, LOQ i baseline noise a consolidats (hpsec_consolidate.py v1.3.0):
+    - Nova funció calculate_snr_info()
+    - Camps afegits al full ID:
+      * SNR_Direct, SNR_UIB
+      * Baseline_Noise_Direct_mAU, Baseline_Noise_UIB_mAU
+      * LOD_Direct_mAU, LOD_UIB_mAU (= 3 × noise)
+      * LOQ_Direct_mAU, LOQ_UIB_mAU (= 10 × noise)
+    - Nou paràmetre snr_info a write_consolidated_excel()
+    - Les 3 crides a write_consolidated_excel() actualitzades
+
+--------------------------------------------------------------------------------
+GUI v2.1 - REDISSENY ACORDAT (2026-01-28)
+--------------------------------------------------------------------------------
+
+ESTRUCTURA FINAL (4 pàgines + modal config):
+
+  ┌──────────────────────────────────────────────────────────┐
+  │  Processar │ SEQ Status │ Repositori │ Eines │    [⚙]  │
+  └──────────────────────────────────────────────────────────┘
+
+  1. PROCESSAR
+     - Pipeline automàtic (Migrar → Consolidar → Calibrar → Processar)
+     - Log en temps real (streaming, sense pauses)
+     - Només para si error
+     - Al final: resum ràpid + botó obrir CHECK/
+     - Auto-detecta darrera SEQ
+     - Exportar: PENDENT DEFINIR (múltiples opcions + ZIP)
+
+  2. SEQ STATUS (abans "Repositori")
+     - Llista totes les SEQs amb estat (MF/Con/Cal/Proc)
+     - Batch processing (seleccionar múltiples)
+     - Reprocessar SEQs antigues
+     - Icones amb llegenda
+
+  3. REPOSITORI (abans "Històric")
+     - Tab Calibracions: KHP_History.json
+       * Taula amb factor, r², data, estat
+       * Gràfic evolució temporal
+       * Marcar outliers
+       * Exportar Excel
+     - Tab Mostres: Samples_History.json
+       * Totes les mostres processades
+       * Cercar, filtrar
+       * Estadístiques per mostra
+       * Exportar Excel
+
+  4. EINES
+     - Planificador T0 (optimitzar seqüències per timeouts)
+     - UIB vs Direct (comparar senyals)
+     - Altres eines a revisar
+
+  5. CONFIG (modal, icona ⚙ a capçalera)
+     - Paths
+     - Thresholds
+     - Wavelengths
+     - etc.
+
+TASQUES IMPLEMENTACIÓ:
+  [x] Reestructurar navegació (4 pàgines + modal config)
+  [x] Config: convertir a modal (icona ⚙ a sidebar)
+  [x] Repositori: estructura tab Calibracions/Mostres
+  [x] Reanomenar etapa "Processar" a "QC" (evita confusió amb pàgina)
+  [x] Fix: SEQs ja processades - ara mostra diàleg confirmació (no bloqueja)
+  [x] Processar: afegir taula QC interactiva (com v1)
+      - Columnes: Mostra, Estat, DOC R, DOC Δ%, Sel DOC, DAD Qual, Sel DAD
+      - Doble clic per obrir gràfic QAQC
+      - Clic dret per canviar selecció DOC/DAD
+      - Tags de color: OK (verd), WARN (taronja), FAIL (vermell), MODIFIED (blau)
+  [x] Processar: panell resum amb stats (fitxers, mostres, KHP, factor)
+  [x] Processar: log detall col·lapsable
+  [x] hpsec_pipeline.py: reanomenar step "processar" a "qc"
+  [ ] Processar: obrir CHECK/ al final
+  [ ] SEQ Status: batch processing funcional
+  [ ] Repositori: poblar tab Calibracions des de KHP_History.json
+  [ ] Repositori: poblar tab Mostres des de Samples_History.json
+  [ ] Eines: revisar funcionalitats necessàries
+
+--------------------------------------------------------------------------------
+PENDENT
+--------------------------------------------------------------------------------
+[ ] RECONSOLIDAR TOTES LES SEQÜÈNCIES:
+    - Afegeix: timeout info, SNR, LOD, LOQ, baseline noise
+    - Executar quan sigui convenient (procés llarg)
+    - Considerar fer-ho en batch overnight
+
+--------------------------------------------------------------------------------
+SESSIO ANTERIOR - 2026-01-26
+--------------------------------------------------------------------------------
+
+TASCA ANTERIOR: HPSEC Suite v2 - GUI Professional
+
+--------------------------------------------------------------------------------
+GUI SUITE v2 - IMPLEMENTAT
+--------------------------------------------------------------------------------
+[x] Nova estructura GUI:
+    - Planificar SEQ: Optimitzar T0 per evitar timeouts en zones crítiques
+    - Processar SEQ: Processar seqüència (auto-detecta darrera o selecció manual)
+    - Estat Repositori: Visió general de totes les SEQs i el seu estat
+    - Eines: Comparacions, diagnòstic, planificador timeout
+    - Configuració: Paràmetres centralitzats
+
+[x] Detecció automàtica d'estat per SEQ:
+    - MasterFile: existeix o cal migrar
+    - Consolidat: carpeta Resultats_Consolidats
+    - Calibrat: CHECK/calibration.json
+    - Processat: CHECK/processing_summary.json
+    - Versió: compara versió processament vs versió actual pipeline
+
+[x] Tracking de versió del pipeline:
+    - PIPELINE_VERSION a hpsec_pipeline.py
+    - Es guarda a processing_summary.json
+    - GUI detecta si cal reprocessar per canvi de versió
+
+[x] Mòduls nous creats:
+    - hpsec_config.py: Gestió centralitzada configuració (JSON)
+    - hpsec_gui.py: Components GUI moderns (ModernCard, ProgressPanel, etc.)
+    - hpsec_planner.py: Planificador seqüències per optimitzar timeout TOC
+    - hpsec_pipeline.py: Pipeline integrat (migrar→consolidar→calibrar→processar→exportar)
+    - HPSEC_Suite_v2.py: Nova GUI professional
+
+--------------------------------------------------------------------------------
+GUI SUITE v2 - ARREGLAT (2026-01-26)
+--------------------------------------------------------------------------------
+[x] Bug crític _create_repositori_page:
+    - Codi botons i "return page" estaven dins _on_repo_selection_change
+    - Arreglat: la funció ara retorna correctament el frame page
+    - Navegació entre pàgines ara funciona correctament
+
+[x] Mida finestra reduïda:
+    - Mida inicial: 700x450 (era 800x500)
+    - Mida mínima: 600x400 (era 700x450)
+
+--------------------------------------------------------------------------------
+GUI SUITE v2 - FINESTRES ACTUALITZADES (2026-01-27)
+--------------------------------------------------------------------------------
+[x] FINESTRA REDIMENSIONADA (2026-01-27):
+    - Mida inicial: 70% pantalla (màx 900x650)
+    - Mida mínima: 600x450
+    - Sidebar: 70px amb icones i text
+    - Fonts: 9-10pt (llegibles)
+
+[x] PLANIFICAR SEQ - TAULA DETALLADA:
+    - Mostra TOTES les mostres amb timeout previst
+    - Columnes: Mostra | Timeout | Zona | Severitat | Descripció
+    - Estadístiques per severitat (CRITICAL, WARNING, INFO, OK)
+    - Resum per zones amb comptadors
+
+[x] PROCESSAR SEQ - PIPELINE PAS A PAS (2026-01-27):
+    - REDISSENYAT: Ara és pas a pas amb confirmació de l'usuari
+    - L'usuari ha de fer clic "Següent" després de cada etapa
+    - Errors EXPLÍCITS amb traceback complet
+    - Cada etapa mostra detalls específics (fitxers, factor, mostres...)
+    - Botons: Iniciar | Següent | Aturar | Obrir Resultats
+    - Si error: opció de reintentar o saltar etapa
+    - Funcions noves a hpsec_pipeline.py:
+        * run_migration_step()
+        * run_consolidation_step()
+        * run_calibration_step()
+        * run_processing_step()
+        * run_export_step()
+
+[x] CONSOLIDAR - MISSATGES MILLORATS (2026-01-27):
+    - Mostra fitxers UIB i DAD trobats explícitament
+    - Si ja consolidat: "Ja consolidat (X fitxers existents)"
+    - Si no troba fitxers: explica on ha buscat (CSV/, Export3D/)
+    - Mostra MasterFile si existeix
+    - Detalla mostres consolidades vs fitxers font
+
+    Pàgines pendents de revisar visualment:
+    [ ] Repositori
+    [ ] Eines
+    [ ] Config
+
+--------------------------------------------------------------------------------
+GUI SUITE v2 - PENDENT
+--------------------------------------------------------------------------------
+[ ] FINESTRA - MILLORES ADDICIONALS:
+    - Guardar última mida/posició a config
+    - Si encara és massa gran per algunes pantalles, considerar scroll
+
+[ ] REPOSITORI A CONFIG:
+    - Moure path "C:/Users/Lequia/Desktop/Dades2" a hpsec_config.py
+    - Permetre canviar des de GUI (pàgina Config)
+    - Validar que existeix abans d'escanejar
+
+[ ] SHAREPOINT/TEAMS:
+    - Opció 1 (Recomanada): OneDrive sync → carpeta local
+    - Opció 2: Mappejar unitat de xarxa (requereix VPN fora UdG)
+    - Opció 3: Microsoft Graph API (complex, auth OAuth2, lent)
+    - Opció 4: WebDAV mount (pot ser lent amb Excels grans)
+    - Opció 5: rclone mount (requereix instal·lar rclone)
+    - DECISIÓ PENDENT: quin mètode implementar?
+
+[ ] REANOMENAR MASTERFILES SEGONS ESTAT:
+    - Format proposat (pendent decisió):
+      * XXX_MasterFile.xlsx     → migrat (raw)
+      * XXX_MasterFile_C.xlsx   → consolidat
+      * XXX_MasterFile_Cal.xlsx → calibrat
+      * XXX_MasterFile_P.xlsx   → processat
+    - Permet veure estat sense obrir fitxer
+    - Requereix actualitzar totes les funcions que busquen MasterFile
+
+[ ] BATCH PROCESSING:
+    - Implementar "Processar Totes Pendents" a Estat Repositori
+    - Progress bar global + per SEQ
+    - Log de resultats
+
+[ ] EINES PENDENTS D'INTEGRAR:
+    - Comparació rèpliques (compare_replicas_direct.py?)
+    - Control charts (generate_control_charts.py)
+    - [x] Planificador timeout (hpsec_planner.py) - INTEGRAT a pàgina "Planificar SEQ"
+
+[ ] PLANIFICADOR SEQ - MILLORES:
+    - Adaptar per seqüències BYPASS (diferents zones crítiques, durades)
+    - Afegir visualització gràfica dels timeouts predits
+    - Opció d'exportar pla a PDF/Excel
+
+--------------------------------------------------------------------------------
+TASCA ANTERIOR: Detecció automàtica de timeouts TOC
 
 COMPLETAT AVUI (2026-01-26):
   [x] Anàlisi cicle recàrrega xeringues TOC:
@@ -59,12 +390,31 @@ COMPLETAT AVUI (2026-01-26):
       - TOC_Zones_Affected: zones amb timeout
       - TOC_Dt_Median_sec / TOC_Dt_Max_sec
 
+  [x] REFACTORING HPSEC_Suite.py i hpsec_replica.py (2026-01-26):
+
+      hpsec_replica.py v1.2:
+        - Afegida avaluació DAD (evaluate_dad, evaluate_dad_multi)
+        - Afegida comparació DOC-DAD (compare_doc_dad)
+        - Afegida compare_replicas_full() per comparació completa
+        - SNR i Pearson actius per selecció COLUMN (abans només BP)
+        - Nous thresholds: DAD_DRIFT_WARNING/CRITICAL, DAD_DOC_CORR
+
+      HPSEC_Suite.py optimitzat (7244 → 6530 línies, -714 línies):
+        - Eliminat avaluar_qualitat_dad() (ara usa evaluate_dad)
+        - Eliminat calcular_roughness() (duplicat d'avaluar_qualitat_doc)
+        - Eliminat analyze_sample_areas() (importa de hpsec_consolidate)
+        - Eliminat write_consolidated_excel() (importa de hpsec_consolidate)
+        - Eliminat get_baseline_correction() (importa de hpsec_consolidate)
+        - Eliminat apply_smoothing() (importa de hpsec_consolidate)
+        - Refactoritzat avaluar_qualitat_dad_replica() per usar evaluate_dad
+        - Refactoritzat seleccionar_millor_dad() amb lògica millorada
+
 PENDENT:
   [ ] Reconsolidar totes les seqüències per afegir info timeout
   [ ] Generar report resum de timeouts per seqüència
   [ ] Considerar canvi durada mostra a 77.2 min (elimina deriva)
 
-  [ ] AFEGIR SNR i LOD A CONSOLIDATS:
+  [x] AFEGIR SNR i LOD A CONSOLIDATS (IMPLEMENTAT 2026-01-28):
       Anàlisi realitzada (156 mostres DUAL):
         - Direct té millor LOD que UIB (1.24 vs 1.85 mAU a 700 ppb)
         - 700 ppb té millor LOD que 1000 ppb (1.85 vs 3.47 mAU)
@@ -168,7 +518,7 @@ PENDENT:
               - IRR (smoothness < 18%)
               - Timeout (via hpsec_core.detect_timeout - dt intervals)
 
-        [ ] DOCtor_BP.py - Pendent actualitzar imports (baixa prioritat)
+        [x] DOCtor_BP.py v1.7 - USA HPSEC_REPLICA (2026-01-26)
 
       DETALL COMPLET: veure PLAN_REFACTOR_DETECCIO.md
 
@@ -366,13 +716,25 @@ ORGANITZACIO CODI
     - calc_snr, calc_peak_area, calc_pearson, calibrate_factor
     - Constants globals (THRESH_R2_*, REPAIR_*, ASYM_*, TIMEOUT_CONFIG)
 
-[x] hpsec_replica.py - Selecció de rèpliques (NOU):
-    - evaluate_replica(t, y, method) - avaluació unificada
-    - select_best_replica(eval1, eval2, method) - selecció COLUMN/BP
-    - compare_replicas(t1, y1, t2, y2) - Pearson i àrea
-    - Criteris COLUMN: Batman > Timeout > IRR > Alçada
-    - Criteris BP: R² status > R² valor > SNR
-    - Usat per: DOCtor_C, HPSEC_Suite
+[x] hpsec_replica.py v1.2 - Selecció de rèpliques amb DAD:
+    Funcions DOC:
+      - evaluate_replica(t, y, method) - avaluació unificada
+      - select_best_replica(eval1, eval2, method, dad_eval) - selecció COLUMN/BP
+      - compare_replicas(t1, y1, t2, y2) - Pearson i àrea
+
+    Funcions DAD (NOU v1.2):
+      - evaluate_dad(t, y) - deriva, soroll, SNR per wavelength
+      - evaluate_dad_multi(t, dad_data) - múltiples wavelengths
+      - compare_doc_dad(t_doc, y_doc, t_dad, y_dad) - correlació DOC-DAD
+      - compare_replicas_full(...) - comparació completa DOC+DAD
+
+    Criteris COLUMN: Batman > Timeout > IRR > DAD_POOR > SNR > DAD_drift > Alçada
+    Criteris BP: Batman > R² status > R² valor > SNR (+DAD warnings)
+
+    Llindars:
+      - SNR_RATIO 1.5x, PEARSON_WARNING 0.990, AREA_DIFF 15/30%
+      - DAD_DRIFT 1.0/3.0 mAU, DAD_NOISE 0.5 mAU, DAD_DOC_CORR 0.90/0.95
+    - Usat per: DOCtor_C v1.3, DOCtor_BP v1.7, HPSEC_Suite
 
 [x] hpsec_utils.py - Utilitats generals:
     - baseline_stats, detect_main_peak
@@ -432,7 +794,7 @@ ORGANITZACIO CODI
       * detect_double_peak (pics coeluits columna)
 
 --------------------------------------------------------------------------------
-FILTRES IMPLEMENTATS (DOCtor_BP v1.6)
+FILTRES IMPLEMENTATS (DOCtor_BP v1.7)
 --------------------------------------------------------------------------------
 [x] Bi-Gaussiana (sigma_left != sigma_right)
 [x] Deteccio Batman (valls al cim del pic)
@@ -577,20 +939,50 @@ REGISTRE DE SCRIPTS
 
 Format: [DATA HORA] script.py - Descripció breu
 
-[2026-01-26 xx:xx] hpsec_replica.py v1.0 - NOU MÒDUL SELECCIÓ RÈPLIQUES
+[2026-01-26 xx:xx] hpsec_replica.py v1.2 - AVALUACIÓ DAD
     Single Source of Truth per avaluar i seleccionar rèpliques.
-    Funcions:
+
+    Funcions DOC:
       - evaluate_replica(t, y, method) - avalua qualitat (batman, timeout, irr, r2, snr)
-      - select_best_replica(eval1, eval2, method) - selecciona millor
+      - select_best_replica(eval1, eval2, method, dad_eval) - selecciona millor
       - compare_replicas(t1, y1, t2, y2) - Pearson i diferència àrea
-    Suporta COLUMN (Anomalies→Alçada) i BP (R²→SNR)
-    Usat per: DOCtor_C v1.3, HPSEC_Suite
+
+    Funcions DAD (NOU):
+      - evaluate_dad(t, y) - deriva, soroll, SNR per wavelength
+      - evaluate_dad_multi(t, dad_data) - avalua A254, A280, etc.
+      - compare_doc_dad(t_doc, y_doc, t_dad, y_dad) - correlació DOC-DAD
+      - compare_replicas_full(...) - comparació completa DOC+DAD
+
+    COLUMN (v1.2):
+      1. Anomalies (Batman > Timeout > IRR)
+      2. DAD quality (si POOR, descartar)
+      3. SNR (si ratio > 1.5x)
+      4. Pearson (warning < 0.990)
+      5. Àrea diff (warning > 15%)
+      6. DAD drift (preferir menys deriva)
+      7. Alçada (tiebreaker)
+
+    BP:
+      1. Batman
+      2. R² status (VALID > CHECK > INVALID)
+      3. R² valor (bi-gaussiana)
+      4. SNR (tiebreaker)
+      + Pearson/Àrea/DAD generen warnings
+
+    Usat per: DOCtor_C v1.3, DOCtor_BP v1.7, HPSEC_Suite
 
 [2026-01-26 xx:xx] DOCtor_C.py v1.3 - USA HPSEC_REPLICA
     Integració amb hpsec_replica.py per selecció de rèpliques.
     - evaluate_replica() substitueix deteccions manuals
     - select_best_replica() importat de hpsec_replica
     - compare_replicas() per Pearson/àrea
+
+[2026-01-26 xx:xx] DOCtor_BP.py v1.7 - USA HPSEC_REPLICA
+    Integració amb hpsec_replica.py per selecció de rèpliques.
+    - select_best_replica() importat de hpsec_replica (mètode BP)
+    - compare_replicas() per Pearson/àrea
+    - make_eval() helper per convertir analysis a format eval
+    - Criteris BP: R² status > R² valor > SNR
 
 [2026-01-26 xx:xx] DOCtor_C.py v1.2 - SIMPLIFICACIÓ DETECCIÓ
     Eliminades deteccions que no funcionen bé:
@@ -667,9 +1059,40 @@ Revisio de Doctor_C
 CHANGELOG / HISTORIAL D'ACCIONS
 ================================================================================
 
-2026-01-26 - SIMPLIFICACIÓ DETECCIÓ (DOCtor_C v1.2)
+2026-01-26 - NETEJA HPSEC_Suite.py
 --------------------------------------------------------------------------------
 [DARRERA ACCIO]
+
+Eliminades funcions duplicades i deprecated (~450 línies):
+
+FUNCIONS ELIMINADES (importades de mòduls):
+  - llegir_doc_uib, llegir_dad_export3d → hpsec_consolidate
+  - netejar_nom_uib, trobar_excel_mestre → hpsec_consolidate
+  - extract_doc_from_master, process_dad → hpsec_consolidate
+  - baseline_stats → hpsec_utils
+  - baseline_stats_time → hpsec_calibrate
+  - detect_main_peak → hpsec_consolidate
+  - netejar_baseline (duplicat) → eliminat
+
+FUNCIONS DEPRECATED ELIMINADES:
+  - detect_batman → usar hpsec_replica.evaluate_replica()
+  - detect_timeout → usar hpsec_replica.evaluate_replica()
+  - detect_ears → no funcionava, eliminat
+
+IMPORTS AFEGITS:
+  - from hpsec_utils import baseline_stats
+  - from hpsec_replica import evaluate_dad, evaluate_dad_multi, compare_doc_dad
+
+Resultat: 7244 línies → 6793 línies (-451 línies, -6%)
+
+PENDENT:
+  - avaluar_qualitat_dad_replica() i seleccionar_millor_dad() podrien
+    migrar a hpsec_replica però requereixen més refactoring
+
+--------------------------------------------------------------------------------
+
+2026-01-26 - SIMPLIFICACIÓ DETECCIÓ (DOCtor_C v1.2)
+--------------------------------------------------------------------------------
 
 Objectiu: Mantenir només les deteccions que funcionen bé.
 

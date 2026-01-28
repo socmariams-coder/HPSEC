@@ -11,8 +11,12 @@ Conté tota la lògica per:
 Usat per HPSEC_Suite.py i batch_process.py
 """
 
-__version__ = "1.2.0"
-__version_date__ = "2026-01-26"
+__version__ = "1.6.0"
+__version_date__ = "2026-01-28"
+# v1.6.0: Filtre injeccions control (MQ, NaOH) - configurable a hpsec_config.py
+# v1.5.0: Sistema de matching amb confiança (EXACT/NORMALIZED/FUZZY) + detecció orfes
+# v1.4.0: Validació mostres contra 1-HPLC-SEQ, detecció fitxers orfes
+# v1.3.0: Afegit SNR, LOD, LOQ i baseline noise als consolidats
 # v1.2.0: Refactor - timeout detection mogut a hpsec_core.py
 
 import os
@@ -20,6 +24,7 @@ import re
 import glob
 import json
 from datetime import datetime
+from difflib import SequenceMatcher
 import numpy as np
 import pandas as pd
 from scipy.signal import find_peaks, savgol_filter
@@ -29,8 +34,11 @@ from scipy.integrate import trapezoid
 from hpsec_core import (
     detect_timeout,
     format_timeout_status,
-    TIMEOUT_CONFIG
+    TIMEOUT_CONFIG,
+    calc_snr
 )
+from hpsec_utils import baseline_stats
+from hpsec_config import get_config
 
 
 # =============================================================================
@@ -38,6 +46,30 @@ from hpsec_core import (
 # =============================================================================
 QAQC_FOLDER = "HPSEC_QAQC"
 ALIGNMENT_LOG_FILE = "Alignment_History.json"
+
+
+def is_control_injection(sample_name, config=None):
+    """
+    Verifica si una mostra és una injecció de control (MQ, NaOH, etc.).
+
+    Args:
+        sample_name: Nom de la mostra
+        config: Configuració (si None, es llegeix de get_config())
+
+    Returns:
+        True si és una injecció de control
+    """
+    if config is None:
+        config = get_config()
+
+    # ConfigManager.get() rep claus com arguments separats
+    control_patterns = config.get("control_injections", "patterns", default=[])
+    sample_upper = sample_name.upper()
+
+    for pattern in control_patterns:
+        if pattern.upper() in sample_upper:
+            return True
+    return False
 
 
 def get_qaqc_folder(base_folder):
@@ -374,6 +406,39 @@ def check_sequence_files(seq_path, used_uib_files=None, used_dad_files=None):
         result["dad"]["count_orphan"] > 0 or
         len(result["proposed_renames"]) > 0
     )
+
+    # Detectar mode (BP vs COLUMN)
+    folder_name = os.path.basename(seq_path).upper()
+    if "_BP" in folder_name or folder_name.endswith("BP"):
+        result["detected_mode"] = "BP"
+    else:
+        result["detected_mode"] = "COLUMN"
+
+    # Comptar mostres (basat en fitxers UIB o DAD únics)
+    # Extreure noms base de mostres (sense rèplica)
+    sample_names = set()
+
+    for f in result["uib"]["found"]:
+        # Extreure nom mostra de fitxers UIB (format: MOSTRA_UIB1B_Rx.csv)
+        parts = f.replace("_UIB1B", "").replace(".csv", "").replace(".CSV", "").replace(".txt", "").replace(".TXT", "")
+        # Treure _R1, _R2, etc.
+        base = re.sub(r'_R\d+$', '', parts)
+        if base and not is_khp(base):
+            sample_names.add(base)
+
+    for f in result["dad"]["found"]:
+        # Extreure nom mostra de fitxers DAD
+        parts = os.path.splitext(f)[0]
+        base = re.sub(r'_R\d+$', '', parts)
+        if base and not is_khp(base):
+            sample_names.add(base)
+
+    result["total_samples"] = len(sample_names)
+    result["sample_names"] = sorted(sample_names)
+
+    # Detectar si té KHP
+    all_files = result["uib"]["found"] + result["dad"]["found"]
+    result["has_khp"] = any(is_khp(f) for f in all_files)
 
     return result
 
@@ -1181,6 +1246,192 @@ def llegir_masterfile_nou(filepath):
     return result
 
 
+def get_valid_samples_from_hplc_seq(master_data):
+    """
+    Extreu la llista de mostres vàlides de 1-HPLC-SEQ.
+
+    Aquesta és la font de veritat per saber quines mostres pertanyen a una SEQ.
+    Els fitxers UIB/DAD que no coincideixin amb aquestes mostres són orfes
+    (exportats per error d'una altra seqüència).
+
+    Args:
+        master_data: Dict retornat per llegir_masterfile_nou()
+
+    Returns:
+        set de noms de mostres (normalitzats) que pertanyen a la SEQ
+    """
+    df_hplc = master_data.get("hplc_seq")
+    if df_hplc is None or df_hplc.empty:
+        return set()
+
+    valid_samples = set()
+
+    # Buscar columna "Sample Name" (pot tenir espais extra)
+    sample_col = None
+    for col in df_hplc.columns:
+        if 'sample' in str(col).lower() and 'name' in str(col).lower():
+            sample_col = col
+            break
+
+    if sample_col is None:
+        return set()
+
+    # Extreure noms únics i normalitzar
+    for val in df_hplc[sample_col].dropna().unique():
+        name = str(val).strip()
+        if name:
+            # Guardar nom original i normalitzat
+            valid_samples.add(name)
+            valid_samples.add(normalize_key(name))
+
+    return valid_samples
+
+
+def match_sample_confidence(sample_name, valid_samples):
+    """
+    Cerca la millor coincidència d'una mostra amb la llista vàlida i retorna la confiança.
+
+    Args:
+        sample_name: Nom de la mostra (del fitxer UIB)
+        valid_samples: Set de mostres vàlides (de get_valid_samples_from_hplc_seq)
+
+    Returns:
+        dict amb:
+            - matched: bool, si s'ha trobat coincidència
+            - best_match: str, nom de la mostra vàlida que coincideix (o None)
+            - confidence: float 0-100, nivell de confiança
+            - match_type: str, tipus de coincidència
+    """
+    result = {
+        "matched": False,
+        "best_match": None,
+        "confidence": 0.0,
+        "match_type": "NOT_FOUND"
+    }
+
+    if not valid_samples:
+        # Si no tenim info de HPLC-SEQ, assumim match perfecte
+        return {
+            "matched": True,
+            "best_match": sample_name,
+            "confidence": 100.0,
+            "match_type": "NO_VALIDATION"
+        }
+
+    sample_norm = normalize_key(sample_name)
+    sample_upper = sample_name.upper()
+
+    # 1. Coincidència exacta (100%)
+    if sample_name in valid_samples:
+        return {
+            "matched": True,
+            "best_match": sample_name,
+            "confidence": 100.0,
+            "match_type": "EXACT"
+        }
+
+    # 2. Coincidència normalitzada (95%)
+    for vs in valid_samples:
+        if normalize_key(vs) == sample_norm:
+            return {
+                "matched": True,
+                "best_match": vs,
+                "confidence": 95.0,
+                "match_type": "NORMALIZED"
+            }
+
+    # 3. Case-insensitive (90%)
+    for vs in valid_samples:
+        if vs.upper() == sample_upper:
+            return {
+                "matched": True,
+                "best_match": vs,
+                "confidence": 90.0,
+                "match_type": "CASE_INSENSITIVE"
+            }
+
+    # 4. Variants (espais, guions, underscores) (85%)
+    variants = [
+        sample_name.replace("_", " "),
+        sample_name.replace(" ", "_"),
+        sample_name.replace("-", "_"),
+        sample_name.replace("_", "-"),
+        sample_name.replace("_", ""),
+        sample_name.replace(" ", ""),
+    ]
+    for v in variants:
+        v_norm = normalize_key(v)
+        v_upper = v.upper()
+        for vs in valid_samples:
+            if vs == v or normalize_key(vs) == v_norm or vs.upper() == v_upper:
+                return {
+                    "matched": True,
+                    "best_match": vs,
+                    "confidence": 85.0,
+                    "match_type": "VARIANT"
+                }
+
+    # 5. Fuzzy matching amb SequenceMatcher
+    best_ratio = 0.0
+    best_match = None
+
+    for vs in valid_samples:
+        # Comparar amb nom original i normalitzat
+        ratio1 = SequenceMatcher(None, sample_upper, vs.upper()).ratio()
+        ratio2 = SequenceMatcher(None, sample_norm, normalize_key(vs)).ratio()
+        ratio = max(ratio1, ratio2)
+
+        if ratio > best_ratio:
+            best_ratio = ratio
+            best_match = vs
+
+    # NOTA: Fuzzy matching desactivat per a IDs científics
+    # FR2606 vs FR2608 són mostres DIFERENTS (el número és l'ID)
+    # Només suggerim si la diferència és molt alta (>95%) i no és numèrica
+
+    # Comprovar si la diferència és només en la part numèrica final
+    # En aquest cas, NO suggerir - són mostres diferents
+    import re
+    sample_base = re.sub(r'\d+$', '', sample_name)  # "FR" de "FR2606"
+
+    if best_ratio >= 0.95:  # Molt similar (probablement error tipogràfic real)
+        # Verificar que no és només diferència numèrica
+        best_base = re.sub(r'\d+$', '', best_match) if best_match else ""
+        if sample_base == best_base:
+            # Mateixa base, diferent número = mostres DIFERENTS, no suggerir
+            return result
+
+        confidence = best_ratio * 100
+        return {
+            "matched": True,
+            "best_match": best_match,
+            "confidence": confidence,
+            "match_type": "FUZZY"
+        }
+
+    # 6. No trobat - sense suggeriment per evitar confusió
+    return result
+
+
+# Llindar de confiança per acceptar automàticament
+CONFIDENCE_THRESHOLD = 85.0
+
+
+def is_sample_in_seq(sample_name, valid_samples):
+    """
+    Verifica si una mostra pertany a la seqüència.
+
+    Args:
+        sample_name: Nom de la mostra (del fitxer UIB)
+        valid_samples: Set de mostres vàlides (de get_valid_samples_from_hplc_seq)
+
+    Returns:
+        True si la mostra pertany a la SEQ, False si és orfe
+    """
+    match_info = match_sample_confidence(sample_name, valid_samples)
+    return match_info["matched"] and match_info["confidence"] >= CONFIDENCE_THRESHOLD
+
+
 def calculate_toc_calc_on_the_fly(master_data):
     """
     Calcula 4-TOC_CALC al vol a partir de 1-HPLC-SEQ i 2-TOC.
@@ -1277,6 +1528,41 @@ def calculate_toc_calc_on_the_fly(master_data):
         })
 
     return pd.DataFrame(calc_rows)
+
+
+def _save_toc_calc_to_masterfile(masterfile_path, df_toc_calc):
+    """
+    Afegeix la fulla 4-TOC_CALC a un MasterFile existent.
+
+    Args:
+        masterfile_path: Ruta al MasterFile
+        df_toc_calc: DataFrame amb les dades calculades
+    """
+    from openpyxl import load_workbook
+
+    wb = load_workbook(masterfile_path)
+
+    # Eliminar fulla existent si hi és
+    if "4-TOC_CALC" in wb.sheetnames:
+        del wb["4-TOC_CALC"]
+
+    # Crear nova fulla al final
+    ws = wb.create_sheet("4-TOC_CALC")
+
+    # Escriure capçaleres
+    headers = ["TOC_Row", "Sample", "Temps_Relatiu (min)", "Inj_Index"]
+    for col, header in enumerate(headers, 1):
+        ws.cell(row=1, column=col, value=header)
+
+    # Escriure dades
+    for row_idx, row in df_toc_calc.iterrows():
+        ws.cell(row=row_idx + 2, column=1, value=row.get("TOC_Row"))
+        ws.cell(row=row_idx + 2, column=2, value=row.get("Sample"))
+        ws.cell(row=row_idx + 2, column=3, value=row.get("Temps_Relatiu (min)"))
+        ws.cell(row=row_idx + 2, column=4, value=row.get("Inj_Index"))
+
+    wb.save(masterfile_path)
+    wb.close()
 
 
 def build_sample_ranges_from_toc_calc(toc_calc_df, toc_df):
@@ -2118,6 +2404,234 @@ def match_uib_to_master(mostra_uib, rep_uib, master_index):
 
 
 # =============================================================================
+# CÀLCUL SNR I BASELINE NOISE
+# =============================================================================
+def calculate_snr_info(y_doc_net, peak_info, y_doc_uib=None):
+    """
+    Calcula SNR, LOD, LOQ i baseline noise per DOC Direct i UIB.
+
+    Args:
+        y_doc_net: Senyal DOC net (Direct)
+        peak_info: Diccionari amb info del pic (height)
+        y_doc_uib: Senyal DOC UIB (opcional, per DUAL)
+
+    Returns:
+        dict amb:
+            - snr_direct: SNR del senyal Direct
+            - baseline_noise_direct: Desviació estàndard baseline Direct (mAU)
+            - lod_direct: Limit of Detection = 3 × noise (mAU)
+            - loq_direct: Limit of Quantification = 10 × noise (mAU)
+            - snr_uib, baseline_noise_uib, lod_uib, loq_uib (si DUAL)
+    """
+    result = {}
+
+    # Direct
+    if y_doc_net is not None and len(y_doc_net) > 10:
+        bl_stats = baseline_stats(y_doc_net)
+        noise_direct = bl_stats.get("std", 0.0)
+        result["baseline_noise_direct"] = noise_direct
+        result["lod_direct"] = 3.0 * noise_direct
+        result["loq_direct"] = 10.0 * noise_direct
+
+        if peak_info and peak_info.get("valid") and peak_info.get("height", 0) > 0:
+            height = peak_info["height"]
+            if noise_direct > 0:
+                result["snr_direct"] = height / noise_direct
+            else:
+                result["snr_direct"] = calc_snr(y_doc_net, height)
+
+    # UIB
+    if y_doc_uib is not None and len(y_doc_uib) > 10:
+        bl_stats_uib = baseline_stats(y_doc_uib)
+        noise_uib = bl_stats_uib.get("std", 0.0)
+        result["baseline_noise_uib"] = noise_uib
+        result["lod_uib"] = 3.0 * noise_uib
+        result["loq_uib"] = 10.0 * noise_uib
+
+        if peak_info and peak_info.get("valid"):
+            # Usar el màxim de UIB com a alçada del pic
+            height_uib = float(np.max(y_doc_uib))
+            if noise_uib > 0:
+                result["snr_uib"] = height_uib / noise_uib
+            else:
+                result["snr_uib"] = calc_snr(y_doc_uib, height_uib)
+
+    return result
+
+
+# =============================================================================
+# FUNCIONS RESUM CONSOLIDACIÓ
+# =============================================================================
+
+def _collect_sample_stats(mostra, rep, timeout_info, snr_info, peak_info, doc_mode):
+    """
+    Recull estadístiques d'una mostra per al resum de consolidació.
+
+    Returns:
+        dict amb estadístiques de la mostra
+    """
+    stats = {
+        "name": f"{mostra}_R{rep}",
+        "mostra": mostra,
+        "replica": rep,
+        "doc_mode": doc_mode,
+        "peak_valid": peak_info.get("valid", False) if peak_info else False,
+    }
+
+    # Timeout info
+    if timeout_info:
+        stats["timeout_detected"] = timeout_info.get("n_timeouts", 0) > 0
+        stats["timeout_count"] = timeout_info.get("n_timeouts", 0)
+        stats["timeout_severity"] = timeout_info.get("severity", "OK")
+        # Zones afectades
+        zone_summary = timeout_info.get("zone_summary", {})
+        if zone_summary:
+            stats["timeout_zones"] = [z for z, n in zone_summary.items() if n > 0]
+    else:
+        stats["timeout_detected"] = False
+        stats["timeout_count"] = 0
+        stats["timeout_severity"] = "OK"
+        stats["timeout_zones"] = []
+
+    # SNR info
+    if snr_info:
+        stats["snr_direct"] = snr_info.get("snr_direct")
+        stats["snr_uib"] = snr_info.get("snr_uib")
+        stats["baseline_noise_direct"] = snr_info.get("baseline_noise_direct")
+        stats["baseline_noise_uib"] = snr_info.get("baseline_noise_uib")
+        stats["lod_direct"] = snr_info.get("lod_direct")
+        stats["lod_uib"] = snr_info.get("lod_uib")
+
+    return stats
+
+
+def generate_consolidation_summary(result, sample_stats):
+    """
+    Genera un resum JSON de la consolidació.
+
+    Args:
+        result: Diccionari resultat de consolidate_sequence
+        sample_stats: Llista d'estadístiques per mostra
+
+    Returns:
+        dict amb el resum complet
+    """
+    from hpsec_utils import is_khp
+
+    # Comptar tipus de mostres
+    n_khp = sum(1 for s in sample_stats if is_khp(s.get("mostra", "")))
+    n_control = sum(1 for s in sample_stats
+                    if any(ctrl in s.get("mostra", "").upper()
+                           for ctrl in ["MQ", "NAOH", "BLANK", "CONTROL"]))
+    n_samples = len(sample_stats) - n_khp - n_control
+
+    # Estadístiques de timeouts
+    timeout_counts = {"OK": 0, "INFO": 0, "WARNING": 0, "CRITICAL": 0}
+    critical_samples = []
+    for s in sample_stats:
+        sev = s.get("timeout_severity", "OK")
+        timeout_counts[sev] = timeout_counts.get(sev, 0) + 1
+        if sev == "CRITICAL":
+            critical_samples.append(s.get("name", ""))
+
+    samples_with_timeout = sum(1 for s in sample_stats if s.get("timeout_detected", False))
+
+    # Estadístiques SNR (filtrar valors extrems: SNR > 10000 o noise < 0.01 indica valors no fiables)
+    MAX_SNR = 10000.0
+    MIN_NOISE = 0.01
+    snr_direct_vals = [s.get("snr_direct") for s in sample_stats
+                       if s.get("snr_direct") is not None and s.get("snr_direct") < MAX_SNR]
+    snr_uib_vals = [s.get("snr_uib") for s in sample_stats
+                    if s.get("snr_uib") is not None and s.get("snr_uib") < MAX_SNR]
+    noise_direct_vals = [s.get("baseline_noise_direct") for s in sample_stats
+                         if s.get("baseline_noise_direct") is not None and s.get("baseline_noise_direct") > MIN_NOISE]
+    noise_uib_vals = [s.get("baseline_noise_uib") for s in sample_stats
+                      if s.get("baseline_noise_uib") is not None and s.get("baseline_noise_uib") > MIN_NOISE]
+
+    def stats_summary(vals):
+        if not vals:
+            return None
+        return {
+            "min": round(min(vals), 2),
+            "median": round(float(np.median(vals)), 2),
+            "max": round(max(vals), 2),
+            "mean": round(float(np.mean(vals)), 2),
+        }
+
+    # LOD (usar mediana del soroll)
+    lod_direct = round(3.0 * float(np.median(noise_direct_vals)), 3) if noise_direct_vals else None
+    lod_uib = round(3.0 * float(np.median(noise_uib_vals)), 3) if noise_uib_vals else None
+
+    # Pics vàlids
+    n_peak_valid = sum(1 for s in sample_stats if s.get("peak_valid", False))
+    peak_valid_pct = round(100.0 * n_peak_valid / len(sample_stats), 1) if sample_stats else 0
+
+    # Construir resum
+    summary = {
+        "meta": {
+            "seq": result.get("seq", ""),
+            "date": result.get("date", ""),
+            "method": "BP" if result.get("bp", False) else "COLUMN",
+            "mode": result.get("mode", ""),
+            "generated_at": datetime.now().isoformat(),
+            "script_version": __version__,
+        },
+        "counts": {
+            "total_samples": len(sample_stats),
+            "total_files": result.get("processed_count", 0),
+            "khp_samples": n_khp,
+            "control_samples": n_control,
+            "regular_samples": n_samples,
+        },
+        "alignment": result.get("alignment", {}),
+        "timeouts": {
+            "samples_with_timeout": samples_with_timeout,
+            "severity_counts": timeout_counts,
+            "critical_samples": critical_samples[:10],  # Màxim 10
+        },
+        "quality": {
+            "snr_direct": stats_summary(snr_direct_vals),
+            "snr_uib": stats_summary(snr_uib_vals),
+            "lod_direct_mau": lod_direct,
+            "lod_uib_mau": lod_uib,
+            "peak_valid_count": n_peak_valid,
+            "peak_valid_pct": peak_valid_pct,
+        },
+        "file_check": result.get("file_check", {}),
+        "warnings": result.get("warnings", []),
+        "errors": [e for e in result.get("errors", []) if not e.startswith("WARN:")],
+        "samples": sample_stats,
+    }
+
+    return summary
+
+
+def save_consolidation_summary(seq_path, summary):
+    """
+    Guarda el resum de consolidació a CHECK/consolidation.json.
+
+    Args:
+        seq_path: Ruta de la seqüència
+        summary: Diccionari amb el resum
+
+    Returns:
+        Path del fitxer guardat o None si error
+    """
+    check_folder = os.path.join(seq_path, "CHECK")
+    os.makedirs(check_folder, exist_ok=True)
+
+    json_path = os.path.join(check_folder, "consolidation.json")
+
+    try:
+        with open(json_path, 'w', encoding='utf-8') as f:
+            json.dump(summary, f, indent=2, ensure_ascii=False, default=str)
+        return json_path
+    except Exception as e:
+        print(f"Error guardant consolidation.json: {e}")
+        return None
+
+
+# =============================================================================
 # FUNCIÓ ESCRIPTURA EXCEL CONSOLIDAT (DUAL PROTOCOL)
 # =============================================================================
 def write_consolidated_excel(out_path, mostra, rep, seq_out, date_master,
@@ -2134,7 +2648,9 @@ def write_consolidated_excel(out_path, mostra, rep, seq_out, date_master,
                              # Info del MasterFile 0-INFO
                              master_info=None,
                              # Detecció de timeouts TOC
-                             timeout_info=None):
+                             timeout_info=None,
+                             # SNR i baseline noise
+                             snr_info=None):
     """
     Escriu fitxer Excel consolidat amb àrees per fraccions de temps.
 
@@ -2274,6 +2790,26 @@ def write_consolidated_excel(out_path, mostra, rep, seq_out, date_master,
     else:
         id_rows.append(("TOC_Timeout_Detected", "NO"))
 
+    # === 9. SNR, LOD, LOQ I BASELINE NOISE ===
+    if snr_info:
+        id_rows.append(("---", "---"))  # Separador visual
+        if snr_info.get("snr_direct") is not None:
+            id_rows.append(("SNR_Direct", round(snr_info["snr_direct"], 1)))
+        if snr_info.get("baseline_noise_direct") is not None:
+            id_rows.append(("Baseline_Noise_Direct_mAU", round(snr_info["baseline_noise_direct"], 3)))
+        if snr_info.get("lod_direct") is not None:
+            id_rows.append(("LOD_Direct_mAU", round(snr_info["lod_direct"], 3)))
+        if snr_info.get("loq_direct") is not None:
+            id_rows.append(("LOQ_Direct_mAU", round(snr_info["loq_direct"], 3)))
+        if is_dual and snr_info.get("snr_uib") is not None:
+            id_rows.append(("SNR_UIB", round(snr_info["snr_uib"], 1)))
+        if is_dual and snr_info.get("baseline_noise_uib") is not None:
+            id_rows.append(("Baseline_Noise_UIB_mAU", round(snr_info["baseline_noise_uib"], 3)))
+        if is_dual and snr_info.get("lod_uib") is not None:
+            id_rows.append(("LOD_UIB_mAU", round(snr_info["lod_uib"], 3)))
+        if is_dual and snr_info.get("loq_uib") is not None:
+            id_rows.append(("LOQ_UIB_mAU", round(snr_info["loq_uib"], 3)))
+
     df_id = pd.DataFrame(id_rows, columns=["Field", "Value"])
 
     # === TMAX SHEET: retention times for DOC and DAD ===
@@ -2385,6 +2921,8 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
         "output_path": "",
         "files": [],
         "errors": [],
+        "warnings": [],
+        "sample_stats": [],  # Estadístiques per mostra (timeout, SNR, etc.)
     }
 
     try:
@@ -2396,24 +2934,41 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
         if not os.path.isdir(path_3d):
             path_3d = os.path.join(input_folder, "Export3D")
 
+        # === AVISOS PUNTS CRÍTICS ===
+        has_export3d = os.path.isdir(path_3d)
+        has_csv = os.path.isdir(path_csv)
+
+        if not has_export3d:
+            result["warnings"].append("AVÍS: No s'ha trobat carpeta Export3d/Export3D (dades DAD)")
+
+        if not has_csv:
+            result["warnings"].append("AVÍS: No s'ha trobat carpeta CSV (fitxers UIB)")
+
         path_out = os.path.join(input_folder, "Resultats_Consolidats")
         os.makedirs(path_out, exist_ok=True)
         result["output_path"] = path_out
 
         # Detectar mode UIB vs DIRECT
         uib_files = []
-        if os.path.isdir(path_csv):
+        if has_csv:
             for ext in ("*.csv", "*.CSV", "*.txt", "*.TXT"):
                 uib_files.extend(glob.glob(os.path.join(path_csv, f"*UIB1B*{ext}")))
 
         mode = "UIB" if uib_files else "DIRECT"
         result["mode"] = mode
 
+        if mode == "DIRECT" and has_csv:
+            result["warnings"].append("AVÍS: Carpeta CSV existeix però no s'han trobat fitxers UIB1B")
+
         # Detectar BP
         dad_pool = list_dad_files(
-            path_3d if os.path.isdir(path_3d) else None,
-            path_csv if os.path.isdir(path_csv) else None,
+            path_3d if has_export3d else None,
+            path_csv if has_csv else None,
         )
+
+        if not dad_pool:
+            result["warnings"].append("AVÍS: No s'han trobat fitxers DAD (Export3d ni CSV)")
+
         bp_flag = is_bp_seq(input_folder, dad_pool)
         method = "BP" if bp_flag else "COLUMN"
         result["bp"] = bp_flag
@@ -2442,6 +2997,10 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
             sample_ranges_new = None  # Per format nou
             has_master = False
             master_info = {}  # Info de 0-INFO per passar a write_consolidated_excel
+            valid_samples = set()  # Mostres vàlides de 1-HPLC-SEQ
+            orphan_files = []  # Fitxers que no pertanyen a aquesta SEQ
+            low_confidence_matches = []  # Matches amb confiança baixa (< CONFIDENCE_THRESHOLD)
+            match_details = {}  # Detalls de matching per cada fitxer
 
             if mestre:
                 result["master_format"] = master_format
@@ -2455,11 +3014,29 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
                             df_toc_calc = master_data["toc_calc"]
                             master_info = master_data.get("info", {})  # 0-INFO
 
-                            if df_toc is not None and df_toc_calc is not None:
-                                sample_ranges_new = build_sample_ranges_from_toc_calc(df_toc_calc, df_toc)
-                                if sample_ranges_new:
-                                    has_master = True
-                                    result["mode"] = "DUAL"
+                            # Obtenir mostres vàlides de 1-HPLC-SEQ
+                            valid_samples = get_valid_samples_from_hplc_seq(master_data)
+                            if valid_samples:
+                                result["valid_samples"] = list(valid_samples)[:20]  # Guardar per debug
+
+                            if df_toc is not None:
+                                # Si no té TOC_CALC, calcular al vol
+                                if df_toc_calc is None or df_toc_calc.empty:
+                                    result["warnings"].append("MasterFile sense fulla 4-TOC_CALC, calculant...")
+                                    df_toc_calc = calculate_toc_calc_on_the_fly(master_data)
+                                    if df_toc_calc is not None and not df_toc_calc.empty:
+                                        # Guardar al MasterFile
+                                        try:
+                                            _save_toc_calc_to_masterfile(mestre, df_toc_calc)
+                                            result["warnings"].append(f"Fulla 4-TOC_CALC afegida al MasterFile ({len(df_toc_calc)} files)")
+                                        except Exception as e:
+                                            result["warnings"].append(f"No s'ha pogut guardar 4-TOC_CALC: {e}")
+
+                                if df_toc_calc is not None and not df_toc_calc.empty:
+                                    sample_ranges_new = build_sample_ranges_from_toc_calc(df_toc_calc, df_toc)
+                                    if sample_ranges_new:
+                                        has_master = True
+                                        result["mode"] = "DUAL"
                     except Exception as e:
                         result["errors"].append(f"WARN: No s'ha pogut llegir MasterFile nou per dual: {e}")
 
@@ -2642,6 +3219,45 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
 
                 if progress_callback:
                     progress_callback(progress, mostra)
+
+                # === VERIFICAR SI LA MOSTRA PERTANY A AQUESTA SEQ ===
+                if valid_samples:
+                    match_info = match_sample_confidence(mostra, valid_samples)
+                    match_details[nom_doc_uib] = match_info
+
+                    if not match_info["matched"]:
+                        # Verificar si és una injecció de control (MQ, NaOH, etc.)
+                        # Els controls es poden ignorar com a orfes (configurable)
+                        cfg = get_config()
+                        ignore_ctrl = cfg.get("control_injections", "ignore_orphan", default=True)
+
+                        if is_control_injection(mostra, cfg) and ignore_ctrl:
+                            # Control no trobat - ignorar silenciosament
+                            result["warnings"].append(
+                                f"CTRL_SKIP: {nom_doc_uib} és injecció de control (ignorat)"
+                            )
+                            continue  # Saltar aquest fitxer
+                        else:
+                            # Fitxer orfe - no pertany a aquesta seqüència
+                            orphan_files.append(nom_doc_uib)
+                            best_guess = f" (similar a: {match_info['best_match']})" if match_info.get("best_match") else ""
+                            result["warnings"].append(
+                                f"ORFE: {nom_doc_uib} no pertany a aquesta SEQ (no està a 1-HPLC-SEQ){best_guess}"
+                            )
+                            continue  # Saltar aquest fitxer
+                    elif match_info["confidence"] < CONFIDENCE_THRESHOLD:
+                        # Match amb confiança baixa - processar però marcar per revisió
+                        low_confidence_matches.append({
+                            "file": nom_doc_uib,
+                            "sample": mostra,
+                            "matched_to": match_info["best_match"],
+                            "confidence": match_info["confidence"],
+                            "match_type": match_info["match_type"]
+                        })
+                        result["warnings"].append(
+                            f"BAIXA_CONFIANÇA: {nom_doc_uib} → {match_info['best_match']} "
+                            f"({match_info['confidence']:.0f}% {match_info['match_type']})"
+                        )
 
                 # Llegir DOC UIB
                 df_doc_uib, st_doc_uib = llegir_doc_uib(f_doc_uib)
@@ -2852,6 +3468,10 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
                         applied_shift_uib = column_shift_uib if column_shift_uib != 0.0 else None
                         applied_shift_direct = column_shift_direct if column_shift_direct != 0.0 else None
 
+                # Calcular SNR i baseline noise
+                snr_info = calculate_snr_info(y_doc_net, peak_info,
+                                              y_doc_uib=y_doc_uib_aligned if doc_mode == "DUAL" else None)
+
                 write_consolidated_excel(
                     out_path, mostra, rep, seq_out, date_master, method, doc_mode,
                     nom_doc, nom_dad, st_doc, st_dad, t_doc, y_doc_raw, y_doc_net, base,
@@ -2871,11 +3491,17 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
                     # Info del MasterFile
                     master_info=master_info,
                     # Detecció de timeouts TOC
-                    timeout_info=timeout_info
+                    timeout_info=timeout_info,
+                    # SNR i baseline noise
+                    snr_info=snr_info
                 )
 
                 result["files"].append(out_path)
                 processed_count += 1
+
+                # Recollir estadístiques de la mostra
+                sample_stat = _collect_sample_stats(mostra, rep, timeout_info, snr_info, peak_info, doc_mode)
+                result["sample_stats"].append(sample_stat)
 
         else:
             # MODE DIRECT: DOC des d'Excel mestre
@@ -2906,11 +3532,18 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
 
                 # Si TOC_CALC buit, calcular al vol des de HPLC-SEQ i TOC
                 if df_toc_calc is None or df_toc_calc.empty:
-                    result["errors"].append("INFO: Calculant 4-TOC_CALC al vol")
+                    result["warnings"].append("MasterFile sense fulla 4-TOC_CALC, calculant...")
                     df_toc_calc = calculate_toc_calc_on_the_fly(master_data)
                     if df_toc_calc is None or df_toc_calc.empty:
-                        result["errors"].append("No s'ha pogut calcular TOC_CALC")
+                        result["errors"].append("No s'ha pogut calcular TOC_CALC: falten dades HPLC-SEQ o TOC")
                         return result
+
+                    # Guardar la fulla calculada al MasterFile
+                    try:
+                        _save_toc_calc_to_masterfile(mestre, df_toc_calc)
+                        result["warnings"].append(f"Fulla 4-TOC_CALC afegida al MasterFile ({len(df_toc_calc)} files)")
+                    except Exception as e:
+                        result["warnings"].append(f"No s'ha pogut guardar 4-TOC_CALC al MasterFile: {e}")
 
                 # Construir rangs de mostres
                 sample_ranges = build_sample_ranges_from_toc_calc(df_toc_calc, df_toc)
@@ -2995,6 +3628,9 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
                     out_name = f"{mostra_clean}_{seq_out}_R{rep}.xlsx"
                     out_path = os.path.join(path_out, out_name)
 
+                    # Calcular SNR i baseline noise
+                    snr_info = calculate_snr_info(doc_net, peak_info)
+
                     write_consolidated_excel(
                         out_path, mostra_clean, rep, seq_out, date_master, method, "DIRECT",
                         os.path.basename(mestre), nom_dad, st_doc, st_dad, t_doc, y_doc, doc_net, base_arr,
@@ -3002,11 +3638,16 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
                         master_file=mestre, row_start=row_ini, row_end=row_fi,
                         smoothing_applied=True,
                         master_info=master_info,
-                        timeout_info=timeout_info
+                        timeout_info=timeout_info,
+                        snr_info=snr_info
                     )
 
                     result["files"].append(out_path)
                     processed_count += 1
+
+                    # Recollir estadístiques de la mostra
+                    sample_stat = _collect_sample_stats(mostra_clean, rep, timeout_info, snr_info, peak_info, "DIRECT")
+                    result["sample_stats"].append(sample_stat)
 
             else:
                 # ============================================================
@@ -3096,6 +3737,9 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
                     out_name = f"{mostra_clean}_{seq_out}_R{rep}.xlsx"
                     out_path = os.path.join(path_out, out_name)
 
+                    # Calcular SNR i baseline noise
+                    snr_info = calculate_snr_info(doc_net, peak_info)
+
                     write_consolidated_excel(
                         out_path, mostra_clean, rep, seq_out, date_master, method, "DIRECT",
                         os.path.basename(mestre), nom_dad, st_doc, st_dad, t_doc, y_doc, doc_net, base_arr,
@@ -3103,17 +3747,40 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
                         master_file=mestre, row_start=row_ini, row_end=row_fi,
                         smoothing_applied=True,
                         master_info={},  # Format antic no té 0-INFO
-                        timeout_info=timeout_info
+                        timeout_info=timeout_info,
+                        snr_info=snr_info
                     )
 
                     result["files"].append(out_path)
                     processed_count += 1
 
+                    # Recollir estadístiques de la mostra
+                    sample_stat = _collect_sample_stats(mostra_clean, rep, timeout_info, snr_info, peak_info, "DIRECT")
+                    result["sample_stats"].append(sample_stat)
+
         result["processed_count"] = processed_count
         result["success"] = processed_count > 0
 
+        # Guardar fitxers orfes (no pertanyen a la SEQ)
+        if 'orphan_files' in dir() and orphan_files:
+            result["orphan_files_seq"] = orphan_files
+
+        # Guardar matches amb confiança baixa
+        if 'low_confidence_matches' in dir() and low_confidence_matches:
+            result["low_confidence_matches"] = low_confidence_matches
+
+        # Guardar detalls de matching
+        if 'match_details' in dir() and match_details:
+            result["match_details"] = match_details
+
         # Verificació de fitxers (QA/QC)
         file_check = check_sequence_files(input_folder, used_uib_files, used_dad_files)
+        # Fitxers orfes (no pertanyen a la SEQ segons 1-HPLC-SEQ)
+        seq_orphan_files = result.get("orphan_files_seq", [])
+
+        # Fitxers amb confiança baixa
+        low_conf_matches = result.get("low_confidence_matches", [])
+
         result["file_check"] = {
             "uib_found": file_check["uib"]["count_found"],
             "uib_used": file_check["uib"]["count_used"],
@@ -3121,8 +3788,11 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
             "dad_found": file_check["dad"]["count_found"],
             "dad_used": file_check["dad"]["count_used"],
             "dad_orphan": file_check["dad"]["count_orphan"],
-            "has_issues": file_check["has_issues"],
+            "has_issues": file_check["has_issues"] or len(seq_orphan_files) > 0 or len(low_conf_matches) > 0,
             "orphan_files": file_check["uib"]["orphan"] + file_check["dad"]["orphan"],
+            "seq_orphan_files": seq_orphan_files,  # Fitxers que no pertanyen a la SEQ
+            "low_confidence_matches": low_conf_matches,  # Matches amb confiança < 85%
+            "needs_review": len(seq_orphan_files) > 0 or len(low_conf_matches) > 0,
             "proposed_renames": file_check["proposed_renames"],
         }
 
@@ -3147,6 +3817,67 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
                 result["errors"].append(
                     f"WARN: {len(file_check['proposed_renames'])} possibles errors de nomenclatura detectats"
                 )
+
+        # Warnings per problemes de matching
+        if len(seq_orphan_files) > 0:
+            result["errors"].append(
+                f"REVIEW: {len(seq_orphan_files)} fitxers no pertanyen a aquesta SEQ (segons 1-HPLC-SEQ)"
+            )
+        if len(low_conf_matches) > 0:
+            result["errors"].append(
+                f"REVIEW: {len(low_conf_matches)} matches amb confiança baixa - cal verificar assignacions"
+            )
+
+        # === GENERAR PDFs DE CONSOLIDACIÓ ===
+        if result["processed_count"] > 0:
+            result["pdf_paths"] = []
+
+            # Recollir fitxers consolidats
+            xlsx_files = glob.glob(os.path.join(path_out, "*.xlsx"))
+            xlsx_files = [f for f in xlsx_files if "~$" not in f]
+
+            if xlsx_files:
+                # Crear carpeta CHECK per als PDFs
+                check_folder = os.path.join(input_folder, "CHECK")
+                os.makedirs(check_folder, exist_ok=True)
+
+                info = {
+                    "seq": result.get("seq", ""),
+                    "date": result.get("date", ""),
+                    "mode": result.get("mode", ""),
+                    "bp": result.get("bp", False),
+                }
+
+                # 1. PDF Consolidació (recompte punts)
+                try:
+                    from hpsec_reports import generate_consolidation_report
+                    pdf_path = generate_consolidation_report(input_folder, xlsx_files, info, check_folder)
+                    if pdf_path and os.path.exists(pdf_path):
+                        result["pdf_paths"].append(pdf_path)
+                        result["warnings"].append(f"PDF generat: {os.path.basename(pdf_path)}")
+                except Exception as e:
+                    result["warnings"].append(f"No s'ha pogut generar PDF consolidació: {e}")
+
+                # 2. PDF Cromatogrames
+                try:
+                    from hpsec_reports import generate_chromatograms_report
+                    pdf_path = generate_chromatograms_report(input_folder, xlsx_files, info, check_folder)
+                    if pdf_path and os.path.exists(pdf_path):
+                        result["pdf_paths"].append(pdf_path)
+                        result["warnings"].append(f"PDF generat: {os.path.basename(pdf_path)}")
+                except Exception as e:
+                    result["warnings"].append(f"No s'ha pogut generar PDF cromatogrames: {e}")
+
+        # === GENERAR JSON RESUM CONSOLIDACIÓ ===
+        if result.get("sample_stats"):
+            try:
+                summary = generate_consolidation_summary(result, result["sample_stats"])
+                json_path = save_consolidation_summary(input_folder, summary)
+                if json_path:
+                    result["consolidation_json"] = json_path
+                    result["consolidation_summary"] = summary
+            except Exception as e:
+                result["warnings"].append(f"No s'ha pogut generar consolidation.json: {e}")
 
     except Exception as e:
         import traceback

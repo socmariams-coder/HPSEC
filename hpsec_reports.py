@@ -233,7 +233,7 @@ def draw_footer(fig, text=""):
 # =============================================================================
 def generate_consolidation_report(seq_path, xlsx_files, info, output_path=None):
     """
-    Genera PDF de consolidació amb recompte de punts.
+    Genera PDF de consolidació amb taula completa de fitxers, punts, timeouts i SNR.
 
     Args:
         seq_path: Ruta a la carpeta SEQ
@@ -255,7 +255,18 @@ def generate_consolidation_report(seq_path, xlsx_files, info, output_path=None):
     seq_name = info.get('seq', os.path.basename(seq_path))
     pdf_path = os.path.join(output_path, f"REPORT_Consolidacio_{seq_name}.pdf")
 
-    # Llegir dades de tots els fitxers
+    # Intentar llegir consolidation.json per info global
+    json_path = os.path.join(output_path, "consolidation.json")
+    summary = {}
+    if os.path.exists(json_path):
+        try:
+            import json
+            with open(json_path, 'r', encoding='utf-8') as f:
+                summary = json.load(f)
+        except:
+            pass
+
+    # Llegir dades de tots els fitxers Excel
     samples_data = []
     total_pts_direct = 0
     total_pts_uib = 0
@@ -264,29 +275,52 @@ def generate_consolidation_report(seq_path, xlsx_files, info, output_path=None):
     for f in sorted(xlsx_files):
         try:
             df_id = pd.read_excel(f, "ID", engine="openpyxl")
-            id_dict = dict(zip(df_id["Camp"], df_id["Valor"]))
+            # Suportar ambdós formats (català antic / anglès nou)
+            if "Field" in df_id.columns:
+                id_dict = dict(zip(df_id["Field"], df_id["Value"]))
+            else:
+                id_dict = dict(zip(df_id["Camp"], df_id["Valor"]))
 
-            mostra = str(id_dict.get("Mostra", ""))
-            rep = str(id_dict.get("Rèplica", "-"))
-            doc_mode = str(id_dict.get("DOC_MODE", ""))
+            mostra = str(id_dict.get("Sample", id_dict.get("Mostra", "")))
+            rep = str(id_dict.get("Replica", id_dict.get("Rèplica", "-")))
+            doc_mode = str(id_dict.get("DOC_Mode", id_dict.get("DOC_MODE", "")))
+
+            # Fitxers origen
+            file_uib = str(id_dict.get("File_DOC_UIB", ""))
+            file_dad = str(id_dict.get("File_DAD", ""))
 
             # Punts
-            n_doc = int(id_dict.get("DOC_N_POINTS", 0) or 0)
-            n_dad = int(id_dict.get("DAD_N_POINTS", 0) or 0)
+            n_doc = 0
+            n_dad = 0
+            try:
+                n_doc = int(float(id_dict.get("DOC_N_Points", 0) or 0))
+                n_dad = int(float(id_dict.get("DAD_N_Points", 0) or 0))
+            except:
+                pass
 
-            # Per DUAL, llegir punts separats si disponibles
-            n_direct = n_doc  # Per defecte
+            # Timeout info
+            timeout_detected = str(id_dict.get("TOC_Timeout_Detected", "NO")).upper() == "YES"
+            timeout_severity = str(id_dict.get("TOC_Timeout_Severity", "OK"))
+            timeout_detail = str(id_dict.get("TOC_Timeout_1", ""))
+
+            # SNR
+            snr_direct = None
+            try:
+                snr_direct = float(id_dict.get("SNR_Direct", 0) or 0)
+            except:
+                pass
+
+            # Comptar punts per DOC Direct/UIB des del sheet DOC
+            n_direct = n_doc
             n_uib = 0
-
-            # Llegir DOC sheet per comptar punts reals
             try:
                 df_doc = pd.read_excel(f, "DOC", engine="openpyxl")
                 if "DOC_Direct (mAU)" in df_doc.columns:
-                    n_direct = df_doc["DOC_Direct (mAU)"].notna().sum()
+                    n_direct = int(df_doc["DOC_Direct (mAU)"].notna().sum())
                 if "DOC_UIB (mAU)" in df_doc.columns:
-                    n_uib = df_doc["DOC_UIB (mAU)"].notna().sum()
+                    n_uib = int(df_doc["DOC_UIB (mAU)"].notna().sum())
                 elif "DOC (mAU)" in df_doc.columns and doc_mode == "UIB":
-                    n_uib = df_doc["DOC (mAU)"].notna().sum()
+                    n_uib = int(df_doc["DOC (mAU)"].notna().sum())
                     n_direct = 0
             except:
                 pass
@@ -299,9 +333,14 @@ def generate_consolidation_report(seq_path, xlsx_files, info, output_path=None):
                 'mostra': mostra,
                 'rep': rep,
                 'doc_mode': doc_mode,
+                'file_uib': file_uib,
+                'file_dad': file_dad,
                 'n_direct': n_direct,
                 'n_uib': n_uib,
                 'n_dad': n_dad,
+                'timeout': timeout_severity if timeout_detected else "OK",
+                'timeout_detail': timeout_detail,
+                'snr': snr_direct,
                 'fitxer': os.path.basename(f),
             })
         except Exception as e:
@@ -321,7 +360,7 @@ def generate_consolidation_report(seq_path, xlsx_files, info, output_path=None):
                    f"Seqüència {seq_name}", seq_name, 1, 2)
 
         # Informació general (taula compacta)
-        ax_info = fig.add_axes([0.05, 0.68, 0.9, 0.18])
+        ax_info = fig.add_axes([0.05, 0.70, 0.9, 0.16])
         ax_info.axis('off')
 
         mode_str = info.get('mode', 'N/A')
@@ -338,7 +377,7 @@ def generate_consolidation_report(seq_path, xlsx_files, info, output_path=None):
             ["Mètode", method_str, "KHP (estàndard)", str(khp_count)],
             ["Data SEQ", date_str[:10] if len(date_str) > 10 else date_str,
              "Controls (MQ/NaOH)", str(control_count)],
-            ["Total fitxers", str(len(xlsx_files)), "─", "─"],
+            ["Total injeccions", str(len(xlsx_files)), "─", "─"],
         ]
 
         tbl_info = ax_info.table(cellText=info_data, loc='center', cellLoc='center',
@@ -347,39 +386,98 @@ def generate_consolidation_report(seq_path, xlsx_files, info, output_path=None):
         tbl_info.set_fontsize(9)
         tbl_info.scale(1.0, 1.8)
 
-        # Estil capçalera
         for j in range(4):
             tbl_info[(0, j)].set_facecolor(COLORS["primary"])
             tbl_info[(0, j)].set_text_props(color='white', fontweight='bold')
 
-        # Recompte de punts (destacat)
-        ax_pts = fig.add_axes([0.1, 0.48, 0.8, 0.15])
+        # Recompte de punts
+        ax_pts = fig.add_axes([0.05, 0.54, 0.42, 0.12])
         ax_pts.axis('off')
 
         pts_data = [
-            ["RECOMPTE DE PUNTS", "TOTAL", "MITJANA/MOSTRA"],
+            ["PUNTS", "TOTAL", "MITJANA"],
             ["DOC Direct", f"{total_pts_direct:,}",
              f"{total_pts_direct/max(len(samples_data),1):,.0f}" if total_pts_direct > 0 else "─"],
             ["DOC UIB", f"{total_pts_uib:,}",
              f"{total_pts_uib/max(len(samples_data),1):,.0f}" if total_pts_uib > 0 else "─"],
-            ["DAD (espectral)", f"{total_pts_dad:,}",
+            ["DAD", f"{total_pts_dad:,}",
              f"{total_pts_dad/max(len(samples_data),1):,.0f}" if total_pts_dad > 0 else "─"],
         ]
 
         tbl_pts = ax_pts.table(cellText=pts_data, loc='center', cellLoc='center',
                                colWidths=[0.4, 0.3, 0.3])
         tbl_pts.auto_set_font_size(False)
-        tbl_pts.set_fontsize(10)
-        tbl_pts.scale(1.0, 2.0)
+        tbl_pts.set_fontsize(8)
+        tbl_pts.scale(1.0, 1.6)
 
         for j in range(3):
             tbl_pts[(0, j)].set_facecolor(COLORS["dark"])
             tbl_pts[(0, j)].set_text_props(color='white', fontweight='bold')
 
-        # Verificació de fitxers (si hi ha info)
+        # Timeouts per severitat
+        ax_to = fig.add_axes([0.53, 0.54, 0.42, 0.12])
+        ax_to.axis('off')
+
+        n_ok = sum(1 for s in samples_data if s['timeout'] == "OK")
+        n_info = sum(1 for s in samples_data if s['timeout'] == "INFO")
+        n_warn = sum(1 for s in samples_data if s['timeout'] == "WARNING")
+        n_crit = sum(1 for s in samples_data if s['timeout'] == "CRITICAL")
+
+        to_data = [
+            ["TIMEOUTS TOC", "N", "%"],
+            ["OK", str(n_ok), f"{100*n_ok/max(len(samples_data),1):.0f}%"],
+            ["WARNING", str(n_warn), f"{100*n_warn/max(len(samples_data),1):.0f}%"],
+            ["CRITICAL", str(n_crit), f"{100*n_crit/max(len(samples_data),1):.0f}%"],
+        ]
+
+        tbl_to = ax_to.table(cellText=to_data, loc='center', cellLoc='center',
+                             colWidths=[0.4, 0.3, 0.3])
+        tbl_to.auto_set_font_size(False)
+        tbl_to.set_fontsize(8)
+        tbl_to.scale(1.0, 1.6)
+
+        for j in range(3):
+            tbl_to[(0, j)].set_facecolor(COLORS["dark"])
+            tbl_to[(0, j)].set_text_props(color='white', fontweight='bold')
+        # Colorar segons severitat
+        tbl_to[(1, 0)].set_facecolor('#c6efce')
+        if n_warn > 0:
+            tbl_to[(2, 0)].set_facecolor('#fff3cd')
+        if n_crit > 0:
+            tbl_to[(3, 0)].set_facecolor('#f8d7da')
+
+        # Qualitat SNR/LOD (si tenim summary)
+        quality = summary.get('quality', {})
+        snr_info = quality.get('snr_direct', {})
+        lod_direct = quality.get('lod_direct_mau')
+
+        if snr_info or lod_direct:
+            ax_qual = fig.add_axes([0.05, 0.42, 0.9, 0.08])
+            ax_qual.axis('off')
+
+            qual_data = [
+                ["QUALITAT", "SNR min", "SNR mediana", "SNR max", "LOD (mAU)"],
+                ["DOC Direct",
+                 f"{snr_info.get('min', '─')}" if snr_info else "─",
+                 f"{snr_info.get('median', '─')}" if snr_info else "─",
+                 f"{snr_info.get('max', '─')}" if snr_info else "─",
+                 f"{lod_direct:.2f}" if lod_direct else "─"],
+            ]
+
+            tbl_qual = ax_qual.table(cellText=qual_data, loc='center', cellLoc='center',
+                                     colWidths=[0.2, 0.2, 0.2, 0.2, 0.2])
+            tbl_qual.auto_set_font_size(False)
+            tbl_qual.set_fontsize(8)
+            tbl_qual.scale(1.0, 1.5)
+
+            for j in range(5):
+                tbl_qual[(0, j)].set_facecolor(COLORS["primary"])
+                tbl_qual[(0, j)].set_text_props(color='white', fontweight='bold')
+
+        # Verificació de fitxers
         file_check = info.get('file_check', {})
         if file_check:
-            ax_check = fig.add_axes([0.1, 0.31, 0.8, 0.12])
+            ax_check = fig.add_axes([0.1, 0.28, 0.8, 0.10])
             ax_check.axis('off')
 
             has_issues = file_check.get('has_issues', False)
@@ -387,7 +485,7 @@ def generate_consolidation_report(seq_path, xlsx_files, info, output_path=None):
             status_text = "DISCREPÀNCIES DETECTADES" if has_issues else "VERIFICACIÓ CORRECTA"
 
             check_data = [
-                ["VERIFICACIÓ FITXERS", "TROBATS", "USATS", "ORFES"],
+                ["FITXERS", "TROBATS", "USATS", "ORFES"],
                 ["UIB", str(file_check.get('uib_found', 0)),
                  str(file_check.get('uib_used', 0)), str(file_check.get('uib_orphan', 0))],
                 ["DAD", str(file_check.get('dad_found', 0)),
@@ -395,106 +493,129 @@ def generate_consolidation_report(seq_path, xlsx_files, info, output_path=None):
             ]
 
             tbl_check = ax_check.table(cellText=check_data, loc='center', cellLoc='center',
-                                       colWidths=[0.4, 0.2, 0.2, 0.2])
+                                       colWidths=[0.25, 0.25, 0.25, 0.25])
             tbl_check.auto_set_font_size(False)
-            tbl_check.set_fontsize(9)
-            tbl_check.scale(1.0, 1.6)
+            tbl_check.set_fontsize(8)
+            tbl_check.scale(1.0, 1.5)
 
             for j in range(4):
                 tbl_check[(0, j)].set_facecolor(COLORS["primary"])
                 tbl_check[(0, j)].set_text_props(color='white', fontweight='bold')
 
-            # Marcar orfes en vermell
             if file_check.get('uib_orphan', 0) > 0:
                 tbl_check[(1, 3)].set_facecolor('#f8d7da')
             if file_check.get('dad_orphan', 0) > 0:
                 tbl_check[(2, 3)].set_facecolor('#f8d7da')
 
-            fig.text(0.5, 0.28, status_text, ha='center', fontsize=10,
+            fig.text(0.5, 0.25, status_text, ha='center', fontsize=9,
                     fontweight='bold', color=status_color)
 
+        # Alineació (si tenim summary)
+        alignment = summary.get('alignment', {})
+        if alignment:
+            shift_uib = alignment.get('shift_uib', 0)
+            shift_direct = alignment.get('shift_direct', 0)
+            source = alignment.get('source', 'N/A')
+            if shift_uib or shift_direct:
+                fig.text(0.1, 0.20, f"ALINEACIÓ: UIB={shift_uib*60:.1f}s, Direct={shift_direct*60:.1f}s ({source})",
+                        fontsize=8, fontweight='bold')
+
         # Processament aplicat
-        fig.text(0.1, 0.20, "PROCESSAMENT APLICAT:", fontsize=9, fontweight='bold')
-        fig.text(0.1, 0.17, "• Correcció baseline: Moda robusta (finestra inicial)", fontsize=8)
-        fig.text(0.1, 0.14, "• Suavitzat: Savitzky-Golay (finestra=11, ordre=3)", fontsize=8)
-        fig.text(0.1, 0.11, "• Alineació temporal: " +
-                ("Pel màxim (BP)" if info.get('bp') else "KHP + A254 (COLUMN)"), fontsize=8)
+        fig.text(0.1, 0.15, "PROCESSAMENT:", fontsize=8, fontweight='bold')
+        fig.text(0.1, 0.12, "• Baseline: Moda robusta | Suavitzat: Savitzky-Golay (11,3) | "
+                f"Alineació: {'Pel màxim (BP)' if info.get('bp') else 'KHP + A254'}", fontsize=7)
 
         draw_footer(fig, "Serveis Tècnics de Recerca")
         pdf.savefig(fig, dpi=150)
         plt.close(fig)
 
         # =================================================================
-        # PÀGINA 2: Taula detallada de mostres
+        # PÀGINES 2+: Taula detallada de mostres
         # =================================================================
-        rows_per_page = 40
+        rows_per_page = 35
         n_pages = (len(samples_data) + rows_per_page - 1) // rows_per_page
 
         for page_idx in range(n_pages):
-            fig = plt.figure(figsize=(8.27, 11.69))
+            fig = plt.figure(figsize=(11.69, 8.27))  # A4 landscape
             fig.patch.set_facecolor('white')
 
-            draw_header(fig, "DETALL DE MOSTRES",
-                       f"Punts per mostra", seq_name, page_idx + 2, n_pages + 1)
+            draw_header(fig, "DETALL D'INJECCIONS",
+                       f"Fitxers i punts per injecció", seq_name, page_idx + 2, n_pages + 1)
 
-            ax = fig.add_axes([0.02, 0.05, 0.96, 0.87])
+            ax = fig.add_axes([0.02, 0.08, 0.96, 0.82])
             ax.axis('off')
 
-            # Subset de mostres per aquesta pàgina
             start_idx = page_idx * rows_per_page
             end_idx = min(start_idx + rows_per_page, len(samples_data))
             page_samples = samples_data[start_idx:end_idx]
 
-            headers = ["#", "Mostra", "Rep", "Mode", "Pts Direct", "Pts UIB", "Pts DAD"]
+            headers = ["#", "Mostra", "R", "Fitxer UIB", "Fitxer DAD", "Pts DOC", "Pts DAD", "Timeout", "SNR"]
             rows = []
 
             for i, s in enumerate(page_samples, start=start_idx + 1):
-                mostra = s['mostra'][:18]
+                mostra = s['mostra']
                 if is_khp(s['mostra']):
                     mostra = f"● {mostra}"
                 elif is_control(s['mostra']):
                     mostra = f"○ {mostra}"
 
+                # Timeout amb zona si hi ha detall
+                timeout_str = s['timeout']
+                if s['timeout_detail'] and s['timeout'] != "OK":
+                    # Extreure zona del detall (ex: "11.5 min (74s) - BioP [WARNING]")
+                    import re
+                    match = re.search(r'- (\w+)', s['timeout_detail'])
+                    if match:
+                        timeout_str = f"{s['timeout']} ({match.group(1)})"
+
+                snr_str = f"{s['snr']:.0f}" if s['snr'] and s['snr'] > 0 else "─"
+
                 rows.append([
                     str(i),
                     mostra,
                     s['rep'],
-                    s['doc_mode'],
-                    str(s['n_direct']) if s['n_direct'] > 0 else "─",
-                    str(s['n_uib']) if s['n_uib'] > 0 else "─",
+                    s['file_uib'] if s['file_uib'] else "─",
+                    s['file_dad'] if s['file_dad'] else "─",
+                    str(s['n_direct']) if s['n_direct'] > 0 else (str(s['n_uib']) if s['n_uib'] > 0 else "─"),
                     str(s['n_dad']) if s['n_dad'] > 0 else "─",
+                    timeout_str,
+                    snr_str,
                 ])
 
             table_data = [headers] + rows
+            col_widths = [0.04, 0.18, 0.03, 0.20, 0.15, 0.10, 0.10, 0.12, 0.08]
             tbl = ax.table(cellText=table_data, loc='upper center', cellLoc='center',
-                          colWidths=[0.05, 0.30, 0.07, 0.12, 0.14, 0.14, 0.14])
+                          colWidths=col_widths)
             tbl.auto_set_font_size(False)
             tbl.set_fontsize(7)
-            tbl.scale(1.0, 1.2)
+            tbl.scale(1.0, 1.3)
 
-            # Estil capçalera
             for j in range(len(headers)):
                 tbl[(0, j)].set_facecolor(COLORS["primary"])
                 tbl[(0, j)].set_text_props(color='white', fontweight='bold')
 
-            # Colorar files segons tipus
             for i, s in enumerate(page_samples, start=1):
                 if is_khp(s['mostra']):
                     for j in range(len(headers)):
-                        tbl[(i, j)].set_facecolor('#d4edda')  # Verd clar
+                        tbl[(i, j)].set_facecolor('#d4edda')
                 elif is_control(s['mostra']):
                     for j in range(len(headers)):
-                        tbl[(i, j)].set_facecolor('#fff3cd')  # Groc clar
+                        tbl[(i, j)].set_facecolor('#fff3cd')
 
-                # Marcar valors 0 o absents
-                if s['n_direct'] == 0 and s['doc_mode'] in ('DUAL', 'DIRECT'):
-                    tbl[(i, 4)].set_facecolor('#f8d7da')
+                # Marcar timeouts
+                if s['timeout'] == "WARNING":
+                    tbl[(i, 7)].set_facecolor('#fff3cd')
+                elif s['timeout'] == "CRITICAL":
+                    tbl[(i, 7)].set_facecolor('#f8d7da')
+
+                # Marcar dades absents
+                if s['n_direct'] == 0 and s['n_uib'] == 0:
+                    tbl[(i, 5)].set_facecolor('#f8d7da')
                 if s['n_dad'] == 0:
                     tbl[(i, 6)].set_facecolor('#f8d7da')
 
-            # Llegenda
-            fig.text(0.1, 0.02, "● KHP (estàndard)  ○ Control (MQ/NaOH)  Vermell = Dades absents",
-                    fontsize=7, style='italic')
+            fig.text(0.02, 0.03, "● KHP  ○ Control  Groc=Warning  Vermell=Critical/Absent",
+                    fontsize=6, style='italic')
 
             draw_footer(fig)
             pdf.savefig(fig, dpi=150)
@@ -545,11 +666,30 @@ def generate_chromatograms_report(seq_path, xlsx_files, info, output_path=None):
     for f in sorted(xlsx_files):
         try:
             df_id = pd.read_excel(f, "ID", engine="openpyxl")
-            id_dict = dict(zip(df_id["Camp"], df_id["Valor"]))
+            # Suportar ambdós formats (català antic / anglès nou)
+            if "Field" in df_id.columns:
+                id_dict = dict(zip(df_id["Field"], df_id["Value"]))
+            else:
+                id_dict = dict(zip(df_id["Camp"], df_id["Valor"]))
 
-            mostra = str(id_dict.get("Mostra", ""))
-            rep = str(id_dict.get("Rèplica", "1"))
-            doc_mode = str(id_dict.get("DOC_MODE", ""))
+            mostra = str(id_dict.get("Sample", id_dict.get("Mostra", "")))
+            rep = str(id_dict.get("Replica", id_dict.get("Rèplica", "1")))
+            doc_mode = str(id_dict.get("DOC_Mode", id_dict.get("DOC_MODE", "")))
+
+            # Timeout i warnings
+            timeout_detected = str(id_dict.get("TOC_Timeout_Detected", "NO")).upper() == "YES"
+            timeout_severity = str(id_dict.get("TOC_Timeout_Severity", "OK"))
+            timeout_detail = str(id_dict.get("TOC_Timeout_1", ""))
+
+            # Construir llista de warnings
+            warnings = []
+            if timeout_detected and timeout_severity in ("WARNING", "CRITICAL"):
+                # Extreure zona del detall
+                zone = ""
+                match = re.search(r'- (\w+)', timeout_detail)
+                if match:
+                    zone = match.group(1)
+                warnings.append(f"TO:{zone}" if zone else "TIMEOUT")
 
             # Llegir DOC
             df_doc = pd.read_excel(f, "DOC", engine="openpyxl")
@@ -591,6 +731,8 @@ def generate_chromatograms_report(seq_path, xlsx_files, info, output_path=None):
                     't_dad': t_dad,
                     'y_dad_254': y_dad_254,
                     'doc_mode': doc_mode,
+                    'warnings': warnings,
+                    'timeout_severity': timeout_severity,
                 })
         except Exception:
             continue
@@ -670,8 +812,8 @@ def generate_chromatograms_report(seq_path, xlsx_files, info, output_path=None):
                                label='DOC UIB')
 
                     ax.set_xlim(x_min, x_max)
-                    ax.set_xlabel('Temps (min)')
-                    ax.set_ylabel('mAU', color=COLORS["doc_direct"])
+                    ax.set_xlabel('Temps (min)', fontsize=7)
+                    ax.set_ylabel('mAU', color=COLORS["doc_direct"], fontsize=7)
                     ax.tick_params(axis='y', colors=COLORS["doc_direct"])
 
                     # Plot A254 (vermell) en eix secundari
@@ -679,13 +821,24 @@ def generate_chromatograms_report(seq_path, xlsx_files, info, output_path=None):
                         ax2 = ax.twinx()
                         ax2.plot(rep_data['t_dad'], rep_data['y_dad_254'], '-',
                                 color=COLORS["dad_254"], linewidth=0.5, alpha=0.6)
-                        ax2.set_ylabel('A254', color=COLORS["dad_254"], fontsize=7)
-                        ax2.tick_params(axis='y', colors=COLORS["dad_254"], labelsize=6)
+                        ax2.set_ylabel('A254', color=COLORS["dad_254"], fontsize=6)
+                        ax2.tick_params(axis='y', colors=COLORS["dad_254"], labelsize=5)
 
-                    # Títol
+                    # Títol amb nom complet
                     rep_num = rep_data.get('rep', '?')
-                    ax.set_title(f"{base} R{rep_num}{title_suffix}",
-                                fontsize=8, fontweight='bold', color=title_color)
+                    title_text = f"{base} R{rep_num}{title_suffix}"
+                    ax.set_title(title_text, fontsize=7, fontweight='bold', color=title_color)
+
+                    # Afegir etiqueta de warnings (timeout, etc.)
+                    sample_warnings = rep_data.get('warnings', [])
+                    if sample_warnings:
+                        warn_text = " | ".join(sample_warnings)
+                        warn_color = COLORS["danger"] if rep_data.get('timeout_severity') == "CRITICAL" else COLORS["warning"]
+                        # Afegir a dalt a la dreta del gràfic
+                        ax.text(0.98, 0.95, warn_text, transform=ax.transAxes,
+                               fontsize=6, fontweight='bold', color='white',
+                               ha='right', va='top',
+                               bbox=dict(boxstyle='round,pad=0.2', facecolor=warn_color, alpha=0.9))
 
                     ax.grid(True, alpha=0.3, linewidth=0.3)
 
