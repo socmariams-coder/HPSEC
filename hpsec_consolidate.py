@@ -2853,7 +2853,7 @@ def calculate_snr_info(y_doc_net, peak_info, y_doc_uib=None,
 # FUNCIONS RESUM CONSOLIDACIÓ
 # =============================================================================
 
-def _collect_sample_stats(mostra, rep, timeout_info, snr_info, peak_info, doc_mode, file_info=None):
+def _collect_sample_stats(mostra, rep, timeout_info, snr_info, peak_info, doc_mode, file_info=None, doc_direct_status=None):
     """
     Recull estadístiques d'una mostra per al resum de consolidació.
 
@@ -2870,6 +2870,9 @@ def _collect_sample_stats(mostra, rep, timeout_info, snr_info, peak_info, doc_mo
             - row_start: Fila inicial
             - row_end: Fila final
             - npts: Nombre de punts
+        doc_direct_status: Dict amb estat del DOC Direct (opcional):
+            - status: "OK", "FALTA_HPLC_SEQ", "SENSE_MATCH", "SOBREESCRIT"
+            - message: Missatge explicatiu
 
     Returns:
         dict amb estadístiques de la mostra
@@ -2891,6 +2894,19 @@ def _collect_sample_stats(mostra, rep, timeout_info, snr_info, peak_info, doc_mo
         stats["npts"] = file_info.get("npts", 0)
         stats["match_confidence"] = file_info.get("match_confidence", 100.0)
         stats["match_type"] = file_info.get("match_type", "exact")
+
+    # DOC Direct status (per GUI - mostrar errors)
+    if doc_direct_status:
+        stats["doc_direct_status"] = doc_direct_status.get("status", "OK")
+        stats["doc_direct_message"] = doc_direct_status.get("message", "")
+    else:
+        # Determinar status automàticament basant-se en file_info
+        if file_info and file_info.get("row_start") and file_info.get("row_end"):
+            stats["doc_direct_status"] = "OK"
+            stats["doc_direct_message"] = ""
+        else:
+            stats["doc_direct_status"] = "SENSE_DADES"
+            stats["doc_direct_message"] = "Sense dades DOC Direct"
 
     # Timeout info
     if timeout_info:
@@ -4068,6 +4084,7 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
                 row_ini = None
                 row_fi = None
                 timeout_info = None  # Info de timeouts detectats en DOC Direct
+                doc_direct_status = {"status": "OK", "message": ""}  # Estat per GUI
 
                 # Intentar obtenir DOC Direct del mestre (dual protocol)
                 if has_master:
@@ -4108,6 +4125,10 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
                             # NO FER FALLBACK: si no trobem la rèplica correcta, NO usar dades incorrectes
                             # Això evita l'error de files duplicades
                             if match_info is None:
+                                doc_direct_status = {
+                                    "status": "FALTA_HPLC_SEQ",
+                                    "message": f"Rèplica {rep} absent a 1-HPLC-SEQ"
+                                }
                                 result["warnings"].append(
                                     f"SENSE_MATCH: {sample_rep_key} no trobat a MasterFile (rèplica {rep} absent)"
                                 )
@@ -4406,7 +4427,7 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
                     "match_confidence": match_conf,
                     "match_type": match_type,
                 }
-                sample_stat = _collect_sample_stats(mostra, rep, timeout_info, snr_info, peak_info, doc_mode, file_info)
+                sample_stat = _collect_sample_stats(mostra, rep, timeout_info, snr_info, peak_info, doc_mode, file_info, doc_direct_status)
                 result["sample_stats"].append(sample_stat)
 
         else:

@@ -1792,8 +1792,16 @@ class HPSECSuiteV3:
             match_conf = s.get('match_confidence', 100.0)
             doc_mode = s.get('doc_mode', '')
 
-            # Columna Direct: fitxer (files ini-fi) npts
-            if file_dad:
+            # DOC Direct status (per mostrar errors)
+            doc_direct_status = s.get('doc_direct_status', 'OK')
+            doc_direct_message = s.get('doc_direct_message', '')
+            has_doc_error = doc_direct_status not in ['OK', '']
+
+            # Columna Direct: fitxer (files ini-fi) npts O missatge d'error
+            if has_doc_error:
+                # Mostrar el motiu de l'error en vermell
+                direct_text = f"⚠ {doc_direct_message}" if doc_direct_message else f"⚠ {doc_direct_status}"
+            elif file_dad:
                 dad_name = os.path.splitext(file_dad)[0]  # Treure .CSV
                 if row_start and row_end:
                     direct_text = f"{dad_name} ({row_start}-{row_end}) {int(npts)}pt"
@@ -1814,10 +1822,12 @@ class HPSECSuiteV3:
 
             # Determinar tag per color
             name_upper = name.upper()
-            if name in dup_samples_set:
-                tag = 'dup_error'  # Prioritat màxima: files duplicades
+            if has_doc_error:
+                tag = 'dup_error'  # Vermell: error DOC Direct
+            elif name in dup_samples_set:
+                tag = 'dup_error'  # Vermell: files duplicades
             elif match_conf < 85:
-                tag = 'low_conf'  # Baixa confiança
+                tag = 'low_conf'  # Groc: baixa confiança
                 n_low_conf += 1
             elif 'KHP' in name_upper:
                 tag = 'khp'
