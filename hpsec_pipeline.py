@@ -1025,8 +1025,16 @@ def _read_areas_from_file(filepath: str) -> Dict[str, float]:
         for _, row in df.iterrows():
             frac = str(row[frac_col]).strip()
             area = row[doc_col]
-            if pd.notna(area):
-                areas[frac] = float(area)
+            # Saltar valors buits o "-"
+            if pd.notna(area) and str(area).strip() not in ['-', '', 'nan', 'NaN']:
+                try:
+                    areas[frac] = float(area)
+                except (ValueError, TypeError):
+                    pass  # Skip non-numeric values
+
+        # Calcular total si no existeix
+        if 'total' not in areas and areas:
+            areas['total'] = sum(areas.values())
 
         return areas
 
