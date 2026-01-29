@@ -67,6 +67,7 @@ from hpsec_calibrate import (
     mark_calibration_as_outlier,
     get_active_calibration,
     set_calibration_override,
+    load_local_calibrations,
 )
 from hpsec_replica import (
     evaluate_replica,
@@ -1421,6 +1422,9 @@ class HPSECSuiteV3:
         # Analitzar contingut
         self._analyze_folder()
 
+        # Carregar calibració existent si n'hi ha
+        self._load_existing_calibration()
+
         # Activar botó consolidar
         self.btn_importar.configure(state="normal")
         self.lbl_status.configure(text=f"Carpeta carregada: {os.path.basename(folder)}")
@@ -2141,6 +2145,116 @@ class HPSECSuiteV3:
     # EXECUCIÓ: CALIBRAR
     # =========================================================================
 
+    def _load_existing_calibration(self):
+        """
+        Carrega dades de calibració existent si la SEQ ja té calibració a CALDATA.
+        Això permet veure les dades sense haver de prémer "Calibrar" de nou.
+        """
+        if not self.seq_path:
+            return
+
+        # Obtenir calibració activa del CALDATA local
+        active_cal = get_active_calibration(self.seq_path)
+        if not active_cal:
+            return
+
+        # Extreure dades de la calibració existent
+        factor = active_cal.get('factor', 0)
+        conc = active_cal.get('conc_ppm', 0)
+        area = active_cal.get('area', 0)
+        n_replicas = active_cal.get('n_replicas', 1)
+        rsd = active_cal.get('rsd', 0)
+        shift_sec = active_cal.get('shift_sec', 0)
+        symmetry = active_cal.get('symmetry', 1.0)
+        snr = active_cal.get('snr', 0)
+        quality_issues = active_cal.get('quality_issues', [])
+        quality_score = active_cal.get('quality_score', 0)
+        status = active_cal.get('status', 'OK')
+        khp_filename = active_cal.get('khp_file', 'N/A')
+        khp_source = active_cal.get('khp_source', 'LOCAL')
+
+        # Actualitzar variables globals
+        if area > 0 and conc > 0:
+            self.khp_area = area
+            self.khp_conc = conc
+            self.khp_source_seq = active_cal.get('seq_name', os.path.basename(self.seq_path))
+
+        # Actualitzar etiquetes - Info KHP
+        self.lbl_cal_source.configure(text=f"Origen: {khp_source} (existent)")
+        self.lbl_cal_khp.configure(text=f"KHP: {khp_filename}")
+        self.lbl_cal_conc.configure(text=f"Concentració: {conc} ppm")
+        self.lbl_cal_replicas.configure(text=f"Rèpliques: {n_replicas}")
+
+        # Actualitzar etiquetes - Resultats
+        self.lbl_cal_factor.configure(text=f"Factor: {factor:.6f}")
+        self.lbl_cal_area.configure(text=f"Àrea: {area:.2f}")
+
+        if n_replicas > 1:
+            self.lbl_cal_rsd.configure(text=f"RSD: {rsd:.1f}%")
+        else:
+            self.lbl_cal_rsd.configure(text="RSD: - (única rèplica)")
+
+        self.lbl_cal_shift.configure(text=f"Shift DOC-DAD: {shift_sec:.1f} s")
+
+        # Actualitzar etiquetes - Qualitat
+        self.lbl_cal_symmetry.configure(text=f"Simetria: {symmetry:.2f}")
+        self.lbl_cal_snr.configure(text=f"SNR: {snr:.1f}")
+
+        # Obtenir camps de validació
+        valid_for_cal = active_cal.get('valid_for_calibration', True)
+        valid_for_shift = active_cal.get('valid_for_shift', True)
+        cal_issues = active_cal.get('calibration_issues', [])
+        shift_issues = active_cal.get('shift_issues', [])
+
+        # Estat de qualitat amb colors
+        if not valid_for_cal:
+            self.lbl_cal_quality.configure(
+                text="Estat: ✗ INVÀLID CALIBRACIÓ",
+                fg=COLORS["error"]
+            )
+        elif not valid_for_shift:
+            self.lbl_cal_quality.configure(
+                text="Estat: ⚠ INVÀLID SHIFT (cal OK)",
+                fg=COLORS["warning"]
+            )
+        elif quality_score < 20:
+            self.lbl_cal_quality.configure(text="Estat: ✓ EXCEL·LENT", fg=COLORS["success"])
+        elif quality_score < 50:
+            self.lbl_cal_quality.configure(text="Estat: ✓ BO", fg=COLORS["success"])
+        elif quality_score < 100:
+            self.lbl_cal_quality.configure(text="Estat: ⚠ REVISAR", fg=COLORS["warning"])
+        else:
+            self.lbl_cal_quality.configure(text="Estat: ✗ PROBLEMES", fg=COLORS["error"])
+
+        # Mostrar issues
+        all_issues = cal_issues + shift_issues + quality_issues
+        seen = set()
+        unique_issues = []
+        for issue in all_issues:
+            if issue not in seen:
+                seen.add(issue)
+                unique_issues.append(issue)
+
+        if unique_issues:
+            issues_text = "\n".join(unique_issues[:5])
+            if len(unique_issues) > 5:
+                issues_text += f"\n... i {len(unique_issues) - 5} més"
+            self.lbl_cal_issues.configure(text=issues_text)
+        else:
+            self.lbl_cal_issues.configure(text="")
+
+        # Guardar dades de calibració
+        self.calibration_data = {
+            'success': True,
+            'khp_data': active_cal,
+            'calibration': active_cal,
+            'khp_source': khp_source,
+            'from_existing': True
+        }
+
+        # Activar següent pas (Processar)
+        self.btn_processar.configure(state="normal")
+
     def _run_calibration(self):
         """Executa la calibració."""
         if self.is_processing or not self.seq_path:
@@ -2383,7 +2497,7 @@ class HPSECSuiteV3:
         canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
     def _plot_khp_history(self, ax, current_khp_data):
-        """Mostra gràfic d'històric KHP amb àrees per SEQ."""
+        """Mostra gràfic d'històric KHP amb àrees per SEQ (inclou outliers marcats)."""
         try:
             # Carregar històric
             history = load_khp_history(self.seq_path)
@@ -2394,25 +2508,23 @@ class HPSECSuiteV3:
                 ax.set_title("Històric KHP")
                 return
 
-            # Filtrar per mode i concentració similar
+            # Filtrar per mode i concentració similar (INCLOU outliers per veure panorama complet)
             current_conc = current_khp_data.get('conc_ppm', 2)
             mode = "BP" if "BP" in os.path.basename(self.seq_path).upper() else "COLUMN"
 
-            # Filtrar calibracions vàlides
-            valid_cals = []
+            # Recopilar TOTES les calibracions del mode/conc (inclou outliers)
+            all_cals = []
             for cal in history:
                 if cal.get('mode') != mode:
-                    continue
-                if cal.get('is_outlier', False):
                     continue
                 cal_conc = cal.get('conc_ppm', 0)
                 if abs(cal_conc - current_conc) > 0.5:
                     continue
                 if cal.get('area', 0) <= 0:
                     continue
-                valid_cals.append(cal)
+                all_cals.append(cal)
 
-            if not valid_cals:
+            if not all_cals:
                 ax.text(0.5, 0.5, f"No hi ha històric per {mode} KHP{current_conc:.0f}",
                        ha='center', va='center', transform=ax.transAxes,
                        fontsize=10, color='gray')
@@ -2426,36 +2538,62 @@ class HPSECSuiteV3:
                 return int(match.group(1)) if match else 0
 
             # Ordenar per número de SEQ (ascendent = cronològic)
-            valid_cals.sort(key=get_seq_num)
+            all_cals.sort(key=get_seq_num)
 
             # Preparar dades
-            seq_names = [cal.get('seq_name', 'N/A').replace('_SEQ', '').replace('_BP', '') for cal in valid_cals]
-            areas = [cal.get('area', 0) for cal in valid_cals]
+            seq_names = [cal.get('seq_name', 'N/A').replace('_SEQ', '').replace('_BP', '') for cal in all_cals]
+            areas = [cal.get('area', 0) for cal in all_cals]
+            is_outliers = [cal.get('is_outlier', False) for cal in all_cals]
 
             # Identificar SEQ actual
             current_seq = os.path.basename(self.seq_path)
             current_seq_short = current_seq.replace('_SEQ', '').replace('_BP', '')
 
-            # Colors: vermell per actual, blau per resta
-            colors = [COLORS["error"] if current_seq_short in name else COLORS["primary"]
-                     for name in seq_names]
+            # Colors: vermell per actual, gris per outliers, blau per vàlids
+            colors = []
+            for i, (name, is_out) in enumerate(zip(seq_names, is_outliers)):
+                if current_seq_short in name:
+                    colors.append(COLORS["error"])  # Actual
+                elif is_out:
+                    colors.append('#999999')  # Outlier = gris
+                else:
+                    colors.append(COLORS["primary"])  # Vàlid = blau
 
             # Gràfic de barres
             bars = ax.bar(range(len(seq_names)), areas, color=colors, alpha=0.7, edgecolor='black')
 
-            # Línia de mitjana
-            mean_area = np.mean(areas)
-            std_area = np.std(areas)
-            ax.axhline(mean_area, color='green', linestyle='--', linewidth=2,
-                      label=f'Mitjana: {mean_area:.1f}')
-            ax.axhspan(mean_area - std_area, mean_area + std_area, alpha=0.2,
-                      color='green', label=f'±1σ ({std_area:.1f})')
+            # Marcar outliers amb patró
+            for i, (bar, is_out) in enumerate(zip(bars, is_outliers)):
+                if is_out:
+                    bar.set_hatch('///')
+                    bar.set_alpha(0.5)
+
+            # Mitjana i std només de calibracions NO outlier
+            valid_areas = [a for a, is_out in zip(areas, is_outliers) if not is_out]
+            n_valid = len(valid_areas)
+
+            if valid_areas:
+                mean_area = np.mean(valid_areas)
+                std_area = np.std(valid_areas) if len(valid_areas) > 1 else 0
+                ax.axhline(mean_area, color='green', linestyle='--', linewidth=2,
+                          label=f'Mitjana: {mean_area:.1f} (n={n_valid})')
+                if std_area > 0:
+                    ax.axhspan(mean_area - std_area, mean_area + std_area, alpha=0.2,
+                              color='green', label=f'±1σ ({std_area:.1f})')
 
             # Etiquetes
             ax.set_xticks(range(len(seq_names)))
             ax.set_xticklabels(seq_names, rotation=45, ha='right', fontsize=7)
             ax.set_ylabel("Àrea KHP", fontsize=9)
-            ax.set_title(f"Històric {mode} KHP{current_conc:.0f} (n={len(valid_cals)})", fontsize=10)
+
+            n_outliers = sum(is_outliers)
+            title = f"Històric {mode} KHP{current_conc:.0f}"
+            if n_outliers > 0:
+                title += f" (vàlids={n_valid}, outliers={n_outliers})"
+            else:
+                title += f" (n={n_valid})"
+            ax.set_title(title, fontsize=10)
+
             ax.legend(loc='upper right', fontsize=7)
             ax.grid(True, alpha=0.3, axis='y')
 
