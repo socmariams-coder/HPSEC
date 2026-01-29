@@ -57,8 +57,8 @@ from hpsec_config import get_config
 # Import validació KHP i alineació des de hpsec_calibrate (Single Source of Truth)
 from hpsec_calibrate import (
     validate_khp_for_alignment,
-    extract_khp_conc,
     get_injection_volume,
+    # NOTA: extract_khp_conc ara s'importa de hpsec_import (2026-01-29)
     # Funcions QAQC i alineació (migrades des de consolidate)
     QAQC_FOLDER,
     ALIGNMENT_LOG_FILE,
@@ -84,6 +84,7 @@ from hpsec_import import (
     normalize_key,
     normalize_rep,
     is_khp,
+    extract_khp_conc,
     is_control_injection,
     obtenir_seq,
     seq_tag,
@@ -748,100 +749,17 @@ def truncate_chromatogram(t, y, max_time_min=None):
         return t[mask], y[mask]
 
 
-def normalize_key(s):
-    """Normalitza string per matching."""
-    return re.sub(r"[^A-Za-z0-9]+", "", str(s or "")).upper()
+# =============================================================================
+# NOTA: Les següents funcions s'han mogut a hpsec_import.py (2026-01-29):
+#   - normalize_key, is_khp, obtenir_seq, seq_tag, is_bp_seq
+#   - skip_sample_direct, split_sample_rep, clean_sample_name, normalize_rep
+# S'importen a l'inici del fitxer per mantenir compatibilitat.
+#
+# mode_robust s'importa de hpsec_utils.py
+# validate_khp_for_alignment s'importa de hpsec_calibrate.py
+# =============================================================================
 
-
-def is_khp(name):
-    """Detecta si és mostra KHP."""
-    return "KHP" in str(name).upper()
-
-
-# NOTA: validate_khp_for_alignment ara està a hpsec_calibrate.py
-# Importat a l'inici del fitxer
-
-
-def mode_robust(data, bins=50):
-    """Calcula moda robusta amb histograma."""
-    if data is None or len(data) == 0:
-        return 0.0
-    counts, edges = np.histogram(np.asarray(data), bins=bins)
-    i = int(np.argmax(counts))
-    return 0.5 * (edges[i] + edges[i + 1])
-
-
-def obtenir_seq(folder):
-    """Extreu ID de seqüència del nom de carpeta."""
-    nom = os.path.basename(os.path.normpath(folder))
-    m = re.search(r"(\d+[A-Za-z]?)", nom)
-    return m.group(1) if m else "000"
-
-
-def seq_tag(seq, bp):
-    """Afegeix _BP si és seqüència BP."""
-    if bp and "BP" not in seq.upper():
-        return f"{seq}_BP"
-    return seq
-
-
-def is_bp_seq(folder, sample_dad_files=None):
-    """Detecta si és seqüència BP."""
-    name = os.path.basename(os.path.normpath(folder)).upper()
-    if re.search(r"(^|[_\-\s])BP($|[_\-\s])", name):
-        return True
-
-    if sample_dad_files:
-        for p in sample_dad_files[:3]:
-            try:
-                df, st = llegir_dad_export3d(p)
-                if st.startswith("OK") and not df.empty and "time (min)" in df.columns:
-                    tmax = pd.to_numeric(df["time (min)"], errors="coerce").max()
-                    if pd.notna(tmax) and float(tmax) <= 18.0:
-                        return True
-            except Exception:
-                continue
-    return False
-
-
-def skip_sample_direct(sample_desc):
-    """Determina si s'ha d'ignorar una mostra."""
-    d = str(sample_desc or "").strip().upper()
-    if d in ("", "0"):
-        return True
-    if "PRE-HPLC" in d or ("POST" in d and "HPLC" in d):
-        return True
-    return False
-
-
-def split_sample_rep(sample_desc):
-    """Separa nom de mostra i rèplica."""
-    s = str(sample_desc or "").strip()
-    if not s:
-        return "", None
-    m = re.match(r"^(.*?)(?:[_\-\s]?R(\d+))\s*$", s, flags=re.IGNORECASE)
-    if m and m.group(1).strip():
-        return m.group(1).strip(), m.group(2)
-    return s, None
-
-
-def clean_sample_name(sample_desc):
-    """Neteja nom de mostra."""
-    s = str(sample_desc or "").strip()
-    return re.sub(r"[^A-Za-z0-9]+", "", s) or "SAMPLE"
-
-
-def normalize_rep(rep):
-    """Normalitza número de rèplica."""
-    if rep is None:
-        return ""
-    s = str(rep).strip()
-    if not s:
-        return ""
-    try:
-        return str(int(s))
-    except Exception:
-        return s
+from hpsec_utils import mode_robust
 
 
 # =============================================================================
@@ -2846,7 +2764,7 @@ def generate_consolidation_summary(result, sample_stats, timing_stats=None):
     Returns:
         dict amb el resum complet
     """
-    from hpsec_utils import is_khp
+    # NOTA: is_khp ja s'importa de hpsec_import a l'inici del fitxer
 
     # Comptar tipus de mostres
     n_khp = sum(1 for s in sample_stats if is_khp(s.get("mostra", "")))

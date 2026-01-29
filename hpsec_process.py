@@ -41,7 +41,7 @@ from hpsec_core import (
     detect_main_peak,
     find_peak_boundaries,
 )
-from hpsec_utils import baseline_stats, baseline_stats_windowed
+from hpsec_utils import baseline_stats, baseline_stats_windowed, mode_robust
 from hpsec_config import get_config
 
 
@@ -98,22 +98,7 @@ def truncate_chromatogram(t, y, max_time_min=None):
         return t[mask], y[mask]
 
 
-def mode_robust(data, bins=50):
-    """
-    Calcula moda robusta amb histograma.
-
-    Args:
-        data: Array de dades
-        bins: Nombre de bins per l'histograma
-
-    Returns:
-        Valor central del bin més freqüent
-    """
-    if data is None or len(data) == 0:
-        return 0.0
-    counts, edges = np.histogram(np.asarray(data), bins=bins)
-    i = int(np.argmax(counts))
-    return 0.5 * (edges[i] + edges[i + 1])
+# NOTA: mode_robust s'ha mogut a hpsec_utils.py (2026-01-29) - importat a dalt
 
 
 # =============================================================================

@@ -7,14 +7,11 @@ Conté:
 - baseline_stats: Estadístiques de baseline (mitjana, std, llindar 3σ)
 - baseline_stats_windowed: Baseline amb finestres temporals
 - seleccionar_carpeta: GUI per selecció de carpeta
-- obtenir_seq: Extracció d'ID de seqüència
-- is_khp: Detecció de mostres KHP
-- extract_khp_conc: Extracció concentració KHP
-- normalize_key: Normalització de strings per matching
 - mode_robust: Càlcul moda robusta
 - t_at_max: Temps al màxim
 
 NOTA: detect_main_peak i detect_batman s'han mogut a hpsec_core.py (2026-01-29)
+NOTA: obtenir_seq, is_khp, extract_khp_conc, normalize_key s'han mogut a hpsec_import.py (2026-01-29)
 """
 
 import os
@@ -47,66 +44,13 @@ def seleccionar_carpeta(titulo="Selecciona carpeta SEQ"):
 
 
 # =============================================================================
-# EXTRACCIÓN DE IDENTIFICADORES
+# NOTA: Les següents funcions s'han mogut a hpsec_import.py (2026-01-29):
+#   - obtenir_seq: Extracció ID seqüència
+#   - normalize_key: Normalització strings per matching
+#   - is_khp: Detecció mostres KHP
+#   - extract_khp_conc: Extracció concentració KHP
+# Importar des de hpsec_import en lloc d'aquí.
 # =============================================================================
-def obtenir_seq(folder):
-    """
-    Extrae el ID de secuencia del nombre de carpeta.
-
-    Args:
-        folder: Ruta de la carpeta
-
-    Returns:
-        str con el ID de secuencia (ej: "123A") o "000" si no se encuentra
-    """
-    nom = os.path.basename(os.path.normpath(folder))
-    m = re.search(r"(\d+[A-Za-z]?)", nom)
-    return m.group(1) if m else "000"
-
-
-def normalize_key(s):
-    """
-    Normaliza un string para matching (elimina caracteres especiales, uppercase).
-
-    Args:
-        s: String a normalizar
-
-    Returns:
-        str normalizado (solo alfanuméricos, uppercase)
-    """
-    return re.sub(r"[^A-Za-z0-9]+", "", str(s or "")).upper()
-
-
-# =============================================================================
-# DETECCIÓN DE MUESTRAS KHP
-# =============================================================================
-def is_khp(name):
-    """
-    Determina si un nombre corresponde a una muestra KHP.
-
-    Args:
-        name: Nombre de la muestra
-
-    Returns:
-        bool indicando si es KHP
-    """
-    return "KHP" in str(name).upper()
-
-
-def extract_khp_conc(name):
-    """
-    Extrae la concentración de KHP del nombre.
-
-    Args:
-        name: Nombre que contiene la concentración (ej: "KHP50", "KHP 100")
-
-    Returns:
-        int con la concentración en ppm, o 0 si no se encuentra
-    """
-    m = re.search(r"KHP\s*(\d+)", str(name), re.IGNORECASE)
-    if m:
-        return int(m.group(1))
-    return 0
 
 
 # =============================================================================

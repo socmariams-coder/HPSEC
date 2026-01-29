@@ -40,6 +40,12 @@ from hpsec_core import (
     TIMEOUT_CONFIG
 )
 
+# Import funcions d'identificació des de hpsec_import (Single Source of Truth)
+from hpsec_import import is_khp, extract_khp_conc, obtenir_seq
+
+# Import funcions utilitàries des de hpsec_utils (Single Source of Truth)
+from hpsec_utils import mode_robust, t_at_max
+
 # =============================================================================
 # JSON ENCODER PER NUMPY TYPES
 # =============================================================================
@@ -165,11 +171,7 @@ def extract_seq_number(seq_path):
     return None
 
 
-def obtenir_seq(folder):
-    """Extreu ID de seqüència del nom de carpeta."""
-    nom = os.path.basename(os.path.normpath(folder))
-    m = re.search(r"(\d+[A-Za-z]?)", nom)
-    return m.group(1) if m else "000"
+# NOTA: obtenir_seq s'ha mogut a hpsec_import.py (2026-01-29)
 
 
 def get_cr_thresholds(is_bp, volume_uL):
@@ -229,55 +231,8 @@ def get_cr_thresholds(is_bp, volume_uL):
         }
 
 
-def is_khp(name):
-    """Detecta si és mostra KHP."""
-    return "KHP" in str(name).upper()
-
-
-def extract_khp_conc(filename):
-    """
-    Extreu la concentració de KHP del nom del fitxer.
-
-    Patrons:
-    - KHP2 -> 2 ppm
-    - KHP_2 -> 2 ppm
-    - KHP-2 -> 2 ppm
-    - KHP2_xxx -> 2 ppm
-    """
-    name = os.path.basename(filename).upper()
-
-    # Patró principal: KHP seguit de número
-    patterns = [
-        r"KHP[_\-]?(\d+(?:\.\d+)?)",  # KHP2, KHP_2, KHP-2, KHP2.5
-        r"KHP\s*(\d+(?:\.\d+)?)",      # KHP 2
-    ]
-
-    for pattern in patterns:
-        match = re.search(pattern, name)
-        if match:
-            try:
-                return float(match.group(1))
-            except ValueError:
-                continue
-
-    return 0
-
-
-def mode_robust(data, bins=50):
-    """Calcula moda robusta amb histograma."""
-    if data is None or len(data) == 0:
-        return 0.0
-    counts, edges = np.histogram(np.asarray(data), bins=bins)
-    i = int(np.argmax(counts))
-    return 0.5 * (edges[i] + edges[i + 1])
-
-
-def t_at_max(t, y):
-    """Retorna el temps al màxim del senyal."""
-    if t is None or y is None or len(t) == 0 or len(y) == 0:
-        return None
-    idx = int(np.argmax(y))
-    return float(t[idx])
+# NOTA: is_khp, extract_khp_conc s'han mogut a hpsec_import.py (2026-01-29)
+# NOTA: mode_robust, t_at_max s'han mogut a hpsec_utils.py (2026-01-29)
 
 
 # =============================================================================

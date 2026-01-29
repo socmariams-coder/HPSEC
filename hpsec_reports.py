@@ -21,6 +21,9 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from matplotlib.gridspec import GridSpec
 
+# Import funcions d'identificació des de hpsec_import (Single Source of Truth)
+from hpsec_import import is_khp
+
 
 # =============================================================================
 # CONFIGURACIÓ I ESTILS
@@ -88,9 +91,7 @@ def apply_style():
     plt.rcParams.update(STYLE_CONFIG)
 
 
-def is_khp(name):
-    """Detecta si és mostra KHP."""
-    return "KHP" in str(name).upper()
+# NOTA: is_khp s'ha mogut a hpsec_import.py (2026-01-29) - importat a dalt
 
 
 def is_control(name):
