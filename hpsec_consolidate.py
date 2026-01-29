@@ -4024,25 +4024,32 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
                     match_details[nom_doc_uib] = match_info
 
                     if not match_info["matched"]:
-                        # Verificar si és una injecció de control (MQ, NaOH, etc.)
-                        # Els controls es poden ignorar com a orfes (configurable)
-                        cfg = get_config()
-                        ignore_ctrl = cfg.get("control_injections", "ignore_orphan", default=True)
+                        # Fitxer orfe - existeix però no està a 1-HPLC-SEQ
+                        orphan_files.append(nom_doc_uib)
+                        best_guess = f" (similar a: {match_info['best_match']})" if match_info.get("best_match") else ""
 
-                        if is_control_injection(mostra, cfg) and ignore_ctrl:
-                            # Control no trobat - ignorar silenciosament
-                            result["warnings"].append(
-                                f"CTRL_SKIP: {nom_doc_uib} és injecció de control (ignorat)"
-                            )
-                            continue  # Saltar aquest fitxer
-                        else:
-                            # Fitxer orfe - no pertany a aquesta seqüència
-                            orphan_files.append(nom_doc_uib)
-                            best_guess = f" (similar a: {match_info['best_match']})" if match_info.get("best_match") else ""
-                            result["warnings"].append(
-                                f"ORFE: {nom_doc_uib} no pertany a aquesta SEQ (no està a 1-HPLC-SEQ){best_guess}"
-                            )
-                            continue  # Saltar aquest fitxer
+                        # Afegir a sample_stats amb error (NO saltar - mostrar a la taula)
+                        doc_direct_status = {
+                            "status": "ORFE_HPLC_SEQ",
+                            "message": f"Fitxer existeix, falta a 1-HPLC-SEQ{best_guess}"
+                        }
+                        file_info = {
+                            "file_dad": "",
+                            "file_uib": nom_doc_uib,
+                            "row_start": None,
+                            "row_end": None,
+                            "npts": 0,
+                            "match_confidence": 0.0,
+                            "match_type": "orphan",
+                        }
+                        sample_stat = _collect_sample_stats(
+                            mostra, rep, None, None, None, "UIB", file_info, doc_direct_status
+                        )
+                        result["sample_stats"].append(sample_stat)
+                        result["warnings"].append(
+                            f"ORFE: {nom_doc_uib} no pertany a aquesta SEQ (no està a 1-HPLC-SEQ){best_guess}"
+                        )
+                        continue  # Processat com a orfe, continuar amb el següent
                     elif match_info["confidence"] < CONFIDENCE_THRESHOLD:
                         # Match amb confiança baixa - processar però marcar per revisió
                         low_confidence_matches.append({
