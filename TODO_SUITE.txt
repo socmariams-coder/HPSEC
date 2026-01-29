@@ -3,6 +3,68 @@ TODO - SUITE HPSEC
 ================================================================================
 
 ################################################################################
+PRINCIPIS D'ARQUITECTURA
+################################################################################
+
+PRINCIPI 1: JSON COMPLET > LECTURA EXCEL
+  Qualsevol canvi a la GUI que requereixi dades, verificar primer si és millor
+  afegir els camps al JSON (backend) en lloc de llegir Excels (lent).
+
+  CORRECTE:  consolidation.json conté TOTA la info → GUI llegeix 1 fitxer
+  INCORRECTE: GUI llegeix N fitxers Excel per obtenir info addicional
+
+  Motius:
+  - Eficiència: 1 JSON vs N Excels (pandas)
+  - Consistència: tota la info centralitzada
+  - Menys dependències a la GUI
+
+################################################################################
+BUGS CONSOLIDACIÓ (hpsec_consolidate.py)
+################################################################################
+
+[x] FIXAT: Files DOC duplicades entre rèpliques (matching parcial)
+    AFECTADES: 269B_SEQ (POST_O3), 270_SEQ_BP (POST_O3)
+    CAUSA: El matching parcial agafava la primera coincidència, ignorant rèplica
+    SOLUCIÓ: Nou algoritme de matching:
+      1. Coincidència exacta (mostra_R#)
+      2. Coincidència normalitzada (ignorar espais/guions)
+      3. Coincidència parcial amb rèplica correcta
+    NOTA: 283_SEQ continua amb problemes perquè el MasterFile és incomplet
+
+[ ] PENDENT: 283_SEQ - MasterFile incomplet
+    PROBLEMA: Falten línies 8-12 a 1-HPLC-SEQ (FR2606, FR2607, FR2608_R1...)
+    IMPACTE: Consolidació no pot assignar files correctes a mostres faltants
+    ACCIÓ: El tècnic ha de revisar l'equip i completar el MasterFile
+
+[ ] BUG: Samples duplicats al JSON
+    AFECTADES: 282B_SEQ, 283_SEQ, 284_SEQ_BP (NAOH_0.1MM)
+    PROBLEMA: El mateix sample apareix 2 cops a consolidation.json
+    CAUSA: Control samples (NaOH, MQ) apareixen múltiples cops sense distinció de bloc
+    IMPACTE: Estadístiques incorrectes, comptadors inflats
+    SOLUCIÓ: Implementar naming amb blocs (B1, B2) per controls que es repeteixen
+
+[x] IMPLEMENTAT: Validació 1-HPLC-SEQ (validate_hplc_seq)
+    Funció nova que verifica integritat del MasterFile:
+      * EMPTY_HPLC_SEQ: Fulla buida o inexistent
+      * MISSING_LINES: Line# no seqüencial (detecta línies faltants)
+      * MISSING_FILES: Entrades MasterFile sense fitxer UIB
+      * INCOMPLETE_FIRST_SAMPLES: Primeres mostres amb poc punts (memòria DOC esgotada)
+    S'executa automàticament durant consolidate_sequence()
+    Resultats guardats a consolidation.json
+
+[x] IMPLEMENTAT: Quality check per detectar duplicats
+    - generate_consolidation_summary() ara detecta:
+      * DUPLICATE_ROWS (ERROR): Files compartides entre mostres diferents
+      * DUPLICATE_SAMPLES (WARNING): Mateixa mostra apareix múltiples cops
+    - update_consolidation_json.py també aplica el quality check
+    - quality_issues array afegit al JSON per GUI
+    - Errors/Warnings afegits automàticament
+
+[x] IMPLEMENTAT: Auto-migració de formats antics
+    Ara consolidate_sequence() crida migrate_single() si no troba MasterFile.
+    257_SEQ i similars es migraran automàticament.
+
+################################################################################
 ACCIONS PENDENTS STRS (Tècnics)
 ################################################################################
 
@@ -67,16 +129,65 @@ PENDENT v3:
   [ ] Generació PDF informe
   [ ] Testejar flux complet
   [ ] Històric KHP funcional (botó existent, implementar diàleg)
+  [ ] EXPORT: Identificar run BP associat a COLUMN
+      - Per FAIR data, cada export COLUMN necessita referenciar el seu run BP
+      - Afegir camp "associated_bp_seq" a metadades d'exportació
+      - Exemple: 283_SEQ_COLUMN -> associated_bp_seq = "283_SEQ_BP"
+      - Important per traçabilitat i reproductibilitat de dades
   [ ] CONFIG: Llista injeccions control (MQ, NaOH, etc.) amb nivell duplicats diferent
       - Les injeccions control poden tenir patrons de rèplica/bloc diferents a les mostres
       - Fitxers com MQ1_UIB1B.CSV, MQ2_UIB1B.CSV no s'han de considerar orfes
       - Afegir a hpsec_config.py: CONTROL_INJECTIONS = ["MQ", "NAOH", "BLANK", ...]
       - Relacionat amb numeració de blocs als fitxers resultants
+  [x] PLANNING: Planificador seqüències complet (hpsec_planner_gui.py v3.0)
+      - Distingeix COLUMN vs BP
+      - Tipus: SAMPLE (duplicat), KHP (duplicat), MQ (control), NaOH (neteja)
+      - Timeline visual amb predicció timeouts
+      - Suggeriments posició MQ/NaOH per evitar zona crítica
+      - Freqüència configurable per MQ i NaOH separadament
+  [ ] PLANNING: Generar configs per BP i COLUMN simultàniament
+      - Per un mateix llistat de mostres, oferir config per ambdós modes
+      - Les mateixes mostres s'analitzen típicament per BP i COLUMN
+      - Botó "Generar ambdós" per comparar durades i timeouts
+      - Export JSON amb configuració dual (COLUMN + BP)
   [ ] PLANNING: Simular seqüència òptima on timeouts cauen sempre a post-run
       - Usar timing stats de consolidation.json (pre_injection_time, interval_mean)
       - TOC_CYCLE = 77.2 min, timeout = 74 sec
       - Objectiu: calcular durada mostra i delay inicial per evitar zona crítica
-      - Script draft: hpsec_planner.py
+
+--------------------------------------------------------------------------------
+SUITE v3.1 - MILLORES GUI (2026-01-29)
+--------------------------------------------------------------------------------
+
+BACKEND CALIBRACIÓ:
+  [x] doc_mode es llegeix correctament (DUAL/Direct/UIB)
+  [x] uib_sensitivity es guarda (700/1000 ppb)
+  [x] Històric filtra per doc_mode i uib_sensitivity
+  [ ] Script per actualitzar doc_mode a calibracions antigues
+
+PAS 1 - IMPORTAR (REDISSENY):
+  [ ] Assignacions incorrectes: permetre correcció manual
+      - Si matching confidence < 85%, mostrar diàleg
+      - Llista de fitxers amb assignació suggerida
+      - Dropdown per reassignar manualment
+      - Botó "Ignorar" per fitxers no volguts
+  [ ] Fitxers orfes: moure de "Resum" a "Info Seqüència"
+      - Mostrar count a info, detall expandible
+  [ ] KHP: mostrar TOTES les rèpliques, no només una
+      - Taula amb R1, R2, etc.
+      - Àrea, SNR, anomalies per cada una
+      - Indicar quina s'usarà per calibrar
+
+PAS 2 - CALIBRAR (MILLORES):
+  [ ] Si ja calibrat: mostrar info sense recalibrar
+      - Botó "Recalibrar" opcional
+  [ ] Mostrar totes les rèpliques KHP amb mètriques
+      - Àrea DOC, Àrea A254, Ratio DOC/A254
+      - SNR, Simetria, Quality score
+      - Checkbox per seleccionar quines usar
+  [ ] Mètode selecció: Promig vs Millor qualitat
+  [ ] Gràfic actualitza dinàmicament segons selecció
+  [ ] Comparació històrica amb filtre doc_mode
 
 --------------------------------------------------------------------------------
 COMPLETAT AVUI (2026-01-28) - ABANS DE v3

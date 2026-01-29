@@ -2,17 +2,25 @@
 hpsec_consolidate.py - Mòdul de consolidació de dades HPSEC
 ===========================================================
 
+NOTA: Aquest mòdul està en procés de refactorització.
+Les funcions de lectura de dades s'han mogut a hpsec_import.py (Fase 1).
+Les funcions de processament s'han mogut a hpsec_process.py (Fase 3).
+Aquest fitxer manté compatibilitat amb codi existent.
+
 Conté tota la lògica per:
-- Llegir fitxers DOC (UIB CSV o Excel mestre)
-- Llegir fitxers DAD (Export3D)
-- Processar i consolidar dades
-- Generar Excels consolidats
+- Llegir fitxers DOC (UIB CSV o Excel mestre) → hpsec_import.py (MIGRAT)
+- Llegir fitxers DAD (Export3D) → hpsec_import.py (MIGRAT)
+- Processar i consolidar dades → hpsec_process.py (MIGRAT)
+- Generar Excels consolidats → hpsec_export.py (pendent)
 
 Usat per HPSEC_Suite.py i batch_process.py
 """
 
-__version__ = "1.8.0"
-__version_date__ = "2026-01-28"
+__version__ = "1.11.0"
+__version_date__ = "2026-01-29"
+# v1.11.0: Refactorització - funcions alineació mogudes a hpsec_calibrate.py
+# v1.10.0: Refactorització - funcions processament mogudes a hpsec_process.py
+# v1.9.0: Refactorització - funcions lectura mogudes a hpsec_import.py
 # v1.8.0: Càlcul baseline amb finestres temporals (evita artefactes timeout)
 # v1.7.0: Estadístiques timing (HPLC + TOC + toc_settings) per planificació/QC
 # v1.6.0: Filtre injeccions control (MQ, NaOH) - configurable a hpsec_config.py
@@ -45,15 +53,114 @@ from hpsec_core import (
 from hpsec_utils import baseline_stats, baseline_stats_windowed
 from hpsec_config import get_config
 
-# Import validació KHP des de hpsec_calibrate (Single Source of Truth)
-from hpsec_calibrate import validate_khp_for_alignment, extract_khp_conc, get_injection_volume
+# Import validació KHP i alineació des de hpsec_calibrate (Single Source of Truth)
+from hpsec_calibrate import (
+    validate_khp_for_alignment,
+    extract_khp_conc,
+    get_injection_volume,
+    # Funcions QAQC i alineació (migrades des de consolidate)
+    QAQC_FOLDER,
+    ALIGNMENT_LOG_FILE,
+    get_qaqc_folder,
+    ensure_qaqc_folder,
+    get_alignment_log_path,
+    load_alignment_log,
+    save_alignment_log,
+    add_alignment_entry,
+    find_sibling_alignment,
+    find_nearest_alignment,
+    find_khp_for_alignment,
+    calculate_column_alignment_shifts,
+    get_a254_for_alignment,
+)
+
+# =============================================================================
+# IMPORTS DES DE hpsec_import.py (Fase 1 - Lectura de dades)
+# Mantinguts aquí per compatibilitat amb codi existent
+# =============================================================================
+from hpsec_import import (
+    # Utilitats
+    normalize_key,
+    normalize_rep,
+    is_khp,
+    is_control_injection,
+    obtenir_seq,
+    seq_tag,
+    split_sample_rep,
+    clean_sample_name,
+    skip_sample_direct,
+    # Detecció mode
+    is_bp_seq,
+    detect_mode_from_folder,
+    # Lectura master
+    detect_master_format,
+    trobar_excel_mestre,
+    read_master_date,
+    llegir_masterfile_nou,
+    llegir_master_direct,
+    # Lectura UIB
+    llegir_doc_uib,
+    netejar_nom_uib,
+    # Lectura DAD
+    llegir_dad_export3d,
+    llegir_dad_1a,
+    llegir_dad_amb_fallback,
+    list_dad_files,
+    # Matching
+    get_valid_samples_from_hplc_seq,
+    match_sample_confidence,
+    is_sample_in_seq,
+    CONFIDENCE_THRESHOLD,
+    # DAD matching
+    detect_dad_rep_style,
+    dad_sample_rep_from_path,
+    target_keys_from_desc,
+    choose_best_candidate,
+    # Verificació
+    detect_replica_anomalies,
+    check_sequence_files,
+    # Nova funció principal
+    import_sequence,
+)
 
 
 # =============================================================================
-# LOG D'ALINEACIÓ (QA/QC)
+# IMPORTS DES DE hpsec_process.py (Fase 3 - Processament)
+# Mantinguts aquí per compatibilitat amb codi existent
 # =============================================================================
-QAQC_FOLDER = "HPSEC_QAQC"
-ALIGNMENT_LOG_FILE = "Alignment_History.json"
+from hpsec_process import (
+    # Config
+    DEFAULT_PROCESS_CONFIG,
+    # Utilitats
+    truncate_chromatogram,
+    mode_robust,
+    # Baseline/smoothing
+    get_baseline_correction,
+    apply_smoothing,
+    # Alineació
+    align_signals_by_max,
+    apply_shift,
+    # DAD
+    process_dad,
+    # Pics
+    find_peak_boundaries,
+    # Nota: detect_main_peak no s'importa aquí perquè ja existeix local
+    # Àrees
+    calcular_fraccions_temps,
+    calcular_arees_fraccions_complet,
+    detectar_tmax_senyals,
+    analyze_sample_areas,
+    # SNR
+    calculate_snr_info,
+    # Funcions principals
+    process_sample,
+    process_sequence,
+)
+
+
+# NOTA: Les constants QAQC_FOLDER i ALIGNMENT_LOG_FILE ara s'importen de hpsec_calibrate.py
+# NOTA: Les funcions d'alineació (get_qaqc_folder, load_alignment_log, etc.)
+#       ara s'importen de hpsec_calibrate.py
 
 
 def is_control_injection(sample_name, config=None):
@@ -80,206 +187,9 @@ def is_control_injection(sample_name, config=None):
     return False
 
 
-def get_qaqc_folder(base_folder):
-    """Retorna el path a la carpeta QAQC (a la carpeta pare de les SEQs)."""
-    parent = os.path.dirname(os.path.normpath(base_folder))
-    qaqc_path = os.path.join(parent, QAQC_FOLDER)
-    return qaqc_path
-
-
-def ensure_qaqc_folder(base_folder):
-    """Crea la carpeta QAQC si no existeix i retorna el path."""
-    qaqc_path = get_qaqc_folder(base_folder)
-    os.makedirs(qaqc_path, exist_ok=True)
-    return qaqc_path
-
-
-def get_alignment_log_path(base_folder):
-    """Retorna el path al fitxer de log d'alineació."""
-    qaqc_path = get_qaqc_folder(base_folder)
-    return os.path.join(qaqc_path, ALIGNMENT_LOG_FILE)
-
-
-def load_alignment_log(base_folder):
-    """Carrega el log d'alineació."""
-    log_path = get_alignment_log_path(base_folder)
-    if os.path.exists(log_path):
-        try:
-            with open(log_path, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except Exception:
-            pass
-    return {"entries": [], "version": "1.0"}
-
-
-def save_alignment_log(base_folder, log_data):
-    """Guarda el log d'alineació."""
-    ensure_qaqc_folder(base_folder)  # Crear carpeta si no existeix
-    log_path = get_alignment_log_path(base_folder)
-    try:
-        with open(log_path, 'w', encoding='utf-8') as f:
-            json.dump(log_data, f, indent=2, ensure_ascii=False)
-        return True
-    except Exception:
-        return False
-
-
-def add_alignment_entry(base_folder, seq_name, seq_date, method, shift_uib, shift_direct, khp_file, details=None):
-    """
-    Afegeix una entrada al log d'alineació.
-
-    Args:
-        base_folder: Carpeta de la SEQ
-        seq_name: Nom de la SEQ (ex: "275", "284_BP")
-        seq_date: Data de la SEQ
-        method: "BP" o "COLUMN"
-        shift_uib: Shift aplicat a DOC_UIB (minuts)
-        shift_direct: Shift aplicat a DOC_Direct (minuts)
-        khp_file: Nom del fitxer KHP usat
-        details: Dict amb detalls adicionals
-    """
-    log_data = load_alignment_log(base_folder)
-
-    entry = {
-        "timestamp": datetime.now().isoformat(),
-        "seq_name": seq_name,
-        "seq_date": str(seq_date) if seq_date else "",
-        "method": method,
-        "shift_uib_min": shift_uib,
-        "shift_uib_sec": shift_uib * 60,
-        "shift_direct_min": shift_direct,
-        "shift_direct_sec": shift_direct * 60,
-        "khp_file": khp_file,
-        "details": details or {}
-    }
-
-    # Evitar duplicats: actualitzar si ja existeix entrada per aquesta SEQ
-    existing_idx = None
-    for i, e in enumerate(log_data["entries"]):
-        if e.get("seq_name") == seq_name:
-            existing_idx = i
-            break
-
-    if existing_idx is not None:
-        log_data["entries"][existing_idx] = entry
-    else:
-        log_data["entries"].append(entry)
-
-    save_alignment_log(base_folder, log_data)
-    return entry
-
-
-def find_sibling_alignment(base_folder, seq_name, method):
-    """
-    Busca l'alineació d'una SEQ sibling (mateixa SEQ numèrica).
-
-    Siblings són carpetes amb el mateix prefix numèric:
-    - 256_SEQ, 256B_SEQ, 256C_SEQ són siblings
-    - 257_SEQ NO és sibling de 256_SEQ
-
-    Args:
-        base_folder: Carpeta base (Dades2)
-        seq_name: Nom de la SEQ actual (ex: "256B", "275")
-        method: "BP" o "COLUMN"
-
-    Returns:
-        Dict amb shift_uib, shift_direct, source_seq, khp_validation o None
-    """
-    log_data = load_alignment_log(base_folder)
-
-    # Extreure prefix numèric de la SEQ actual
-    match = re.match(r'^(\d+)', seq_name)
-    if not match:
-        return None
-
-    seq_num = match.group(1)
-
-    # Buscar siblings a l'historial (mateix prefix numèric, diferent nom)
-    candidates = []
-    for e in log_data.get("entries", []):
-        entry_seq = e.get("seq_name", "")
-        entry_method = e.get("method", "")
-
-        # Mateix mètode
-        if entry_method != method:
-            continue
-
-        # Mateix prefix numèric però diferent SEQ
-        entry_match = re.match(r'^(\d+)', entry_seq)
-        if entry_match and entry_match.group(1) == seq_num and entry_seq != seq_name:
-            # És un sibling!
-            candidates.append(e)
-
-    if not candidates:
-        return None
-
-    # Preferir el sibling amb KHP vàlid
-    valid_siblings = [c for c in candidates
-                      if c.get("details", {}).get("khp_validation", "").startswith("VALID")]
-
-    best = valid_siblings[0] if valid_siblings else candidates[0]
-
-    return {
-        "shift_uib": best.get("shift_uib_min", 0.0),
-        "shift_direct": best.get("shift_direct_min", 0.0),
-        "source_seq": best.get("seq_name", ""),
-        "source_date": best.get("seq_date", ""),
-        "source_khp": best.get("khp_file", ""),
-        "khp_validation": best.get("details", {}).get("khp_validation", "UNKNOWN"),
-        "khp_issues": best.get("details", {}).get("khp_issues", []),
-    }
-
-
-def find_nearest_alignment(base_folder, method, seq_date=None):
-    """
-    DEPRECATED: No usar per shifts. Mantingut per compatibilitat.
-
-    Busca l'alineació més propera en el temps per usar quan no hi ha KHP.
-    NOTA: Aquesta funció NO s'hauria d'usar per aplicar shifts.
-          Usar find_sibling_alignment() per siblings.
-
-    Args:
-        base_folder: Carpeta de la SEQ
-        method: "BP" o "COLUMN" (només busca del mateix mètode)
-        seq_date: Data de la SEQ actual (per trobar la més propera)
-
-    Returns:
-        Dict amb shift_uib, shift_direct, source_seq o None si no es troba
-    """
-    log_data = load_alignment_log(base_folder)
-
-    # Filtrar per mètode
-    candidates = [e for e in log_data.get("entries", []) if e.get("method") == method]
-
-    if not candidates:
-        return None
-
-    # Si tenim data, ordenar per proximitat temporal
-    if seq_date:
-        try:
-            target_date = pd.to_datetime(seq_date)
-            for c in candidates:
-                c_date = pd.to_datetime(c.get("seq_date", ""), errors='coerce')
-                if pd.notna(c_date):
-                    c["_date_diff"] = abs((target_date - c_date).days)
-                else:
-                    c["_date_diff"] = 9999
-            candidates.sort(key=lambda x: x.get("_date_diff", 9999))
-        except Exception:
-            pass
-
-    # Retornar el més proper (o el més recent si no hi ha dates)
-    if candidates:
-        best = candidates[0]
-        return {
-            "shift_uib": best.get("shift_uib_min", 0.0),
-            "shift_direct": best.get("shift_direct_min", 0.0),
-            "source_seq": best.get("seq_name", ""),
-            "source_date": best.get("seq_date", ""),
-            "source_khp": best.get("khp_file", "")
-        }
-
-    return None
+# NOTA: Funcions d'alineació (get_qaqc_folder, ensure_qaqc_folder, get_alignment_log_path,
+#       load_alignment_log, save_alignment_log, add_alignment_entry, find_sibling_alignment,
+#       find_nearest_alignment) ara s'importen de hpsec_calibrate.py
 
 
 # =============================================================================
@@ -1001,149 +911,8 @@ def find_khp_in_folder(folder):
     return files
 
 
-def find_khp_for_alignment(seq_folder):
-    """
-    Cerca KHP per alineació: LOCAL → SIBLINGS.
-
-    Args:
-        seq_folder: Carpeta de la SEQ
-
-    Returns:
-        (khp_path, source) o (None, None) si no es troba
-    """
-    # FASE 1: LOCAL
-    res_cons = os.path.join(seq_folder, "Resultats_Consolidats")
-    khp_files = find_khp_in_folder(res_cons)
-    if khp_files:
-        return khp_files[0], "LOCAL"
-
-    # FASE 2: SIBLINGS
-    folder_name = os.path.basename(seq_folder)
-    parent_dir = os.path.dirname(seq_folder)
-
-    match = re.match(r'^(\d+)', folder_name)
-    if match:
-        seq_id = match.group(1)
-        try:
-            all_folders = [d for d in os.listdir(parent_dir)
-                          if os.path.isdir(os.path.join(parent_dir, d))]
-            siblings = [d for d in all_folders
-                       if d.startswith(seq_id) and d != folder_name]
-
-            for sib in siblings:
-                sib_res_cons = os.path.join(parent_dir, sib, "Resultats_Consolidats")
-                khp_files = find_khp_in_folder(sib_res_cons)
-                if khp_files:
-                    return khp_files[0], f"SIBLING:{sib}"
-        except Exception:
-            pass
-
-    return None, None
-
-
-def calculate_column_alignment_shifts(khp_path, config=None, tolerance_sec=2.0):
-    """
-    Calcula els shifts d'alineació per COLUMN usant KHP com a referència.
-
-    Protocol:
-    1. A254 (DAD) és la referència absoluta
-    2. Calcular shift_uib = t_max(A254) - t_max(DOC_UIB)
-    3. Calcular shift_direct = t_max(A254) - t_max(DOC_Direct)
-
-    Args:
-        khp_path: Path al fitxer KHP consolidat
-        config: Configuració
-        tolerance_sec: Tolerància en segons per considerar alineat (default 2s)
-
-    Returns:
-        dict amb:
-            - shift_uib: shift per DOC_UIB (minuts)
-            - shift_direct: shift per DOC_Direct (minuts)
-            - aligned: True si ja estaven alineats (shifts < tolerance)
-            - details: dict amb detalls dels càlculs
-    """
-    result = {
-        "shift_uib": 0.0,
-        "shift_direct": 0.0,
-        "aligned": True,
-        "details": {}
-    }
-
-    tolerance_min = tolerance_sec / 60.0
-
-    try:
-        xls = pd.ExcelFile(khp_path, engine="openpyxl")
-
-        # Llegir DOC
-        if "DOC" not in xls.sheet_names:
-            return result
-
-        df_doc = pd.read_excel(xls, "DOC", engine="openpyxl")
-
-        t = df_doc["time (min)"].values
-
-        # Verificar que tenim les columnes necessàries
-        # Nota: DUAL mode usa "DOC_Direct (mAU)", mode simple usa "DOC (mAU)"
-        has_direct = "DOC (mAU)" in df_doc.columns or "DOC_Direct (mAU)" in df_doc.columns
-        has_uib = "DOC_UIB (mAU)" in df_doc.columns
-
-        if not has_direct and not has_uib:
-            return result
-
-        # Determinar nom columna Direct
-        direct_col = "DOC_Direct (mAU)" if "DOC_Direct (mAU)" in df_doc.columns else "DOC (mAU)"
-
-        # Llegir DAD per A254
-        if "DAD" not in xls.sheet_names:
-            return result
-
-        df_dad = pd.read_excel(xls, "DAD", engine="openpyxl")
-
-        if "254" not in df_dad.columns and "254.0" not in df_dad.columns:
-            return result
-
-        t_dad = df_dad["time (min)"].values
-        a254_col = "254" if "254" in df_dad.columns else "254.0"
-        y_a254 = df_dad[a254_col].values
-
-        # Trobar màxim A254 (referència)
-        idx_max_a254 = np.argmax(y_a254)
-        t_max_a254 = t_dad[idx_max_a254]
-
-        result["details"]["t_max_a254"] = t_max_a254
-
-        # Calcular shift per DOC_UIB
-        if has_uib:
-            y_uib = df_doc["DOC_UIB (mAU)"].values
-            idx_max_uib = np.argmax(y_uib)
-            t_max_uib = t[idx_max_uib]
-
-            shift_uib = t_max_a254 - t_max_uib
-            result["details"]["t_max_uib"] = t_max_uib
-            result["details"]["shift_uib_raw"] = shift_uib
-
-            if abs(shift_uib) > tolerance_min:
-                result["shift_uib"] = shift_uib
-                result["aligned"] = False
-
-        # Calcular shift per DOC_Direct
-        if has_direct:
-            y_direct = df_doc[direct_col].values
-            idx_max_direct = np.argmax(y_direct)
-            t_max_direct = t[idx_max_direct]
-
-            shift_direct = t_max_a254 - t_max_direct
-            result["details"]["t_max_direct"] = t_max_direct
-            result["details"]["shift_direct_raw"] = shift_direct
-
-            if abs(shift_direct) > tolerance_min:
-                result["shift_direct"] = shift_direct
-                result["aligned"] = False
-
-    except Exception as e:
-        result["details"]["error"] = str(e)
-
-    return result
+# NOTA: find_khp_for_alignment i calculate_column_alignment_shifts
+#       ara s'importen de hpsec_calibrate.py
 
 
 # =============================================================================
@@ -1371,48 +1140,7 @@ def llegir_dad_amb_fallback(path_export3d, path_dad1a=None, wavelength="254"):
     return None, None, "NOT_FOUND"
 
 
-def get_a254_for_alignment(df_dad_khp=None, path_export3d=None, path_dad1a=None):
-    """
-    Obté senyal A254 per alineament, amb prioritat:
-    1. MasterFile 3-DAD_KHP (si df_dad_khp proporcionat)
-    2. Export3D
-    3. DAD1A
-
-    Args:
-        df_dad_khp: DataFrame de la fulla 3-DAD_KHP del MasterFile (pot ser None)
-        path_export3d: Camí al fitxer Export3D (pot ser None)
-        path_dad1a: Camí al fitxer DAD1A (pot ser None)
-
-    Returns:
-        (t, y, source): Arrays de temps i senyal A254, i string indicant la font
-    """
-    # Prioritat 1: MasterFile 3-DAD_KHP
-    if df_dad_khp is not None and not df_dad_khp.empty:
-        try:
-            # Format típic: 'time (min)', 'value (mAU)' per cada KHP
-            # Usar la primera columna de temps i valors
-            cols = df_dad_khp.columns.tolist()
-            t_col = None
-            y_col = None
-
-            for c in cols:
-                c_lower = str(c).lower()
-                if 'time' in c_lower and t_col is None:
-                    t_col = c
-                elif ('value' in c_lower or 'mau' in c_lower) and y_col is None:
-                    y_col = c
-
-            if t_col and y_col:
-                t = pd.to_numeric(df_dad_khp[t_col], errors="coerce").to_numpy()
-                y = pd.to_numeric(df_dad_khp[y_col], errors="coerce").to_numpy()
-                valid = np.isfinite(t) & np.isfinite(y)
-                if np.sum(valid) > 10:
-                    return t[valid], y[valid], "MasterFile_3-DAD_KHP"
-        except Exception:
-            pass  # Fallback a altres fonts
-
-    # Prioritat 2 i 3: Export3D o DAD1A
-    return llegir_dad_amb_fallback(path_export3d, path_dad1a, wavelength="254")
+# NOTA: get_a254_for_alignment ara s'importa de hpsec_calibrate.py
 
 
 def netejar_nom_uib(nom_fitxer):
@@ -1579,6 +1307,191 @@ def get_valid_samples_from_hplc_seq(master_data):
             valid_samples.add(normalize_key(name))
 
     return valid_samples
+
+
+def validate_hplc_seq(master_data, uib_files=None):
+    """
+    Valida la integritat de 1-HPLC-SEQ i creua amb fitxers existents.
+
+    Quality checks:
+    1. Fulla no buida
+    2. Line# seqüencial (1, 2, 3... N sense gaps)
+    3. Creuar amb fitxers UIB per detectar discrepàncies
+
+    Args:
+        master_data: Dict retornat per llegir_masterfile_nou()
+        uib_files: Llista de fitxers UIB existents (opcional)
+
+    Returns:
+        dict amb:
+            - valid: bool, si passa tots els checks
+            - issues: list de problemes detectats
+            - missing_lines: list de Line# que falten
+            - expected_samples: int, mostres esperades segons Line#
+            - actual_samples: int, mostres al MasterFile
+            - orphan_files: list de fitxers sense entrada al MasterFile
+            - missing_files: list d'entrades MasterFile sense fitxer
+    """
+    result = {
+        "valid": True,
+        "issues": [],
+        "missing_lines": [],
+        "expected_samples": 0,
+        "actual_samples": 0,
+        "orphan_files": [],
+        "missing_files": [],
+    }
+
+    df_hplc = master_data.get("hplc_seq")
+
+    # Check 1: Fulla buida
+    if df_hplc is None or df_hplc.empty:
+        result["valid"] = False
+        result["issues"].append({
+            "type": "EMPTY_HPLC_SEQ",
+            "severity": "CRITICAL",
+            "message": "Fulla 1-HPLC-SEQ buida o no existeix"
+        })
+        return result
+
+    # Buscar columna Line#
+    line_col = None
+    for col in df_hplc.columns:
+        col_str = str(col).lower()
+        if 'line' in col_str and '#' in str(col):
+            line_col = col
+            break
+        if col_str == 'line#':
+            line_col = col
+            break
+
+    if line_col is None:
+        # Intentar primera columna
+        line_col = df_hplc.columns[0]
+
+    # Check 2: Line# seqüencial
+    try:
+        lines = df_hplc[line_col].dropna().astype(int).tolist()
+        if lines:
+            min_line = min(lines)
+            max_line = max(lines)
+            expected_lines = set(range(min_line, max_line + 1))
+            actual_lines = set(lines)
+            missing = sorted(expected_lines - actual_lines)
+
+            result["expected_samples"] = len(expected_lines)
+            result["actual_samples"] = len(actual_lines)
+
+            if missing:
+                result["valid"] = False
+                result["missing_lines"] = missing
+                result["issues"].append({
+                    "type": "MISSING_LINES",
+                    "severity": "ERROR",
+                    "message": f"Falten {len(missing)} línies a 1-HPLC-SEQ: {missing[:10]}{'...' if len(missing) > 10 else ''}",
+                    "missing": missing
+                })
+    except Exception as e:
+        result["issues"].append({
+            "type": "LINE_CHECK_ERROR",
+            "severity": "WARNING",
+            "message": f"No s'ha pogut verificar seqüència Line#: {e}"
+        })
+
+    # Check 3: Creuar amb fitxers UIB
+    if uib_files:
+        # Obtenir Sample_Rep del MasterFile
+        sample_rep_col = None
+        for col in df_hplc.columns:
+            if 'sample_rep' in str(col).lower():
+                sample_rep_col = col
+                break
+
+        master_samples = set()
+        if sample_rep_col:
+            for val in df_hplc[sample_rep_col].dropna():
+                master_samples.add(normalize_key(str(val).strip()))
+        else:
+            # Fallback: usar Sample Name + Inj#
+            sample_col = None
+            inj_col = None
+            for col in df_hplc.columns:
+                if 'sample' in str(col).lower() and 'name' in str(col).lower():
+                    sample_col = col
+                if 'inj' in str(col).lower() and '#' in str(col):
+                    inj_col = col
+            if sample_col and inj_col:
+                for _, row in df_hplc.iterrows():
+                    sample = str(row[sample_col]).strip() if pd.notna(row[sample_col]) else ""
+                    inj = int(row[inj_col]) if pd.notna(row[inj_col]) else 1
+                    if sample:
+                        master_samples.add(normalize_key(f"{sample}_R{inj}"))
+
+        # Obtenir samples dels fitxers UIB
+        file_samples = set()
+        for f in uib_files:
+            nom = os.path.basename(f)
+            mostra, rep = netejar_nom_uib(nom)
+            file_samples.add(normalize_key(f"{mostra}_R{rep}"))
+
+        # Fitxers sense entrada al MasterFile
+        orphans = file_samples - master_samples
+        if orphans:
+            result["orphan_files"] = sorted(orphans)
+            # No és error crític, pot ser normal (fitxers d'altra SEQ)
+
+        # Entrades MasterFile sense fitxer
+        missing = master_samples - file_samples
+        if missing:
+            result["missing_files"] = sorted(missing)
+            result["issues"].append({
+                "type": "MISSING_FILES",
+                "severity": "WARNING",
+                "message": f"{len(missing)} mostres al MasterFile sense fitxer UIB: {sorted(missing)[:5]}{'...' if len(missing) > 5 else ''}"
+            })
+
+    # Check 4: Verificar dades DOC primeres mostres (memòria DOC esgotada)
+    # Si la memòria del TOC s'esgota, sobreescriu els primers DOCs
+    toc_calc_df = master_data.get("toc_calc")
+    if toc_calc_df is not None and not toc_calc_df.empty:
+        # Trobar columnes
+        sample_col = None
+        toc_row_col = None
+        for col in toc_calc_df.columns:
+            col_lower = str(col).lower()
+            if 'sample' in col_lower:
+                sample_col = col
+            elif 'toc_row' in col_lower or 'toc row' in col_lower:
+                toc_row_col = col
+
+        if sample_col and toc_row_col:
+            # Agrupar per sample i comptar punts
+            sample_points = toc_calc_df.groupby(sample_col).size().reset_index(name='npts')
+            sample_points = sample_points[sample_points[sample_col].notna()]
+
+            if len(sample_points) >= 3:
+                # Comparar punts de les primeres mostres amb la mediana
+                first_samples = sample_points.head(3)
+                median_pts = sample_points['npts'].median()
+
+                incomplete_samples = []
+                for _, row in first_samples.iterrows():
+                    if row['npts'] < median_pts * 0.5:  # Menys del 50% de punts
+                        incomplete_samples.append({
+                            "sample": str(row[sample_col]),
+                            "npts": int(row['npts']),
+                            "expected": int(median_pts)
+                        })
+
+                if incomplete_samples:
+                    result["incomplete_first_samples"] = incomplete_samples
+                    result["issues"].append({
+                        "type": "INCOMPLETE_FIRST_SAMPLES",
+                        "severity": "WARNING",
+                        "message": f"Primeres mostres amb dades incompletes (memòria DOC esgotada?): {[s['sample'] for s in incomplete_samples]}"
+                    })
+
+    return result
 
 
 def match_sample_confidence(sample_name, valid_samples):
@@ -2940,9 +2853,23 @@ def calculate_snr_info(y_doc_net, peak_info, y_doc_uib=None,
 # FUNCIONS RESUM CONSOLIDACIÓ
 # =============================================================================
 
-def _collect_sample_stats(mostra, rep, timeout_info, snr_info, peak_info, doc_mode):
+def _collect_sample_stats(mostra, rep, timeout_info, snr_info, peak_info, doc_mode, file_info=None):
     """
     Recull estadístiques d'una mostra per al resum de consolidació.
+
+    Args:
+        mostra: Nom de la mostra
+        rep: Número de rèplica
+        timeout_info: Info de timeouts TOC
+        snr_info: Info de SNR i baseline
+        peak_info: Info del pic principal
+        doc_mode: Mode DOC (DUAL, DIRECT, UIB)
+        file_info: Dict amb info dels fitxers (opcional):
+            - file_dad: Nom fitxer DAD/Direct
+            - file_uib: Nom fitxer UIB
+            - row_start: Fila inicial
+            - row_end: Fila final
+            - npts: Nombre de punts
 
     Returns:
         dict amb estadístiques de la mostra
@@ -2954,6 +2881,16 @@ def _collect_sample_stats(mostra, rep, timeout_info, snr_info, peak_info, doc_mo
         "doc_mode": doc_mode,
         "peak_valid": peak_info.get("valid", False) if peak_info else False,
     }
+
+    # File info (per GUI eficient)
+    if file_info:
+        stats["file_dad"] = file_info.get("file_dad", "")
+        stats["file_uib"] = file_info.get("file_uib", "")
+        stats["row_start"] = file_info.get("row_start", 0)
+        stats["row_end"] = file_info.get("row_end", 0)
+        stats["npts"] = file_info.get("npts", 0)
+        stats["match_confidence"] = file_info.get("match_confidence", 100.0)
+        stats["match_type"] = file_info.get("match_type", "exact")
 
     # Timeout info
     if timeout_info:
@@ -3047,6 +2984,76 @@ def generate_consolidation_summary(result, sample_stats, timing_stats=None):
     n_peak_valid = sum(1 for s in sample_stats if s.get("peak_valid", False))
     peak_valid_pct = round(100.0 * n_peak_valid / len(sample_stats), 1) if sample_stats else 0
 
+    # === QUALITY CHECK: Detectar files duplicades i mostres duplicades ===
+    row_usage = {}  # {(row_start, row_end): [sample_names]}
+    sample_count = {}  # {sample_name: count}
+    duplicate_rows = []
+    duplicate_samples = []
+
+    for s in sample_stats:
+        row_start = s.get("row_start") or 0
+        row_end = s.get("row_end") or 0
+        sample_name = s.get("name", s.get("mostra", "unknown"))
+
+        # Comptar mostres duplicades
+        sample_count[sample_name] = sample_count.get(sample_name, 0) + 1
+
+        # Files duplicades (només si tenim files vàlides)
+        if row_start and row_end and row_start > 0 and row_end > 0 and row_start != row_end:
+            key = (row_start, row_end)
+            if key not in row_usage:
+                row_usage[key] = []
+            row_usage[key].append(sample_name)
+
+    # Detectar mostres duplicades
+    for sample_name, count in sample_count.items():
+        if count > 1:
+            duplicate_samples.append({
+                "sample": sample_name,
+                "count": count
+            })
+
+    # Detectar files compartides entre mostres DIFERENTS
+    for (row_start, row_end), samples in row_usage.items():
+        unique_names = set(samples)
+        if len(unique_names) > 1:
+            duplicate_rows.append({
+                "rows": f"{row_start}-{row_end}",
+                "samples": list(unique_names),
+                "count": len(unique_names)
+            })
+
+    duplicate_rows.sort(key=lambda x: x["count"], reverse=True)
+    duplicate_samples.sort(key=lambda x: x["count"], reverse=True)
+
+    # Quality issues array
+    quality_issues = []
+
+    # Mostres duplicades (WARNING - cal revisar blocs B1/B2)
+    for dup in duplicate_samples:
+        quality_issues.append({
+            "type": "DUPLICATE_SAMPLE",
+            "severity": "WARNING",
+            "message": f"Mostra '{dup['sample']}' apareix {dup['count']} cops (revisar blocs B1/B2)",
+            "sample": dup["sample"],
+            "count": dup["count"]
+        })
+
+    # Files duplicades (ERROR - problema de MasterFile)
+    for dup in duplicate_rows:
+        quality_issues.append({
+            "type": "DUPLICATE_ROWS",
+            "severity": "ERROR",
+            "message": f"Files {dup['rows']} usades per mostres diferents: {', '.join(dup['samples'])}",
+            "samples": dup["samples"],
+            "rows": dup["rows"]
+        })
+
+    # Issues de validació 1-HPLC-SEQ (del resultat de consolidació)
+    hplc_validation = result.get("hplc_seq_validation", {})
+    for issue in hplc_validation.get("issues", []):
+        quality_issues.append(issue)
+
     # Construir resum
     summary = {
         "meta": {
@@ -3077,10 +3084,22 @@ def generate_consolidation_summary(result, sample_stats, timing_stats=None):
             "lod_uib_mau": lod_uib,
             "peak_valid_count": n_peak_valid,
             "peak_valid_pct": peak_valid_pct,
+            "duplicate_rows": duplicate_rows,
+            "duplicate_row_count": len(duplicate_rows),
+            "duplicate_samples": duplicate_samples,
+            "duplicate_sample_count": len(duplicate_samples),
         },
+        "quality_issues": quality_issues,
+        "hplc_seq_validation": hplc_validation if hplc_validation else {},
         "file_check": result.get("file_check", {}),
-        "warnings": result.get("warnings", []),
-        "errors": [e for e in result.get("errors", []) if not e.startswith("WARN:")],
+        "warnings": result.get("warnings", []) + [
+            f"AVÍS DUPLICAT: Mostra '{dup['sample']}' apareix {dup['count']} cops (revisar blocs B1/B2)"
+            for dup in duplicate_samples
+        ],
+        "errors": [e for e in result.get("errors", []) if not e.startswith("WARN:")] + [
+            f"ERROR DUPLICAT: Files {dup['rows']} usades per {len(dup['samples'])} mostres: {', '.join(dup['samples'])}"
+            for dup in duplicate_rows
+        ],
         "samples": sample_stats,
     }
 
@@ -3412,6 +3431,37 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
 
     try:
         input_folder = seq_path
+
+        # === AUTO-MIGRACIÓ: Si no hi ha MasterFile, intentar crear-lo ===
+        master_files = glob.glob(os.path.join(input_folder, "*MasterFile*.xlsx"))
+        master_files = [f for f in master_files if "~$" not in f and "backup" not in f.lower()]
+
+        if not master_files:
+            # Intentar migrar des de fitxers antics (v11/v12)
+            try:
+                from hpsec_migrate_master import migrate_single
+                if progress_callback:
+                    progress_callback(0, "Migrant format antic...")
+                migrate_result = migrate_single(input_folder, force=False)
+
+                if migrate_result.get('status') == 'ok':
+                    result["warnings"].append(
+                        f"AUTO-MIGRATE: MasterFile creat des de {migrate_result.get('rawdata', 'rawdata')}"
+                    )
+                elif migrate_result.get('status') == 'need_input':
+                    result["warnings"].append(
+                        "AVÍS: No s'ha trobat MasterFile ni rawdata v11/v12 per migrar"
+                    )
+                elif migrate_result.get('status') == 'exists':
+                    pass  # MasterFile ja existeix (potser creat ara)
+                else:
+                    result["warnings"].append(
+                        f"AVÍS: Migració fallida - {migrate_result.get('message', 'error desconegut')}"
+                    )
+            except ImportError:
+                result["warnings"].append("AVÍS: Mòdul hpsec_migrate_master no disponible")
+            except Exception as e:
+                result["warnings"].append(f"AVÍS: Error durant migració automàtica: {e}")
         path_csv = os.path.join(input_folder, "CSV")
         path_3d = os.path.join(input_folder, "Export3d")
 
@@ -3505,6 +3555,20 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
                             valid_samples = get_valid_samples_from_hplc_seq(master_data)
                             if valid_samples:
                                 result["valid_samples"] = list(valid_samples)[:20]  # Guardar per debug
+
+                            # === VALIDACIÓ CRÍTICA: Integritat 1-HPLC-SEQ ===
+                            hplc_validation = validate_hplc_seq(master_data, uib_files)
+                            result["hplc_seq_validation"] = hplc_validation
+
+                            if not hplc_validation["valid"]:
+                                # Afegir errors/warnings al resultat
+                                for issue in hplc_validation["issues"]:
+                                    if issue["severity"] == "CRITICAL":
+                                        result["errors"].append(f"CRÍTIC: {issue['message']}")
+                                    elif issue["severity"] == "ERROR":
+                                        result["errors"].append(f"ERROR: {issue['message']}")
+                                    else:
+                                        result["warnings"].append(f"AVÍS: {issue['message']}")
 
                             # Calcular timing stats (per planificació futures SEQs)
                             timing_stats = calculate_timing_stats(master_data)
@@ -4013,16 +4077,40 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
                     if sample_ranges_new and not matched:
                         # Construir Sample_Rep per buscar
                         sample_rep_key = f"{mostra}_R{rep}"
-                        # Buscar coincidència exacta o parcial
+                        sample_rep_normalized = normalize_key(sample_rep_key)
+
+                        # Buscar coincidència: exacta, normalitzada, o parcial
                         match_info = None
+                        partial_matches = []
+
                         for sr, info in sample_ranges_new.items():
+                            # 1. Coincidència exacta
                             if sr == sample_rep_key:
                                 match_info = info
                                 break
-                            # Buscar per coincidència parcial (mostra sense rep)
-                            if normalize_key(sr.split("_R")[0]) == normalize_key(mostra):
-                                if match_info is None:
+                            # 2. Coincidència normalitzada (ignorar espais, guions, etc.)
+                            if normalize_key(sr) == sample_rep_normalized:
+                                match_info = info
+                                break
+                            # 3. Guardar coincidències parcials per si no hi ha exacta
+                            sr_base = sr.rsplit("_R", 1)[0] if "_R" in sr else sr
+                            if normalize_key(sr_base) == normalize_key(mostra):
+                                # Extreure rèplica del sample_ranges key
+                                sr_rep = sr.rsplit("_R", 1)[1] if "_R" in sr else "1"
+                                partial_matches.append((sr, info, sr_rep))
+
+                        # Si no hi ha match exacte, buscar la rèplica correcta entre parcials
+                        if match_info is None and partial_matches:
+                            for sr, info, sr_rep in partial_matches:
+                                if sr_rep == str(rep):
                                     match_info = info
+                                    break
+                            # NO FER FALLBACK: si no trobem la rèplica correcta, NO usar dades incorrectes
+                            # Això evita l'error de files duplicades
+                            if match_info is None:
+                                result["warnings"].append(
+                                    f"SENSE_MATCH: {sample_rep_key} no trobat a MasterFile (rèplica {rep} absent)"
+                                )
 
                         if match_info:
                             try:
@@ -4301,7 +4389,24 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
                 processed_count += 1
 
                 # Recollir estadístiques de la mostra
-                sample_stat = _collect_sample_stats(mostra, rep, timeout_info, snr_info, peak_info, doc_mode)
+                # Obtenir confiança del match (si available)
+                match_conf = 100.0  # Default alta confiança
+                match_type = "exact"
+                if nom_doc_uib in match_details:
+                    mi = match_details[nom_doc_uib]
+                    match_conf = mi.get("confidence", 100.0)
+                    match_type = mi.get("match_type", "exact")
+
+                file_info = {
+                    "file_dad": nom_doc,
+                    "file_uib": nom_doc_uib if doc_mode == "DUAL" else "",
+                    "row_start": row_ini,
+                    "row_end": row_fi,
+                    "npts": len(t_doc) if t_doc is not None else 0,
+                    "match_confidence": match_conf,
+                    "match_type": match_type,
+                }
+                sample_stat = _collect_sample_stats(mostra, rep, timeout_info, snr_info, peak_info, doc_mode, file_info)
                 result["sample_stats"].append(sample_stat)
 
         else:
@@ -4688,7 +4793,16 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
                     processed_count += 1
 
                     # Recollir estadístiques de la mostra
-                    sample_stat = _collect_sample_stats(mostra_clean, rep, timeout_info, snr_info, peak_info, "DIRECT")
+                    file_info = {
+                        "file_dad": nom_dad if nom_dad else os.path.basename(mestre),
+                        "file_uib": "",
+                        "row_start": row_ini,
+                        "row_end": row_fi,
+                        "npts": len(t_doc) if t_doc is not None else 0,
+                        "match_confidence": 100.0,  # DIRECT: match exacte des de MasterFile
+                        "match_type": "masterfile",
+                    }
+                    sample_stat = _collect_sample_stats(mostra_clean, rep, timeout_info, snr_info, peak_info, "DIRECT", file_info)
                     result["sample_stats"].append(sample_stat)
 
             else:
@@ -4834,7 +4948,16 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
                     processed_count += 1
 
                     # Recollir estadístiques de la mostra
-                    sample_stat = _collect_sample_stats(mostra_clean, rep, timeout_info, snr_info, peak_info, "DIRECT")
+                    file_info = {
+                        "file_dad": nom_dad if nom_dad else os.path.basename(mestre),
+                        "file_uib": "",
+                        "row_start": row_ini,
+                        "row_end": row_fi,
+                        "npts": len(t_doc) if t_doc is not None else 0,
+                        "match_confidence": 100.0,  # DIRECT: match exacte des de MasterFile
+                        "match_type": "masterfile",
+                    }
+                    sample_stat = _collect_sample_stats(mostra_clean, rep, timeout_info, snr_info, peak_info, "DIRECT", file_info)
                     result["sample_stats"].append(sample_stat)
 
         result["processed_count"] = processed_count

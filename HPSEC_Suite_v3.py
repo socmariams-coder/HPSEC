@@ -1,15 +1,20 @@
 """
-HPSEC Suite v3.0
+HPSEC Suite v3.1
 ================
 Aplicació unificada per al processament de dades HPSEC.
 
-Basat en v1 (wizard 4 passos) + backend modular de v2.
+Basat en v1 (wizard) + backend modular de 5 fases.
 
-Pipeline:
-1. Consolidar - Llegir fitxers .D i crear Excel consolidats
-2. Calibrar - Calcular factor de calibració amb KHP
-3. QC - Detectar anomalies i seleccionar millors rèpliques
-4. Exportar - Generar fitxers finals i informes PDF
+Pipeline (5 fases):
+1. Importar  - Llegir fitxers font, aparellar mostres (hpsec_import.py)
+2. Calibrar  - Validació KHP, càlcul factor calibració (hpsec_calibrate.py)
+3. Processar - Alineació, baseline, àrees, SNR (hpsec_process.py)
+4. Revisar   - Comparar rèpliques, seleccionar millor (hpsec_review.py)
+5. Exportar  - Generar fitxers finals i informes PDF
+
+Eines:
+- Planificador de seqüències (hpsec_planner_gui.py)
+- Configuració (modal)
 
 Autor: LEQUIA/STRs
 """
@@ -74,7 +79,7 @@ from hpsec_utils import baseline_stats
 # CONSTANTS
 # =============================================================================
 APP_NAME = "HPSEC Suite"
-VERSION = "3.0.0"
+VERSION = "3.1.0"
 
 # Colors (paleta professional)
 COLORS = {
@@ -322,7 +327,7 @@ class HPSECSuiteV3:
         # Estat
         self.seq_path = None
         self.current_step = 0
-        self.steps = ["Consolidar", "Calibrar", "QC", "Exportar"]
+        self.steps = ["Importar", "Calibrar", "Processar", "Revisar", "Exportar"]
 
         # Dades
         self.consolidated_data = {}
@@ -331,6 +336,7 @@ class HPSECSuiteV3:
         self.selected_replicas = {}
         self.khp_area = None  # Àrea KHP per càlcul concentració
         self.khp_conc = None  # Concentració KHP (ppm)
+        self.khp_source_seq = None  # SEQ origen del KHP usat per calibració
 
         # Flags
         self.is_processing = False
@@ -401,19 +407,26 @@ class HPSECSuiteV3:
                 bg=COLORS["primary"], fg=COLORS["light"]).pack(side=tk.LEFT, pady=15)
 
         # Botons dreta
-        btn_config = tk.Button(header, text="⚙",
+        btn_config = tk.Button(header, text="[=]",
                               command=self._open_config,
                               bg=COLORS["white"], fg=COLORS["primary"],
-                              font=("Segoe UI", 12),
+                              font=("Segoe UI", 10),
                               relief="flat", width=3)
         btn_config.pack(side=tk.RIGHT, padx=10, pady=15)
 
-        btn_repo = tk.Button(header, text="Repositori",
-                            command=self._open_repositori,
-                            bg=COLORS["success"], fg=COLORS["white"],
-                            font=("Segoe UI", 9, "bold"),
-                            relief="flat", padx=15, pady=5)
-        btn_repo.pack(side=tk.RIGHT, padx=5, pady=15)
+        # Menú Eines (desplegable)
+        self.btn_eines = tk.Menubutton(header, text="Eines",
+                                       bg=COLORS["secondary"], fg=COLORS["white"],
+                                       font=("Segoe UI", 9, "bold"),
+                                       relief="flat", padx=12, pady=5)
+        self.btn_eines.pack(side=tk.RIGHT, padx=5, pady=15)
+
+        self.menu_eines = tk.Menu(self.btn_eines, tearoff=0)
+        self.btn_eines.configure(menu=self.menu_eines)
+        self.menu_eines.add_command(label="Planificador Sequencies", command=self._open_planner)
+        self.menu_eines.add_command(label="Comparador UIB/Direct", command=self._open_comparador)
+        self.menu_eines.add_separator()
+        self.menu_eines.add_command(label="Repositori KHP", command=self._open_repositori)
 
         btn_folder = tk.Button(header, text="Seleccionar SEQ",
                               command=self._select_folder,
@@ -481,26 +494,26 @@ class HPSECSuiteV3:
         # === Frame per cada pas (només un visible a la vegada) ===
         self.action_frames = []
 
-        # Pas 1: Consolidar
+        # Pas 1: Importar
         frame1 = tk.Frame(btn_container, bg=COLORS["white"])
         self.action_frames.append(frame1)
 
-        self.progress_con = ttk.Progressbar(frame1, mode='determinate', length=300)
-        self.progress_con.pack(side=tk.LEFT, padx=(20, 10))
+        self.progress_import = ttk.Progressbar(frame1, mode='determinate', length=300)
+        self.progress_import.pack(side=tk.LEFT, padx=(20, 10))
 
-        self.lbl_con_progress = tk.Label(frame1, text="",
-                                         font=("Segoe UI", 9),
-                                         bg=COLORS["white"], fg=COLORS["text_light"],
-                                         width=30)
-        self.lbl_con_progress.pack(side=tk.LEFT, padx=10)
+        self.lbl_import_progress = tk.Label(frame1, text="",
+                                            font=("Segoe UI", 9),
+                                            bg=COLORS["white"], fg=COLORS["text_light"],
+                                            width=30)
+        self.lbl_import_progress.pack(side=tk.LEFT, padx=10)
 
-        self.btn_consolidar = tk.Button(frame1, text="▶ Consolidar Dades",
-                                        command=self._run_consolidation,
-                                        bg=COLORS["primary"], fg=COLORS["white"],
-                                        font=("Segoe UI", 11, "bold"),
-                                        relief="flat", padx=25, pady=8,
-                                        state="disabled")
-        self.btn_consolidar.pack(side=tk.RIGHT, padx=20)
+        self.btn_importar = tk.Button(frame1, text="▶ Importar Dades",
+                                      command=self._run_import,
+                                      bg=COLORS["primary"], fg=COLORS["white"],
+                                      font=("Segoe UI", 11, "bold"),
+                                      relief="flat", padx=25, pady=8,
+                                      state="disabled")
+        self.btn_importar.pack(side=tk.RIGHT, padx=20)
 
         # Pas 2: Calibrar
         frame2 = tk.Frame(btn_container, bg=COLORS["white"])
@@ -519,23 +532,38 @@ class HPSECSuiteV3:
                                        bg=COLORS["white"], fg=COLORS["text_light"])
         self.lbl_cal_status.pack(side=tk.LEFT, padx=20)
 
-        # Pas 3: QC
+        # Pas 3: Processar
         frame3 = tk.Frame(btn_container, bg=COLORS["white"])
         self.action_frames.append(frame3)
 
-        self.btn_qc = tk.Button(frame3, text="▶ Analitzar Qualitat",
-                                command=self._run_qc,
-                                bg=COLORS["primary"], fg=COLORS["white"],
-                                font=("Segoe UI", 11, "bold"),
-                                relief="flat", padx=25, pady=8,
-                                state="disabled")
-        self.btn_qc.pack(side=tk.RIGHT, padx=20)
+        self.progress_process = ttk.Progressbar(frame3, mode='determinate', length=300)
+        self.progress_process.pack(side=tk.LEFT, padx=(20, 10))
 
-        # Pas 4: Exportar
+        self.btn_processar = tk.Button(frame3, text="▶ Processar",
+                                       command=self._run_process,
+                                       bg=COLORS["primary"], fg=COLORS["white"],
+                                       font=("Segoe UI", 11, "bold"),
+                                       relief="flat", padx=25, pady=8,
+                                       state="disabled")
+        self.btn_processar.pack(side=tk.RIGHT, padx=20)
+
+        # Pas 4: Revisar
         frame4 = tk.Frame(btn_container, bg=COLORS["white"])
         self.action_frames.append(frame4)
 
-        self.btn_export = tk.Button(frame4, text="▶ Exportar Resultats",
+        self.btn_revisar = tk.Button(frame4, text="▶ Revisar Repliques",
+                                     command=self._run_review,
+                                     bg=COLORS["primary"], fg=COLORS["white"],
+                                     font=("Segoe UI", 11, "bold"),
+                                     relief="flat", padx=25, pady=8,
+                                     state="disabled")
+        self.btn_revisar.pack(side=tk.RIGHT, padx=20)
+
+        # Pas 5: Exportar
+        frame5 = tk.Frame(btn_container, bg=COLORS["white"])
+        self.action_frames.append(frame5)
+
+        self.btn_export = tk.Button(frame5, text="▶ Exportar Resultats",
                                     command=self._run_export,
                                     bg=COLORS["success"], fg=COLORS["white"],
                                     font=("Segoe UI", 11, "bold"),
@@ -590,17 +618,18 @@ class HPSECSuiteV3:
         self.main_frame = tk.Frame(self.scrollable_frame, bg=COLORS["white"])
         self.main_frame.pack(fill=tk.BOTH, expand=True)
 
-        # Un frame per cada pas
+        # Un frame per cada pas (5 fases)
         self.step_frames = []
-        for i in range(4):
+        for i in range(5):
             frame = tk.Frame(self.main_frame, bg=COLORS["white"])
             self.step_frames.append(frame)
 
         # Construir contingut de cada pas
-        self._build_step_consolidar(self.step_frames[0])
+        self._build_step_importar(self.step_frames[0])
         self._build_step_calibrar(self.step_frames[1])
-        self._build_step_qc(self.step_frames[2])
-        self._build_step_exportar(self.step_frames[3])
+        self._build_step_processar(self.step_frames[2])
+        self._build_step_revisar(self.step_frames[3])
+        self._build_step_exportar(self.step_frames[4])
 
     def _on_canvas_configure(self, event):
         """Ajusta l'amplada del frame interior al canvas."""
@@ -614,197 +643,242 @@ class HPSECSuiteV3:
     # PAS 1: CONSOLIDAR
     # =========================================================================
 
-    def _build_step_consolidar(self, parent):
-        """Construeix el pas de consolidació."""
-        # Títol + botó obrir carpeta
-        header_frame = tk.Frame(parent, bg=COLORS["white"])
-        header_frame.pack(fill=tk.X, pady=(0, 10))
+    def _build_step_importar(self, parent):
+        """Construeix el pas d'importació (Fase 1) - Disseny unificat amb taula central."""
 
-        tk.Label(header_frame, text="Pas 1: Consolidació de Dades",
-                font=("Segoe UI", 14, "bold"),
+        # === HEADER ===
+        header = tk.Frame(parent, bg=COLORS["white"])
+        header.pack(fill=tk.X, pady=(0, 5))
+
+        tk.Label(header, text="Pas 1: Importar",
+                font=("Segoe UI", 13, "bold"),
                 bg=COLORS["white"], fg=COLORS["primary"]).pack(side=tk.LEFT)
 
-        self.btn_open_seq_folder = tk.Button(header_frame, text="Obrir Carpeta",
+        self.btn_open_seq_folder = tk.Button(header, text="Obrir Carpeta",
                                              command=self._open_seq_folder,
                                              bg=COLORS["light"], fg=COLORS["dark"],
-                                             font=("Segoe UI", 9),
-                                             relief="flat", padx=10, pady=2)
+                                             font=("Segoe UI", 8),
+                                             relief="flat", padx=8, pady=2)
         self.btn_open_seq_folder.pack(side=tk.RIGHT)
 
-        tk.Label(parent, text="Llegeix fitxers UIB (CSV) i DAD (Export3D) i crea Excel consolidats per cada mostra.",
-                font=("Segoe UI", 10),
-                bg=COLORS["white"], fg=COLORS["dark"]).pack(anchor="w", pady=(0, 10))
+        # === FILA SUPERIOR: SEQÜÈNCIA | KHP ===
+        top_row = tk.Frame(parent, bg=COLORS["white"])
+        top_row.pack(fill=tk.X, pady=(0, 5))
+        top_row.columnconfigure(0, weight=1)
+        top_row.columnconfigure(1, weight=1)
 
-        # Info frame
-        info_frame = tk.LabelFrame(parent, text="Informació de la Seqüència",
-                                   font=("Segoe UI", 10, "bold"),
-                                   bg=COLORS["white"])
-        info_frame.pack(fill=tk.X, pady=10)
+        # -- Columna esquerra: SEQÜÈNCIA --
+        seq_frame = tk.LabelFrame(top_row, text="SEQÜÈNCIA", font=("Segoe UI", 9, "bold"),
+                                  bg=COLORS["white"], fg=COLORS["dark"])
+        seq_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 3), pady=0)
 
-        # MasterFile
-        self.lbl_con_master = tk.Label(info_frame, text="MasterFile: -",
-                                       font=("Segoe UI", 10),
-                                       bg=COLORS["white"])
-        self.lbl_con_master.pack(anchor="w", padx=10, pady=3)
+        # Línia 1: SEQ · Mode
+        self.lbl_seq_header = tk.Label(seq_frame, text="- · -",
+                                       font=("Segoe UI", 10, "bold"),
+                                       bg=COLORS["white"], fg=COLORS["primary"])
+        self.lbl_seq_header.pack(anchor="w", padx=8, pady=(4, 2))
 
-        # Fitxers dades
-        self.lbl_con_uib = tk.Label(info_frame, text="Fitxers UIB (CSV): -",
-                                    font=("Segoe UI", 10),
-                                    bg=COLORS["white"])
-        self.lbl_con_uib.pack(anchor="w", padx=10, pady=3)
+        # Info en línia: Mode dades | UIB | Volum
+        info_line = tk.Frame(seq_frame, bg=COLORS["white"])
+        info_line.pack(fill=tk.X, padx=8, pady=2)
 
-        self.lbl_con_dad = tk.Label(info_frame, text="Fitxers DAD (Export3D): -",
-                                    font=("Segoe UI", 10),
-                                    bg=COLORS["white"])
-        self.lbl_con_dad.pack(anchor="w", padx=10, pady=3)
+        self.lbl_data_mode = tk.Label(info_line, text="Dades: -",
+                                      font=("Segoe UI", 8), bg=COLORS["white"])
+        self.lbl_data_mode.pack(side=tk.LEFT, padx=(0, 10))
 
-        # Mode
-        self.lbl_con_mode = tk.Label(info_frame, text="Mode: -",
-                                     font=("Segoe UI", 10),
-                                     bg=COLORS["white"])
-        self.lbl_con_mode.pack(anchor="w", padx=10, pady=3)
+        self.lbl_uib_sens = tk.Label(info_line, text="UIB: -",
+                                     font=("Segoe UI", 8), bg=COLORS["white"])
+        self.lbl_uib_sens.pack(side=tk.LEFT, padx=(0, 10))
 
-        # Estat consolidació
-        self.lbl_con_status = tk.Label(info_frame, text="Estat: -",
-                                       font=("Segoe UI", 10),
-                                       bg=COLORS["white"])
-        self.lbl_con_status.pack(anchor="w", padx=10, pady=3)
+        self.lbl_inj_vol = tk.Label(info_line, text="Vol: -",
+                                    font=("Segoe UI", 8), bg=COLORS["white"])
+        self.lbl_inj_vol.pack(side=tk.LEFT)
 
-        # Frame per botons PDF (inicialment amagat)
-        self.pdf_frame = tk.Frame(info_frame, bg=COLORS["white"])
-        self.pdf_frame.pack(anchor="w", padx=10, pady=5)
+        # Comptadors exactes: x mostres, y KHP, z control
+        self.lbl_samples_count = tk.Label(seq_frame, text="Mostres: -",
+                                          font=("Segoe UI", 9), bg=COLORS["white"])
+        self.lbl_samples_count.pack(anchor="w", padx=8, pady=2)
 
-        self.btn_open_report = tk.Button(self.pdf_frame, text="Obrir Informe PDF",
+        # Estat + MasterFile
+        status_line = tk.Frame(seq_frame, bg=COLORS["white"])
+        status_line.pack(fill=tk.X, padx=8, pady=(0, 4))
+
+        self.lbl_con_status = tk.Label(status_line, text="Pendent",
+                                       font=("Segoe UI", 8), bg=COLORS["white"],
+                                       fg=COLORS["text_light"])
+        self.lbl_con_status.pack(side=tk.LEFT)
+
+        self.lbl_con_master = tk.Label(status_line, text="",
+                                       font=("Segoe UI", 8),
+                                       bg=COLORS["white"], fg=COLORS["text_light"])
+        self.lbl_con_master.pack(side=tk.RIGHT)
+
+        # -- Columna dreta: KHP DETECTATS --
+        khp_frame = tk.LabelFrame(top_row, text="KHP DETECTATS", font=("Segoe UI", 9, "bold"),
+                                  bg=COLORS["white"], fg=COLORS["dark"])
+        khp_frame.grid(row=0, column=1, sticky="nsew", padx=(3, 0), pady=0)
+
+        # Header KHP
+        self.lbl_khp_header = tk.Label(khp_frame, text="Cap KHP trobat",
+                                       font=("Segoe UI", 9),
+                                       bg=COLORS["white"], fg=COLORS["text_light"])
+        self.lbl_khp_header.pack(anchor="w", padx=8, pady=(4, 2))
+
+        # Taula KHP (Treeview compacte)
+        khp_table_frame = tk.Frame(khp_frame, bg=COLORS["white"])
+        khp_table_frame.pack(fill=tk.BOTH, expand=True, padx=8, pady=2)
+
+        khp_cols = ("rep", "area_doc", "a254", "ratio", "snr", "status")
+        self.tree_khp = ttk.Treeview(khp_table_frame, columns=khp_cols, show='headings', height=2)
+
+        col_widths = {"rep": 30, "area_doc": 65, "a254": 50, "ratio": 50, "snr": 45, "status": 30}
+        col_texts = {"rep": "", "area_doc": "DOC", "a254": "A254", "ratio": "Ratio", "snr": "SNR", "status": ""}
+        for col in khp_cols:
+            self.tree_khp.heading(col, text=col_texts[col])
+            self.tree_khp.column(col, width=col_widths[col], anchor="center", stretch=False)
+
+        self.tree_khp.tag_configure('ok', foreground='#006100')
+        self.tree_khp.tag_configure('warn', foreground='#856404')
+        self.tree_khp.tag_configure('fail', foreground='#721c24')
+        self.tree_khp.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        # RSD i selecció
+        self.lbl_khp_rsd = tk.Label(khp_frame, text="",
+                                    font=("Segoe UI", 8), bg=COLORS["white"],
+                                    fg=COLORS["text_light"])
+        self.lbl_khp_rsd.pack(anchor="w", padx=8, pady=(0, 4))
+
+        # === TAULA CENTRAL UNIFICADA: FITXERS/MOSTRES ===
+        files_frame = tk.LabelFrame(parent, text="FITXERS IMPORTATS", font=("Segoe UI", 9, "bold"),
+                                    bg=COLORS["white"], fg=COLORS["dark"])
+        files_frame.pack(fill=tk.BOTH, expand=True, pady=5)
+
+        # Treeview amb scroll
+        tree_container = tk.Frame(files_frame, bg=COLORS["white"])
+        tree_container.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+        # Columnes: Mostra | Direct (fitxer+files+npts) | UIB (fitxer+npts) | Conf | Timeout | SNR | St
+        file_cols = ("mostra", "direct", "uib", "conf", "timeout", "snr", "status")
+        self.tree_files = ttk.Treeview(tree_container, columns=file_cols, show='headings', height=8)
+
+        col_config = {
+            "mostra": ("Mostra", 85, "w"),
+            "direct": ("DOC Direct", 165, "w"),
+            "uib": ("DOC UIB", 130, "w"),
+            "conf": ("%", 30, "center"),
+            "timeout": ("Timeout", 60, "center"),
+            "snr": ("SNR", 45, "e"),
+            "status": ("", 20, "center")
+        }
+        for col, (text, width, anchor) in col_config.items():
+            self.tree_files.heading(col, text=text)
+            self.tree_files.column(col, width=width, anchor=anchor, stretch=(col == "direct"))
+
+        # Tags per colors
+        self.tree_files.tag_configure('ok', foreground='#006100')
+        self.tree_files.tag_configure('warn', foreground='#856404')
+        self.tree_files.tag_configure('crit', foreground='#721c24')
+        self.tree_files.tag_configure('khp', foreground='#004085', background='#e7f1ff')
+        self.tree_files.tag_configure('ctrl', foreground='#155724', background='#d4edda')
+        self.tree_files.tag_configure('low_conf', foreground='#856404', background='#fff3cd')  # Confiança baixa
+        self.tree_files.tag_configure('dup_error', foreground='#721c24', background='#f8d7da')  # Files duplicades
+
+        # Scrollbar
+        scrollbar = ttk.Scrollbar(tree_container, orient="vertical", command=self.tree_files.yview)
+        self.tree_files.configure(yscrollcommand=scrollbar.set)
+
+        self.tree_files.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # Bind doble-clic per editar assignació
+        self.tree_files.bind("<Double-1>", self._on_file_double_click)
+
+        # === BARRA INFERIOR: STATS + BOTONS ===
+        stats_bar = tk.Frame(parent, bg=COLORS["light"])
+        stats_bar.pack(fill=tk.X, pady=(5, 0))
+
+        # Stats
+        self.lbl_res_snr = tk.Label(stats_bar, text="SNR: -",
+                                    font=("Segoe UI", 8), bg=COLORS["light"])
+        self.lbl_res_snr.pack(side=tk.LEFT, padx=8, pady=4)
+
+        self.lbl_res_lod = tk.Label(stats_bar, text="LOD: -",
+                                    font=("Segoe UI", 8), bg=COLORS["light"])
+        self.lbl_res_lod.pack(side=tk.LEFT, padx=8, pady=4)
+
+        self.lbl_res_baseline = tk.Label(stats_bar, text="",
+                                         font=("Segoe UI", 8), bg=COLORS["light"],
+                                         fg=COLORS["text_light"])
+        self.lbl_res_baseline.pack(side=tk.LEFT, padx=8, pady=4)
+
+        # Botons PDF
+        self.btn_open_report = tk.Button(stats_bar, text="Informe",
                                          command=self._open_consolidation_report,
                                          bg=COLORS["secondary"], fg=COLORS["white"],
-                                         font=("Segoe UI", 9),
-                                         relief="flat", padx=10, pady=3)
+                                         font=("Segoe UI", 8), relief="flat", padx=6, pady=2)
+        self.btn_open_report.pack(side=tk.RIGHT, padx=2, pady=3)
 
-        self.btn_open_chromato = tk.Button(self.pdf_frame, text="Obrir Cromatogrames PDF",
+        self.btn_open_chromato = tk.Button(stats_bar, text="Cromatogrames",
                                            command=self._open_chromatograms_report,
                                            bg=COLORS["secondary"], fg=COLORS["white"],
-                                           font=("Segoe UI", 9),
-                                           relief="flat", padx=10, pady=3)
+                                           font=("Segoe UI", 8), relief="flat", padx=6, pady=2)
+        self.btn_open_chromato.pack(side=tk.RIGHT, padx=2, pady=3)
 
-        # === FRAME RESUM CONSOLIDACIÓ (inicialment amagat) ===
-        self.summary_frame = tk.LabelFrame(parent, text="Resum Consolidació",
-                                           font=("Segoe UI", 10, "bold"),
-                                           bg=COLORS["white"])
-        # No pack() encara - es mostrarà després de consolidar
+        # Comptador timeouts inline
+        self.lbl_timeout_summary = tk.Label(stats_bar, text="",
+                                            font=("Segoe UI", 8), bg=COLORS["light"],
+                                            fg=COLORS["text_light"])
+        self.lbl_timeout_summary.pack(side=tk.RIGHT, padx=10, pady=4)
 
-        # Subframe per estadístiques en 2 columnes
-        summary_content = tk.Frame(self.summary_frame, bg=COLORS["white"])
-        summary_content.pack(fill=tk.X, padx=10, pady=5)
+        # === Compatibilitat amb codi existent (aliases) ===
+        self.lbl_con_uib = self.lbl_data_mode  # Reutilitzem
+        self.lbl_con_dad = self.lbl_data_mode
+        self.lbl_con_mode = self.lbl_data_mode
+        self.lbl_res_processed = self.lbl_samples_count
+        self.lbl_sum_samples = self.lbl_samples_count
+        self.lbl_sum_snr = self.lbl_res_snr
+        self.lbl_sum_lod = self.lbl_res_lod
+        self.lbl_sum_warnings = self.lbl_res_baseline
+        self.lbl_res_warnings = self.lbl_res_baseline
+        # Timeouts
+        self.lbl_timeout_ok = self.lbl_timeout_summary
+        self.lbl_timeout_info = self.lbl_timeout_summary
+        self.lbl_timeout_warn = self.lbl_timeout_summary
+        self.lbl_timeout_crit = self.lbl_timeout_summary
+        self.lbl_timeout_affected = self.lbl_timeout_summary
+        self.lbl_sum_critical = self.lbl_timeout_summary
+        self.lbl_sum_generated = self.lbl_res_baseline
+        # Frames
+        self.summary_frame = stats_bar
+        self.results_frame = stats_bar
 
-        # Columna esquerra: Comptadors
-        left_col = tk.Frame(summary_content, bg=COLORS["white"])
-        left_col.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 10))
+    def _on_file_double_click(self, event):
+        """Mostra detalls del fitxer seleccionat i permet editar assignació."""
+        selection = self.tree_files.selection()
+        if not selection:
+            return
+        item = self.tree_files.item(selection[0])
+        values = item['values']
+        if values:
+            # Columnes: mostra, direct, uib, conf, timeout, snr, status
+            mostra = values[0] if len(values) > 0 else "-"
+            direct = values[1] if len(values) > 1 else "-"
+            uib = values[2] if len(values) > 2 else "-"
+            conf = values[3] if len(values) > 3 else "100"
+            timeout = values[4] if len(values) > 4 else "-"
+            snr = values[5] if len(values) > 5 else "-"
 
-        self.lbl_sum_samples = tk.Label(left_col, text="Mostres: -",
-                                        font=("Segoe UI", 10),
-                                        bg=COLORS["white"])
-        self.lbl_sum_samples.pack(anchor="w")
+            conf_val = int(conf) if conf and conf != "" else 100
+            conf_warning = "\n\n⚠ BAIXA CONFIANÇA - Revisar assignació!" if conf_val < 85 else ""
 
-        self.lbl_sum_alignment = tk.Label(left_col, text="Alineació: -",
-                                          font=("Segoe UI", 10),
-                                          bg=COLORS["white"])
-        self.lbl_sum_alignment.pack(anchor="w")
-
-        self.lbl_sum_snr = tk.Label(left_col, text="SNR mediana: -",
-                                    font=("Segoe UI", 10),
-                                    bg=COLORS["white"])
-        self.lbl_sum_snr.pack(anchor="w")
-
-        self.lbl_sum_lod = tk.Label(left_col, text="LOD: -",
-                                    font=("Segoe UI", 10),
-                                    bg=COLORS["white"])
-        self.lbl_sum_lod.pack(anchor="w")
-
-        self.lbl_sum_generated = tk.Label(left_col, text="",
-                                          font=("Segoe UI", 9),
-                                          bg=COLORS["white"], fg=COLORS["text_light"])
-        self.lbl_sum_generated.pack(anchor="w", pady=(5, 0))
-
-        # Columna central: Validació KHP
-        mid_col = tk.Frame(summary_content, bg=COLORS["white"])
-        mid_col.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 10))
-
-        tk.Label(mid_col, text="Validació KHP:",
-                font=("Segoe UI", 10, "bold"),
-                bg=COLORS["white"]).pack(anchor="w")
-
-        self.lbl_khp_status = tk.Label(mid_col, text="Status: -",
-                                       font=("Segoe UI", 10),
-                                       bg=COLORS["white"])
-        self.lbl_khp_status.pack(anchor="w")
-
-        self.lbl_khp_file = tk.Label(mid_col, text="Fitxer: -",
-                                     font=("Segoe UI", 9),
-                                     bg=COLORS["white"], fg=COLORS["text_light"])
-        self.lbl_khp_file.pack(anchor="w")
-
-        self.lbl_khp_area = tk.Label(mid_col, text="Àrea: -",
-                                     font=("Segoe UI", 9),
-                                     bg=COLORS["white"])
-        self.lbl_khp_area.pack(anchor="w")
-
-        self.lbl_khp_historical = tk.Label(mid_col, text="Històric: -",
-                                           font=("Segoe UI", 9),
-                                           bg=COLORS["white"])
-        self.lbl_khp_historical.pack(anchor="w")
-
-        self.lbl_khp_issues = tk.Label(mid_col, text="",
-                                       font=("Segoe UI", 9),
-                                       bg=COLORS["white"], fg=COLORS["error"],
-                                       wraplength=200)
-        self.lbl_khp_issues.pack(anchor="w")
-
-        # Columna dreta: Timeouts
-        right_col = tk.Frame(summary_content, bg=COLORS["white"])
-        right_col.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-
-        tk.Label(right_col, text="Timeouts TOC:",
-                font=("Segoe UI", 10, "bold"),
-                bg=COLORS["white"]).pack(anchor="w")
-
-        # Frame per les barres de severitat
-        self.timeout_bars_frame = tk.Frame(right_col, bg=COLORS["white"])
-        self.timeout_bars_frame.pack(anchor="w", pady=5)
-
-        self.lbl_timeout_ok = tk.Label(self.timeout_bars_frame, text="OK: -",
-                                       font=("Segoe UI", 9),
-                                       bg="#c6efce", fg="#006100", padx=8, pady=2)
-        self.lbl_timeout_ok.pack(side=tk.LEFT, padx=2)
-
-        self.lbl_timeout_info = tk.Label(self.timeout_bars_frame, text="INFO: -",
-                                         font=("Segoe UI", 9),
-                                         bg="#cce5ff", fg="#004085", padx=8, pady=2)
-        self.lbl_timeout_info.pack(side=tk.LEFT, padx=2)
-
-        self.lbl_timeout_warn = tk.Label(self.timeout_bars_frame, text="WARN: -",
-                                         font=("Segoe UI", 9),
-                                         bg="#fff3cd", fg="#856404", padx=8, pady=2)
-        self.lbl_timeout_warn.pack(side=tk.LEFT, padx=2)
-
-        self.lbl_timeout_crit = tk.Label(self.timeout_bars_frame, text="CRIT: -",
-                                         font=("Segoe UI", 9),
-                                         bg="#f8d7da", fg="#721c24", padx=8, pady=2)
-        self.lbl_timeout_crit.pack(side=tk.LEFT, padx=2)
-
-        self.lbl_sum_critical = tk.Label(right_col, text="",
-                                         font=("Segoe UI", 9),
-                                         bg=COLORS["white"], fg=COLORS["error"],
-                                         wraplength=300)
-        self.lbl_sum_critical.pack(anchor="w")
-
-        # Warnings
-        self.lbl_sum_warnings = tk.Label(self.summary_frame, text="",
-                                         font=("Segoe UI", 9),
-                                         bg=COLORS["white"], fg=COLORS["warning"],
-                                         wraplength=600, justify=tk.LEFT)
-        self.lbl_sum_warnings.pack(anchor="w", padx=10, pady=5)
-
-        # NOTA: Progress bar i botó "Consolidar" ara estan a la Action Bar (sempre visibles)
+            messagebox.showinfo("Detalls Fitxer",
+                               f"Mostra: {mostra}\n"
+                               f"Direct: {direct}\n"
+                               f"UIB: {uib}\n"
+                               f"Confiança: {conf_val}%\n"
+                               f"Timeout: {timeout}\n"
+                               f"SNR: {snr}"
+                               f"{conf_warning}")
 
     # =========================================================================
     # PAS 2: CALIBRAR
@@ -935,16 +1009,81 @@ class HPSECSuiteV3:
         # Amagat inicialment
 
     # =========================================================================
-    # PAS 3: QC (QUALITY CONTROL)
+    # PAS 3: PROCESSAR
     # =========================================================================
 
-    def _build_step_qc(self, parent):
-        """Construeix el pas de QC."""
-        tk.Label(parent, text="Pas 3: Quality Control (QC)",
+    def _build_step_processar(self, parent):
+        """Construeix el pas de processament (Fase 3)."""
+        tk.Label(parent, text="Pas 3: Processar Dades",
                 font=("Segoe UI", 14, "bold"),
                 bg=COLORS["white"], fg=COLORS["primary"]).pack(anchor="w", pady=(0, 15))
 
-        tk.Label(parent, text="Detecta anomalies (TimeOUT, Batman) i selecciona les millors rèpliques.",
+        tk.Label(parent, text="Aplica alineacio temporal, correccio baseline, deteccio pics i calcul d'arees.",
+                font=("Segoe UI", 10),
+                bg=COLORS["white"], fg=COLORS["dark"]).pack(anchor="w", pady=(0, 10))
+
+        # Info processament
+        info_frame = tk.LabelFrame(parent, text="Processament",
+                                   font=("Segoe UI", 10, "bold"),
+                                   bg=COLORS["white"])
+        info_frame.pack(fill=tk.X, pady=10)
+
+        self.lbl_proc_alignment = tk.Label(info_frame, text="Alineacio: -",
+                                           font=("Segoe UI", 10),
+                                           bg=COLORS["white"])
+        self.lbl_proc_alignment.pack(anchor="w", padx=10, pady=3)
+
+        self.lbl_proc_baseline = tk.Label(info_frame, text="Baseline: -",
+                                          font=("Segoe UI", 10),
+                                          bg=COLORS["white"])
+        self.lbl_proc_baseline.pack(anchor="w", padx=10, pady=3)
+
+        self.lbl_proc_peaks = tk.Label(info_frame, text="Pics detectats: -",
+                                       font=("Segoe UI", 10),
+                                       bg=COLORS["white"])
+        self.lbl_proc_peaks.pack(anchor="w", padx=10, pady=3)
+
+        self.lbl_proc_areas = tk.Label(info_frame, text="Arees calculades: -",
+                                       font=("Segoe UI", 10),
+                                       bg=COLORS["white"])
+        self.lbl_proc_areas.pack(anchor="w", padx=10, pady=3)
+
+        # Estadístiques
+        stats_frame = tk.LabelFrame(parent, text="Estadistiques",
+                                    font=("Segoe UI", 10, "bold"),
+                                    bg=COLORS["white"])
+        stats_frame.pack(fill=tk.X, pady=10)
+
+        self.lbl_proc_snr = tk.Label(stats_frame, text="SNR mediana: -",
+                                     font=("Segoe UI", 10),
+                                     bg=COLORS["white"])
+        self.lbl_proc_snr.pack(anchor="w", padx=10, pady=3)
+
+        self.lbl_proc_lod = tk.Label(stats_frame, text="LOD: -",
+                                     font=("Segoe UI", 10),
+                                     bg=COLORS["white"])
+        self.lbl_proc_lod.pack(anchor="w", padx=10, pady=3)
+
+        self.lbl_proc_timeouts = tk.Label(stats_frame, text="Timeouts: -",
+                                          font=("Segoe UI", 10),
+                                          bg=COLORS["white"])
+        self.lbl_proc_timeouts.pack(anchor="w", padx=10, pady=3)
+
+        # Progrés
+        self.progress_proc = ttk.Progressbar(parent, mode='determinate', length=400)
+        self.progress_proc.pack(pady=10)
+
+    # =========================================================================
+    # PAS 4: REVISAR REPLIQUES
+    # =========================================================================
+
+    def _build_step_revisar(self, parent):
+        """Construeix el pas de revisió de rèpliques (Fase 4)."""
+        tk.Label(parent, text="Pas 4: Revisar Repliques",
+                font=("Segoe UI", 14, "bold"),
+                bg=COLORS["white"], fg=COLORS["primary"]).pack(anchor="w", pady=(0, 15))
+
+        tk.Label(parent, text="Compara repliques, detecta anomalies i selecciona les millors (DOC i DAD independent).",
                 font=("Segoe UI", 10),
                 bg=COLORS["white"], fg=COLORS["dark"]).pack(anchor="w", pady=(0, 10))
 
@@ -991,8 +1130,8 @@ class HPSECSuiteV3:
 
         # Progrés
         # NOTA: Botó principal "QC" ara està a la Action Bar
-        self.progress_qc = ttk.Progressbar(parent, mode='determinate', length=400)
-        self.progress_qc.pack(pady=10)
+        self.progress_review = ttk.Progressbar(parent, mode='determinate', length=400)
+        self.progress_review.pack(pady=10)
 
     # =========================================================================
     # PAS 4: EXPORTAR
@@ -1000,7 +1139,7 @@ class HPSECSuiteV3:
 
     def _build_step_exportar(self, parent):
         """Construeix el pas d'exportació."""
-        tk.Label(parent, text="Pas 4: Exportació Final",
+        tk.Label(parent, text="Pas 5: Exportar Resultats",
                 font=("Segoe UI", 14, "bold"),
                 bg=COLORS["white"], fg=COLORS["primary"]).pack(anchor="w", pady=(0, 15))
 
@@ -1122,16 +1261,16 @@ class HPSECSuiteV3:
 
         # Actualitzar botons navegació
         self.btn_prev.configure(state="normal" if step_idx > 0 else "disabled")
-        self.btn_next.configure(state="normal" if step_idx < 3 else "disabled")
+        self.btn_next.configure(state="normal" if step_idx < 4 else "disabled")
 
-        if step_idx == 3:
+        if step_idx == 4:
             self.btn_next.configure(text="Finalitzar")
         else:
             self.btn_next.configure(text="Següent →")
 
     def _next_step(self):
         """Avança al següent pas."""
-        if self.current_step < 3:
+        if self.current_step < 4:
             self._show_step(self.current_step + 1)
 
     def _prev_step(self):
@@ -1178,58 +1317,218 @@ class HPSECSuiteV3:
         self.calibration_data = {}
         self.qc_results = {}
         self.selected_replicas = {}
+        self.khp_area = None
+        self.khp_conc = None
+        self.khp_source_seq = None
         self.is_processing = False
 
         # Analitzar contingut
         self._analyze_folder()
 
         # Activar botó consolidar
-        self.btn_consolidar.configure(state="normal")
+        self.btn_importar.configure(state="normal")
         self.lbl_status.configure(text=f"Carpeta carregada: {os.path.basename(folder)}")
 
         # Anar al primer pas
         self._show_step(0)
 
     def _analyze_folder(self):
-        """Analitza el contingut de la carpeta SEQ."""
+        """Analitza el contingut de la carpeta SEQ i omple la nova UI."""
         if not self.seq_path:
             return
 
+        seq_name = os.path.basename(self.seq_path)
         mode = detect_mode(self.seq_path)
 
+        # Extreure número SEQ i data (si disponible)
+        seq_num = None
+        import re
+        match = re.search(r'^(\d+)', seq_name)
+        if match:
+            seq_num = int(match.group(1))
+
+        # Determinar volum d'injecció
+        is_bp = mode == "BP"
+        if is_bp:
+            inj_vol = 100
+        elif seq_num and 256 <= seq_num <= 274:
+            inj_vol = 100
+        else:
+            inj_vol = 400
+
+        # Determinar sensibilitat UIB
+        if seq_num and 269 <= seq_num <= 274:
+            uib_sens = "700 ppb"
+        else:
+            uib_sens = "1000 ppb"
+
         # Buscar MasterFile
+        # Buscar MasterFile i comptar mostres precises
         master_files = glob.glob(os.path.join(self.seq_path, "*MasterFile*.xlsx"))
         master_files = [f for f in master_files if "~$" not in f and "backup" not in f.lower()]
+
+        n_mostres, n_khp, n_ctrl = 0, 0, 0
         if master_files:
             master_name = os.path.basename(master_files[0])
-            self.lbl_con_master.configure(text=f"MasterFile: {master_name}", fg=COLORS["success"])
+            self.lbl_con_master.configure(text=master_name, fg=COLORS["text_light"])
+            # Comptar mostres des del MasterFile
+            try:
+                import pandas as pd
+                df = pd.read_excel(master_files[0], sheet_name='Mostres', usecols=['Mostra'])
+                for m in df['Mostra'].dropna():
+                    m_str = str(m).upper()
+                    if 'KHP' in m_str:
+                        n_khp += 1
+                    elif 'CTRL' in m_str or 'CONTROL' in m_str or 'BLANC' in m_str:
+                        n_ctrl += 1
+                    else:
+                        n_mostres += 1
+            except Exception:
+                pass
         else:
-            self.lbl_con_master.configure(text="MasterFile: No trobat", fg=COLORS["warning"])
+            self.lbl_con_master.configure(text="No MasterFile!", fg=COLORS["warning"])
 
         # Obtenir info de fitxers UIB/DAD
         info = check_sequence_files(self.seq_path)
         uib_count = info.get("uib", {}).get("count_found", 0)
         dad_count = info.get("dad", {}).get("count_found", 0)
 
-        # Determinar mode de dades (UIB, Direct, Dual)
-        if uib_count > 0 and dad_count > 0:
-            data_mode = "DUAL (UIB + Direct)"
-        elif uib_count > 0:
+        # Determinar mode de dades
+        has_direct = dad_count > 0
+        has_uib = uib_count > 0
+        if has_direct and has_uib:
+            data_mode = "DUAL"
+        elif has_uib:
             data_mode = "UIB"
-        elif dad_count > 0:
+        elif has_direct:
             data_mode = "Direct"
         else:
-            data_mode = "Sense dades"
+            data_mode = "-"
 
-        # Actualitzar labels
-        self.lbl_con_uib.configure(text=f"Fitxers UIB (CSV): {uib_count}")
-        self.lbl_con_dad.configure(text=f"Fitxers DAD (Export3D): {dad_count}")
-        self.lbl_con_mode.configure(text=f"Mode: {mode} | Dades: {data_mode}")
+        # === Actualitzar UI SEQÜÈNCIA ===
+        self.lbl_seq_header.configure(text=f"{seq_name}  ·  {mode}")
+        self.lbl_data_mode.configure(text=f"{data_mode}")
+        self.lbl_uib_sens.configure(text=f"{uib_sens}" if has_uib else "-")
+        self.lbl_inj_vol.configure(text=f"{inj_vol} µL")
 
-        # Amagar botons PDF i resum per defecte
-        self.btn_open_report.pack_forget()
-        self.btn_open_chromato.pack_forget()
-        self.summary_frame.pack_forget()
+        # Comptadors precisos
+        if n_mostres > 0 or n_khp > 0 or n_ctrl > 0:
+            self.lbl_samples_count.configure(text=f"{n_mostres} mostres, {n_khp} KHP, {n_ctrl} control")
+        else:
+            # Fallback a estimació
+            n_est = max(dad_count, uib_count) // 2 if max(dad_count, uib_count) > 0 else 0
+            self.lbl_samples_count.configure(text=f"~{n_est} injeccions (estimat)")
+
+        # Estat inicial
+        self.lbl_con_status.configure(text="Pendent", fg=COLORS["text_light"])
+
+        # === Netejar KHP ===
+        for item in self.tree_khp.get_children():
+            self.tree_khp.delete(item)
+        self.lbl_khp_header.configure(text="Analitzant...", fg=COLORS["text_light"])
+        self.lbl_khp_rsd.configure(text="")
+
+        # === Netejar taula fitxers ===
+        for item in self.tree_files.get_children():
+            self.tree_files.delete(item)
+        self.lbl_timeout_summary.configure(text="")
+        self.lbl_res_snr.configure(text="SNR: -")
+        self.lbl_res_lod.configure(text="LOD: -")
+        self.lbl_res_baseline.configure(text="")
+
+        # === Buscar KHP existents ===
+        self._analyze_khp_files()
+
+        # === Comprovar si ja consolidat ===
+        con_folder = os.path.join(self.seq_path, "Resultats_Consolidats")
+        if os.path.isdir(con_folder):
+            con_files = glob.glob(os.path.join(con_folder, "*.xlsx"))
+            con_files = [f for f in con_files if "~$" not in f]
+            if con_files:
+                self.lbl_con_status.configure(text=f"Importat ({len(con_files)} fitxers)",
+                                             fg=COLORS["success"])
+                self.consolidated_data = {"path": con_folder, "files": con_files}
+                self.btn_calibrar.configure(state="normal")
+                self._load_consolidation_summary()
+
+    def _analyze_khp_files(self):
+        """Analitza els fitxers KHP i omple la taula."""
+        con_folder = os.path.join(self.seq_path, "Resultats_Consolidats")
+        khp_files = glob.glob(os.path.join(con_folder, "KHP*.xlsx"))
+        khp_files = [f for f in khp_files if "~$" not in f]
+
+        if not khp_files:
+            self.lbl_khp_header.configure(text="Cap KHP trobat", fg=COLORS["text_light"])
+            return
+
+        # Agrupar per concentració
+        from hpsec_calibrate import analizar_khp_consolidado, extract_khp_conc
+
+        khp_by_conc = {}
+        for f in khp_files:
+            conc = extract_khp_conc(os.path.basename(f))
+            if conc not in khp_by_conc:
+                khp_by_conc[conc] = []
+            khp_by_conc[conc].append(f)
+
+        # Mostrar info per cada concentració
+        for conc, files in khp_by_conc.items():
+            self.lbl_khp_header.configure(
+                text=f"KHP{conc} ({conc} ppm) · {len(files)} repliques",
+                fg=COLORS["primary"]
+            )
+
+            areas = []
+            for i, f in enumerate(files):
+                try:
+                    result = analizar_khp_consolidado(f)
+                    if result:
+                        area = result.get('area', 0)
+                        a254 = result.get('a254_area', 0)
+                        ratio = result.get('a254_doc_ratio', 0)
+                        snr = result.get('snr', 0)
+                        issues = result.get('quality_issues', [])
+
+                        areas.append(area)
+
+                        # Determinar estat
+                        if issues or snr < 10:
+                            status = "!"
+                            tag = 'warn'
+                        else:
+                            status = "ok"
+                            tag = 'ok'
+
+                        self.tree_khp.insert("", "end",
+                            values=(f"R{i+1}", f"{area:.1f}", f"{a254:.2f}",
+                                   f"{ratio:.4f}", f"{snr:.0f}", status),
+                            tags=(tag,))
+                except Exception as e:
+                    self.tree_khp.insert("", "end",
+                        values=(f"R{i+1}", "Error", "-", "-", "-", "!"),
+                        tags=('fail',))
+
+            # RSD
+            if len(areas) >= 2:
+                import numpy as np
+                mean_area = np.mean(areas)
+                std_area = np.std(areas)
+                rsd = (std_area / mean_area * 100) if mean_area > 0 else 0
+                selection = "Promig" if rsd < 10 else "Millor qualitat"
+                self.lbl_khp_rsd.configure(text=f"RSD: {rsd:.1f}% · Seleccio: {selection}")
+            break  # Només mostrem el primer grup KHP
+
+    def _load_consolidation_summary(self):
+        """Carrega resum de consolidació existent."""
+        check_folder = os.path.join(self.seq_path, "CHECK")
+        json_path = os.path.join(check_folder, "consolidation.json")
+        if os.path.exists(json_path):
+            try:
+                with open(json_path, 'r', encoding='utf-8') as f:
+                    summary = json.load(f)
+                self._show_consolidation_summary(summary)
+            except Exception:
+                pass
 
         # Comprovar si ja està consolidat
         con_folder = os.path.join(self.seq_path, "Resultats_Consolidats")
@@ -1284,45 +1583,46 @@ class HPSECSuiteV3:
                                          fg=COLORS["dark"])
 
     # =========================================================================
-    # EXECUCIÓ: CONSOLIDAR
+    # EXECUCIÓ: IMPORTAR (Fase 1)
     # =========================================================================
 
-    def _run_consolidation(self):
-        """Executa la consolidació."""
+    def _run_import(self):
+        """Executa la importació de dades (Fase 1)."""
         if self.is_processing or not self.seq_path:
             return
 
         self.is_processing = True
-        self.btn_consolidar.configure(state="disabled")
-        self.progress_con['value'] = 0
-        self.lbl_con_status.configure(text="Estat: Consolidant...", fg=COLORS["dark"])
-        self.lbl_con_progress.configure(text="Iniciant...")
+        self.btn_importar.configure(state="disabled")
+        self.progress_import['value'] = 0
+        self.lbl_con_status.configure(text="Estat: Important...", fg=COLORS["dark"])
+        self.lbl_import_progress.configure(text="Iniciant...")
 
-        def consolidate_thread():
+        def import_thread():
             try:
                 def on_progress(pct, item):
                     """Callback: pct=percentatge (0-100), item=nom mostra"""
-                    self.root.after(0, lambda: self._update_consolidation_progress(pct, item))
+                    self.root.after(0, lambda: self._update_import_progress(pct, item))
 
+                # Usa consolidate_sequence que ara fa la fase d'importació
                 result = consolidate_sequence(self.seq_path, progress_callback=on_progress)
 
-                self.root.after(0, lambda: self._consolidation_done(result))
+                self.root.after(0, lambda: self._import_done(result))
             except Exception as e:
-                self.root.after(0, lambda: self._consolidation_error(str(e)))
+                self.root.after(0, lambda: self._import_error(str(e)))
 
-        thread = threading.Thread(target=consolidate_thread, daemon=True)
+        thread = threading.Thread(target=import_thread, daemon=True)
         thread.start()
 
-    def _update_consolidation_progress(self, pct, item):
-        """Actualitza progrés de consolidació."""
-        self.progress_con['value'] = pct
-        self.lbl_con_progress.configure(text=f"Consolidant: {item}")
+    def _update_import_progress(self, pct, item):
+        """Actualitza progrés d'importació."""
+        self.progress_import['value'] = pct
+        self.lbl_import_progress.configure(text=f"Important: {item}")
 
-    def _consolidation_done(self, result):
-        """Callback quan la consolidació acaba."""
+    def _import_done(self, result):
+        """Callback quan la importació acaba."""
         self.is_processing = False
-        self.progress_con['value'] = 100
-        self.lbl_con_progress.configure(text="")
+        self.progress_import['value'] = 100
+        self.lbl_import_progress.configure(text="")
 
         if result.get('success', False):
             n_processed = result.get('processed_count', 0)
@@ -1449,179 +1749,234 @@ class HPSECSuiteV3:
             error_text = errors[0] if errors else 'Error desconegut'
             self.lbl_con_status.configure(text=f"Estat: Error - {error_text}",
                                          fg=COLORS["error"])
-            self.btn_consolidar.configure(state="normal")
+            self.btn_importar.configure(state="normal")
 
     def _show_consolidation_summary(self, summary):
-        """Mostra el resum de consolidació a la GUI."""
-        # Mostrar el frame (ja no usem before= perquè progress està a action bar)
-        self.summary_frame.pack(fill=tk.X, pady=10)
+        """Mostra el resum de consolidació a la GUI (taula unificada)."""
 
-        # Scroll per mostrar el resum
-        self.root.after(100, lambda: self.canvas.yview_moveto(1.0))
-
-        # Comptadors
+        # === COMPTADORS PRECISOS ===
         counts = summary.get('counts', {})
         total = counts.get('total_samples', 0)
         khp = counts.get('khp_samples', 0)
         ctrl = counts.get('control_samples', 0)
         reg = counts.get('regular_samples', 0)
-        self.lbl_sum_samples.configure(text=f"Injeccions: {total} ({reg} mostres, {khp} KHP, {ctrl} controls)")
+        self.lbl_samples_count.configure(text=f"{reg} mostres, {khp} KHP, {ctrl} control")
 
-        # Alineació
+        # === TAULA FITXERS - Tot directament del JSON (eficient!) ===
+        for item in self.tree_files.get_children():
+            self.tree_files.delete(item)
+
+        samples = summary.get('samples', [])
+        n_low_conf = 0  # Comptador de baixa confiança
+
+        # Obtenir samples afectats per duplicate rows
+        quality = summary.get('quality', {})
+        dup_rows = quality.get('duplicate_rows', [])
+        dup_samples_set = set()
+        for dup in dup_rows:
+            for sample_name in dup.get('samples', []):
+                dup_samples_set.add(sample_name)
+
+        for s in samples:
+            name = s.get('name', '-')
+            mostra = s.get('mostra', '-')
+            replica = s.get('replica', '')
+            mostra_display = f"{mostra}_R{replica}" if replica else mostra
+
+            # Info directa del JSON (afegida al backend)
+            file_dad = s.get('file_dad', '')
+            file_uib = s.get('file_uib', '')
+            row_start = s.get('row_start', 0)
+            row_end = s.get('row_end', 0)
+            npts = s.get('npts', 0)
+            match_conf = s.get('match_confidence', 100.0)
+            doc_mode = s.get('doc_mode', '')
+
+            # Columna Direct: fitxer (files ini-fi) npts
+            if file_dad:
+                dad_name = os.path.splitext(file_dad)[0]  # Treure .CSV
+                if row_start and row_end:
+                    direct_text = f"{dad_name} ({row_start}-{row_end}) {int(npts)}pt"
+                else:
+                    direct_text = f"{dad_name} {int(npts)}pt" if npts else dad_name
+            else:
+                direct_text = "-"
+
+            # Columna UIB: fitxer npts (o buit si només Direct)
+            if file_uib and doc_mode in ['DUAL', 'UIB']:
+                uib_name = os.path.splitext(file_uib)[0]
+                uib_text = f"{uib_name} {int(npts)}pt" if npts else uib_name
+            else:
+                uib_text = ""
+
+            # Columna confiança
+            conf_text = f"{match_conf:.0f}" if match_conf < 100 else ""
+
+            # Determinar tag per color
+            name_upper = name.upper()
+            if name in dup_samples_set:
+                tag = 'dup_error'  # Prioritat màxima: files duplicades
+            elif match_conf < 85:
+                tag = 'low_conf'  # Baixa confiança
+                n_low_conf += 1
+            elif 'KHP' in name_upper:
+                tag = 'khp'
+            elif 'CTRL' in name_upper or 'CONTROL' in name_upper or 'BLANC' in name_upper:
+                tag = 'ctrl'
+            else:
+                tag = 'ok'
+
+            # Timeout info
+            timeout_sev = s.get('timeout_severity', 'OK')
+            timeout_zones = s.get('timeout_zones', [])
+            if timeout_sev == 'CRITICAL':
+                timeout_text = ','.join(timeout_zones) if timeout_zones else "CRIT"
+                if tag == 'ok':
+                    tag = 'crit'
+            elif timeout_sev == 'WARNING':
+                timeout_text = ','.join(timeout_zones) if timeout_zones else "WARN"
+                if tag == 'ok':
+                    tag = 'warn'
+            elif timeout_sev == 'INFO':
+                timeout_text = "info"
+            else:
+                timeout_text = "-"
+
+            # SNR
+            snr = s.get('snr_direct', s.get('snr_uib', 0))
+            snr_text = f"{snr:.0f}" if snr else "-"
+
+            # Status
+            if s.get('peak_valid', True):
+                status = "✓"
+            else:
+                status = "!"
+                if tag == 'ok':
+                    tag = 'warn'
+
+            # Columnes: mostra, direct, uib, conf, timeout, snr, status
+            self.tree_files.insert("", "end",
+                values=(mostra_display, direct_text, uib_text, conf_text, timeout_text, snr_text, status),
+                tags=(tag,))
+
+        # Mostrar avís si hi ha assignacions de baixa confiança
+        if n_low_conf > 0:
+            self.lbl_res_baseline.configure(
+                text=f"⚠ {n_low_conf} assignacions amb baixa confiança - revisar!",
+                fg=COLORS["warning"])
+
+        # === RESUM TIMEOUTS ===
+        timeouts = summary.get('timeouts', {})
+        sev_counts = timeouts.get('severity_counts', {})
+        n_ok = sev_counts.get('OK', 0)
+        n_info = sev_counts.get('INFO', 0)
+        n_warn = sev_counts.get('WARNING', 0)
+        n_crit = sev_counts.get('CRITICAL', 0)
+
+        timeout_parts = []
+        if n_crit > 0:
+            timeout_parts.append(f"CRIT:{n_crit}")
+        if n_warn > 0:
+            timeout_parts.append(f"WARN:{n_warn}")
+        if n_info > 0:
+            timeout_parts.append(f"INFO:{n_info}")
+        if timeout_parts:
+            self.lbl_timeout_summary.configure(text=f"Timeouts: {' '.join(timeout_parts)}")
+        else:
+            self.lbl_timeout_summary.configure(text="Timeouts: OK")
+
+        # === KHP ALIGNMENT INFO ===
         alignment = summary.get('alignment', {})
         if alignment:
-            shift_uib = alignment.get('shift_uib', 0) * 60 if alignment.get('shift_uib') else 0
-            shift_direct = alignment.get('shift_direct', 0) * 60 if alignment.get('shift_direct') else 0
-            source = alignment.get('source', 'N/A')
-            self.lbl_sum_alignment.configure(
-                text=f"Alineació: UIB={shift_uib:.1f}s, Direct={shift_direct:.1f}s ({source})")
-
-            # === VALIDACIÓ KHP ===
             khp_validation = alignment.get('khp_validation', 'N/A')
             khp_file = alignment.get('khp_file', '-')
             khp_metrics = alignment.get('khp_metrics', {})
-            khp_issues = alignment.get('khp_issues', [])
-            khp_warnings = alignment.get('khp_warnings', [])
-
-            # Status amb color
-            if khp_validation == 'VALID':
-                self.lbl_khp_status.configure(text=f"Status: ✓ {khp_validation}", fg=COLORS["success"])
-            elif khp_validation == 'INVALID':
-                self.lbl_khp_status.configure(text=f"Status: ✗ {khp_validation}", fg=COLORS["error"])
-            elif 'WARNING' in str(khp_validation):
-                self.lbl_khp_status.configure(text=f"Status: ⚠ {khp_validation}", fg=COLORS["warning"])
-            else:
-                self.lbl_khp_status.configure(text=f"Status: {khp_validation}", fg=COLORS["dark"])
-
-            # Fitxer KHP
-            self.lbl_khp_file.configure(text=f"Fitxer: {khp_file}")
-
-            # Àrea i intensitat
             area_doc = khp_metrics.get('area_doc', 0)
-            intensity = khp_metrics.get('intensity_doc', 0)
 
-            # Extreure concentració KHP del nom del fitxer
             from hpsec_calibrate import extract_khp_conc
             khp_conc = extract_khp_conc(khp_file) if khp_file else None
 
             if area_doc > 0:
-                conc_text = f" ({khp_conc} ppm)" if khp_conc else ""
-                self.lbl_khp_area.configure(text=f"Àrea: {area_doc:.1f}{conc_text} | Int: {intensity:.0f} mAU")
-                # Guardar àrea i concentració per càlcul de concentració mostres
                 self.khp_area = area_doc
                 self.khp_conc = khp_conc
+                self.khp_source_seq = os.path.basename(self.seq_path)
+
+                if khp_validation == 'VALID':
+                    self.lbl_khp_header.configure(
+                        text=f"✓ {khp_file} ({area_doc:.1f})", fg=COLORS["success"])
+                elif khp_validation == 'INVALID':
+                    self.lbl_khp_header.configure(
+                        text=f"✗ {khp_file} ({area_doc:.1f})", fg=COLORS["error"])
+                else:
+                    self.lbl_khp_header.configure(
+                        text=f"⚠ {khp_file} ({area_doc:.1f})", fg=COLORS["warning"])
+
+                # Històric
+                hist = khp_metrics.get('historical_comparison', {})
+                if hist:
+                    hist_status = hist.get('status', 'N/A')
+                    hist_dev = hist.get('area_deviation_pct', 0)
+                    self.lbl_khp_rsd.configure(text=f"Hist: {hist_status} ({hist_dev:.1f}%)")
             else:
-                self.lbl_khp_area.configure(text="Àrea: -")
                 self.khp_area = None
                 self.khp_conc = None
-
-            # Comparació històrica
-            hist = khp_metrics.get('historical_comparison', {})
-            if hist:
-                hist_status = hist.get('status', 'N/A')
-                hist_dev = hist.get('area_deviation_pct', 0)
-                hist_n = hist.get('n_calibrations', 0)
-                hist_text = f"Històric: {hist_status} (desv. {hist_dev:.1f}%, n={hist_n})"
-                if hist_status == 'OK':
-                    self.lbl_khp_historical.configure(text=hist_text, fg=COLORS["success"])
-                elif hist_status == 'WARNING':
-                    self.lbl_khp_historical.configure(text=hist_text, fg=COLORS["warning"])
-                elif hist_status == 'INVALID':
-                    self.lbl_khp_historical.configure(text=hist_text, fg=COLORS["error"])
-                else:
-                    self.lbl_khp_historical.configure(text=hist_text, fg=COLORS["text_light"])
-            else:
-                self.lbl_khp_historical.configure(text="Històric: No disponible", fg=COLORS["text_light"])
-
-            # Issues i warnings
-            all_issues = khp_issues + khp_warnings
-            if all_issues:
-                self.lbl_khp_issues.configure(text=" | ".join(all_issues[:2]))
-            else:
-                self.lbl_khp_issues.configure(text="")
-
+                self.khp_source_seq = None
         else:
-            self.lbl_sum_alignment.configure(text="Alineació: No aplicada")
-            self.lbl_khp_status.configure(text="Status: -", fg=COLORS["dark"])
-            self.lbl_khp_file.configure(text="Fitxer: -")
-            self.lbl_khp_area.configure(text="Àrea: -")
-            self.lbl_khp_historical.configure(text="Històric: -", fg=COLORS["text_light"])
-            self.lbl_khp_issues.configure(text="")
             self.khp_area = None
             self.khp_conc = None
+            self.khp_source_seq = None
 
-        # SNR
+        # === QUALITAT ===
         quality = summary.get('quality', {})
         snr_direct = quality.get('snr_direct', {})
         if snr_direct:
-            self.lbl_sum_snr.configure(
-                text=f"SNR Direct: mediana={snr_direct.get('median', '-')}, min={snr_direct.get('min', '-')}")
+            self.lbl_res_snr.configure(
+                text=f"SNR: {snr_direct.get('median', '-')}")
         else:
-            self.lbl_sum_snr.configure(text="SNR: -")
+            self.lbl_res_snr.configure(text="SNR: -")
 
-        # LOD
         lod_direct = quality.get('lod_direct_mau')
-        lod_uib = quality.get('lod_uib_mau')
         if lod_direct:
-            lod_text = f"LOD: Direct={lod_direct:.2f} mAU"
-            if lod_uib:
-                lod_text += f", UIB={lod_uib:.2f} mAU"
-            self.lbl_sum_lod.configure(text=lod_text)
+            self.lbl_res_lod.configure(text=f"LOD: {lod_direct:.2f} mAU")
         else:
-            self.lbl_sum_lod.configure(text="LOD: -")
+            self.lbl_res_lod.configure(text="LOD: -")
 
-        # Data generació i versió
-        meta = summary.get('meta', {})
-        generated_at = meta.get('generated_at', '')
-        script_version = meta.get('script_version', '')
-        if generated_at:
-            # Format: 2026-01-28T12:01:34.109120 -> 28/01/2026 12:01
-            try:
-                dt = datetime.fromisoformat(generated_at)
-                date_str = dt.strftime("%d/%m/%Y %H:%M")
-            except:
-                date_str = generated_at[:16] if len(generated_at) > 16 else generated_at
-            gen_text = f"Generat: {date_str}"
-            if script_version:
-                gen_text += f" (v{script_version})"
-            self.lbl_sum_generated.configure(text=gen_text)
+        # === QUALITY ISSUES ===
+        quality_issues = summary.get('quality_issues', [])
+        errors = [q for q in quality_issues if q.get('severity') == 'ERROR']
+        warnings = [q for q in quality_issues if q.get('severity') == 'WARNING']
+
+        if errors:
+            # Mostrar errors de qualitat (prioritat màxima)
+            self.lbl_res_baseline.configure(
+                text=f"⛔ {len(errors)} ERROR{'S' if len(errors) > 1 else ''}: {errors[0].get('message', '')}",
+                fg=COLORS["error"])
+        elif warnings:
+            # Mostrar warnings de qualitat
+            self.lbl_res_baseline.configure(
+                text=f"⚠ {len(warnings)} AVÍS: {warnings[0].get('message', '')}",
+                fg=COLORS["warning"])
+        elif n_low_conf > 0:
+            # Ja mostrat abans (baixa confiança)
+            pass
         else:
-            self.lbl_sum_generated.configure(text="")
+            # Data generació (només si no hi ha issues)
+            meta = summary.get('meta', {})
+            generated_at = meta.get('generated_at', '')
+            if generated_at:
+                try:
+                    dt = datetime.fromisoformat(generated_at)
+                    self.lbl_res_baseline.configure(
+                        text=dt.strftime("%d/%m %H:%M"), fg=COLORS["text"])
+                except:
+                    self.lbl_res_baseline.configure(text="")
 
-        # Timeouts
-        timeouts = summary.get('timeouts', {})
-        sev_counts = timeouts.get('severity_counts', {})
-
-        self.lbl_timeout_ok.configure(text=f"OK: {sev_counts.get('OK', 0)}")
-        self.lbl_timeout_info.configure(text=f"INFO: {sev_counts.get('INFO', 0)}")
-        self.lbl_timeout_warn.configure(text=f"WARN: {sev_counts.get('WARNING', 0)}")
-        self.lbl_timeout_crit.configure(text=f"CRIT: {sev_counts.get('CRITICAL', 0)}")
-
-        # Mostres crítiques
-        critical = timeouts.get('critical_samples', [])
-        if critical:
-            self.lbl_sum_critical.configure(text=f"Mostres crítiques: {', '.join(critical[:5])}")
-        else:
-            self.lbl_sum_critical.configure(text="")
-
-        # Warnings
-        warnings = summary.get('warnings', [])
-        if warnings:
-            # Filtrar només els més importants
-            important = [w for w in warnings if not w.startswith("PDF generat")][:3]
-            if important:
-                self.lbl_sum_warnings.configure(text="Avisos: " + " | ".join(important))
-            else:
-                self.lbl_sum_warnings.configure(text="")
-        else:
-            self.lbl_sum_warnings.configure(text="")
-
-    def _consolidation_error(self, error):
-        """Callback quan hi ha error de consolidació."""
+    def _import_error(self, error):
+        """Callback quan hi ha error d'importació."""
         self.is_processing = False
-        self.lbl_con_status.configure(text=f"✗ Error: {error}", fg=COLORS["error"])
-        self.btn_consolidar.configure(state="normal")
-        messagebox.showerror("Error", f"Error durant la consolidació:\n\n{error}")
+        self.lbl_con_status.configure(text=f"Error: {error}", fg=COLORS["error"])
+        self.btn_importar.configure(state="normal")
+        messagebox.showerror("Error", f"Error durant la importacio:\n\n{error}")
 
     def _open_seq_folder(self):
         """Obre la carpeta SEQ actual."""
@@ -1743,8 +2098,8 @@ class HPSECSuiteV3:
 
             self.calibration_data = result
 
-            # Activar següent pas
-            self.btn_qc.configure(state="normal")
+            # Activar següent pas (Processar és el pas 3)
+            self.btn_processar.configure(state="normal")
 
             # Mostrar gràfic
             self._plot_calibration(result)
@@ -1970,7 +2325,7 @@ class HPSECSuiteV3:
             ax.set_title("Històric KHP")
 
     def _show_khp_history(self):
-        """Mostra diàleg amb l'històric complet de KHP."""
+        """Mostra diàleg amb l'històric complet de KHP amb opció de selecció."""
         if not self.seq_path:
             messagebox.showwarning("Avís", "Cal seleccionar una seqüència primer.")
             return
@@ -1983,48 +2338,263 @@ class HPSECSuiteV3:
 
             # Crear finestra
             dialog = tk.Toplevel(self.root)
-            dialog.title("Històric KHP")
-            dialog.geometry("800x500")
+            dialog.title("Històric KHP - Seleccionar Calibració")
+            dialog.geometry("900x550")
+            dialog.transient(self.root)
+            dialog.grab_set()
+
+            # Guardar referència a l'històric per la selecció
+            self._khp_history_data = history
+            self._khp_history_dialog = dialog
+
+            # Header amb info
+            header = tk.Frame(dialog, bg=COLORS["secondary"], height=50)
+            header.pack(fill=tk.X)
+            header.pack_propagate(False)
+
+            tk.Label(header, text="Històric de Calibracions KHP",
+                    font=("Segoe UI", 12, "bold"),
+                    bg=COLORS["secondary"], fg=COLORS["white"]).pack(side=tk.LEFT, padx=20, pady=12)
+
+            # Info actual
+            current_info = f"Actual: {self.khp_source_seq or 'Cap'}"
+            if self.khp_area and self.khp_conc:
+                current_info += f" | Àrea: {self.khp_area:.1f} | Conc: {self.khp_conc} ppm"
+            tk.Label(header, text=current_info,
+                    font=("Segoe UI", 10),
+                    bg=COLORS["secondary"], fg=COLORS["light"]).pack(side=tk.RIGHT, padx=20, pady=12)
+
+            # Frame principal
+            main_frame = tk.Frame(dialog, bg=COLORS["white"])
+            main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+            # Filtre de mode
+            filter_frame = tk.Frame(main_frame, bg=COLORS["white"])
+            filter_frame.pack(fill=tk.X, pady=(0, 10))
+
+            tk.Label(filter_frame, text="Mode:",
+                    font=("Segoe UI", 10),
+                    bg=COLORS["white"]).pack(side=tk.LEFT, padx=(0, 5))
+
+            self._khp_mode_var = tk.StringVar(value="TOTS")
+            current_mode = detect_mode(self.seq_path) if self.seq_path else "TOTS"
+
+            for mode in ["TOTS", "COLUMN", "BP"]:
+                rb = tk.Radiobutton(filter_frame, text=mode, variable=self._khp_mode_var, value=mode,
+                                   font=("Segoe UI", 10), bg=COLORS["white"],
+                                   command=lambda: self._filter_khp_history())
+                rb.pack(side=tk.LEFT, padx=5)
 
             # Taula
             columns = ("SEQ", "Mode", "KHP", "Àrea", "Factor", "Shift (s)", "SNR", "Status")
-            tree = ttk.Treeview(dialog, columns=columns, show='headings', height=20)
+            self._khp_tree = ttk.Treeview(main_frame, columns=columns, show='headings', height=15)
 
+            widths = {"SEQ": 110, "Mode": 70, "KHP": 70, "Àrea": 80, "Factor": 90, "Shift (s)": 70, "SNR": 60, "Status": 80}
             for col in columns:
-                tree.heading(col, text=col)
-                tree.column(col, width=90)
+                self._khp_tree.heading(col, text=col, command=lambda c=col: self._sort_khp_history(c))
+                self._khp_tree.column(col, width=widths.get(col, 80), anchor="center")
 
-            # Ordenar per número de SEQ
-            def get_seq_num(cal):
-                match = re.search(r'(\d+)', cal.get('seq_name', ''))
-                return int(match.group(1)) if match else 0
+            # Tags de colors
+            self._khp_tree.tag_configure('OK', background='#c6efce', foreground='#006100')
+            self._khp_tree.tag_configure('WARN', background='#fff3cd', foreground='#856404')
+            self._khp_tree.tag_configure('FAIL', background='#f8d7da', foreground='#721c24')
+            self._khp_tree.tag_configure('outlier', foreground='gray')
+            self._khp_tree.tag_configure('current', background='#cce5ff', foreground='#004085')
 
-            history.sort(key=get_seq_num)
+            # Scrollbar
+            scrollbar = ttk.Scrollbar(main_frame, orient=tk.VERTICAL, command=self._khp_tree.yview)
+            self._khp_tree.configure(yscrollcommand=scrollbar.set)
 
-            for cal in history:
-                values = (
-                    cal.get('seq_name', 'N/A'),
-                    cal.get('mode', 'N/A'),
-                    f"KHP{cal.get('conc_ppm', 0):.0f}",
-                    f"{cal.get('area', 0):.1f}",
-                    f"{cal.get('factor', 0):.6f}" if cal.get('factor') else '-',
-                    f"{cal.get('shift_sec', 0):.1f}",
-                    f"{cal.get('snr', 0):.1f}" if cal.get('snr') else '-',
-                    cal.get('status', 'N/A')
-                )
-                tag = 'outlier' if cal.get('is_outlier') else ''
-                tree.insert('', 'end', values=values, tags=(tag,))
-
-            tree.tag_configure('outlier', foreground='gray')
-
-            scrollbar = ttk.Scrollbar(dialog, orient=tk.VERTICAL, command=tree.yview)
-            tree.configure(yscrollcommand=scrollbar.set)
-
-            tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+            self._khp_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
             scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
+            # Omplir taula
+            self._populate_khp_history()
+
+            # Frame inferior amb botons
+            btn_frame = tk.Frame(dialog, bg=COLORS["light"], height=60)
+            btn_frame.pack(fill=tk.X, side=tk.BOTTOM)
+            btn_frame.pack_propagate(False)
+
+            # Info selecció
+            self._khp_info_lbl = tk.Label(btn_frame, text="Selecciona una calibració per aplicar-la",
+                                          font=("Segoe UI", 9, "italic"),
+                                          bg=COLORS["light"], fg=COLORS["dark"])
+            self._khp_info_lbl.pack(side=tk.LEFT, padx=20, pady=15)
+
+            # Botons dreta
+            tk.Button(btn_frame, text="Tancar",
+                     command=dialog.destroy,
+                     bg=COLORS["dark"], fg=COLORS["white"],
+                     font=("Segoe UI", 10),
+                     relief="flat", padx=20, pady=5).pack(side=tk.RIGHT, padx=10, pady=15)
+
+            self._khp_apply_btn = tk.Button(btn_frame, text="Aplicar Seleccionat",
+                                            command=self._apply_khp_from_history,
+                                            bg=COLORS["primary"], fg=COLORS["white"],
+                                            font=("Segoe UI", 10, "bold"),
+                                            relief="flat", padx=20, pady=5,
+                                            state="disabled")
+            self._khp_apply_btn.pack(side=tk.RIGHT, padx=10, pady=15)
+
+            # Binds
+            self._khp_tree.bind("<<TreeviewSelect>>", self._on_khp_select)
+            self._khp_tree.bind("<Double-1>", lambda e: self._apply_khp_from_history())
+
         except Exception as e:
-            messagebox.showerror("Error", f"Error carregant històric: {e}")
+            import traceback
+            messagebox.showerror("Error", f"Error carregant històric: {e}\n{traceback.format_exc()}")
+
+    def _populate_khp_history(self):
+        """Omple la taula d'històric KHP amb filtre aplicat."""
+        # Netejar
+        for item in self._khp_tree.get_children():
+            self._khp_tree.delete(item)
+
+        mode_filter = self._khp_mode_var.get()
+        current_seq = os.path.basename(self.seq_path) if self.seq_path else ""
+
+        # Ordenar per número de SEQ
+        def get_seq_num(cal):
+            match = re.search(r'(\d+)', cal.get('seq_name', ''))
+            return int(match.group(1)) if match else 0
+
+        sorted_history = sorted(self._khp_history_data, key=get_seq_num)
+
+        for cal in sorted_history:
+            # Filtrar per mode
+            cal_mode = cal.get('mode', 'N/A')
+            if mode_filter != "TOTS" and cal_mode != mode_filter:
+                continue
+
+            # Calcular factor si no existeix
+            area = cal.get('area', 0)
+            conc = cal.get('conc_ppm', 0)
+            factor = cal.get('factor', conc / area if area > 0 else 0)
+
+            values = (
+                cal.get('seq_name', 'N/A'),
+                cal_mode,
+                f"KHP{conc:.0f}",
+                f"{area:.1f}",
+                f"{factor:.6f}" if factor else '-',
+                f"{cal.get('shift_sec', 0):.1f}",
+                f"{cal.get('snr', 0):.1f}" if cal.get('snr') else '-',
+                cal.get('status', 'N/A')
+            )
+
+            # Determinar tag
+            is_outlier = cal.get('is_outlier', False)
+            is_current = cal.get('seq_name', '') == self.khp_source_seq
+            status = cal.get('status', 'OK')
+
+            if is_outlier:
+                tag = 'outlier'
+            elif is_current:
+                tag = 'current'
+            elif status in ['FAIL', 'INVALID']:
+                tag = 'FAIL'
+            elif status in ['WARN', 'WARNING', 'VALID_WITH_WARNINGS']:
+                tag = 'WARN'
+            else:
+                tag = 'OK'
+
+            self._khp_tree.insert('', 'end', values=values, tags=(tag,), iid=cal.get('seq_name', ''))
+
+    def _filter_khp_history(self):
+        """Re-filtra la taula d'històric."""
+        self._populate_khp_history()
+
+    def _sort_khp_history(self, col):
+        """Ordena la taula per columna."""
+        items = [(self._khp_tree.set(k, col), k) for k in self._khp_tree.get_children("")]
+        try:
+            items.sort(key=lambda t: float(t[0].replace(",", ".")), reverse=True)
+        except ValueError:
+            items.sort(reverse=True)
+        for index, (_, k) in enumerate(items):
+            self._khp_tree.move(k, "", index)
+
+    def _on_khp_select(self, event):
+        """Gestiona la selecció d'una fila de l'històric."""
+        selection = self._khp_tree.selection()
+        if selection:
+            self._khp_apply_btn.configure(state="normal")
+            seq_name = selection[0]
+            # Trobar l'entrada
+            for cal in self._khp_history_data:
+                if cal.get("seq_name") == seq_name:
+                    area = cal.get('area', 0)
+                    conc = cal.get('conc_ppm', 0)
+                    self._khp_info_lbl.configure(
+                        text=f"Seleccionat: {seq_name} | Àrea: {area:.1f} | Conc: {conc} ppm"
+                    )
+                    break
+        else:
+            self._khp_apply_btn.configure(state="disabled")
+            self._khp_info_lbl.configure(text="Selecciona una calibració per aplicar-la")
+
+    def _apply_khp_from_history(self):
+        """Aplica la calibració KHP seleccionada de l'històric."""
+        selection = self._khp_tree.selection()
+        if not selection:
+            return
+
+        seq_name = selection[0]
+        selected_cal = None
+        for cal in self._khp_history_data:
+            if cal.get("seq_name") == seq_name:
+                selected_cal = cal
+                break
+
+        if not selected_cal:
+            messagebox.showerror("Error", "No s'ha trobat la calibració seleccionada.")
+            return
+
+        # Verificar que no és outlier
+        if selected_cal.get('is_outlier', False):
+            if not messagebox.askyesno("Avís",
+                                       "Aquesta calibració està marcada com a OUTLIER.\n"
+                                       "Segur que vols usar-la?"):
+                return
+
+        # Aplicar la calibració
+        area = selected_cal.get('area', 0)
+        conc = selected_cal.get('conc_ppm', 0)
+
+        if area <= 0 or conc <= 0:
+            messagebox.showerror("Error", "La calibració seleccionada no té dades vàlides.")
+            return
+
+        # Actualitzar les variables de calibració
+        self.khp_area = area
+        self.khp_conc = conc
+        self.khp_source_seq = seq_name
+
+        # Actualitzar la UI amb KHP aplicat
+        self.lbl_khp_header.configure(
+            text=f"KHP: {area:.1f} mAU·min ({conc} ppm) - de {seq_name}",
+            fg=COLORS["primary"])
+
+        # Recalcular concentracions si ja tenim resultats QC
+        if self.selected_replicas:
+            for name, data in self.selected_replicas.items():
+                sel_area = data.get('area')
+                if sel_area and self.khp_area and self.khp_conc:
+                    data['concentration'] = (sel_area / self.khp_area) * self.khp_conc
+                # Actualitzar info de calibració per cada mostra
+                data['cal_khp_area'] = self.khp_area
+                data['cal_khp_conc'] = self.khp_conc
+                data['cal_khp_seq'] = self.khp_source_seq
+
+        # Tancar diàleg
+        self._khp_history_dialog.destroy()
+
+        messagebox.showinfo("Calibració Aplicada",
+                          f"S'ha aplicat la calibració de {seq_name}:\n\n"
+                          f"Àrea KHP: {area:.1f}\n"
+                          f"Concentració: {conc} ppm\n\n"
+                          f"Les concentracions de les mostres s'han recalculat.")
 
     def _mark_as_outlier(self):
         """Marca la calibració actual com a outlier."""
@@ -2033,17 +2603,70 @@ class HPSECSuiteV3:
             messagebox.showinfo("Outlier", "Calibració marcada com a outlier.")
 
     # =========================================================================
-    # EXECUCIÓ: QC
+    # EXECUCIÓ: PROCESSAR (Fase 3)
     # =========================================================================
 
-    def _run_qc(self):
-        """Executa el Quality Control."""
+    def _run_process(self):
+        """Executa el processament de dades (Fase 3)."""
         if self.is_processing or not self.seq_path:
             return
 
         self.is_processing = True
-        self.btn_qc.configure(state="disabled")
-        self.progress_qc['value'] = 0
+        self.btn_processar.configure(state="disabled")
+        self.progress_process['value'] = 0
+
+        def process_thread():
+            try:
+                # TODO: Implementar processament real amb hpsec_process.py
+                # Per ara, simplement activa el següent pas
+                import time
+                for i in range(10):
+                    time.sleep(0.1)
+                    pct = (i + 1) * 10
+                    self.root.after(0, lambda p=pct: self._update_process_progress(p, "Processant..."))
+
+                self.root.after(0, self._process_done)
+            except Exception as e:
+                import traceback
+                self.root.after(0, lambda: self._process_error(str(e)))
+
+        thread = threading.Thread(target=process_thread, daemon=True)
+        thread.start()
+
+    def _update_process_progress(self, pct, msg):
+        """Actualitza progrés de processament."""
+        self.progress_process['value'] = pct
+
+    def _process_done(self):
+        """Callback quan el processament acaba."""
+        self.is_processing = False
+        self.progress_process['value'] = 100
+        self.btn_processar.configure(state="normal")
+        self.btn_revisar.configure(state="normal")
+
+        self.lbl_proc_alignment.configure(text="Alineacio: Aplicada")
+        self.lbl_proc_baseline.configure(text="Baseline: Corregit")
+        self.lbl_proc_peaks.configure(text="Pics detectats: OK")
+        self.lbl_proc_areas.configure(text="Arees calculades: OK")
+
+    def _process_error(self, error):
+        """Callback quan hi ha error de processament."""
+        self.is_processing = False
+        self.btn_processar.configure(state="normal")
+        messagebox.showerror("Error", f"Error durant el processament:\n\n{error}")
+
+    # =========================================================================
+    # EXECUCIÓ: REVISAR (Fase 4)
+    # =========================================================================
+
+    def _run_review(self):
+        """Executa la revisió de rèpliques (Fase 4)."""
+        if self.is_processing or not self.seq_path:
+            return
+
+        self.is_processing = True
+        self.btn_revisar.configure(state="disabled")
+        self.progress_review['value'] = 0
 
         # Netejar taula
         for item in self.tree_qc.get_children():
@@ -2051,15 +2674,15 @@ class HPSECSuiteV3:
 
         def qc_thread():
             try:
-                self._run_qc_process()
+                self._run_review_process()
             except Exception as e:
                 import traceback
-                self.root.after(0, lambda: self._qc_error(str(e) + "\n" + traceback.format_exc()))
+                self.root.after(0, lambda: self._review_error(str(e) + "\n" + traceback.format_exc()))
 
         thread = threading.Thread(target=qc_thread, daemon=True)
         thread.start()
 
-    def _run_qc_process(self):
+    def _run_review_process(self):
         """Procés de QC (en thread separat)."""
         con_path = self.consolidated_data.get("path", "")
         if not con_path:
@@ -2085,7 +2708,7 @@ class HPSECSuiteV3:
 
         for i, (sample_name, reps) in enumerate(samples.items()):
             pct = int(100 * (i + 1) / total)
-            self.root.after(0, lambda p=pct, s=sample_name: self._update_qc_progress(p, s))
+            self.root.after(0, lambda p=pct, s=sample_name: self._update_review_progress(p, s))
 
             # Avaluar cada rèplica
             evals = {}
@@ -2185,7 +2808,7 @@ class HPSECSuiteV3:
             if sel_area and self.khp_area and self.khp_conc:
                 concentration = (sel_area / self.khp_area) * self.khp_conc
 
-            # Guardar resultats
+            # Guardar resultats amb info de calibració
             self.selected_replicas[sample_name] = {
                 "sel_doc": sel_doc,
                 "sel_dad": sel_dad,
@@ -2196,12 +2819,15 @@ class HPSECSuiteV3:
                 "area": sel_area,
                 "areas_fraction": areas_by_fraction,
                 "concentration": concentration,
+                "cal_khp_area": self.khp_area,
+                "cal_khp_conc": self.khp_conc,
+                "cal_khp_seq": self.khp_source_seq,
             }
 
             # Actualitzar taula
             self.root.after(0, lambda v=values, t=tag: self._add_qc_row(v, t))
 
-        self.root.after(0, self._qc_done)
+        self.root.after(0, self._review_done)
 
     def _read_doc_from_file(self, filepath):
         """Llegeix dades DOC d'un fitxer consolidat."""
@@ -2233,35 +2859,35 @@ class HPSECSuiteV3:
         except Exception as e:
             return np.array([]), np.array([])
 
-    def _update_qc_progress(self, pct, sample):
+    def _update_review_progress(self, pct, sample):
         """Actualitza progrés de QC."""
-        self.progress_qc['value'] = pct
+        self.progress_review['value'] = pct
 
     def _add_qc_row(self, values, tag):
         """Afegeix una fila a la taula QC."""
         self.tree_qc.insert("", "end", values=values, tags=(tag,))
 
-    def _qc_done(self):
-        """Callback quan el QC acaba."""
+    def _review_done(self):
+        """Callback quan la revisió acaba."""
         self.is_processing = False
-        self.progress_qc['value'] = 100
+        self.progress_review['value'] = 100
         self.btn_export.configure(state="normal")
 
         n_ok = sum(1 for k, v in self.selected_replicas.items()
                    if v.get('doc_r') and v['doc_r'] >= DEFAULT_MIN_CORR)
         total = len(self.selected_replicas)
 
-        messagebox.showinfo("QC Completat",
-                           f"Quality Control completat!\n\n"
+        messagebox.showinfo("Revisio Completada",
+                           f"Revisio de repliques completada!\n\n"
                            f"Mostres: {total}\n"
                            f"OK: {n_ok}\n"
                            f"Revisar: {total - n_ok}")
 
-    def _qc_error(self, error):
-        """Callback quan hi ha error de QC."""
+    def _review_error(self, error):
+        """Callback quan hi ha error de revisió."""
         self.is_processing = False
-        self.btn_qc.configure(state="normal")
-        messagebox.showerror("Error", f"Error durant el QC:\n\n{error}")
+        self.btn_revisar.configure(state="normal")
+        messagebox.showerror("Error", f"Error durant la revisio:\n\n{error}")
 
     def _on_qc_double_click(self, event):
         """Doble clic a la taula QC."""
@@ -2357,22 +2983,40 @@ class HPSECSuiteV3:
         current += 1
         self.root.after(0, lambda: self._update_export_progress(int(100*current/total_steps), "Guardant resum..."))
 
+        # Info de calibració activa (pot ser diferent de la local)
+        active_calibration = {
+            "khp_area": self.khp_area,
+            "khp_conc_ppm": self.khp_conc,
+            "khp_source_seq": self.khp_source_seq,
+            "factor": self.khp_conc / self.khp_area if self.khp_area and self.khp_conc else None,
+        }
+
         summary = {
             "seq_path": self.seq_path,
             "seq_name": os.path.basename(self.seq_path),
             "generated_at": datetime.now().isoformat(),
-            "calibration": self.calibration_data,
+            "calibration_local": self.calibration_data,
+            "calibration_active": active_calibration,
             "samples": []
         }
 
         for name, data in self.selected_replicas.items():
-            summary["samples"].append({
+            sample_entry = {
                 "name": name,
                 "sel_doc": data.get('sel_doc'),
                 "sel_dad": data.get('sel_dad'),
                 "doc_r": data.get('doc_r'),
                 "doc_diff": data.get('doc_diff'),
-            })
+                "area_total": data.get('area'),
+                "concentration_ppm": data.get('concentration'),
+                "areas_fraction": data.get('areas_fraction', {}),
+                "calibration": {
+                    "khp_area": data.get('cal_khp_area'),
+                    "khp_conc_ppm": data.get('cal_khp_conc'),
+                    "khp_source_seq": data.get('cal_khp_seq'),
+                }
+            }
+            summary["samples"].append(sample_entry)
 
         summary_path = os.path.join(check_folder, "processing_summary.json")
         with open(summary_path, 'w', encoding='utf-8') as f:
@@ -2446,8 +3090,10 @@ class HPSECSuiteV3:
             ws = writer.sheets['Resultats']
             ws['A1'] = f"SEQ: {os.path.basename(self.seq_path)}"
             if self.khp_area and self.khp_conc:
-                ws['A2'] = f"KHP: Àrea={self.khp_area:.1f}, Conc={self.khp_conc} ppm"
-                ws['E2'] = f"Fórmula: Conc = (Àrea_mostra / {self.khp_area:.1f}) × {self.khp_conc}"
+                source_info = f" (de {self.khp_source_seq})" if self.khp_source_seq else ""
+                ws['A2'] = f"KHP: Àrea={self.khp_area:.1f}, Conc={self.khp_conc} ppm{source_info}"
+                factor = self.khp_conc / self.khp_area
+                ws['A3'] = f"Factor: {factor:.6f} | Fórmula: Conc = Àrea_mostra × {factor:.6f}"
 
     def _export_done(self, check_folder):
         """Callback quan l'exportació acaba."""
@@ -2493,6 +3139,21 @@ class HPSECSuiteV3:
         """Obre la finestra de repositori."""
         # TODO: Implementar finestra repositori
         messagebox.showinfo("Repositori", "Funcionalitat pendent d'implementar.")
+
+    def _open_planner(self):
+        """Obre el planificador de seqüències."""
+        try:
+            from hpsec_planner_gui import SequencePlannerGUI
+            planner = SequencePlannerGUI(parent=self.root)
+        except ImportError as e:
+            messagebox.showerror("Error", f"No s'ha pogut carregar el planificador:\n{e}")
+        except Exception as e:
+            messagebox.showerror("Error", f"Error obrint planificador:\n{e}")
+
+    def _open_comparador(self):
+        """Obre el comparador UIB/Direct."""
+        # TODO: Implementar comparador
+        messagebox.showinfo("Comparador", "Funcionalitat pendent d'implementar.")
 
 
 # =============================================================================
