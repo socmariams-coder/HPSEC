@@ -974,6 +974,9 @@ def validate_khp_quality(khp_data, all_peaks, timeout_info, anomaly_info=None, s
     # 8. Comparació històrica (si tenim seq_path)
     # Filtrar per concentració i volum per comparar "pomes amb pomes"
     historical_comparison = None
+    reference_comparison = None
+    current_area = khp_data.get('area', 0)
+
     if seq_path:
         mode = "BP" if khp_data.get('is_bp', False) else "COLUMN"
         conc_ppm = khp_data.get('conc_ppm', None)
@@ -982,7 +985,7 @@ def validate_khp_quality(khp_data, all_peaks, timeout_info, anomaly_info=None, s
         uib_sensitivity = khp_data.get('uib_sensitivity', None)
 
         historical_comparison = compare_khp_historical(
-            current_area=khp_data.get('area', 0),
+            current_area=current_area,
             current_concentration_ratio=concentration_ratio,
             seq_path=seq_path,
             mode=mode,
@@ -1000,6 +1003,37 @@ def validate_khp_quality(khp_data, all_peaks, timeout_info, anomaly_info=None, s
             for warn in historical_comparison['warnings']:
                 warnings.append(f"HISTORICAL: {warn}")
             quality_score += 20
+        elif historical_comparison['status'] == 'INSUFFICIENT_DATA':
+            # FALLBACK: Usar valors de referència de config
+            ref = _get_reference_area(mode, conc_ppm, volume_uL, doc_mode, uib_sensitivity)
+            if ref and ref['area_mean'] > 0:
+                ref_mean = ref['area_mean']
+                ref_std = ref['area_std']
+                area_deviation_pct = abs(current_area - ref_mean) / ref_mean * 100
+
+                # Thresholds segons mode
+                threshold = 100.0 if mode == "BP" else 20.0
+
+                reference_comparison = {
+                    'source': ref['source'],
+                    'ref_mean': ref_mean,
+                    'ref_std': ref_std,
+                    'area_deviation_pct': area_deviation_pct,
+                    'threshold': threshold
+                }
+
+                if area_deviation_pct > threshold:
+                    issues.append(
+                        f"REFERENCE: Desviació àrea {area_deviation_pct:.0f}% > {threshold:.0f}% "
+                        f"(vs {ref['source']}: {ref_mean}±{ref_std})"
+                    )
+                    quality_score += 100
+                elif area_deviation_pct > threshold * 0.5:
+                    warnings.append(
+                        f"REFERENCE: Desviació àrea {area_deviation_pct:.0f}% "
+                        f"(vs {ref['source']}: {ref_mean}±{ref_std})"
+                    )
+                    quality_score += 20
 
     # Determinar validesa
     is_valid = quality_score < 100 and len(issues) == 0
@@ -1010,7 +1044,8 @@ def validate_khp_quality(khp_data, all_peaks, timeout_info, anomaly_info=None, s
         'warnings': warnings,
         'quality_score': quality_score,
         'concentration_ratio': concentration_ratio,
-        'historical_comparison': historical_comparison
+        'historical_comparison': historical_comparison,
+        'reference_comparison': reference_comparison
     }
 
 
