@@ -4007,6 +4007,9 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
                     except Exception as e:
                         result["warnings"].append(f"WARN: Error validant KHP BP: {e}")
 
+            # Tracking de sample_ranges usats (per evitar duplicats amb blocs)
+            used_sample_ranges = set()
+
             for i, f_doc_uib in enumerate(uib_files):
                 progress = int(100 * (i + 1) / max(total, 1))
                 nom_doc_uib = os.path.basename(f_doc_uib)
@@ -4095,43 +4098,79 @@ def consolidate_sequence(seq_path, config=None, progress_callback=None):
                         # Construir Sample_Rep per buscar
                         sample_rep_key = f"{mostra}_R{rep}"
                         sample_rep_normalized = normalize_key(sample_rep_key)
+                        # Normalitzar base sample (sense _R#)
+                        mostra_normalized = normalize_key(mostra)
 
-                        # Buscar coincidència: exacta, normalitzada, o parcial
+                        # Buscar coincidència: exacta, normalitzada, o per base+bloc
                         match_info = None
-                        partial_matches = []
+                        matched_sample_rep = None  # Sample_Rep oficial del MasterFile
+                        block_matches = []  # Per samples amb blocs (B1, B2)
 
                         for sr, info in sample_ranges_new.items():
+                            # Saltar si ja s'ha usat aquest entry
+                            if sr in used_sample_ranges:
+                                continue
+
                             # 1. Coincidència exacta
                             if sr == sample_rep_key:
                                 match_info = info
+                                matched_sample_rep = sr
                                 break
+
                             # 2. Coincidència normalitzada (ignorar espais, guions, etc.)
                             if normalize_key(sr) == sample_rep_normalized:
                                 match_info = info
+                                matched_sample_rep = sr
                                 break
-                            # 3. Guardar coincidències parcials per si no hi ha exacta
-                            sr_base = sr.rsplit("_R", 1)[0] if "_R" in sr else sr
-                            if normalize_key(sr_base) == normalize_key(mostra):
-                                # Extreure rèplica del sample_ranges key
-                                sr_rep = sr.rsplit("_R", 1)[1] if "_R" in sr else "1"
-                                partial_matches.append((sr, info, sr_rep))
 
-                        # Si no hi ha match exacte, buscar la rèplica correcta entre parcials
-                        if match_info is None and partial_matches:
-                            for sr, info, sr_rep in partial_matches:
-                                if sr_rep == str(rep):
+                            # 3. Samples amb blocs: SAMPLE_B#_R# → extreure base i comparar
+                            if "_B" in sr and "_R" in sr:
+                                # Extreure base: NAOH01MM_B1_R1 → NAOH01MM
+                                sr_parts = sr.split("_B")
+                                sr_base = sr_parts[0]
+                                sr_rest = sr_parts[1] if len(sr_parts) > 1 else ""
+                                sr_rep = sr_rest.split("_R")[1] if "_R" in sr_rest else "1"
+
+                                if normalize_key(sr_base) == mostra_normalized and sr_rep == str(rep):
+                                    block_matches.append((sr, info))
+
+                            # 4. Coincidència parcial sense bloc
+                            else:
+                                sr_base = sr.rsplit("_R", 1)[0] if "_R" in sr else sr
+                                sr_rep = sr.rsplit("_R", 1)[1] if "_R" in sr else "1"
+                                if normalize_key(sr_base) == mostra_normalized and sr_rep == str(rep):
                                     match_info = info
+                                    matched_sample_rep = sr
                                     break
-                            # NO FER FALLBACK: si no trobem la rèplica correcta, NO usar dades incorrectes
-                            # Això evita l'error de files duplicades
-                            if match_info is None:
-                                doc_direct_status = {
-                                    "status": "FALTA_HPLC_SEQ",
-                                    "message": f"Rèplica {rep} absent a 1-HPLC-SEQ"
-                                }
-                                result["warnings"].append(
-                                    f"SENSE_MATCH: {sample_rep_key} no trobat a MasterFile (rèplica {rep} absent)"
-                                )
+
+                        # Si no hi ha match exacte però hi ha matches amb blocs, agafar el primer disponible
+                        if match_info is None and block_matches:
+                            matched_sample_rep, match_info = block_matches[0]
+
+                        # Si encara no hi ha match, registrar error
+                        if match_info is None:
+                            doc_direct_status = {
+                                "status": "FALTA_HPLC_SEQ",
+                                "message": f"Rèplica {rep} absent a 1-HPLC-SEQ"
+                            }
+                            result["warnings"].append(
+                                f"SENSE_MATCH: {sample_rep_key} no trobat a MasterFile (rèplica {rep} absent)"
+                            )
+
+                        # Marcar entry com a usat i actualitzar mostra/rep amb Sample_Rep oficial
+                        if matched_sample_rep:
+                            used_sample_ranges.add(matched_sample_rep)
+                            # Parsejar Sample_Rep: pot ser "NAOH01MM_B1_R1" o "FR2608_R1"
+                            if "_B" in matched_sample_rep and "_R" in matched_sample_rep:
+                                # Format amb bloc: SAMPLE_B#_R#
+                                parts = matched_sample_rep.rsplit("_R", 1)
+                                mostra = parts[0]  # NAOH01MM_B1
+                                rep = int(parts[1]) if len(parts) > 1 else rep
+                            else:
+                                # Format sense bloc: SAMPLE_R#
+                                parts = matched_sample_rep.rsplit("_R", 1)
+                                mostra = parts[0]
+                                rep = int(parts[1]) if len(parts) > 1 else rep
 
                         if match_info:
                             try:

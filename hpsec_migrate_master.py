@@ -542,6 +542,17 @@ def _create_masterfile(data: Dict, info: Dict, seq_path: str) -> tuple:
     return output_path, n_rows
 
 
+def _normalize_sample_name(sample: str) -> str:
+    """Normalitza nom de mostra per detectar duplicats (NaOH 0.1mM_1 → NAOH01MM)."""
+    import re
+    s = str(sample or "").upper()
+    # Treure sufixos com _1, _2 que no són rèpliques
+    s = re.sub(r'_\d+$', '', s)
+    # Treure tot excepte alfanumèrics
+    s = re.sub(r'[^A-Z0-9]', '', s)
+    return s
+
+
 def _create_sample_rep(df_hplc: pd.DataFrame, sample_col: str) -> List[str]:
     """Crea Sample_Rep amb lògica de blocs per duplicats."""
 
@@ -550,27 +561,33 @@ def _create_sample_rep(df_hplc: pd.DataFrame, sample_col: str) -> List[str]:
     if not inj_num_col:
         return [f"{row[sample_col]}_R1" for _, row in df_hplc.iterrows()]
 
+    df_hplc = df_hplc.copy()  # Evitar modificar l'original
     df_hplc['_inj_num'] = df_hplc[inj_num_col].fillna(1).astype(int)
 
-    # Detectar duplicats
-    df_hplc['_key'] = df_hplc[sample_col].astype(str) + '_R' + df_hplc['_inj_num'].astype(str)
-    dup_counts = df_hplc['_key'].value_counts()
-    samples_need_blocks = set(df_hplc.loc[df_hplc['_key'].isin(dup_counts[dup_counts > 1].index), sample_col])
+    # Normalitzar noms per detectar duplicats (NaOH 0.1mM_1 i NaOH 0.1mM → mateix grup)
+    df_hplc['_sample_norm'] = df_hplc[sample_col].apply(_normalize_sample_name)
+
+    # Detectar duplicats amb nom normalitzat + inj_num
+    df_hplc['_key_norm'] = df_hplc['_sample_norm'] + '_R' + df_hplc['_inj_num'].astype(str)
+    dup_counts = df_hplc['_key_norm'].value_counts()
+    samples_need_blocks_norm = set(df_hplc.loc[df_hplc['_key_norm'].isin(dup_counts[dup_counts > 1].index), '_sample_norm'])
 
     # Generar Sample_Rep
     result = []
-    block_counter = {}
+    block_counter = {}  # Clau: sample_norm
 
     for _, row in df_hplc.iterrows():
-        sample = row[sample_col]
+        sample = str(row[sample_col]).strip()
+        sample_norm = row['_sample_norm']
         inj_num = row['_inj_num']
 
-        if sample in samples_need_blocks:
-            if sample not in block_counter:
-                block_counter[sample] = 0
+        if sample_norm in samples_need_blocks_norm:
+            if sample_norm not in block_counter:
+                block_counter[sample_norm] = 0
             if inj_num == 1:
-                block_counter[sample] += 1
-            result.append(f"{sample}_B{block_counter[sample]}_R{inj_num}")
+                block_counter[sample_norm] += 1
+            # Usar sample_norm per consistència al Sample_Rep
+            result.append(f"{sample_norm}_B{block_counter[sample_norm]}_R{inj_num}")
         else:
             result.append(f"{sample}_R{inj_num}")
 
