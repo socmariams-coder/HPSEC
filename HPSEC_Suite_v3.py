@@ -66,6 +66,7 @@ from hpsec_calibrate import (
     register_calibration,
     mark_calibration_as_outlier,
     get_active_calibration,
+    set_calibration_override,
 )
 from hpsec_replica import (
     evaluate_replica,
@@ -2202,8 +2203,24 @@ class HPSECSuiteV3:
             self.lbl_cal_symmetry.configure(text=f"Simetria: {symmetry:.2f}")
             self.lbl_cal_snr.configure(text=f"SNR: {snr:.1f}")
 
-            # Estat de qualitat amb colors
-            if quality_score < 20:
+            # Obtenir nous camps de validació
+            valid_for_cal = calibration.get('valid_for_calibration', True)
+            valid_for_shift = calibration.get('valid_for_shift', True)
+            cal_issues = calibration.get('calibration_issues', [])
+            shift_issues = calibration.get('shift_issues', [])
+
+            # Estat de qualitat amb colors - basat en validació, no només quality_score
+            if not valid_for_cal:
+                self.lbl_cal_quality.configure(
+                    text="Estat: ✗ INVÀLID CALIBRACIÓ",
+                    fg=COLORS["error"]
+                )
+            elif not valid_for_shift:
+                self.lbl_cal_quality.configure(
+                    text="Estat: ⚠ INVÀLID SHIFT (cal OK)",
+                    fg=COLORS["warning"]
+                )
+            elif quality_score < 20:
                 self.lbl_cal_quality.configure(text="Estat: ✓ EXCEL·LENT", fg=COLORS["success"])
             elif quality_score < 50:
                 self.lbl_cal_quality.configure(text="Estat: ✓ BO", fg=COLORS["success"])
@@ -2212,9 +2229,18 @@ class HPSECSuiteV3:
             else:
                 self.lbl_cal_quality.configure(text="Estat: ✗ PROBLEMES", fg=COLORS["error"])
 
-            # Mostrar issues si n'hi ha
-            if quality_issues:
-                issues_text = " | ".join(quality_issues[:3])  # Màxim 3
+            # Mostrar issues - prioritzar cal_issues i shift_issues sobre quality_issues
+            all_issues = cal_issues + shift_issues + quality_issues
+            # Eliminar duplicats mantenint ordre
+            seen = set()
+            unique_issues = []
+            for issue in all_issues:
+                if issue not in seen:
+                    seen.add(issue)
+                    unique_issues.append(issue)
+
+            if unique_issues:
+                issues_text = " | ".join(unique_issues[:3])  # Màxim 3
                 self.lbl_cal_issues.configure(text=issues_text)
             else:
                 self.lbl_cal_issues.configure(text="")
@@ -2595,6 +2621,23 @@ class HPSECSuiteV3:
             conc = cal.get('conc_ppm', 0)
             factor = cal.get('factor', conc / area if area > 0 else 0)
 
+            # Determinar status mostrat
+            valid_for_cal = cal.get('valid_for_calibration', True)
+            valid_for_shift = cal.get('valid_for_shift', True)
+            manual_override = cal.get('manual_override')
+            stored_status = cal.get('status', 'OK')
+
+            if manual_override is True:
+                display_status = "MANUAL_OK"
+            elif manual_override is False:
+                display_status = "MANUAL_INV"
+            elif not valid_for_cal:
+                display_status = "INV_CAL"
+            elif not valid_for_shift:
+                display_status = "INV_SHIFT"
+            else:
+                display_status = stored_status if stored_status else "OK"
+
             values = (
                 cal.get('seq_name', 'N/A'),
                 cal_mode,
@@ -2603,13 +2646,13 @@ class HPSECSuiteV3:
                 f"{factor:.6f}" if factor else '-',
                 f"{cal.get('shift_sec', 0):.1f}",
                 f"{cal.get('snr', 0):.1f}" if cal.get('snr') else '-',
-                cal.get('status', 'N/A')
+                display_status
             )
 
             # Determinar tag
-            is_outlier = cal.get('is_outlier', False)
+            is_outlier = cal.get('is_outlier', False) or not valid_for_cal
             is_current = cal.get('seq_name', '') == self.khp_source_seq
-            status = cal.get('status', 'OK')
+            status = display_status
 
             if is_outlier:
                 tag = 'outlier'
@@ -2720,10 +2763,73 @@ class HPSECSuiteV3:
                           f"Les concentracions de les mostres s'han recalculat.")
 
     def _mark_as_outlier(self):
-        """Marca la calibració actual com a outlier."""
-        if messagebox.askyesno("Confirmar", "Vols marcar aquesta calibració com a outlier?"):
-            # TODO: Implementar marcar outlier
-            messagebox.showinfo("Outlier", "Calibració marcada com a outlier.")
+        """Marca la calibració actual com a outlier amb opció shift/calibració."""
+        if not hasattr(self, 'calibration_data') or not self.calibration_data:
+            messagebox.showerror("Error", "No hi ha calibració carregada.")
+            return
+
+        calibration = self.calibration_data.get('calibration', {})
+        cal_id = calibration.get('cal_id')
+        if not cal_id:
+            messagebox.showerror("Error", "No s'ha trobat l'ID de la calibració.")
+            return
+
+        # Diàleg per triar tipus d'invalidació
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Marcar com a invàlid")
+        dialog.geometry("400x250")
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        # Centrar
+        dialog.update_idletasks()
+        x = self.root.winfo_x() + (self.root.winfo_width() - 400) // 2
+        y = self.root.winfo_y() + (self.root.winfo_height() - 250) // 2
+        dialog.geometry(f"+{x}+{y}")
+
+        ttk.Label(dialog, text="Què vols invalidar?", font=("Segoe UI", 11, "bold")).pack(pady=15)
+
+        var_type = tk.StringVar(value="calibration")
+
+        ttk.Radiobutton(dialog, text="Invàlid per CALIBRACIÓ (factor quantitatiu)\n→ No usar per calcular concentracions",
+                       variable=var_type, value="calibration").pack(anchor="w", padx=30, pady=5)
+        ttk.Radiobutton(dialog, text="Invàlid per SHIFT (alineació temporal)\n→ No usar per alinear senyals",
+                       variable=var_type, value="shift").pack(anchor="w", padx=30, pady=5)
+        ttk.Radiobutton(dialog, text="Invàlid per AMBDÓS",
+                       variable=var_type, value="both").pack(anchor="w", padx=30, pady=5)
+
+        ttk.Label(dialog, text="Motiu (opcional):").pack(anchor="w", padx=30, pady=(15, 5))
+        reason_entry = ttk.Entry(dialog, width=40)
+        reason_entry.pack(padx=30)
+
+        def apply_override():
+            override_type = var_type.get()
+            reason = reason_entry.get().strip() or f"Marcat manualment ({override_type})"
+
+            try:
+                if override_type == "calibration":
+                    # Només invalidar calibració, shift pot ser vàlid
+                    result = set_calibration_override(self.seq_path, cal_id, False, reason)
+                elif override_type == "shift":
+                    # Només invalidar shift (cal actualitzar el camp manualment)
+                    result = set_calibration_override(self.seq_path, cal_id, False, f"SHIFT: {reason}")
+                else:  # both
+                    result = set_calibration_override(self.seq_path, cal_id, False, f"AMBDÓS: {reason}")
+
+                if result.get('success'):
+                    messagebox.showinfo("Fet", result.get('message', 'Calibració marcada com a invàlida.'))
+                    dialog.destroy()
+                    # Refrescar històric
+                    self._populate_khp_history()
+                else:
+                    messagebox.showerror("Error", result.get('message', 'Error desconegut'))
+            except Exception as e:
+                messagebox.showerror("Error", f"Error aplicant override: {e}")
+
+        btn_frame = ttk.Frame(dialog)
+        btn_frame.pack(pady=20)
+        ttk.Button(btn_frame, text="Aplicar", command=apply_override).pack(side=tk.LEFT, padx=10)
+        ttk.Button(btn_frame, text="Cancel·lar", command=dialog.destroy).pack(side=tk.LEFT, padx=10)
 
     # =========================================================================
     # EXECUCIÓ: PROCESSAR (Fase 3)
