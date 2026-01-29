@@ -107,7 +107,7 @@ IMPLEMENTAT v3:
   [x] Estructura wizard 4 passos
   [x] Pas 1: Consolidar (info + progrés + botó)
   [x] Pas 2: Calibrar (info detallada + gràfic cromatograma + botons)
-  [x] Pas 3: QC (taula interactiva + menú contextual)
+  [x] Pas 3: QC (taula interactiva + menú contextual, llegeix de JSON)
   [x] Pas 4: Exportar (opcions + resum + botons)
   [x] Navegació (Anterior/Següent + clic passos)
   [x] Detecció automàtica última SEQ
@@ -154,6 +154,53 @@ PENDENT v3:
       - Usar timing stats de consolidation.json (pre_injection_time, interval_mean)
       - TOC_CYCLE = 77.2 min, timeout = 74 sec
       - Objectiu: calcular durada mostra i delay inicial per evitar zona crítica
+
+--------------------------------------------------------------------------------
+PIPELINE REPLICA SELECTION (2026-01-29) - COMPLETAT
+--------------------------------------------------------------------------------
+
+OBJECTIU: Implementar selecció de rèpliques post-calibració amb suport híbrid DOC/DAD
+
+IMPLEMENTAT:
+  [x] hpsec_pipeline.py - Selecció independent DOC/DAD
+      - SampleResult ara té: selected_doc, selected_dad, selected (R1/R2/MIXED)
+      - Comparativa entre rèpliques: Pearson, àrea, DAD quality
+      - Concentracions per fracció calculades amb factor calibració
+      - Paràmetres transformació per reproductibilitat
+
+  [x] processing_summary.json - Font única de veritat
+      Estructura per mostra:
+        - selected_doc, selected_dad, selected
+        - comparison: {pearson, area_diff_pct}
+        - areas_fraction: {BioP, HS, BB, SB, LMW, total}
+        - concentration_ppm, conc_fraction
+        - transformation: {shift_sec, baseline_mau, factor_used, khp_source}
+        - replicas: info detallada per R1, R2 incloent dad_eval
+
+  [x] HPSEC_Suite_v3.py - GUI passiva
+      - _run_review_process() ara NOMÉS llegeix de processing_summary.json
+      - NO fa processament - tot ve del JSON generat per hpsec_pipeline.py
+      - Mostra selecció independent (DOC/DAD) i estat MIXED
+      - Guarda resultats a self.selected_replicas per exportació
+
+FLUX FINAL:
+  hpsec_pipeline.process_sequence()
+    → _step_process() amb calibration_data
+      → _process_sample() per cada mostra
+        → Avalua rèpliques (evaluate_replica)
+        → Compara (compare_replicas)
+        → Selecciona millor DOC i DAD independentment
+        → Calcula concentracions amb factor calibració
+    → _step_export()
+      → _create_export_summary() genera processing_summary.json
+
+  HPSEC_Suite_v3.py
+    → _run_review_process() llegeix processing_summary.json
+    → Mostra taula amb seleccions i estat
+
+COMMITS:
+  - 14b1e80: hpsec_pipeline: Add independent DOC/DAD replica selection
+  - 17b2c9d: Refactor GUI review stage to read from JSON only
 
 --------------------------------------------------------------------------------
 SUITE v3.1 - MILLORES GUI (2026-01-29)
