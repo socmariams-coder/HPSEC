@@ -1,0 +1,187 @@
+{
+  "time_fractions": {
+    "BioP": {
+      "start": 0.0,
+      "end": 18.0,
+      "name": "Biopolímers"
+    },
+    "HS": {
+      "start": 18.0,
+      "end": 23.0,
+      "name": "Àcids Húmics"
+    },
+    "BB": {
+      "start": 23.0,
+      "end": 30.0,
+      "name": "Building Blocks"
+    },
+    "SB": {
+      "start": 30.0,
+      "end": 40.0,
+      "name": "Small Building Blocks"
+    },
+    "LMW": {
+      "start": 40.0,
+      "end": 70.0,
+      "name": "Low Molecular Weight"
+    }
+  },
+  "chromatogram": {
+    "max_duration_min": 78.65,
+    "baseline_window_bp": 1.0,
+    "baseline_window_column": 10.0,
+    "smoothing_window": 11,
+    "smoothing_order": 3
+  },
+  "quality": {
+    "r2_valid": 0.987,
+    "r2_check": 0.98,
+    "pearson_min": 0.995,
+    "pearson_warning": 0.99,
+    "snr_min": 10.0,
+    "snr_ratio_threshold": 1.5,
+    "area_diff_warning": 15.0,
+    "area_diff_critical": 30.0
+  },
+  "dad": {
+    "drift_warning": 1.0,
+    "drift_critical": 3.0,
+    "noise_warning": 0.5,
+    "doc_correlation_min": 0.9,
+    "doc_correlation_warning": 0.95
+  },
+  "wavelengths": {
+    "selected": [
+      220,
+      254,
+      272,
+      290,
+      362
+    ],
+    "available": [
+      210,
+      220,
+      230,
+      240,
+      250,
+      254,
+      260,
+      272,
+      280,
+      290,
+      300,
+      350,
+      362,
+      400
+    ],
+    "primary": 254
+  },
+  "injection_volumes": {
+    "bp_default": 100,
+    "column_default": 400,
+    "column_old": 100,
+    "column_change_seq": 275
+  },
+  "detection": {
+    "batman_max_sep_min": 0.5,
+    "batman_drop_min": 0.05,
+    "batman_drop_max": 0.5,
+    "timeout_min_duration": 5.0,
+    "timeout_major": 74.0,
+    "ears_threshold": 0.1,
+    "ears_max_sep_min": 0.5,
+    "irr_smoothness_threshold": 0.18
+  },
+  "calibration": {
+    "khp_pattern": "KHP",
+    "peak_min_prominence_pct": 5.0,
+    "symmetry_min": 0.5,
+    "symmetry_max": 2.0,
+    "snr_min_khp": 50.0,
+    "deviation_threshold_column": 20.0,
+    "deviation_threshold_bp": 100.0,
+    "reference_values": {
+      "COLUMN_KHP2_400uL_Direct": {
+        "area_mean": 630,
+        "area_std": 30,
+        "description": "KHP 2ppm, 400µL, Direct (SEQ>=275)"
+      },
+      "COLUMN_KHP2_400uL_DUAL": {
+        "area_mean": 625,
+        "area_std": 35,
+        "description": "KHP 2ppm, 400µL, DUAL mode"
+      },
+      "COLUMN_KHP2_100uL_Direct": {
+        "area_mean": 160,
+        "area_std": 20,
+        "description": "KHP 2ppm, 100µL, Direct (SEQ 256-274)"
+      },
+      "COLUMN_KHP2_100uL_DUAL": {
+        "area_mean": 160,
+        "area_std": 25,
+        "description": "KHP 2ppm, 100µL, DUAL mode (SEQ 269-274)"
+      },
+      "COLUMN_KHP2_400uL_UIB_1000": {
+        "area_mean": 620,
+        "area_std": 35,
+        "description": "KHP 2ppm, 400µL, UIB 1000ppb"
+      },
+      "COLUMN_KHP2_100uL_UIB_700": {
+        "area_mean": 155,
+        "area_std": 25,
+        "description": "KHP 2ppm, 100µL, UIB 700ppb"
+      },
+      "BP_KHP2_100uL": {
+        "area_mean": 200,
+        "area_std": 50,
+        "description": "KHP 2ppm, 100µL, BP mode (alta variabilitat)"
+      }
+    }
+  },
+  "timeout_zones": {
+    "RUN_START": {
+      "start": 0,
+      "end": 1,
+      "severity": "INFO"
+    },
+    "BioP": {
+      "start": 0,
+      "end": 18,
+      "severity": "WARNING"
+    },
+    "HS": {
+      "start": 18,
+      "end": 23,
+      "severity": "CRITICAL"
+    },
+    "BB": {
+      "start": 23,
+      "end": 30,
+      "severity": "WARNING"
+    },
+    "SB": {
+      "start": 30,
+      "end": 40,
+      "severity": "WARNING"
+    },
+    "LMW": {
+      "start": 40,
+      "end": 70,
+      "severity": "INFO"
+    },
+    "POST_RUN": {
+      "start": 70,
+      "end": 999,
+      "severity": "OK"
+    }
+  },
+  "ui": {
+    "theme": "clam",
+    "font_family": "Segoe UI",
+    "font_size": 10,
+    "accent_color": "#2E86AB",
+    "warning_color": "#F6AE2D",
+    "error_color": "#E63946",
+    "success_color": "#2A9D8F"
+  }
+}

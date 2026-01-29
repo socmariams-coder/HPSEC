@@ -2457,6 +2457,46 @@ def _extract_replicas_info(khp_data):
     return replicas_info
 
 
+def _get_reference_area(mode, conc_ppm, volume_uL, doc_mode, uib_sensitivity):
+    """
+    Obté valors de referència de la config quan no hi ha històric.
+
+    Returns:
+        dict amb 'area_mean', 'area_std', 'source' o None si no hi ha referència
+    """
+    try:
+        config_path = os.path.join(os.path.dirname(__file__), "hpsec_config.json")
+        if os.path.exists(config_path):
+            with open(config_path, 'r', encoding='utf-8') as f:
+                config = json.load(f)
+            ref_values = config.get('calibration', {}).get('reference_values', {})
+
+            # Construir clau de cerca
+            # Format: MODE_KHPx_VOLuL_DOCMODE
+            conc_str = f"KHP{int(conc_ppm)}" if conc_ppm else "KHP"
+            vol_str = f"{int(volume_uL)}uL" if volume_uL else ""
+
+            # Provar diferents combinacions
+            keys_to_try = []
+            if doc_mode and 'UIB' in doc_mode and uib_sensitivity:
+                keys_to_try.append(f"{mode}_{conc_str}_{vol_str}_UIB_{uib_sensitivity}")
+            if doc_mode:
+                keys_to_try.append(f"{mode}_{conc_str}_{vol_str}_{doc_mode}")
+            keys_to_try.append(f"{mode}_{conc_str}_{vol_str}")
+
+            for key in keys_to_try:
+                if key in ref_values:
+                    ref = ref_values[key]
+                    return {
+                        'area_mean': ref.get('area_mean', 0),
+                        'area_std': ref.get('area_std', 0),
+                        'source': f"config:{key}"
+                    }
+    except Exception:
+        pass
+    return None
+
+
 def register_calibration(seq_path, khp_data, khp_source, mode="COLUMN"):
     """
     Registra una nova calibració a l'històric.
@@ -2465,11 +2505,9 @@ def register_calibration(seq_path, khp_data, khp_source, mode="COLUMN"):
     1. LOCAL (CALDATA/calibrations.json) - Historial complet de la SEQ
     2. GLOBAL (KHP_History.json) - Una entrada per SEQ per comparacions
 
-    VALIDACIÓ AUTOMÀTICA:
-    - Compara amb l'històric (mateixa concentració/volum/doc_mode)
-    - Marca is_outlier=True si àrea desvia >20% (COLUMN) o >100% (BP)
-    - Marca is_outlier=True si hi ha quality_issues greus
-    - valid_for_shift pot ser True encara que is_outlier=True (shift usable)
+    VALIDACIÓ COMPLETA amb validate_khp_quality():
+    - valid_for_shift: Pic clar, sense timeout crític, batman reparat
+    - valid_for_calibration: Tots els criteris de qualitat (8 criteris)
     """
     seq_name = os.path.basename(seq_path)
 
@@ -2488,104 +2526,54 @@ def register_calibration(seq_path, khp_data, khp_source, mode="COLUMN"):
     uib_sensitivity = khp_data.get('uib_sensitivity')
 
     peak_info = khp_data.get('peak_info', {})
+    t_retention = khp_data.get('t_retention', khp_data.get('t_doc_max', 0))
 
-    # === VALIDACIÓ: Comparació històrica ===
-    # Filtrar per concentració, volum i doc_mode per comparar correctament
-    historical_result = compare_khp_historical(
-        current_area=area,
-        current_concentration_ratio=khp_data.get('concentration_ratio', 1.0),
-        seq_path=seq_path,
-        mode=mode,
-        conc_ppm=conc,
-        volume_uL=volume,
-        doc_mode=doc_mode if doc_mode != 'N/A' else None,
-        uib_sensitivity=uib_sensitivity
+    # =========================================================================
+    # VALIDACIÓ COMPLETA amb validate_khp_quality()
+    # Criteris: multi-pic, timeout, batman, simetria, SNR, límits, CR, històric
+    # =========================================================================
+    all_peaks = khp_data.get('all_peaks', [])
+    timeout_info = khp_data.get('timeout_info', {})
+    anomaly_info = khp_data.get('anomaly_info', {})
+
+    validation_result = validate_khp_quality(
+        khp_data=khp_data,
+        all_peaks=all_peaks,
+        timeout_info=timeout_info,
+        anomaly_info=anomaly_info,
+        seq_path=seq_path
     )
 
-    # Determinar si és outlier basant-se en:
-    # 1. Comparació històrica (INVALID = outlier)
-    # 2. Quality issues existents (issues greus = outlier)
-    quality_issues = khp_data.get('quality_issues', [])
-    is_outlier = False
-    outlier_reasons = []
+    # Extreure resultats de validació
+    valid_for_calibration = validation_result.get('is_valid', True)
+    calibration_issues = validation_result.get('issues', [])
+    calibration_warnings = validation_result.get('warnings', [])
+    quality_score = validation_result.get('quality_score', 0)
+    quality_issues = calibration_issues + calibration_warnings
 
-    # Criteri 1: Comparació històrica
-    if historical_result['status'] == 'INVALID':
-        is_outlier = True
-        outlier_reasons.extend(historical_result.get('issues', []))
-
-    # Criteri 2: Quality issues greus (no warnings)
-    # Issues que invaliden per calibració
-    severe_keywords = ['BATMAN', 'MULTI_PEAK', 'TIMEOUT_CRITICAL', 'LOW_SNR', 'CR_FAIL', 'ASYMMETRY']
-    for issue in quality_issues:
-        issue_upper = str(issue).upper()
-        if any(kw in issue_upper for kw in severe_keywords):
-            is_outlier = True
-            if issue not in outlier_reasons:
-                outlier_reasons.append(issue)
-        # Pic irregular amb smoothness <30% és greu
-        elif 'IRREGULAR' in issue_upper or 'SMOOTHNESS' in issue_upper:
-            import re
-            smoothness_match = re.search(r'smoothness[=:\s]*(\d+)', issue, re.I)
-            if smoothness_match:
-                smoothness_val = int(smoothness_match.group(1))
-                if smoothness_val < 30:  # Smoothness molt baixa = outlier
-                    is_outlier = True
-                    if issue not in outlier_reasons:
-                        outlier_reasons.append(issue)
-
-    # Criteri 3: Intensitat excessiva (àrea molt alta/baixa)
-    # Si la historical_result té àrea_deviation > threshold, ja està marcat INVALID
-    # Però si no hi ha suficient històric, mirem si l'àrea és anormalment alta
-    area_deviation = historical_result.get('area_deviation_pct', 0)
-    if area_deviation > 0 and not is_outlier:
-        threshold = 100 if is_bp else 20
-        if area_deviation > threshold:
-            is_outlier = True
-            outlier_reasons.append(f"Desviació àrea {area_deviation:.1f}% (>{threshold}%)")
-
-    # Criteri 4: Si històric insuficient, comparar amb rang general
-    # per detectar intensitats extremes sense històric equivalent
-    if historical_result['status'] == 'INSUFFICIENT_DATA' and not is_outlier:
-        # Primer intentar amb mateix volum però qualsevol doc_mode
-        same_vol_stats = get_historical_khp_stats(
-            seq_path, mode, conc_ppm=conc, volume_uL=volume, doc_mode=None
-        )
-        if same_vol_stats and same_vol_stats['n_calibrations'] >= 3:
-            # Comparació fiable (mateix volum)
-            mean_area = same_vol_stats['mean_area']
-            std_area = same_vol_stats['std_area']
-            if mean_area > 0 and std_area > 0:
-                z_score = abs(area - mean_area) / std_area
-                if z_score > 3.0:
-                    is_outlier = True
-                    pct_dev = abs(area - mean_area) / mean_area * 100
-                    outlier_reasons.append(
-                        f"Intensitat extrema: {area:.0f} vs {mean_area:.0f}±{std_area:.0f} "
-                        f"(z={z_score:.1f}, {pct_dev:.0f}%)"
-                    )
-
-    # === VALIDESA PER SHIFT ===
-    # El shift pot ser vàlid encara que la calibració no ho sigui
-    # Invàlid per shift si: no hi ha pic clar, timeout sever al pic, batman sever
+    # =========================================================================
+    # VALIDACIÓ PER SHIFT (alineació temporal)
+    # Criteris més relaxats: només necessitem posició pic fiable
+    # =========================================================================
     valid_for_shift = True
     shift_issues = []
 
-    t_retention = khp_data.get('t_retention', khp_data.get('t_doc_max', 0))
     if not t_retention or t_retention <= 0:
         valid_for_shift = False
-        shift_issues.append("No s'ha detectat pic clar")
+        shift_issues.append("No s'ha detectat pic")
 
-    # Timeout crític invalida shift (posició pic dubtosa)
-    timeout_info = khp_data.get('timeout_info', {})
     if timeout_info.get('severity') == 'CRITICAL':
         valid_for_shift = False
-        shift_issues.append("Timeout crític afecta posició pic")
+        shift_issues.append("Timeout crític a zona pic")
 
-    # Batman sever pot afectar t_max (però si s'ha reparat, OK)
     if khp_data.get('has_batman', False) and not khp_data.get('batman_repaired', False):
-        # Batman no reparat: shift pot ser imprecís però usable amb warning
-        shift_issues.append("Batman no reparat: shift pot ser imprecís")
+        shift_issues.append("Batman no reparat (shift imprecís)")
+
+    # Alias per compatibilitat
+    is_outlier = not valid_for_calibration
+
+    # Obtenir info històrica per registre (no per validació, ja feta a validate_khp_quality)
+    historical_comparison = validation_result.get('historical_comparison', {})
 
     entry = {
         "cal_id": generate_calibration_id(),
@@ -2611,14 +2599,33 @@ def register_calibration(seq_path, khp_data, khp_source, mode="COLUMN"):
         "has_timeout": khp_data.get('has_timeout', False),
         "n_replicas": khp_data.get('n_replicas', 1),
         "rsd": khp_data.get('rsd', 0),
-        "status": "OUTLIER" if is_outlier else khp_data.get('status', 'OK'),
         "quality_issues": quality_issues,
         "is_bp": is_bp,
-        "is_outlier": is_outlier,
-        "outlier_reasons": outlier_reasons if is_outlier else [],
-        "is_active": not is_outlier,  # Outliers no s'activen per defecte
+
+        # === VALIDACIÓ SHIFT (alineació) ===
         "valid_for_shift": valid_for_shift,
-        "shift_issues": shift_issues if shift_issues else [],
+        "shift_issues": shift_issues,
+
+        # === VALIDACIÓ CALIBRACIÓ (quantitatiu) ===
+        "valid_for_calibration": valid_for_calibration,
+        "calibration_issues": calibration_issues,
+        "calibration_warnings": calibration_warnings,
+        "quality_score": quality_score,
+
+        # === OVERRIDE MANUAL ===
+        "manual_override": None,          # None=automàtic, True=forçat vàlid, False=forçat invàlid
+        "manual_override_reason": "",     # Motiu de l'override
+        "manual_override_by": "",         # Qui ha fet l'override
+        "manual_override_date": None,     # Quan
+
+        # Alias/compatibilitat
+        "is_outlier": is_outlier,  # = not valid_for_calibration (automàtic)
+        "is_active": valid_for_calibration,  # Automàtic, pot ser sobreescrit per manual_override
+        "status": "INVALID_CAL" if not valid_for_calibration else (
+            "INVALID_SHIFT" if not valid_for_shift else "OK"
+        ),
+
+        # Altres camps
         "baseline_valid": khp_data.get('baseline_valid', True),
         "t_retention": t_retention,
         "limits_expanded": khp_data.get('limits_expanded', False),
@@ -2635,20 +2642,20 @@ def register_calibration(seq_path, khp_data, khp_source, mode="COLUMN"):
         "area_main_peak": khp_data.get('area_main_peak', khp_data.get('area', 0)),
         "concentration_ratio": khp_data.get('concentration_ratio', 1.0),
         "uib_sensitivity": uib_sensitivity,
-        "historical_comparison": {
-            "status": historical_result['status'],
-            "area_deviation_pct": historical_result.get('area_deviation_pct', 0),
-            "issues": historical_result.get('issues', []),
-            "warnings": historical_result.get('warnings', []),
+        "validation_details": {
+            "quality_score": quality_score,
+            "issues": calibration_issues,
+            "warnings": calibration_warnings,
+            "historical_comparison": historical_comparison,
         },
     }
 
     # 1. GUARDAR A LOCAL (CALDATA)
     local_cals = load_local_calibrations(seq_path)
 
-    if is_outlier:
-        # Si la nova calibració és outlier, NO desactivar l'anterior vàlida
-        # Només afegir l'outlier al registre per traçabilitat
+    if not valid_for_calibration:
+        # Calibració invàlida per quantitatiu: NO desactivar l'anterior vàlida
+        # S'afegeix al registre per traçabilitat però no s'activa
         pass
     else:
         # Calibració vàlida: desactivar les anteriors
@@ -2678,9 +2685,94 @@ def register_calibration(seq_path, khp_data, khp_source, mode="COLUMN"):
     return entry
 
 
+def set_calibration_override(seq_path, cal_id, override_value, reason="", user="manual"):
+    """
+    Aplica un override manual a una calibració.
+
+    Permet forçar una calibració com a vàlida o invàlida, independentment
+    de la validació automàtica.
+
+    Args:
+        seq_path: Path de la seqüència
+        cal_id: ID de la calibració a modificar
+        override_value: True (forçar vàlid), False (forçar invàlid), None (tornar a automàtic)
+        reason: Motiu de l'override
+        user: Usuari que fa l'override
+
+    Returns:
+        dict amb resultat: {"success": bool, "message": str, "entry": dict}
+    """
+    from datetime import datetime
+
+    # LOCAL
+    local_cals = load_local_calibrations(seq_path)
+    entry_found = None
+    mode = None
+
+    for cal in local_cals:
+        if cal.get("cal_id") == cal_id:
+            cal["manual_override"] = override_value
+            cal["manual_override_reason"] = reason
+            cal["manual_override_by"] = user
+            cal["manual_override_date"] = datetime.now().isoformat() if override_value is not None else None
+
+            # Actualitzar is_active segons override
+            if override_value is not None:
+                cal["is_active"] = override_value
+                cal["status"] = "MANUAL_VALID" if override_value else "MANUAL_INVALID"
+            else:
+                # Tornar a validació automàtica
+                cal["is_active"] = cal.get("valid_for_calibration", True)
+                if not cal.get("valid_for_calibration", True):
+                    cal["status"] = "INVALID_CAL"
+                elif not cal.get("valid_for_shift", True):
+                    cal["status"] = "INVALID_SHIFT"
+                else:
+                    cal["status"] = "OK"
+
+            entry_found = cal.copy()
+            mode = cal.get("mode")
+            break
+
+    if not entry_found:
+        return {"success": False, "message": f"No s'ha trobat calibració amb ID {cal_id}", "entry": None}
+
+    # Si s'activa manualment, desactivar les altres del mateix mode
+    if override_value is True:
+        for cal in local_cals:
+            if cal.get("mode") == mode and cal.get("cal_id") != cal_id:
+                cal["is_active"] = False
+
+    save_local_calibrations(seq_path, local_cals)
+
+    # GLOBAL
+    global_cals = load_khp_history(seq_path)
+    seq_name = os.path.basename(seq_path)
+
+    for cal in global_cals:
+        if cal.get("cal_id") == cal_id:
+            cal["manual_override"] = override_value
+            cal["manual_override_reason"] = reason
+            cal["manual_override_by"] = user
+            cal["manual_override_date"] = entry_found.get("manual_override_date")
+            cal["is_active"] = entry_found.get("is_active")
+            cal["status"] = entry_found.get("status")
+            break
+
+    save_khp_history(seq_path, global_cals)
+
+    action = "validat" if override_value else ("invalidat" if override_value is False else "retornat a automàtic")
+    return {
+        "success": True,
+        "message": f"Calibració {cal_id} {action} manualment",
+        "entry": entry_found
+    }
+
+
 def mark_calibration_as_outlier(seq_path, seq_name, mode="COLUMN", is_outlier=True, cal_id=None):
     """
     Marca/desmarca una calibració com a outlier.
+    DEPRECAT: Usar set_calibration_override() per overrides manuals.
     """
     # LOCAL
     local_cals = load_local_calibrations(seq_path)
