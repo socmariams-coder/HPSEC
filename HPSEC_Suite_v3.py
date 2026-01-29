@@ -757,21 +757,23 @@ class HPSECSuiteV3:
         tree_container = tk.Frame(files_frame, bg=COLORS["white"])
         tree_container.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
-        # Columnes: Mostra | Direct | UIB | Timeout | SNR | Status (al final, expandible)
+        # Columnes: Mostra | Direct | UIB | Timeout | SNR | Status
         file_cols = ("mostra", "direct", "uib", "timeout", "snr", "status")
         self.tree_files = ttk.Treeview(tree_container, columns=file_cols, show='headings', height=8)
 
+        # Amplades proporcionals - columnes amb contingut variable s'expandeixen
         col_config = {
-            "mostra": ("Mostra", 100, "w", False),
-            "direct": ("Direct", 50, "center", False),
-            "uib": ("UIB", 100, "w", False),
-            "timeout": ("Timeout", 50, "center", False),
-            "snr": ("SNR", 35, "e", False),
-            "status": ("Status", 200, "w", True),  # Expandible
+            #           header,    width, minw, anchor, stretch
+            "mostra":  ("Mostra",    120,   80,  "w",    True),   # expandeix
+            "direct":  ("Direct",     85,   70,  "center", False), # fix
+            "uib":     ("UIB",       115,   80,  "w",    True),   # expandeix
+            "timeout": ("Timeout",    60,   50,  "center", False), # fix
+            "snr":     ("SNR",        50,   40,  "e",    False),  # fix
+            "status":  ("Status",    200,  120,  "w",    True),   # expandeix
         }
-        for col, (text, width, anchor, stretch) in col_config.items():
+        for col, (text, width, minw, anchor, stretch) in col_config.items():
             self.tree_files.heading(col, text=text)
-            self.tree_files.column(col, width=width, minwidth=width, anchor=anchor, stretch=stretch)
+            self.tree_files.column(col, width=width, minwidth=minw, anchor=anchor, stretch=stretch)
 
         # Tags per colors
         self.tree_files.tag_configure('ok', foreground='#006100')
@@ -927,11 +929,6 @@ class HPSECSuiteV3:
                 dialog.destroy()
                 self._show_consolidation_summary(self._last_consolidation_summary)
 
-            def modificar_assignacio():
-                # Obrir editor d'assignació
-                dialog.destroy()
-                self._open_assignment_editor(mostra)
-
             btn_frame = tk.Frame(options_frame)
             btn_frame.pack(fill=tk.X, pady=10)
 
@@ -941,8 +938,6 @@ class HPSECSuiteV3:
             else:
                 tk.Button(btn_frame, text="🚫 Ignorar mostra", command=ignorar_mostra,
                          width=18, bg="#f8d7da", fg="#721c24").pack(side=tk.LEFT, padx=5)
-                tk.Button(btn_frame, text="✏️ Modificar assignació", command=modificar_assignacio,
-                         width=18, bg="#cce5ff", fg="#004085").pack(side=tk.LEFT, padx=5)
         else:
             tk.Label(options_frame, text="✓ Assignació correcta", font=("Segoe UI", 10), fg="#006100").pack(anchor="w")
 
@@ -979,91 +974,6 @@ class HPSECSuiteV3:
 
         except Exception as e:
             messagebox.showerror("Error", f"No s'ha pogut actualitzar el JSON:\n{e}")
-
-    def _open_assignment_editor(self, sample_name):
-        """Obre editor per modificar l'assignació de files MasterFile."""
-        if not self.seq_path:
-            messagebox.showwarning("Avís", "No hi ha seqüència carregada")
-            return
-
-        # Buscar info actual de la mostra
-        json_path = os.path.join(self.seq_path, "CHECK", "consolidation.json")
-        if not os.path.exists(json_path):
-            messagebox.showwarning("Avís", "No existeix consolidation.json")
-            return
-
-        try:
-            with open(json_path, 'r', encoding='utf-8') as f:
-                summary = json.load(f)
-        except Exception as e:
-            messagebox.showerror("Error", f"Error llegint JSON:\n{e}")
-            return
-
-        # Buscar la mostra
-        sample_info = None
-        for s in summary.get('samples', []):
-            if s.get('name') == sample_name:
-                sample_info = s
-                break
-
-        # Crear diàleg d'edició
-        dialog = tk.Toplevel(self.root)
-        dialog.title(f"Modificar assignació: {sample_name}")
-        dialog.geometry("350x200")
-        dialog.resizable(False, False)
-        dialog.transient(self.root)
-        dialog.grab_set()
-
-        # Centrar
-        dialog.update_idletasks()
-        x = self.root.winfo_x() + (self.root.winfo_width() - 350) // 2
-        y = self.root.winfo_y() + (self.root.winfo_height() - 200) // 2
-        dialog.geometry(f"+{x}+{y}")
-
-        tk.Label(dialog, text=f"Assignar files DOC Direct per: {sample_name}",
-                font=("Segoe UI", 10, "bold")).pack(pady=10)
-
-        # Camps d'entrada
-        entry_frame = tk.Frame(dialog)
-        entry_frame.pack(pady=10)
-
-        tk.Label(entry_frame, text="Fila inici:").grid(row=0, column=0, padx=5, pady=5, sticky="e")
-        entry_start = tk.Entry(entry_frame, width=10)
-        entry_start.grid(row=0, column=1, padx=5, pady=5)
-        if sample_info and sample_info.get('row_start'):
-            entry_start.insert(0, str(sample_info['row_start']))
-
-        tk.Label(entry_frame, text="Fila final:").grid(row=1, column=0, padx=5, pady=5, sticky="e")
-        entry_end = tk.Entry(entry_frame, width=10)
-        entry_end.grid(row=1, column=1, padx=5, pady=5)
-        if sample_info and sample_info.get('row_end'):
-            entry_end.insert(0, str(sample_info['row_end']))
-
-        def guardar():
-            try:
-                row_start = int(entry_start.get()) if entry_start.get() else None
-                row_end = int(entry_end.get()) if entry_end.get() else None
-
-                # Actualitzar JSON
-                if 'manual_assignments' not in summary:
-                    summary['manual_assignments'] = {}
-                summary['manual_assignments'][sample_name] = {
-                    'row_start': row_start,
-                    'row_end': row_end
-                }
-
-                with open(json_path, 'w', encoding='utf-8') as f:
-                    json.dump(summary, f, indent=2, ensure_ascii=False, default=str)
-
-                messagebox.showinfo("Guardat", f"Assignació guardada per {sample_name}.\nReconsolida per aplicar els canvis.")
-                dialog.destroy()
-            except ValueError:
-                messagebox.showerror("Error", "Les files han de ser números enters")
-
-        btn_frame = tk.Frame(dialog)
-        btn_frame.pack(pady=15)
-        tk.Button(btn_frame, text="Guardar", command=guardar, width=10, bg="#28a745", fg="white").pack(side=tk.LEFT, padx=5)
-        tk.Button(btn_frame, text="Cancel·lar", command=dialog.destroy, width=10).pack(side=tk.LEFT, padx=5)
 
     # =========================================================================
     # PAS 2: CALIBRAR

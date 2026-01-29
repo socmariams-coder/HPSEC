@@ -715,15 +715,26 @@ def generate_chromatograms_report(seq_path, xlsx_files, info, output_path=None):
             timeout_severity = str(id_dict.get("TOC_Timeout_Severity", "OK"))
             timeout_detail = str(id_dict.get("TOC_Timeout_1", ""))
 
-            # Construir llista de warnings
+            # Extreure posicions dels timeouts per marcar a la gràfica
+            timeout_positions = []
+            if timeout_detected:
+                for i in range(1, 10):  # Màxim 9 timeouts
+                    to_str = str(id_dict.get(f"TOC_Timeout_{i}", ""))
+                    if to_str:
+                        # Format: "11.5 min (74s) - BioP [WARNING]"
+                        match_pos = re.match(r'([\d.]+)\s*min\s*\((\d+)s\)', to_str)
+                        if match_pos:
+                            t_min = float(match_pos.group(1))
+                            dur_s = float(match_pos.group(2))
+                            timeout_positions.append({
+                                't_start': t_min,
+                                't_end': t_min + dur_s / 60.0  # Convertir segons a minuts
+                            })
+
+            # Construir llista de warnings (sense text, només per color títol)
             warnings = []
             if timeout_detected and timeout_severity in ("WARNING", "CRITICAL"):
-                # Extreure zona del detall
-                zone = ""
-                match = re.search(r'- (\w+)', timeout_detail)
-                if match:
-                    zone = match.group(1)
-                warnings.append(f"TO:{zone}" if zone else "TIMEOUT")
+                warnings.append("TIMEOUT")
 
             # Llegir DOC
             df_doc = pd.read_excel(f, "DOC", engine="openpyxl")
@@ -767,6 +778,7 @@ def generate_chromatograms_report(seq_path, xlsx_files, info, output_path=None):
                     'doc_mode': doc_mode,
                     'warnings': warnings,
                     'timeout_severity': timeout_severity,
+                    'timeout_positions': timeout_positions,
                 })
         except Exception:
             continue
@@ -833,17 +845,34 @@ def generate_chromatograms_report(seq_path, xlsx_files, info, output_path=None):
 
                     t = rep_data['t_doc']
 
-                    # Plot DOC Direct (blau, línia sòlida)
-                    if rep_data['y_direct'] is not None and len(rep_data['y_direct']) > 0:
+                    # Marcar zones de timeout amb patró 'x' subtil (ABANS de les línies)
+                    timeout_positions = rep_data.get('timeout_positions', [])
+                    for to in timeout_positions:
+                        ax.axvspan(to['t_start'], to['t_end'],
+                                  alpha=0.15, color='gray', hatch='xx', linewidth=0)
+
+                    # Determinar si hi ha dades Direct i/o UIB
+                    has_direct = rep_data['y_direct'] is not None and len(rep_data['y_direct']) > 0
+                    has_uib = rep_data['y_uib'] is not None and len(rep_data['y_uib']) > 0
+
+                    if has_direct and has_uib:
+                        # DUAL: Ambdós disponibles - Direct principal, UIB secundari
                         ax.plot(t, rep_data['y_direct'], '-',
                                color=COLORS["doc_direct"], linewidth=0.8,
-                               label='DOC Direct')
-
-                    # Plot DOC UIB (verd, línia discontínua per distingir quan es superposen)
-                    if rep_data['y_uib'] is not None and len(rep_data['y_uib']) > 0:
+                               label='Direct')
                         ax.plot(t, rep_data['y_uib'], '--',
                                color=COLORS["doc_uib"], linewidth=0.6,
-                               label='DOC UIB')
+                               label='UIB')
+                    elif has_direct:
+                        # Només Direct
+                        ax.plot(t, rep_data['y_direct'], '-',
+                               color=COLORS["doc_direct"], linewidth=0.8,
+                               label='Direct')
+                    elif has_uib:
+                        # Només UIB - usar com a principal (blau, sòlida)
+                        ax.plot(t, rep_data['y_uib'], '-',
+                               color=COLORS["doc_direct"], linewidth=0.8,
+                               label='DOC (UIB)')
 
                     ax.set_xlim(x_min, x_max)
                     ax.set_xlabel('Temps (min)', fontsize=7)
@@ -851,28 +880,28 @@ def generate_chromatograms_report(seq_path, xlsx_files, info, output_path=None):
                     ax.tick_params(axis='y', colors=COLORS["doc_direct"])
 
                     # Plot A254 (vermell) en eix secundari
+                    ax2 = None
                     if len(rep_data['t_dad']) > 10 and len(rep_data['y_dad_254']) > 10:
                         ax2 = ax.twinx()
                         ax2.plot(rep_data['t_dad'], rep_data['y_dad_254'], '-',
-                                color=COLORS["dad_254"], linewidth=0.5, alpha=0.6)
+                                color=COLORS["dad_254"], linewidth=0.5, alpha=0.6,
+                                label='A254')
                         ax2.set_ylabel('A254', color=COLORS["dad_254"], fontsize=6)
                         ax2.tick_params(axis='y', colors=COLORS["dad_254"], labelsize=5)
 
-                    # Títol amb nom complet
+                    # Títol amb nom complet (color segons severitat timeout)
                     rep_num = rep_data.get('rep', '?')
                     title_text = f"{base} R{rep_num}{title_suffix}"
                     ax.set_title(title_text, fontsize=7, fontweight='bold', color=title_color)
 
-                    # Afegir etiqueta de warnings (timeout, etc.)
-                    sample_warnings = rep_data.get('warnings', [])
-                    if sample_warnings:
-                        warn_text = " | ".join(sample_warnings)
-                        warn_color = COLORS["danger"] if rep_data.get('timeout_severity') == "CRITICAL" else COLORS["warning"]
-                        # Afegir a dalt a la dreta del gràfic
-                        ax.text(0.98, 0.95, warn_text, transform=ax.transAxes,
-                               fontsize=6, fontweight='bold', color='white',
-                               ha='right', va='top',
-                               bbox=dict(boxstyle='round,pad=0.2', facecolor=warn_color, alpha=0.9))
+                    # Llegenda combinada (ax + ax2) dins la gràfica
+                    handles, labels = ax.get_legend_handles_labels()
+                    if ax2 is not None:
+                        handles2, labels2 = ax2.get_legend_handles_labels()
+                        handles += handles2
+                        labels += labels2
+                    ax.legend(handles, labels, loc='upper right', fontsize=5,
+                             framealpha=0.7, handlelength=1.5, handletextpad=0.3)
 
                     ax.grid(True, alpha=0.3, linewidth=0.3)
 
@@ -882,15 +911,6 @@ def generate_chromatograms_report(seq_path, xlsx_files, info, output_path=None):
                     ax_empty.text(0.5, 0.5, f"(Sense R2)", ha='center', va='center',
                                  fontsize=9, color='lightgray', style='italic')
                     ax_empty.axis('off')
-
-            # Llegenda al peu (desplaçada amunt per deixar espai al footer)
-            legend_elements = [
-                mpatches.Patch(color=COLORS["doc_direct"], label='DOC Direct'),
-                mpatches.Patch(color=COLORS["doc_uib"], label='DOC UIB'),
-                mpatches.Patch(color=COLORS["dad_254"], label='A254 (DAD)'),
-            ]
-            fig.legend(handles=legend_elements, loc='lower center', ncol=3,
-                      fontsize=7, frameon=False, bbox_to_anchor=(0.5, 0.035))
 
             draw_footer(fig, version=script_version)
             pdf.savefig(fig, dpi=150)
