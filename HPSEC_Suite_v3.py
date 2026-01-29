@@ -3050,145 +3050,107 @@ class HPSECSuiteV3:
         thread.start()
 
     def _run_review_process(self):
-        """Procés de QC (en thread separat)."""
-        con_path = self.consolidated_data.get("path", "")
-        if not con_path:
-            con_path = os.path.join(self.seq_path, "Resultats_Consolidats")
+        """
+        Carrega i mostra resultats del processament des del JSON.
 
-        xlsx_files = glob.glob(os.path.join(con_path, "*.xlsx"))
-        xlsx_files = [f for f in xlsx_files if "~$" not in f]
+        NO fa processament - només llegeix processing_summary.json
+        generat per hpsec_pipeline.py
+        """
+        # Buscar processing_summary.json
+        check_folder = os.path.join(self.seq_path, "CHECK")
+        summary_path = os.path.join(check_folder, "processing_summary.json")
 
-        # Agrupar per mostra
-        samples = {}
-        for f in xlsx_files:
-            name = os.path.basename(f).replace(".xlsx", "")
-            match = re.search(r"(.+)_R(\d+)$", name)
-            if match:
-                base = match.group(1)
-                rep = match.group(2)
-                if base not in samples:
-                    samples[base] = {}
-                samples[base][rep] = f
+        if not os.path.exists(summary_path):
+            self.root.after(0, lambda: self._review_error(
+                "No s'ha trobat processing_summary.json\n\n"
+                "Cal executar primer el processament amb hpsec_pipeline.py"
+            ))
+            return
 
+        # Llegir JSON
+        try:
+            with open(summary_path, 'r', encoding='utf-8') as f:
+                summary = json.load(f)
+        except Exception as e:
+            self.root.after(0, lambda: self._review_error(f"Error llegint JSON: {e}"))
+            return
+
+        samples = summary.get('samples', [])
         total = len(samples)
-        mode = detect_mode(self.seq_path)
 
-        for i, (sample_name, reps) in enumerate(samples.items()):
+        if total == 0:
+            self.root.after(0, lambda: self._review_error("No hi ha mostres al JSON"))
+            return
+
+        # Processar cada mostra del JSON
+        for i, sample in enumerate(samples):
             pct = int(100 * (i + 1) / total)
+            sample_name = sample.get('name', 'N/A')
             self.root.after(0, lambda p=pct, s=sample_name: self._update_review_progress(p, s))
 
-            # Avaluar cada rèplica
-            evals = {}
-            for rep_id, filepath in reps.items():
-                try:
-                    t, y = self._read_doc_from_file(filepath)
-                    evaluation = evaluate_replica(t, y, method=mode)
-                    evaluation['filepath'] = filepath
+            # Extreure dades del JSON
+            selected_doc = sample.get('selected_doc') or sample.get('best_replica')
+            selected_dad = sample.get('selected_dad') or selected_doc
+            selected = sample.get('selected', selected_doc)
 
-                    # Llegir àrea total de la fulla AREAS
-                    try:
-                        df_areas = pd.read_excel(filepath, sheet_name='AREAS')
-                        total_row = df_areas[df_areas['Fraction'] == 'total']
-                        if not total_row.empty:
-                            evaluation['area_total'] = float(total_row['DOC'].iloc[0])
-                            # Guardar també àrees per fraccions
-                            for _, row in df_areas.iterrows():
-                                frac = row['Fraction']
-                                if frac != 'total':
-                                    evaluation[f'area_{frac}'] = float(row['DOC'])
-                    except Exception:
-                        pass  # Si no hi ha AREAS, usar l'àrea calculada
-
-                    evals[rep_id] = evaluation
-                except Exception as e:
-                    evals[rep_id] = {'valid': False, 'error': str(e), 'filepath': filepath}
-
-            # Comparar rèpliques
-            doc_r, doc_diff = None, None
-            if len(evals) >= 2:
-                rep_ids = sorted(evals.keys())
-                if evals[rep_ids[0]].get('valid') and evals[rep_ids[1]].get('valid'):
-                    try:
-                        t1, y1 = self._read_doc_from_file(evals[rep_ids[0]]['filepath'])
-                        t2, y2 = self._read_doc_from_file(evals[rep_ids[1]]['filepath'])
-                        comparison = compare_replicas(t1, y1, t2, y2)
-                        doc_r = comparison.get('pearson')
-                        doc_diff = comparison.get('area_diff_pct')
-                    except:
-                        pass
-
-            # Seleccionar millor
-            sel_doc = "1"
-            sel_dad = "1"
-
-            if len(evals) >= 2:
-                rep_ids = sorted(evals.keys())
-                e1, e2 = evals.get(rep_ids[0], {}), evals.get(rep_ids[1], {})
-
-                if e1.get('valid') and e2.get('valid'):
-                    selection = select_best_replica(e1, e2, method=mode)
-                    sel_doc = selection.get('best', '1')
-                elif e1.get('valid'):
-                    sel_doc = rep_ids[0]
-                elif e2.get('valid'):
-                    sel_doc = rep_ids[1]
-
-            sel_dad = sel_doc  # Per ara, mateixa selecció
+            # Comparativa
+            comparison = sample.get('comparison', {})
+            doc_r = comparison.get('pearson')
+            doc_diff = comparison.get('area_diff_pct')
 
             # Determinar estat
-            if doc_r is None:
-                estat = "?"
-                tag = "WARN"
-            elif doc_r >= DEFAULT_MIN_CORR and (doc_diff is None or doc_diff <= DEFAULT_MAX_DIFF):
+            confidence = sample.get('confidence', 0)
+            if selected and confidence >= 0.8:
                 estat = "OK"
                 tag = "OK"
-            elif doc_r >= 0.99:
+            elif selected and confidence >= 0.5:
+                estat = "CHECK"
+                tag = "WARN"
+            elif selected:
                 estat = "CHECK"
                 tag = "WARN"
             else:
                 estat = "FAIL"
                 tag = "FAIL"
 
+            # Si és MIXED, marcar com CHECK
+            if selected == "MIXED":
+                estat = "MIXED"
+                tag = "WARN"
+
+            # Qualitat DAD
+            dad_quality = "-"
+            if selected_dad:
+                rep_data = sample.get('replicas', {}).get(selected_dad, {})
+                dad_eval = rep_data.get('dad_eval', {})
+                if dad_eval:
+                    dad_quality = dad_eval.get('quality', '-')
+
             # Formatar valors
             doc_r_str = f"{doc_r:.3f}" if doc_r is not None else "-"
             doc_diff_str = f"{doc_diff:.1f}%" if doc_diff is not None else "-"
 
+            # Formatar selecció
+            sel_doc_str = selected_doc if selected_doc else "-"
+            sel_dad_str = selected_dad if selected_dad else "-"
+
             values = (sample_name, estat, doc_r_str, doc_diff_str,
-                     f"R{sel_doc}", "-", f"R{sel_dad}")
+                     sel_doc_str, dad_quality, sel_dad_str)
 
-            # Obtenir àrea de la rèplica seleccionada (preferir area_total de AREAS sheet)
-            sel_area = None
-            sel_eval = evals.get(sel_doc, {})
-            if sel_eval.get('area_total'):
-                sel_area = sel_eval['area_total']
-            elif sel_eval.get('area'):
-                sel_area = sel_eval['area']
-
-            # Obtenir àrees per fraccions
-            areas_by_fraction = {}
-            for key in ['area_BioP', 'area_HS', 'area_BB', 'area_SB', 'area_LMW']:
-                if key in sel_eval:
-                    areas_by_fraction[key.replace('area_', '')] = sel_eval[key]
-
-            # Calcular concentració si tenim KHP
-            concentration = None
-            if sel_area and self.khp_area and self.khp_conc:
-                concentration = (sel_area / self.khp_area) * self.khp_conc
-
-            # Guardar resultats amb info de calibració
+            # Guardar resultats per ús posterior
             self.selected_replicas[sample_name] = {
-                "sel_doc": sel_doc,
-                "sel_dad": sel_dad,
-                "reps": reps,
-                "evals": evals,
+                "sel_doc": selected_doc,
+                "sel_dad": selected_dad,
+                "selected": selected,
                 "doc_r": doc_r,
                 "doc_diff": doc_diff,
-                "area": sel_area,
-                "areas_fraction": areas_by_fraction,
-                "concentration": concentration,
-                "cal_khp_area": self.khp_area,
-                "cal_khp_conc": self.khp_conc,
-                "cal_khp_seq": self.khp_source_seq,
+                "confidence": confidence,
+                "areas_fraction": sample.get('areas_fraction', {}),
+                "concentration": sample.get('concentration_ppm'),
+                "conc_fraction": sample.get('conc_fraction', {}),
+                "transformation": sample.get('transformation', {}),
+                "replicas": sample.get('replicas', {}),
+                "warnings": sample.get('warnings', []),
             }
 
             # Actualitzar taula
