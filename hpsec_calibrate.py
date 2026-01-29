@@ -14,8 +14,9 @@ v1.1 - 2026-01-26: Refactor - funcions detecció mogudes a hpsec_core.py
 v1.0 - Versió inicial
 """
 
-__version__ = "1.2.0"
-__version_date__ = "2026-01-28"
+__version__ = "1.3.0"
+__version_date__ = "2026-01-29"
+# v1.3.0: Migrades funcions alineació des de hpsec_consolidate.py
 
 import os
 import re
@@ -69,6 +70,10 @@ SAMPLES_HISTORY_FILENAME = "Samples_History.json"
 # Sistema CALDATA - Carpeta local per cada SEQ
 CALDATA_FOLDER = "CALDATA"
 CALDATA_FILENAME = "calibrations.json"
+
+# Sistema QAQC - Carpeta global per alineació (a nivell Dades2)
+QAQC_FOLDER = "HPSEC_QAQC"
+ALIGNMENT_LOG_FILE = "Alignment_History.json"
 
 # Configuració per defecte
 DEFAULT_CONFIG = {
@@ -590,17 +595,22 @@ def validate_integration_baseline(t, y, left_idx, right_idx, peak_idx, baseline_
 # COMPARACIÓ HISTÒRICA KHP
 # =============================================================================
 
-def get_historical_khp_stats(seq_path, mode="COLUMN", conc_ppm=None, volume_uL=None, n_recent=10, exclude_outliers=True):
+def get_historical_khp_stats(seq_path, mode="COLUMN", conc_ppm=None, volume_uL=None,
+                             doc_mode=None, uib_sensitivity=None,
+                             n_recent=10, exclude_outliers=True):
     """
     Obté estadístiques de les calibracions KHP històriques.
 
-    Filtra per mode, concentració i volum d'injecció per comparar "pomes amb pomes".
+    Filtra per mode, concentració, volum, doc_mode i sensibilitat UIB
+    per comparar "pomes amb pomes".
 
     Args:
         seq_path: Path de la SEQ actual (per trobar KHP_History.json)
         mode: "COLUMN" o "BP"
         conc_ppm: Concentració KHP en ppm (ex: 2 per KHP2). REQUERIT per comparació vàlida.
         volume_uL: Volum d'injecció en µL (ex: 100, 400). REQUERIT per comparació vàlida.
+        doc_mode: "Direct", "UIB" o "DUAL". Si None, no filtra.
+        uib_sensitivity: 700 o 1000 (ppb). Només aplica si doc_mode conté UIB.
         n_recent: Nombre de calibracions recents a considerar
         exclude_outliers: Excloure calibracions marcades com outlier
 
@@ -613,6 +623,8 @@ def get_historical_khp_stats(seq_path, mode="COLUMN", conc_ppm=None, volume_uL=N
             'n_calibrations': int,
             'conc_ppm': float,
             'volume_uL': float,
+            'doc_mode': str,
+            'uib_sensitivity': int or None,
             'calibrations': list  # Les calibracions usades
         }
     """
@@ -620,7 +632,7 @@ def get_historical_khp_stats(seq_path, mode="COLUMN", conc_ppm=None, volume_uL=N
     if not history:
         return None
 
-    # Filtrar per mode, concentració, volum i excloure outliers si cal
+    # Filtrar per mode, concentració, volum, doc_mode i sensibilitat
     valid_cals = []
     for cal in history:
         if cal.get('mode') != mode:
@@ -638,6 +650,22 @@ def get_historical_khp_stats(seq_path, mode="COLUMN", conc_ppm=None, volume_uL=N
         if volume_uL is not None:
             cal_vol = cal.get('volume_uL', 0)
             if cal_vol != volume_uL:  # Volum ha de ser exacte
+                continue
+        # Filtrar per doc_mode si s'especifica
+        if doc_mode is not None:
+            cal_doc_mode = cal.get('doc_mode', 'N/A')
+            # Si doc_mode actual és DUAL, acceptar DUAL o el mateix senyal
+            # Si doc_mode actual és Direct/UIB, només acceptar exacte o DUAL
+            if doc_mode == "DUAL":
+                if cal_doc_mode not in ["DUAL", "Direct", "UIB"]:
+                    continue
+            else:
+                if cal_doc_mode != doc_mode and cal_doc_mode != "DUAL":
+                    continue
+        # Filtrar per sensibilitat UIB si s'especifica i és UIB
+        if uib_sensitivity is not None and doc_mode in ["UIB", "DUAL"]:
+            cal_sensitivity = cal.get('uib_sensitivity')
+            if cal_sensitivity is not None and cal_sensitivity != uib_sensitivity:
                 continue
         valid_cals.append(cal)
 
@@ -676,12 +704,13 @@ def get_historical_khp_stats(seq_path, mode="COLUMN", conc_ppm=None, volume_uL=N
     }
 
 
-def compare_khp_historical(current_area, current_concentration_ratio, seq_path, mode="COLUMN", conc_ppm=None, volume_uL=None):
+def compare_khp_historical(current_area, current_concentration_ratio, seq_path, mode="COLUMN",
+                          conc_ppm=None, volume_uL=None, doc_mode=None, uib_sensitivity=None):
     """
     Compara el KHP actual amb l'històric.
 
-    IMPORTANT: Filtra per concentració i volum per comparar correctament.
-    No es pot comparar KHP2 amb KHP5, ni 100µL amb 400µL.
+    IMPORTANT: Filtra per concentració, volum i doc_mode per comparar correctament.
+    No es pot comparar KHP2 amb KHP5, ni 100µL amb 400µL, ni Direct amb UIB.
 
     Args:
         current_area: Àrea del pic principal del KHP actual
@@ -690,6 +719,8 @@ def compare_khp_historical(current_area, current_concentration_ratio, seq_path, 
         mode: "COLUMN" o "BP"
         conc_ppm: Concentració KHP (ex: 2 per KHP2)
         volume_uL: Volum d'injecció en µL
+        doc_mode: "Direct", "UIB" o "DUAL"
+        uib_sensitivity: 700 o 1000 (ppb) - només si UIB
 
     Returns:
         Dict amb resultat de la comparació:
@@ -702,7 +733,8 @@ def compare_khp_historical(current_area, current_concentration_ratio, seq_path, 
             'warnings': list
         }
     """
-    stats = get_historical_khp_stats(seq_path, mode, conc_ppm=conc_ppm, volume_uL=volume_uL)
+    stats = get_historical_khp_stats(seq_path, mode, conc_ppm=conc_ppm, volume_uL=volume_uL,
+                                     doc_mode=doc_mode, uib_sensitivity=uib_sensitivity)
 
     result = {
         'status': 'OK',
@@ -946,6 +978,8 @@ def validate_khp_quality(khp_data, all_peaks, timeout_info, anomaly_info=None, s
         mode = "BP" if khp_data.get('is_bp', False) else "COLUMN"
         conc_ppm = khp_data.get('conc_ppm', None)
         volume_uL = khp_data.get('volume_uL', None)
+        doc_mode = khp_data.get('doc_mode', None)
+        uib_sensitivity = khp_data.get('uib_sensitivity', None)
 
         historical_comparison = compare_khp_historical(
             current_area=khp_data.get('area', 0),
@@ -953,7 +987,9 @@ def validate_khp_quality(khp_data, all_peaks, timeout_info, anomaly_info=None, s
             seq_path=seq_path,
             mode=mode,
             conc_ppm=conc_ppm,
-            volume_uL=volume_uL
+            volume_uL=volume_uL,
+            doc_mode=doc_mode,
+            uib_sensitivity=uib_sensitivity
         )
 
         if historical_comparison['status'] == 'INVALID':
@@ -980,7 +1016,8 @@ def validate_khp_quality(khp_data, all_peaks, timeout_info, anomaly_info=None, s
 
 def validate_khp_for_alignment(t_doc, y_doc, t_dad, y_a254, t_uib=None, y_uib=None,
                                method="COLUMN", repair_batman=True,
-                               seq_path=None, conc_ppm=None, volume_uL=None):
+                               seq_path=None, conc_ppm=None, volume_uL=None,
+                               doc_mode=None, uib_sensitivity=None):
     """
     Valida si el KHP és adequat per calcular shifts d'alineament.
 
@@ -1213,7 +1250,9 @@ def validate_khp_for_alignment(t_doc, y_doc, t_dad, y_a254, t_uib=None, y_uib=No
                 seq_path=seq_path,
                 mode=method,
                 conc_ppm=conc_ppm,
-                volume_uL=volume_uL
+                volume_uL=volume_uL,
+                doc_mode=doc_mode,
+                uib_sensitivity=uib_sensitivity
             )
 
             result["metrics"]["historical_comparison"] = {
@@ -1236,6 +1275,396 @@ def validate_khp_for_alignment(t_doc, y_doc, t_dad, y_a254, t_uib=None, y_uib=No
             result["warnings"].append(f"HISTORICAL: Error en comparació: {e}")
 
     return result
+
+
+# =============================================================================
+# GESTIÓ QAQC I ALINEACIÓ (GLOBAL)
+# =============================================================================
+
+def get_qaqc_folder(base_folder):
+    """Retorna el path a la carpeta QAQC (a la carpeta pare de les SEQs)."""
+    parent = os.path.dirname(os.path.normpath(base_folder))
+    qaqc_path = os.path.join(parent, QAQC_FOLDER)
+    return qaqc_path
+
+
+def ensure_qaqc_folder(base_folder):
+    """Crea la carpeta QAQC si no existeix i retorna el path."""
+    qaqc_path = get_qaqc_folder(base_folder)
+    os.makedirs(qaqc_path, exist_ok=True)
+    return qaqc_path
+
+
+def get_alignment_log_path(base_folder):
+    """Retorna el path al fitxer de log d'alineació."""
+    qaqc_path = get_qaqc_folder(base_folder)
+    return os.path.join(qaqc_path, ALIGNMENT_LOG_FILE)
+
+
+def load_alignment_log(base_folder):
+    """Carrega el log d'alineació."""
+    log_path = get_alignment_log_path(base_folder)
+    if os.path.exists(log_path):
+        try:
+            with open(log_path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {"entries": [], "version": "1.0"}
+
+
+def save_alignment_log(base_folder, log_data):
+    """Guarda el log d'alineació."""
+    ensure_qaqc_folder(base_folder)
+    log_path = get_alignment_log_path(base_folder)
+    try:
+        with open(log_path, 'w', encoding='utf-8') as f:
+            json.dump(log_data, f, indent=2, ensure_ascii=False, cls=NumpyEncoder)
+        return True
+    except Exception:
+        return False
+
+
+def add_alignment_entry(base_folder, seq_name, seq_date, method, shift_uib, shift_direct, khp_file, details=None):
+    """
+    Afegeix una entrada al log d'alineació.
+
+    Args:
+        base_folder: Carpeta de la SEQ
+        seq_name: Nom de la SEQ (ex: "275", "284_BP")
+        seq_date: Data de la SEQ
+        method: "BP" o "COLUMN"
+        shift_uib: Shift aplicat a DOC_UIB (minuts)
+        shift_direct: Shift aplicat a DOC_Direct (minuts)
+        khp_file: Nom del fitxer KHP usat
+        details: Dict amb detalls adicionals
+    """
+    log_data = load_alignment_log(base_folder)
+
+    entry = {
+        "timestamp": datetime.now().isoformat(),
+        "seq_name": seq_name,
+        "seq_date": str(seq_date) if seq_date else "",
+        "method": method,
+        "shift_uib_min": shift_uib,
+        "shift_uib_sec": shift_uib * 60,
+        "shift_direct_min": shift_direct,
+        "shift_direct_sec": shift_direct * 60,
+        "khp_file": khp_file,
+        "details": details or {}
+    }
+
+    # Evitar duplicats: actualitzar si ja existeix entrada per aquesta SEQ
+    existing_idx = None
+    for i, e in enumerate(log_data["entries"]):
+        if e.get("seq_name") == seq_name:
+            existing_idx = i
+            break
+
+    if existing_idx is not None:
+        log_data["entries"][existing_idx] = entry
+    else:
+        log_data["entries"].append(entry)
+
+    save_alignment_log(base_folder, log_data)
+    return entry
+
+
+def find_sibling_alignment(base_folder, seq_name, method):
+    """
+    Busca l'alineació d'una SEQ sibling (mateixa SEQ numèrica).
+
+    Siblings són carpetes amb el mateix prefix numèric:
+    - 256_SEQ, 256B_SEQ, 256C_SEQ són siblings
+    - 257_SEQ NO és sibling de 256_SEQ
+
+    Args:
+        base_folder: Carpeta base (Dades2)
+        seq_name: Nom de la SEQ actual (ex: "256B", "275")
+        method: "BP" o "COLUMN"
+
+    Returns:
+        Dict amb shift_uib, shift_direct, source_seq, khp_validation o None
+    """
+    log_data = load_alignment_log(base_folder)
+
+    # Extreure prefix numèric de la SEQ actual
+    match = re.match(r'^(\d+)', seq_name)
+    if not match:
+        return None
+
+    seq_num = match.group(1)
+
+    # Buscar siblings a l'historial (mateix prefix numèric, diferent nom)
+    candidates = []
+    for e in log_data.get("entries", []):
+        entry_seq = e.get("seq_name", "")
+        entry_method = e.get("method", "")
+
+        # Mateix mètode
+        if entry_method != method:
+            continue
+
+        # Mateix prefix numèric però diferent SEQ
+        entry_match = re.match(r'^(\d+)', entry_seq)
+        if entry_match and entry_match.group(1) == seq_num and entry_seq != seq_name:
+            candidates.append(e)
+
+    if not candidates:
+        return None
+
+    # Preferir el sibling amb KHP vàlid
+    valid_siblings = [c for c in candidates
+                      if c.get("details", {}).get("khp_validation", "").startswith("VALID")]
+
+    best = valid_siblings[0] if valid_siblings else candidates[0]
+
+    return {
+        "shift_uib": best.get("shift_uib_min", 0.0),
+        "shift_direct": best.get("shift_direct_min", 0.0),
+        "source_seq": best.get("seq_name", ""),
+        "source_date": best.get("seq_date", ""),
+        "source_khp": best.get("khp_file", ""),
+        "khp_validation": best.get("details", {}).get("khp_validation", "UNKNOWN"),
+        "khp_issues": best.get("details", {}).get("khp_issues", []),
+    }
+
+
+def find_nearest_alignment(base_folder, method, seq_date=None):
+    """
+    DEPRECATED: No usar per shifts. Mantingut per compatibilitat.
+
+    Busca l'alineació més propera en el temps per usar quan no hi ha KHP.
+    NOTA: Aquesta funció NO s'hauria d'usar per aplicar shifts.
+          Usar find_sibling_alignment() per siblings.
+
+    Args:
+        base_folder: Carpeta de la SEQ
+        method: "BP" o "COLUMN" (només busca del mateix mètode)
+        seq_date: Data de la SEQ actual (per trobar la més propera)
+
+    Returns:
+        Dict amb shift_uib, shift_direct, source_seq o None si no es troba
+    """
+    log_data = load_alignment_log(base_folder)
+
+    # Filtrar per mètode
+    candidates = [e for e in log_data.get("entries", []) if e.get("method") == method]
+
+    if not candidates:
+        return None
+
+    # Si tenim data, ordenar per proximitat temporal
+    if seq_date:
+        try:
+            target_date = pd.to_datetime(seq_date)
+            for c in candidates:
+                c_date = pd.to_datetime(c.get("seq_date", ""), errors='coerce')
+                if pd.notna(c_date):
+                    c["_date_diff"] = abs((target_date - c_date).days)
+                else:
+                    c["_date_diff"] = 9999
+            candidates.sort(key=lambda x: x.get("_date_diff", 9999))
+        except Exception:
+            pass
+
+    # Retornar el més proper (o el més recent si no hi ha dates)
+    if candidates:
+        best = candidates[0]
+        return {
+            "shift_uib": best.get("shift_uib_min", 0.0),
+            "shift_direct": best.get("shift_direct_min", 0.0),
+            "source_seq": best.get("seq_name", ""),
+            "source_date": best.get("seq_date", ""),
+            "source_khp": best.get("khp_file", "")
+        }
+
+    return None
+
+
+def find_khp_for_alignment(seq_folder):
+    """
+    Cerca KHP per alineació: LOCAL → SIBLINGS.
+
+    Args:
+        seq_folder: Carpeta de la SEQ
+
+    Returns:
+        (khp_path, source) o (None, None) si no es troba
+    """
+    # FASE 1: LOCAL
+    res_cons = os.path.join(seq_folder, "Resultats_Consolidats")
+    khp_files = find_khp_in_folder(res_cons)
+    if khp_files:
+        return khp_files[0], "LOCAL"
+
+    # FASE 2: SIBLINGS
+    folder_name = os.path.basename(seq_folder)
+    parent_dir = os.path.dirname(seq_folder)
+
+    match = re.match(r'^(\d+)', folder_name)
+    if match:
+        seq_id = match.group(1)
+        try:
+            all_folders = [d for d in os.listdir(parent_dir)
+                          if os.path.isdir(os.path.join(parent_dir, d))]
+            siblings = [d for d in all_folders
+                       if d.startswith(seq_id) and d != folder_name]
+
+            for sib in siblings:
+                sib_res_cons = os.path.join(parent_dir, sib, "Resultats_Consolidats")
+                khp_files = find_khp_in_folder(sib_res_cons)
+                if khp_files:
+                    return khp_files[0], f"SIBLING:{sib}"
+        except Exception:
+            pass
+
+    return None, None
+
+
+def calculate_column_alignment_shifts(khp_path, config=None, tolerance_sec=2.0):
+    """
+    Calcula els shifts d'alineació per COLUMN usant KHP com a referència.
+
+    Protocol:
+    1. A254 (DAD) és la referència absoluta
+    2. Calcular shift_uib = t_max(A254) - t_max(DOC_UIB)
+    3. Calcular shift_direct = t_max(A254) - t_max(DOC_Direct)
+
+    Args:
+        khp_path: Path al fitxer KHP consolidat
+        config: Configuració
+        tolerance_sec: Tolerància en segons per considerar alineat (default 2s)
+
+    Returns:
+        dict amb:
+            - shift_uib: shift per DOC_UIB (minuts)
+            - shift_direct: shift per DOC_Direct (minuts)
+            - aligned: True si ja estaven alineats (shifts < tolerance)
+            - details: dict amb detalls dels càlculs
+    """
+    result = {
+        "shift_uib": 0.0,
+        "shift_direct": 0.0,
+        "aligned": True,
+        "details": {}
+    }
+
+    tolerance_min = tolerance_sec / 60.0
+
+    try:
+        xls = pd.ExcelFile(khp_path, engine="openpyxl")
+
+        # Llegir DOC
+        if "DOC" not in xls.sheet_names:
+            return result
+
+        df_doc = pd.read_excel(xls, "DOC", engine="openpyxl")
+        t = df_doc["time (min)"].values
+
+        # Verificar columnes
+        has_direct = "DOC (mAU)" in df_doc.columns or "DOC_Direct (mAU)" in df_doc.columns
+        has_uib = "DOC_UIB (mAU)" in df_doc.columns
+
+        if not has_direct and not has_uib:
+            return result
+
+        direct_col = "DOC_Direct (mAU)" if "DOC_Direct (mAU)" in df_doc.columns else "DOC (mAU)"
+
+        # Llegir DAD per A254
+        if "DAD" not in xls.sheet_names:
+            return result
+
+        df_dad = pd.read_excel(xls, "DAD", engine="openpyxl")
+
+        if "254" not in df_dad.columns and "254.0" not in df_dad.columns:
+            return result
+
+        t_dad = df_dad["time (min)"].values
+        a254_col = "254" if "254" in df_dad.columns else "254.0"
+        y_a254 = df_dad[a254_col].values
+
+        # Trobar màxim A254 (referència)
+        idx_max_a254 = np.argmax(y_a254)
+        t_max_a254 = t_dad[idx_max_a254]
+        result["details"]["t_max_a254"] = float(t_max_a254)
+
+        # Calcular shift per DOC_UIB
+        if has_uib:
+            y_uib = df_doc["DOC_UIB (mAU)"].values
+            idx_max_uib = np.argmax(y_uib)
+            t_max_uib = t[idx_max_uib]
+
+            shift_uib = t_max_a254 - t_max_uib
+            result["details"]["t_max_uib"] = float(t_max_uib)
+            result["details"]["shift_uib_raw"] = float(shift_uib)
+
+            if abs(shift_uib) > tolerance_min:
+                result["shift_uib"] = float(shift_uib)
+                result["aligned"] = False
+
+        # Calcular shift per DOC_Direct
+        if has_direct:
+            y_direct = df_doc[direct_col].values
+            idx_max_direct = np.argmax(y_direct)
+            t_max_direct = t[idx_max_direct]
+
+            shift_direct = t_max_a254 - t_max_direct
+            result["details"]["t_max_direct"] = float(t_max_direct)
+            result["details"]["shift_direct_raw"] = float(shift_direct)
+
+            if abs(shift_direct) > tolerance_min:
+                result["shift_direct"] = float(shift_direct)
+                result["aligned"] = False
+
+    except Exception as e:
+        result["details"]["error"] = str(e)
+
+    return result
+
+
+def get_a254_for_alignment(df_dad_khp=None, path_export3d=None, path_dad1a=None):
+    """
+    Obté senyal A254 per alineament, amb prioritat:
+    1. MasterFile 3-DAD_KHP (si df_dad_khp proporcionat)
+    2. Export3D
+    3. DAD1A
+
+    Args:
+        df_dad_khp: DataFrame de la fulla 3-DAD_KHP del MasterFile (pot ser None)
+        path_export3d: Camí al fitxer Export3D (pot ser None)
+        path_dad1a: Camí al fitxer DAD1A (pot ser None)
+
+    Returns:
+        (t, y, source): Arrays de temps i senyal A254, i string indicant la font
+    """
+    # Prioritat 1: MasterFile 3-DAD_KHP
+    if df_dad_khp is not None and not df_dad_khp.empty:
+        try:
+            cols = df_dad_khp.columns.tolist()
+            t_col = None
+            y_col = None
+
+            for c in cols:
+                c_lower = str(c).lower()
+                if 'time' in c_lower and t_col is None:
+                    t_col = c
+                elif ('value' in c_lower or 'mau' in c_lower) and y_col is None:
+                    y_col = c
+
+            if t_col and y_col:
+                t = pd.to_numeric(df_dad_khp[t_col], errors="coerce").to_numpy()
+                y = pd.to_numeric(df_dad_khp[y_col], errors="coerce").to_numpy()
+                valid = np.isfinite(t) & np.isfinite(y)
+                if np.sum(valid) > 10:
+                    return t[valid], y[valid], "MasterFile_3-DAD_KHP"
+        except Exception:
+            pass
+
+    # Prioritat 2 i 3: Export3D o DAD1A
+    # Import local per evitar dependència circular
+    from hpsec_import import llegir_dad_amb_fallback
+    return llegir_dad_amb_fallback(path_export3d, path_dad1a, wavelength="254")
 
 
 # =============================================================================
@@ -1532,6 +1961,8 @@ def analizar_khp_consolidado(khp_file, config=None):
         doc_mode = "N/A"
         seq_date = ""
         method_from_file = None
+        uib_sensitivity = None
+        inj_volume = None
 
         if "ID" in xls.sheet_names:
             df_id = pd.read_excel(xls, "ID", engine="openpyxl")
@@ -1542,7 +1973,28 @@ def analizar_khp_consolidado(khp_file, config=None):
                 id_dict = dict(zip(df_id["Camp"], df_id["Valor"]))
             else:
                 id_dict = {}
-            doc_mode = str(id_dict.get("DOC_MODE", id_dict.get("Source", "N/A")))
+
+            # DOC_Mode: buscar amb diferents variants de majúscules
+            doc_mode = str(id_dict.get("DOC_Mode",
+                          id_dict.get("DOC_MODE",
+                          id_dict.get("doc_mode",
+                          id_dict.get("Source", "N/A")))))
+
+            # UIB sensitivity (700 ppb o 1000 ppb)
+            uib_range = str(id_dict.get("UIB_range", id_dict.get("UIB_Range", "")))
+            if "700" in uib_range:
+                uib_sensitivity = 700
+            elif "1000" in uib_range:
+                uib_sensitivity = 1000
+
+            # Injection volume
+            inj_vol_raw = id_dict.get("Inj_Volume_uL", id_dict.get("Inj_Volume", None))
+            if inj_vol_raw is not None:
+                try:
+                    inj_volume = int(float(inj_vol_raw))
+                except (ValueError, TypeError):
+                    pass
+
             seq_date = str(id_dict.get("Date", ""))
             method_from_file = str(id_dict.get("Method", id_dict.get("MODE", ""))).upper()
             if method_from_file not in ["BP", "COLUMN", "COL"]:
@@ -1835,6 +2287,7 @@ def analizar_khp_consolidado(khp_file, config=None):
             'area_main_peak': area_main_peak,
             'concentration_ratio': concentration_ratio,
             'volume_uL': volume_uL,
+            'uib_sensitivity': uib_sensitivity,  # 700 o 1000 ppb
         }
 
     except Exception as e:
@@ -2011,6 +2464,12 @@ def register_calibration(seq_path, khp_data, khp_source, mode="COLUMN"):
     Guarda a DOS llocs:
     1. LOCAL (CALDATA/calibrations.json) - Historial complet de la SEQ
     2. GLOBAL (KHP_History.json) - Una entrada per SEQ per comparacions
+
+    VALIDACIÓ AUTOMÀTICA:
+    - Compara amb l'històric (mateixa concentració/volum/doc_mode)
+    - Marca is_outlier=True si àrea desvia >20% (COLUMN) o >100% (BP)
+    - Marca is_outlier=True si hi ha quality_issues greus
+    - valid_for_shift pot ser True encara que is_outlier=True (shift usable)
     """
     seq_name = os.path.basename(seq_path)
 
@@ -2025,8 +2484,108 @@ def register_calibration(seq_path, khp_data, khp_source, mode="COLUMN"):
 
     is_bp = khp_data.get('is_bp', False)
     volume = get_injection_volume(seq_path, is_bp)
+    doc_mode = khp_data.get('doc_mode', 'N/A')
+    uib_sensitivity = khp_data.get('uib_sensitivity')
 
     peak_info = khp_data.get('peak_info', {})
+
+    # === VALIDACIÓ: Comparació històrica ===
+    # Filtrar per concentració, volum i doc_mode per comparar correctament
+    historical_result = compare_khp_historical(
+        current_area=area,
+        current_concentration_ratio=khp_data.get('concentration_ratio', 1.0),
+        seq_path=seq_path,
+        mode=mode,
+        conc_ppm=conc,
+        volume_uL=volume,
+        doc_mode=doc_mode if doc_mode != 'N/A' else None,
+        uib_sensitivity=uib_sensitivity
+    )
+
+    # Determinar si és outlier basant-se en:
+    # 1. Comparació històrica (INVALID = outlier)
+    # 2. Quality issues existents (issues greus = outlier)
+    quality_issues = khp_data.get('quality_issues', [])
+    is_outlier = False
+    outlier_reasons = []
+
+    # Criteri 1: Comparació històrica
+    if historical_result['status'] == 'INVALID':
+        is_outlier = True
+        outlier_reasons.extend(historical_result.get('issues', []))
+
+    # Criteri 2: Quality issues greus (no warnings)
+    # Issues que invaliden per calibració
+    severe_keywords = ['BATMAN', 'MULTI_PEAK', 'TIMEOUT_CRITICAL', 'LOW_SNR', 'CR_FAIL', 'ASYMMETRY']
+    for issue in quality_issues:
+        issue_upper = str(issue).upper()
+        if any(kw in issue_upper for kw in severe_keywords):
+            is_outlier = True
+            if issue not in outlier_reasons:
+                outlier_reasons.append(issue)
+        # Pic irregular amb smoothness <30% és greu
+        elif 'IRREGULAR' in issue_upper or 'SMOOTHNESS' in issue_upper:
+            import re
+            smoothness_match = re.search(r'smoothness[=:\s]*(\d+)', issue, re.I)
+            if smoothness_match:
+                smoothness_val = int(smoothness_match.group(1))
+                if smoothness_val < 30:  # Smoothness molt baixa = outlier
+                    is_outlier = True
+                    if issue not in outlier_reasons:
+                        outlier_reasons.append(issue)
+
+    # Criteri 3: Intensitat excessiva (àrea molt alta/baixa)
+    # Si la historical_result té àrea_deviation > threshold, ja està marcat INVALID
+    # Però si no hi ha suficient històric, mirem si l'àrea és anormalment alta
+    area_deviation = historical_result.get('area_deviation_pct', 0)
+    if area_deviation > 0 and not is_outlier:
+        threshold = 100 if is_bp else 20
+        if area_deviation > threshold:
+            is_outlier = True
+            outlier_reasons.append(f"Desviació àrea {area_deviation:.1f}% (>{threshold}%)")
+
+    # Criteri 4: Si històric insuficient, comparar amb rang general
+    # per detectar intensitats extremes sense històric equivalent
+    if historical_result['status'] == 'INSUFFICIENT_DATA' and not is_outlier:
+        # Primer intentar amb mateix volum però qualsevol doc_mode
+        same_vol_stats = get_historical_khp_stats(
+            seq_path, mode, conc_ppm=conc, volume_uL=volume, doc_mode=None
+        )
+        if same_vol_stats and same_vol_stats['n_calibrations'] >= 3:
+            # Comparació fiable (mateix volum)
+            mean_area = same_vol_stats['mean_area']
+            std_area = same_vol_stats['std_area']
+            if mean_area > 0 and std_area > 0:
+                z_score = abs(area - mean_area) / std_area
+                if z_score > 3.0:
+                    is_outlier = True
+                    pct_dev = abs(area - mean_area) / mean_area * 100
+                    outlier_reasons.append(
+                        f"Intensitat extrema: {area:.0f} vs {mean_area:.0f}±{std_area:.0f} "
+                        f"(z={z_score:.1f}, {pct_dev:.0f}%)"
+                    )
+
+    # === VALIDESA PER SHIFT ===
+    # El shift pot ser vàlid encara que la calibració no ho sigui
+    # Invàlid per shift si: no hi ha pic clar, timeout sever al pic, batman sever
+    valid_for_shift = True
+    shift_issues = []
+
+    t_retention = khp_data.get('t_retention', khp_data.get('t_doc_max', 0))
+    if not t_retention or t_retention <= 0:
+        valid_for_shift = False
+        shift_issues.append("No s'ha detectat pic clar")
+
+    # Timeout crític invalida shift (posició pic dubtosa)
+    timeout_info = khp_data.get('timeout_info', {})
+    if timeout_info.get('severity') == 'CRITICAL':
+        valid_for_shift = False
+        shift_issues.append("Timeout crític afecta posició pic")
+
+    # Batman sever pot afectar t_max (però si s'ha reparat, OK)
+    if khp_data.get('has_batman', False) and not khp_data.get('batman_repaired', False):
+        # Batman no reparat: shift pot ser imprecís però usable amb warning
+        shift_issues.append("Batman no reparat: shift pot ser imprecís")
 
     entry = {
         "cal_id": generate_calibration_id(),
@@ -2038,7 +2597,7 @@ def register_calibration(seq_path, khp_data, khp_source, mode="COLUMN"):
         "mode": mode,
         "khp_file": khp_data.get('filename', 'N/A'),
         "khp_source": khp_source,
-        "doc_mode": khp_data.get('doc_mode', 'N/A'),
+        "doc_mode": doc_mode,
         "conc_ppm": conc,
         "volume_uL": volume,
         "area": area,
@@ -2052,13 +2611,16 @@ def register_calibration(seq_path, khp_data, khp_source, mode="COLUMN"):
         "has_timeout": khp_data.get('has_timeout', False),
         "n_replicas": khp_data.get('n_replicas', 1),
         "rsd": khp_data.get('rsd', 0),
-        "status": khp_data.get('status', 'OK'),
-        "quality_issues": khp_data.get('quality_issues', []),
+        "status": "OUTLIER" if is_outlier else khp_data.get('status', 'OK'),
+        "quality_issues": quality_issues,
         "is_bp": is_bp,
-        "is_outlier": False,
-        "is_active": True,
+        "is_outlier": is_outlier,
+        "outlier_reasons": outlier_reasons if is_outlier else [],
+        "is_active": not is_outlier,  # Outliers no s'activen per defecte
+        "valid_for_shift": valid_for_shift,
+        "shift_issues": shift_issues if shift_issues else [],
         "baseline_valid": khp_data.get('baseline_valid', True),
-        "t_retention": khp_data.get('t_retention', khp_data.get('t_doc_max', 0)),
+        "t_retention": t_retention,
         "limits_expanded": khp_data.get('limits_expanded', False),
         "t_start": peak_info.get('t_start', 0),
         "t_end": peak_info.get('t_end', 0),
@@ -2072,14 +2634,27 @@ def register_calibration(seq_path, khp_data, khp_source, mode="COLUMN"):
         "area_total": khp_data.get('area_total', 0),
         "area_main_peak": khp_data.get('area_main_peak', khp_data.get('area', 0)),
         "concentration_ratio": khp_data.get('concentration_ratio', 1.0),
+        "uib_sensitivity": uib_sensitivity,
+        "historical_comparison": {
+            "status": historical_result['status'],
+            "area_deviation_pct": historical_result.get('area_deviation_pct', 0),
+            "issues": historical_result.get('issues', []),
+            "warnings": historical_result.get('warnings', []),
+        },
     }
 
     # 1. GUARDAR A LOCAL (CALDATA)
     local_cals = load_local_calibrations(seq_path)
 
-    for cal in local_cals:
-        if cal.get("mode") == mode:
-            cal["is_active"] = False
+    if is_outlier:
+        # Si la nova calibració és outlier, NO desactivar l'anterior vàlida
+        # Només afegir l'outlier al registre per traçabilitat
+        pass
+    else:
+        # Calibració vàlida: desactivar les anteriors
+        for cal in local_cals:
+            if cal.get("mode") == mode:
+                cal["is_active"] = False
 
     local_cals.insert(0, entry)
     save_local_calibrations(seq_path, local_cals)
