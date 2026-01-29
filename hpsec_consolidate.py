@@ -49,6 +49,7 @@ from hpsec_core import (
     detect_batman,
     repair_with_parabola,
     detect_main_peak,
+    find_peak_boundaries,
 )
 from hpsec_utils import baseline_stats, baseline_stats_windowed
 from hpsec_config import get_config
@@ -142,9 +143,6 @@ from hpsec_process import (
     apply_shift,
     # DAD
     process_dad,
-    # Pics
-    find_peak_boundaries,
-    # Nota: detect_main_peak no s'importa aquí perquè ja existeix local
     # Àrees
     calcular_fraccions_temps,
     calcular_arees_fraccions_complet,
@@ -156,6 +154,7 @@ from hpsec_process import (
     process_sample,
     process_sequence,
 )
+# NOTA: find_peak_boundaries i detect_main_peak s'importen de hpsec_core.py
 
 
 # NOTA: Les constants QAQC_FOLDER i ALIGNMENT_LOG_FILE ara s'importen de hpsec_calibrate.py
@@ -2324,111 +2323,8 @@ def process_dad(df_dad, config=None):
 # =============================================================================
 # FUNCIONS DETECCIÓ PICS
 # =============================================================================
-def find_peak_boundaries(t, y, peak_idx, baseline_level=None, threshold_pct=5.0, is_bp=False):
-    """
-    Troba els límits reals d'un pic per integració.
-    """
-    n = len(y)
-    t = np.asarray(t)
-
-    if baseline_level is None:
-        if is_bp:
-            n_edge = max(20, n // 5)
-            baseline_level = np.median(y[-n_edge:])
-        else:
-            n_edge = max(10, n // 10)
-            baseline_level = min(np.median(y[:n_edge]), np.median(y[-n_edge:]))
-
-    peak_height = y[peak_idx]
-    peak_amplitude = peak_height - baseline_level
-
-    if peak_amplitude <= 0:
-        return 0, n - 1
-
-    threshold = baseline_level + (threshold_pct / 100.0) * peak_amplitude
-
-    # Buscar límit esquerre
-    left_idx = peak_idx
-    for i in range(peak_idx - 1, -1, -1):
-        if y[i] <= threshold:
-            left_idx = i
-            break
-        if i > 0 and y[i] < y[i-1] and y[i] < y[i+1]:
-            left_idx = i
-            break
-        left_idx = i
-
-    # Buscar límit dret
-    right_idx = peak_idx
-    for i in range(peak_idx + 1, n):
-        if y[i] <= threshold:
-            right_idx = i
-            break
-        if i < n - 1 and y[i] < y[i-1] and y[i] < y[i+1]:
-            right_idx = i
-            break
-        right_idx = i
-
-    return left_idx, right_idx
-
-
-def detect_main_peak(t, y, min_prominence_pct=5.0, is_bp=None):
-    """Detecta el pic principal en el senyal amb límits d'integració correctes."""
-    t = np.asarray(t, dtype=float)
-    y = np.asarray(y, dtype=float)
-
-    if len(t) < 10 or len(y) < 10:
-        return {"valid": False}
-
-    y_max = float(np.nanmax(y))
-    if y_max < 1e-6:
-        return {"valid": False}
-
-    if is_bp is None:
-        t_max_chromato = float(np.max(t))
-        is_bp = t_max_chromato < 20
-
-    min_prominence = y_max * (min_prominence_pct / 100.0)
-    peaks, props = find_peaks(y, prominence=min_prominence, width=3)
-
-    if len(peaks) == 0:
-        return {"valid": False}
-
-    idx = int(np.argmax(props["prominences"]))
-    main_peak = int(peaks[idx])
-
-    n = len(y)
-    if is_bp:
-        n_edge = max(20, n // 5)
-        baseline_level = np.median(y[-n_edge:])
-    else:
-        n_edge = max(10, n // 10)
-        baseline_level = min(np.median(y[:n_edge]), np.median(y[-n_edge:]))
-
-    left_idx, right_idx = find_peak_boundaries(t, y, main_peak, baseline_level, threshold_pct=5.0, is_bp=is_bp)
-
-    left_idx = max(0, left_idx)
-    right_idx = min(len(y) - 1, right_idx)
-
-    if right_idx > left_idx:
-        area = float(trapezoid(y[left_idx:right_idx + 1], t[left_idx:right_idx + 1]))
-    else:
-        area = 0.0
-
-    return {
-        "valid": True,
-        "area": area,
-        "t_start": float(t[left_idx]),
-        "t_max": float(t[main_peak]),
-        "t_end": float(t[right_idx]),
-        "height": float(y[main_peak]),
-        "prominence": float(props["prominences"][idx]),
-        "left_idx": left_idx,
-        "right_idx": right_idx,
-        "peak_idx": main_peak,
-        "is_bp": is_bp,
-        "baseline_level": float(baseline_level),
-    }
+# NOTA: find_peak_boundaries i detect_main_peak s'importen de hpsec_core.py
+# Eliminades versions locals per evitar duplicació (2026-01-29)
 
 
 def calcular_fraccions_temps(t, y, config=None):

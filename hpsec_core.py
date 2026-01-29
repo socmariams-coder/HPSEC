@@ -1003,47 +1003,131 @@ def format_timeout_status(timeout_info):
 # PEAK DETECTION
 # =============================================================================
 
-def detect_main_peak(t, y, min_prominence_pct=5.0):
+def find_peak_boundaries(t, y, peak_idx, baseline_level=None, threshold_pct=5.0, is_bp=False):
     """
-    Detecta el pic principal d'un cromatograma.
+    Troba els límits reals d'un pic per integració.
 
-    Troba el pic més alt amb prominència suficient i retorna els seus límits.
-    Usat per:
-    - KHP Column: integrar NOMÉS el pic principal
-    - Identificar zona d'interès
+    Busca on el senyal baixa al llindar (baseline + threshold% de l'amplitud).
 
     Args:
         t: Array de temps
         y: Array de senyal
-        min_prominence_pct: Prominència mínima com a % del rang (defecte: 5%)
+        peak_idx: Índex del màxim del pic
+        baseline_level: Nivell de baseline (auto-calculat si None)
+        threshold_pct: % de l'amplitud per definir límits (defecte: 5%)
+        is_bp: Si és mode BP (afecta càlcul baseline)
+
+    Returns:
+        tuple(left_idx, right_idx): Índexs dels límits
+    """
+    n = len(y)
+    t = np.asarray(t)
+    y = np.asarray(y)
+
+    if baseline_level is None:
+        if is_bp:
+            n_edge = max(20, n // 5)
+            baseline_level = np.median(y[-n_edge:])
+        else:
+            n_edge = max(10, n // 10)
+            baseline_level = min(np.median(y[:n_edge]), np.median(y[-n_edge:]))
+
+    peak_height = y[peak_idx]
+    peak_amplitude = peak_height - baseline_level
+
+    if peak_amplitude <= 0:
+        return 0, n - 1
+
+    threshold = baseline_level + (threshold_pct / 100.0) * peak_amplitude
+
+    # Buscar límit esquerre
+    left_idx = peak_idx
+    for i in range(peak_idx - 1, -1, -1):
+        if y[i] <= threshold:
+            left_idx = i
+            break
+        if i > 0 and y[i] < y[i-1] and y[i] < y[i+1]:
+            left_idx = i
+            break
+        left_idx = i
+
+    # Buscar límit dret
+    right_idx = peak_idx
+    for i in range(peak_idx + 1, n):
+        if y[i] <= threshold:
+            right_idx = i
+            break
+        if i < n - 1 and y[i] < y[i-1] and y[i] < y[i+1]:
+            right_idx = i
+            break
+        right_idx = i
+
+    return left_idx, right_idx
+
+
+def detect_main_peak(t, y, min_prominence_pct=5.0, is_bp=None):
+    """
+    Detecta el pic principal d'un cromatograma amb límits d'integració correctes.
+
+    Versió unificada que combina:
+    - Detecció de pics amb prominència
+    - Càlcul de baseline adaptat a BP/COLUMN
+    - Límits d'integració precisos via find_peak_boundaries()
+
+    Args:
+        t: Array de temps (minuts)
+        y: Array de senyal (mAU)
+        min_prominence_pct: Prominència mínima com a % del màxim (defecte: 5%)
+        is_bp: Si és mode BP (auto-detectat si None basant-se en durada)
 
     Returns:
         Dict amb:
-            - valid: bool
+            - valid: bool - True si s'ha detectat pic
             - t_max: temps al màxim
-            - peak_idx: índex del màxim
-            - left_idx, right_idx: límits del pic
             - t_start, t_end: temps dels límits
+            - peak_idx, left_idx, right_idx: índexs
             - area: àrea del pic
             - height: altura del pic
-            - fallback: True si s'ha usat màxim global
+            - prominence: prominència del pic
+            - is_bp: mode BP detectat/usat
+            - baseline_level: nivell de baseline calculat
+            - fallback: True si s'ha usat fallback (sense pic detectat)
     """
-    if t is None or y is None or len(t) < 20:
+    if t is None or y is None:
         return {"valid": False}
 
-    y = np.asarray(y)
-    t = np.asarray(t)
+    t = np.asarray(t, dtype=float)
+    y = np.asarray(y, dtype=float)
+
+    if len(t) < 10 or len(y) < 10:
+        return {"valid": False}
+
+    y_max = float(np.nanmax(y))
+    if y_max < 1e-6:
+        return {"valid": False}
+
+    # Auto-detectar mode BP si no especificat
+    if is_bp is None:
+        t_max_chromato = float(np.max(t))
+        is_bp = t_max_chromato < 20  # BP típicament < 20 min
 
     # Calcular prominència mínima
-    y_range = np.max(y) - np.min(y)
-    min_prominence = y_range * min_prominence_pct / 100.0
+    min_prominence = y_max * (min_prominence_pct / 100.0)
 
     # Trobar pics
-    peaks, properties = find_peaks(y, prominence=min_prominence, width=3)
+    peaks, props = find_peaks(y, prominence=min_prominence, width=3)
 
     if len(peaks) == 0:
         # Fallback: usar màxim global
         peak_idx = int(np.argmax(y))
+        n = len(y)
+        if is_bp:
+            n_edge = max(20, n // 5)
+            baseline_level = float(np.median(y[-n_edge:]))
+        else:
+            n_edge = max(10, n // 10)
+            baseline_level = float(min(np.median(y[:n_edge]), np.median(y[-n_edge:])))
+
         return {
             "valid": True,
             "t_max": float(t[peak_idx]),
@@ -1054,38 +1138,52 @@ def detect_main_peak(t, y, min_prominence_pct=5.0):
             "t_end": float(t[-1]),
             "area": float(trapezoid(y, t)),
             "height": float(y[peak_idx]),
+            "prominence": float(y_max),
+            "is_bp": is_bp,
+            "baseline_level": baseline_level,
             "fallback": True,
         }
 
-    # Seleccionar pic més alt
-    peak_heights = y[peaks]
-    main_peak_local_idx = int(np.argmax(peak_heights))
-    peak_idx = peaks[main_peak_local_idx]
+    # Seleccionar pic amb major prominència
+    idx = int(np.argmax(props["prominences"]))
+    main_peak = int(peaks[idx])
 
-    # Obtenir límits del pic
-    left_bases = properties.get("left_bases", [0] * len(peaks))
-    right_bases = properties.get("right_bases", [len(y) - 1] * len(peaks))
+    # Calcular baseline
+    n = len(y)
+    if is_bp:
+        n_edge = max(20, n // 5)
+        baseline_level = float(np.median(y[-n_edge:]))
+    else:
+        n_edge = max(10, n // 10)
+        baseline_level = float(min(np.median(y[:n_edge]), np.median(y[-n_edge:])))
 
-    left_idx = int(left_bases[main_peak_local_idx])
-    right_idx = int(right_bases[main_peak_local_idx])
+    # Trobar límits precisos
+    left_idx, right_idx = find_peak_boundaries(
+        t, y, main_peak, baseline_level, threshold_pct=5.0, is_bp=is_bp
+    )
 
-    # Assegurar límits vàlids
     left_idx = max(0, left_idx)
     right_idx = min(len(y) - 1, right_idx)
 
     # Calcular àrea
-    area = float(trapezoid(y[left_idx:right_idx+1], t[left_idx:right_idx+1]))
+    if right_idx > left_idx:
+        area = float(trapezoid(y[left_idx:right_idx + 1], t[left_idx:right_idx + 1]))
+    else:
+        area = 0.0
 
     return {
         "valid": True,
-        "t_max": float(t[peak_idx]),
+        "t_max": float(t[main_peak]),
         "t_start": float(t[left_idx]),
         "t_end": float(t[right_idx]),
-        "peak_idx": peak_idx,
+        "peak_idx": main_peak,
         "left_idx": left_idx,
         "right_idx": right_idx,
         "area": area,
-        "height": float(y[peak_idx]),
+        "height": float(y[main_peak]),
+        "prominence": float(props["prominences"][idx]),
+        "is_bp": is_bp,
+        "baseline_level": baseline_level,
         "fallback": False,
     }
 
