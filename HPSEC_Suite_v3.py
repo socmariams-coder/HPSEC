@@ -757,22 +757,21 @@ class HPSECSuiteV3:
         tree_container = tk.Frame(files_frame, bg=COLORS["white"])
         tree_container.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
-        # Columnes: Mostra | Direct (fitxer+files+npts) | UIB (fitxer+npts) | Conf | Timeout | SNR | St
-        file_cols = ("mostra", "direct", "uib", "conf", "timeout", "snr", "status")
+        # Columnes: Mostra | Direct | UIB | Timeout | SNR | Status (al final, expandible)
+        file_cols = ("mostra", "direct", "uib", "timeout", "snr", "status")
         self.tree_files = ttk.Treeview(tree_container, columns=file_cols, show='headings', height=8)
 
         col_config = {
-            "mostra": ("Mostra", 85, "w"),
-            "direct": ("DOC Direct", 165, "w"),
-            "uib": ("DOC UIB", 130, "w"),
-            "conf": ("%", 30, "center"),
-            "timeout": ("Timeout", 60, "center"),
-            "snr": ("SNR", 45, "e"),
-            "status": ("", 20, "center")
+            "mostra": ("Mostra", 100, "w", False),
+            "direct": ("Direct", 50, "center", False),
+            "uib": ("UIB", 100, "w", False),
+            "timeout": ("Timeout", 50, "center", False),
+            "snr": ("SNR", 35, "e", False),
+            "status": ("Status", 200, "w", True),  # Expandible
         }
-        for col, (text, width, anchor) in col_config.items():
+        for col, (text, width, anchor, stretch) in col_config.items():
             self.tree_files.heading(col, text=text)
-            self.tree_files.column(col, width=width, anchor=anchor, stretch=(col == "direct"))
+            self.tree_files.column(col, width=width, minwidth=width, anchor=anchor, stretch=stretch)
 
         # Tags per colors
         self.tree_files.tag_configure('ok', foreground='#006100')
@@ -782,6 +781,7 @@ class HPSECSuiteV3:
         self.tree_files.tag_configure('ctrl', foreground='#155724', background='#d4edda')
         self.tree_files.tag_configure('low_conf', foreground='#856404', background='#fff3cd')  # Confiança baixa
         self.tree_files.tag_configure('dup_error', foreground='#721c24', background='#f8d7da')  # Files duplicades
+        self.tree_files.tag_configure('ignored', foreground='#999999')  # Ignorat (gris)
 
         # Scrollbar
         scrollbar = ttk.Scrollbar(tree_container, orient="vertical", command=self.tree_files.yview)
@@ -853,32 +853,217 @@ class HPSECSuiteV3:
         self.results_frame = stats_bar
 
     def _on_file_double_click(self, event):
-        """Mostra detalls del fitxer seleccionat i permet editar assignació."""
+        """Mostra detalls del fitxer seleccionat i permet acceptar/modificar assignació."""
         selection = self.tree_files.selection()
         if not selection:
             return
         item = self.tree_files.item(selection[0])
         values = item['values']
-        if values:
-            # Columnes: mostra, direct, uib, conf, timeout, snr, status
-            mostra = values[0] if len(values) > 0 else "-"
-            direct = values[1] if len(values) > 1 else "-"
-            uib = values[2] if len(values) > 2 else "-"
-            conf = values[3] if len(values) > 3 else "100"
-            timeout = values[4] if len(values) > 4 else "-"
-            snr = values[5] if len(values) > 5 else "-"
+        if not values:
+            return
 
-            conf_val = int(conf) if conf and conf != "" else 100
-            conf_warning = "\n\n⚠ BAIXA CONFIANÇA - Revisar assignació!" if conf_val < 85 else ""
+        # Columnes: mostra, direct, uib, timeout, snr, status
+        mostra = values[0] if len(values) > 0 else "-"
+        direct_files = values[1] if len(values) > 1 else "-"
+        uib = values[2] if len(values) > 2 else "-"
+        timeout = values[3] if len(values) > 3 else "-"
+        snr = values[4] if len(values) > 4 else "-"
+        status = values[5] if len(values) > 5 else "OK"
 
-            messagebox.showinfo("Detalls Fitxer",
-                               f"Mostra: {mostra}\n"
-                               f"Direct: {direct}\n"
-                               f"UIB: {uib}\n"
-                               f"Confiança: {conf_val}%\n"
-                               f"Timeout: {timeout}\n"
-                               f"SNR: {snr}"
-                               f"{conf_warning}")
+        has_error = "⚠" in str(status)
+
+        # Crear diàleg personalitzat
+        dialog = tk.Toplevel(self.root)
+        dialog.title(f"Mostra: {mostra}")
+        dialog.geometry("400x280")
+        dialog.resizable(False, False)
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        # Centrar
+        dialog.update_idletasks()
+        x = self.root.winfo_x() + (self.root.winfo_width() - 400) // 2
+        y = self.root.winfo_y() + (self.root.winfo_height() - 280) // 2
+        dialog.geometry(f"+{x}+{y}")
+
+        # Info
+        info_frame = tk.Frame(dialog, padx=15, pady=10)
+        info_frame.pack(fill=tk.X)
+
+        tk.Label(info_frame, text=f"Mostra: {mostra}", font=("Segoe UI", 11, "bold")).pack(anchor="w")
+        tk.Label(info_frame, text=f"DOC Direct (files): {direct_files}", font=("Segoe UI", 10)).pack(anchor="w", pady=2)
+        tk.Label(info_frame, text=f"DOC UIB: {uib}", font=("Segoe UI", 10)).pack(anchor="w", pady=2)
+        tk.Label(info_frame, text=f"Timeout: {timeout}  |  SNR: {snr}", font=("Segoe UI", 10)).pack(anchor="w", pady=2)
+
+        # Status amb color
+        status_color = "#721c24" if has_error else "#006100"
+        tk.Label(info_frame, text=f"Status: {status}", font=("Segoe UI", 10, "bold"), fg=status_color).pack(anchor="w", pady=(5, 0))
+
+        # Separador
+        ttk.Separator(dialog, orient="horizontal").pack(fill=tk.X, pady=10)
+
+        # Opcions
+        options_frame = tk.Frame(dialog, padx=15)
+        options_frame.pack(fill=tk.X)
+
+        is_ignored = "IGNORAT" in str(status)
+
+        if has_error or is_ignored:
+            tk.Label(options_frame, text="Accions disponibles:", font=("Segoe UI", 10, "bold")).pack(anchor="w")
+
+            def ignorar_mostra():
+                # Marcar com a ignorada al JSON i actualitzar UI
+                self._set_sample_ignored(mostra, True)
+                # Actualitzar la fila a la taula (ordre: mostra, direct, uib, timeout, snr, status)
+                self.tree_files.item(selection[0],
+                    values=(mostra, direct_files, uib, timeout, snr, "IGNORAT"),
+                    tags=('ignored',))
+                dialog.destroy()
+
+            def restaurar_mostra():
+                # Treure marca d'ignorada
+                self._set_sample_ignored(mostra, False)
+                # Refrescar la taula (recarregar)
+                dialog.destroy()
+                self._show_consolidation_summary(self._last_consolidation_summary)
+
+            def modificar_assignacio():
+                # Obrir editor d'assignació
+                dialog.destroy()
+                self._open_assignment_editor(mostra)
+
+            btn_frame = tk.Frame(options_frame)
+            btn_frame.pack(fill=tk.X, pady=10)
+
+            if is_ignored:
+                tk.Button(btn_frame, text="↩️ Restaurar mostra", command=restaurar_mostra,
+                         width=18, bg="#d4edda", fg="#155724").pack(side=tk.LEFT, padx=5)
+            else:
+                tk.Button(btn_frame, text="🚫 Ignorar mostra", command=ignorar_mostra,
+                         width=18, bg="#f8d7da", fg="#721c24").pack(side=tk.LEFT, padx=5)
+                tk.Button(btn_frame, text="✏️ Modificar assignació", command=modificar_assignacio,
+                         width=18, bg="#cce5ff", fg="#004085").pack(side=tk.LEFT, padx=5)
+        else:
+            tk.Label(options_frame, text="✓ Assignació correcta", font=("Segoe UI", 10), fg="#006100").pack(anchor="w")
+
+        # Botó tancar
+        tk.Button(dialog, text="Tancar", command=dialog.destroy, width=10).pack(pady=15)
+
+    def _set_sample_ignored(self, sample_name, ignored):
+        """Marca o desmarca una mostra com a ignorada al JSON."""
+        if not self.seq_path:
+            return
+
+        json_path = os.path.join(self.seq_path, "CHECK", "consolidation.json")
+        if not os.path.exists(json_path):
+            return
+
+        try:
+            with open(json_path, 'r', encoding='utf-8') as f:
+                summary = json.load(f)
+
+            # Inicialitzar llista d'ignorats si no existeix
+            if 'ignored_samples' not in summary:
+                summary['ignored_samples'] = []
+
+            if ignored:
+                if sample_name not in summary['ignored_samples']:
+                    summary['ignored_samples'].append(sample_name)
+            else:
+                if sample_name in summary['ignored_samples']:
+                    summary['ignored_samples'].remove(sample_name)
+
+            # Guardar JSON
+            with open(json_path, 'w', encoding='utf-8') as f:
+                json.dump(summary, f, indent=2, ensure_ascii=False, default=str)
+
+        except Exception as e:
+            messagebox.showerror("Error", f"No s'ha pogut actualitzar el JSON:\n{e}")
+
+    def _open_assignment_editor(self, sample_name):
+        """Obre editor per modificar l'assignació de files MasterFile."""
+        if not self.seq_path:
+            messagebox.showwarning("Avís", "No hi ha seqüència carregada")
+            return
+
+        # Buscar info actual de la mostra
+        json_path = os.path.join(self.seq_path, "CHECK", "consolidation.json")
+        if not os.path.exists(json_path):
+            messagebox.showwarning("Avís", "No existeix consolidation.json")
+            return
+
+        try:
+            with open(json_path, 'r', encoding='utf-8') as f:
+                summary = json.load(f)
+        except Exception as e:
+            messagebox.showerror("Error", f"Error llegint JSON:\n{e}")
+            return
+
+        # Buscar la mostra
+        sample_info = None
+        for s in summary.get('samples', []):
+            if s.get('name') == sample_name:
+                sample_info = s
+                break
+
+        # Crear diàleg d'edició
+        dialog = tk.Toplevel(self.root)
+        dialog.title(f"Modificar assignació: {sample_name}")
+        dialog.geometry("350x200")
+        dialog.resizable(False, False)
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        # Centrar
+        dialog.update_idletasks()
+        x = self.root.winfo_x() + (self.root.winfo_width() - 350) // 2
+        y = self.root.winfo_y() + (self.root.winfo_height() - 200) // 2
+        dialog.geometry(f"+{x}+{y}")
+
+        tk.Label(dialog, text=f"Assignar files DOC Direct per: {sample_name}",
+                font=("Segoe UI", 10, "bold")).pack(pady=10)
+
+        # Camps d'entrada
+        entry_frame = tk.Frame(dialog)
+        entry_frame.pack(pady=10)
+
+        tk.Label(entry_frame, text="Fila inici:").grid(row=0, column=0, padx=5, pady=5, sticky="e")
+        entry_start = tk.Entry(entry_frame, width=10)
+        entry_start.grid(row=0, column=1, padx=5, pady=5)
+        if sample_info and sample_info.get('row_start'):
+            entry_start.insert(0, str(sample_info['row_start']))
+
+        tk.Label(entry_frame, text="Fila final:").grid(row=1, column=0, padx=5, pady=5, sticky="e")
+        entry_end = tk.Entry(entry_frame, width=10)
+        entry_end.grid(row=1, column=1, padx=5, pady=5)
+        if sample_info and sample_info.get('row_end'):
+            entry_end.insert(0, str(sample_info['row_end']))
+
+        def guardar():
+            try:
+                row_start = int(entry_start.get()) if entry_start.get() else None
+                row_end = int(entry_end.get()) if entry_end.get() else None
+
+                # Actualitzar JSON
+                if 'manual_assignments' not in summary:
+                    summary['manual_assignments'] = {}
+                summary['manual_assignments'][sample_name] = {
+                    'row_start': row_start,
+                    'row_end': row_end
+                }
+
+                with open(json_path, 'w', encoding='utf-8') as f:
+                    json.dump(summary, f, indent=2, ensure_ascii=False, default=str)
+
+                messagebox.showinfo("Guardat", f"Assignació guardada per {sample_name}.\nReconsolida per aplicar els canvis.")
+                dialog.destroy()
+            except ValueError:
+                messagebox.showerror("Error", "Les files han de ser números enters")
+
+        btn_frame = tk.Frame(dialog)
+        btn_frame.pack(pady=15)
+        tk.Button(btn_frame, text="Guardar", command=guardar, width=10, bg="#28a745", fg="white").pack(side=tk.LEFT, padx=5)
+        tk.Button(btn_frame, text="Cancel·lar", command=dialog.destroy, width=10).pack(side=tk.LEFT, padx=5)
 
     # =========================================================================
     # PAS 2: CALIBRAR
@@ -1769,6 +1954,9 @@ class HPSECSuiteV3:
         samples = summary.get('samples', [])
         n_low_conf = 0  # Comptador de baixa confiança
 
+        # Obtenir samples ignorats
+        ignored_samples = set(summary.get('ignored_samples', []))
+
         # Obtenir samples afectats per duplicate rows
         quality = summary.get('quality', {})
         dup_rows = quality.get('duplicate_rows', [])
@@ -1797,33 +1985,50 @@ class HPSECSuiteV3:
             doc_direct_message = s.get('doc_direct_message', '')
             has_doc_error = doc_direct_status not in ['OK', '']
 
-            # Columna Direct: fitxer (files ini-fi) npts O missatge d'error
-            if has_doc_error:
-                # Mostrar el motiu de l'error en vermell
-                direct_text = f"⚠ {doc_direct_message}" if doc_direct_message else f"⚠ {doc_direct_status}"
-            elif file_dad:
-                dad_name = os.path.splitext(file_dad)[0]  # Treure .CSV
-                if row_start and row_end:
-                    direct_text = f"{dad_name} ({row_start}-{row_end}) {int(npts)}pt"
-                else:
-                    direct_text = f"{dad_name} {int(npts)}pt" if npts else dad_name
+            # Columna Direct: mostrar només rang de files MasterFile
+            if row_start and row_end:
+                direct_text = f"{row_start}-{row_end}"
             else:
                 direct_text = "-"
 
-            # Columna UIB: fitxer npts (o buit si només Direct)
-            if file_uib and doc_mode in ['DUAL', 'UIB']:
+            # Columna UIB: fitxer (o "-" si no n'hi ha)
+            if file_uib:
                 uib_name = os.path.splitext(file_uib)[0]
-                uib_text = f"{uib_name} {int(npts)}pt" if npts else uib_name
+                uib_text = uib_name
             else:
-                uib_text = ""
+                uib_text = "-"
 
-            # Columna confiança
-            conf_text = f"{match_conf:.0f}" if match_conf < 100 else ""
+            # Comprovar si la mostra està ignorada
+            is_ignored = mostra_display in ignored_samples or name in ignored_samples
+
+            # Columna Status: explicació clara
+            if is_ignored:
+                status_text = "IGNORAT"
+            elif doc_direct_status == 'ORFE_HPLC_SEQ':
+                status_text = "⚠ UIB existeix, falta a 1-HPLC-SEQ"
+            elif doc_direct_status == 'FALTA_HPLC_SEQ':
+                status_text = "⚠ Línia absent a 1-HPLC-SEQ"
+            elif doc_direct_status == 'SENSE_DADES':
+                status_text = "⚠ Sense dades DOC"
+            elif doc_direct_status == 'SOBREESCRIT':
+                status_text = "⚠ DOC sobreescrit (memòria)"
+            elif has_doc_error:
+                status_text = f"⚠ {doc_direct_status}"
+            elif match_conf < 85:
+                status_text = f"⚠ Baixa confiança ({match_conf:.0f}%)"
+            elif doc_mode == 'UIB' and not file_dad:
+                status_text = "Només UIB"
+            elif doc_mode == 'DIRECT' and not file_uib:
+                status_text = "Només Direct"
+            else:
+                status_text = "OK"
 
             # Determinar tag per color
             name_upper = name.upper()
-            if has_doc_error:
-                tag = 'dup_error'  # Vermell: error DOC Direct
+            if is_ignored:
+                tag = 'ignored'  # Gris: ignorat
+            elif has_doc_error:
+                tag = 'dup_error'  # Vermell: error MasterFile
             elif name in dup_samples_set:
                 tag = 'dup_error'  # Vermell: files duplicades
             elif match_conf < 85:
@@ -1831,7 +2036,7 @@ class HPSECSuiteV3:
                 n_low_conf += 1
             elif 'KHP' in name_upper:
                 tag = 'khp'
-            elif 'CTRL' in name_upper or 'CONTROL' in name_upper or 'BLANC' in name_upper:
+            elif 'MQ' in name_upper or 'NAOH' in name_upper or 'CTRL' in name_upper or 'CONTROL' in name_upper or 'BLANC' in name_upper:
                 tag = 'ctrl'
             else:
                 tag = 'ok'
@@ -1856,17 +2061,15 @@ class HPSECSuiteV3:
             snr = s.get('snr_direct', s.get('snr_uib', 0))
             snr_text = f"{snr:.0f}" if snr else "-"
 
-            # Status
-            if s.get('peak_valid', True):
-                status = "✓"
-            else:
-                status = "!"
+            # Ajustar tag si peak no és vàlid
+            if not s.get('peak_valid', True):
                 if tag == 'ok':
                     tag = 'warn'
+                status_text = status_text + " (!)" if status_text == "OK" else status_text
 
-            # Columnes: mostra, direct, uib, conf, timeout, snr, status
+            # Columnes: mostra, direct, uib, timeout, snr, status (status al final)
             self.tree_files.insert("", "end",
-                values=(mostra_display, direct_text, uib_text, conf_text, timeout_text, snr_text, status),
+                values=(mostra_display, direct_text, uib_text, timeout_text, snr_text, status_text),
                 tags=(tag,))
 
         # Mostrar avís si hi ha assignacions de baixa confiança
