@@ -2841,6 +2841,181 @@ def mark_calibration_as_outlier(seq_path, seq_name, mode="COLUMN", is_outlier=Tr
     save_khp_history(seq_path, global_cals)
 
 
+def update_calibration_validation(seq_path=None, update_global=True):
+    """
+    Actualitza les calibracions existents amb els nous camps de validació.
+
+    Llegeix cada calibració del JSON, executa validate_khp_quality() i
+    actualitza els camps:
+    - valid_for_shift
+    - valid_for_calibration
+    - calibration_issues
+    - calibration_warnings
+    - quality_score
+    - shift_issues
+    - reference_comparison
+
+    Args:
+        seq_path: Path d'una SEQ específica, o None per actualitzar global
+        update_global: Si True, actualitza KHP_History.json global
+
+    Returns:
+        dict amb resum: {"updated": int, "errors": list, "details": list}
+    """
+    result = {"updated": 0, "errors": [], "details": []}
+
+    if seq_path:
+        # Actualitzar només una SEQ
+        paths_to_update = [seq_path]
+    else:
+        # Actualitzar totes les SEQ del global
+        paths_to_update = []
+
+    if update_global:
+        # Carregar històric global
+        # Necessitem un seq_path vàlid per trobar el JSON
+        base_path = r"C:\Users\Lequia\Desktop\Dades2"
+
+        # Trobar una SEQ vàlida per obtenir el path correcte
+        sample_seq = None
+        for item in os.listdir(base_path):
+            if "_SEQ" in item:
+                sample_seq = os.path.join(base_path, item)
+                break
+
+        if not sample_seq:
+            result['errors'].append("No s'ha trobat cap SEQ a Dades2")
+            return result
+
+        global_cals = load_khp_history(sample_seq)
+
+        for cal in global_cals:
+            cal_seq_path = cal.get('seq_path', '')
+            if cal_seq_path and os.path.isdir(cal_seq_path):
+                if cal_seq_path not in paths_to_update:
+                    paths_to_update.append(cal_seq_path)
+
+        # Revalidar cada calibració
+        updated_cals = []
+        for cal in global_cals:
+            try:
+                # Crear khp_data simulat des de la calibració existent
+                khp_data = {
+                    'area': cal.get('area', 0),
+                    'conc_ppm': cal.get('conc_ppm', 0),
+                    'volume_uL': cal.get('volume_uL', 0),
+                    'doc_mode': cal.get('doc_mode', 'N/A'),
+                    'is_bp': cal.get('is_bp', False),
+                    'symmetry': cal.get('symmetry', 1.0),
+                    'snr': cal.get('snr', 0),
+                    'concentration_ratio': cal.get('concentration_ratio', 1.0),
+                    'has_batman': cal.get('has_batman', False),
+                    'limits_expanded': cal.get('limits_expanded', False),
+                    'uib_sensitivity': cal.get('uib_sensitivity'),
+                    't_retention': cal.get('t_retention', 0),
+                }
+
+                # Timeout i anomaly info (reconstruir si possible)
+                timeout_info = {'severity': 'CRITICAL' if cal.get('has_timeout') else 'OK'}
+                anomaly_info = {'is_batman': cal.get('has_batman', False), 'is_irregular': False}
+
+                # Buscar quality_issues existents per detectar irregular
+                existing_issues = cal.get('quality_issues', [])
+                for issue in existing_issues:
+                    if 'irregular' in issue.lower() or 'smoothness' in issue.lower():
+                        anomaly_info['is_irregular'] = True
+                        # Intentar extreure smoothness
+                        import re
+                        match = re.search(r'smoothness[=:\s]*(\d+)', issue, re.I)
+                        if match:
+                            anomaly_info['smoothness'] = int(match.group(1))
+
+                all_peaks = []
+
+                # Executar validació
+                validation = validate_khp_quality(
+                    khp_data=khp_data,
+                    all_peaks=all_peaks,
+                    timeout_info=timeout_info,
+                    anomaly_info=anomaly_info,
+                    seq_path=cal.get('seq_path', base_path)
+                )
+
+                # Actualitzar camps
+                cal['valid_for_calibration'] = validation.get('is_valid', True)
+                cal['calibration_issues'] = validation.get('issues', [])
+                cal['calibration_warnings'] = validation.get('warnings', [])
+                cal['quality_score'] = validation.get('quality_score', 0)
+
+                # Validació shift
+                t_retention = cal.get('t_retention', 0)
+                valid_for_shift = True
+                shift_issues = []
+
+                if not t_retention or t_retention <= 0:
+                    valid_for_shift = False
+                    shift_issues.append("No s'ha detectat pic")
+
+                if cal.get('has_timeout') and timeout_info.get('severity') == 'CRITICAL':
+                    valid_for_shift = False
+                    shift_issues.append("Timeout crític")
+
+                if cal.get('has_batman', False):
+                    shift_issues.append("Batman detectat")
+
+                cal['valid_for_shift'] = valid_for_shift
+                cal['shift_issues'] = shift_issues
+
+                # Camps d'override manual (inicialitzar si no existeixen)
+                if 'manual_override' not in cal:
+                    cal['manual_override'] = None
+                if 'manual_override_reason' not in cal:
+                    cal['manual_override_reason'] = ""
+                if 'manual_override_by' not in cal:
+                    cal['manual_override_by'] = ""
+                if 'manual_override_date' not in cal:
+                    cal['manual_override_date'] = None
+
+                # Actualitzar is_outlier i is_active segons validació
+                if cal['manual_override'] is None:
+                    cal['is_outlier'] = not cal['valid_for_calibration']
+                    cal['is_active'] = cal['valid_for_calibration']
+
+                # Actualitzar status
+                if cal['manual_override'] is True:
+                    cal['status'] = "MANUAL_VALID"
+                elif cal['manual_override'] is False:
+                    cal['status'] = "MANUAL_INVALID"
+                elif not cal['valid_for_calibration']:
+                    cal['status'] = "INVALID_CAL"
+                elif not cal['valid_for_shift']:
+                    cal['status'] = "INVALID_SHIFT"
+                else:
+                    cal['status'] = "OK"
+
+                # Reference comparison
+                if validation.get('reference_comparison'):
+                    cal['reference_comparison'] = validation['reference_comparison']
+
+                result['details'].append({
+                    'seq_name': cal.get('seq_name'),
+                    'valid_for_cal': cal['valid_for_calibration'],
+                    'valid_for_shift': cal['valid_for_shift'],
+                    'issues': cal['calibration_issues']
+                })
+                result['updated'] += 1
+
+            except Exception as e:
+                result['errors'].append(f"{cal.get('seq_name', 'unknown')}: {e}")
+
+            updated_cals.append(cal)
+
+        # Guardar JSON actualitzat
+        save_khp_history(sample_seq, updated_cals)
+
+    return result
+
+
 # =============================================================================
 # FUNCIÓ PRINCIPAL STANDALONE
 # =============================================================================
