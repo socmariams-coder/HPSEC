@@ -1036,6 +1036,14 @@ def _read_areas_from_file(filepath: str) -> Dict[str, float]:
         if 'total' not in areas and areas:
             areas['total'] = sum(areas.values())
 
+        # Detectar mode BP: només BioP té valor (HS, BB, SB, LMW són buits)
+        # En aquest cas, retornar només total
+        fractions = ['BioP', 'HS', 'BB', 'SB', 'LMW']
+        non_empty_fractions = [f for f in fractions if f in areas and areas[f] > 0]
+        if non_empty_fractions == ['BioP'] and 'total' in areas:
+            # Mode BP: només retornar total
+            return {'total': areas['total']}
+
         return areas
 
     except Exception:
