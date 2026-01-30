@@ -1095,6 +1095,17 @@ def write_consolidated_excel(out_path, mostra, rep, seq_out, date_master,
         y_doc_uib = np.asarray(y_doc_uib) if y_doc_uib is not None else None
         y_doc_uib_raw = np.asarray(y_doc_uib_raw) if y_doc_uib_raw is not None and hasattr(y_doc_uib_raw, '__len__') and len(y_doc_uib_raw) > 0 else None
 
+        # IMPORTANT: Interpolar UIB a la mida de t_doc (Direct) si tenen longituds diferents
+        if y_doc_uib is not None and len(y_doc_uib) != len(t_doc) and len(t_doc) > 0:
+            # Assumim que UIB té el seu propi array de temps amb rang similar
+            # Creem un temps UIB aproximat basant-nos en el rang de t_doc
+            t_uib_approx = np.linspace(t_doc.min(), t_doc.max(), len(y_doc_uib))
+            y_doc_uib = np.interp(t_doc, t_uib_approx, y_doc_uib)
+
+        if y_doc_uib_raw is not None and len(y_doc_uib_raw) != len(t_doc) and len(t_doc) > 0:
+            t_uib_approx = np.linspace(t_doc.min(), t_doc.max(), len(y_doc_uib_raw))
+            y_doc_uib_raw = np.interp(t_doc, t_uib_approx, y_doc_uib_raw)
+
     # NO truncar - mantenir dades completes
 
     # Handle baseline as scalar or array

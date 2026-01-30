@@ -1898,6 +1898,452 @@ def import_sequence(seq_path, config=None, progress_callback=None):
 
 
 # =============================================================================
+# GENERACIÓ DE MANIFEST JSON
+# =============================================================================
+
+def generate_import_manifest(imported_data, include_injection_details=True):
+    """
+    Genera un manifest JSON amb metadata de la importació.
+
+    Útil per:
+    - Traçabilitat: saber d'on venen les dades
+    - Verificació: comprovar què s'ha detectat
+    - Debugging: diagnosticar problemes d'importació
+
+    Args:
+        imported_data: Dict retornat per import_sequence()
+        include_injection_details: Si True, inclou detall per cada injecció
+
+    Returns:
+        dict JSON-serializable amb tota la metadata
+    """
+    manifest = {
+        "manifest_version": "1.0",
+        "generated_at": datetime.now().isoformat(),
+        "generator": f"hpsec_import v{__version__}",
+
+        # Info seqüència
+        "sequence": {
+            "name": imported_data.get("seq_name", ""),
+            "path": imported_data.get("seq_path", ""),
+            "date": str(imported_data.get("date", "")),
+            "method": imported_data.get("method", ""),  # COLUMN o BP
+            "data_mode": imported_data.get("data_mode", ""),  # DUAL, DIRECT, UIB
+        },
+
+        # MasterFile
+        "master_file": {
+            "path": imported_data.get("master_file", ""),
+            "format": imported_data.get("master_format", ""),  # NEW o OLD
+            "filename": os.path.basename(imported_data.get("master_file", "")) if imported_data.get("master_file") else "",
+        },
+
+        # Estadístiques globals
+        "stats": imported_data.get("stats", {}),
+
+        # Avisos i errors
+        "warnings": imported_data.get("warnings", []),
+        "errors": imported_data.get("errors", []),
+
+        # Fitxers orfes
+        "orphan_files": {
+            "uib": [os.path.basename(f) for f in imported_data.get("orphan_files", {}).get("uib", [])],
+            "dad": [os.path.basename(f) for f in imported_data.get("orphan_files", {}).get("dad", [])],
+        },
+    }
+
+    # Detall per mostra
+    samples_detail = []
+    for sample_name, sample_info in imported_data.get("samples", {}).items():
+        sample_entry = {
+            "name": sample_name,
+            "type": sample_info.get("type", "SAMPLE"),
+            "replicas": [],
+        }
+
+        for rep_num, rep_data in sample_info.get("replicas", {}).items():
+            replica_entry = {
+                "replica": rep_num,
+                "has_data": rep_data.get("has_data", False),
+            }
+
+            # DOC Direct
+            direct = rep_data.get("direct") or {}
+            if direct.get("t") is not None:
+                t_arr = direct["t"]
+                replica_entry["direct"] = {
+                    "source": "MasterFile:2-TOC",
+                    "row_start": direct.get("row_start"),
+                    "row_end": direct.get("row_end"),
+                    "n_points": len(t_arr),
+                    "t_min": float(min(t_arr)),
+                    "t_max": float(max(t_arr)),
+                    "baseline": direct.get("baseline"),
+                    "has_timeout": direct.get("timeout_info", {}).get("has_timeout", False),
+                }
+                if direct.get("timeout_info", {}).get("has_timeout"):
+                    replica_entry["direct"]["timeout_ranges"] = direct["timeout_info"].get("timeout_ranges", [])
+
+            # DOC UIB
+            uib = rep_data.get("uib") or {}
+            if uib.get("t") is not None:
+                t_arr = uib["t"]
+                replica_entry["uib"] = {
+                    "source": "CSV",
+                    "file": os.path.basename(uib.get("path", "")),
+                    "n_points": len(t_arr),
+                    "t_min": float(min(t_arr)),
+                    "t_max": float(max(t_arr)),
+                    "baseline": uib.get("baseline"),
+                }
+
+            # DAD
+            dad = rep_data.get("dad") or {}
+            df = dad.get("df")
+            if df is not None:
+                t_col = df.columns[0]
+                replica_entry["dad"] = {
+                    "source": rep_data.get("dad_source", "unknown"),
+                    "n_points": len(df),
+                    "n_wavelengths": len(df.columns) - 1,  # -1 per columna temps
+                    "t_min": float(df[t_col].min()),
+                    "t_max": float(df[t_col].max()),
+                    "wavelengths_range": f"{df.columns[1]}-{df.columns[-1]}",
+                }
+
+            # Info injecció original (si disponible)
+            inj_info = rep_data.get("injection_info")
+            if inj_info and include_injection_details:
+                replica_entry["injection"] = {
+                    "line_num": inj_info.get("line_num"),
+                    "inj_num": inj_info.get("inj_num"),
+                    "location": inj_info.get("row_data", {}).get("Location"),
+                    "acq_date": str(inj_info.get("row_data", {}).get("Injection Acquired Date", "")),
+                    "method": inj_info.get("row_data", {}).get("Injection Acq Method Name"),
+                }
+
+            sample_entry["replicas"].append(replica_entry)
+
+        samples_detail.append(sample_entry)
+
+    manifest["samples"] = samples_detail
+
+    # Resum per tipus
+    manifest["summary"] = {
+        "total_samples": len([s for s in samples_detail if s["type"] == "SAMPLE"]),
+        "total_khp": len([s for s in samples_detail if s["type"] == "KHP"]),
+        "total_controls": len([s for s in samples_detail if s["type"] == "CONTROL"]),
+        "total_replicas": sum(len(s["replicas"]) for s in samples_detail),
+        "replicas_with_direct": sum(
+            1 for s in samples_detail
+            for r in s["replicas"]
+            if "direct" in r
+        ),
+        "replicas_with_uib": sum(
+            1 for s in samples_detail
+            for r in s["replicas"]
+            if "uib" in r
+        ),
+        "replicas_with_dad": sum(
+            1 for s in samples_detail
+            for r in s["replicas"]
+            if "dad" in r
+        ),
+    }
+
+    return manifest
+
+
+def save_import_manifest(imported_data, output_path=None):
+    """
+    Genera i guarda el manifest JSON a un fitxer.
+
+    Args:
+        imported_data: Dict retornat per import_sequence()
+        output_path: Ruta de sortida (default: SEQ_PATH/import_manifest.json)
+
+    Returns:
+        Path del fitxer generat
+    """
+    manifest = generate_import_manifest(imported_data)
+
+    if output_path is None:
+        seq_path = imported_data.get("seq_path", ".")
+        output_path = os.path.join(seq_path, "import_manifest.json")
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(manifest, f, indent=2, ensure_ascii=False)
+
+    return output_path
+
+
+def load_manifest(seq_path):
+    """
+    Carrega el manifest JSON si existeix.
+
+    Args:
+        seq_path: Ruta a la carpeta SEQ
+
+    Returns:
+        dict amb manifest o None si no existeix
+    """
+    manifest_path = os.path.join(seq_path, "import_manifest.json")
+    if os.path.exists(manifest_path):
+        try:
+            with open(manifest_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return None
+    return None
+
+
+def import_from_manifest(seq_path, manifest=None, config=None, progress_callback=None):
+    """
+    Reimporta dades guiat pel manifest (molt més ràpid).
+
+    En lloc de detectar/matching, llegeix directament d'on indica el manifest:
+    - DOC Direct: files row_start-row_end del MasterFile
+    - UIB: fitxer CSV indicat
+    - DAD: segons source (export3d o dad1a)
+
+    Args:
+        seq_path: Ruta a la carpeta SEQ
+        manifest: Manifest carregat (si None, el carrega)
+        config: Configuració
+        progress_callback: Funció callback(pct, msg)
+
+    Returns:
+        dict equivalent a import_sequence()
+    """
+    config = config or get_config()
+
+    def report_progress(pct, msg):
+        if progress_callback:
+            progress_callback(pct, msg)
+
+    # Carregar manifest si no proporcionat
+    if manifest is None:
+        manifest = load_manifest(seq_path)
+        if manifest is None:
+            # Fallback a import normal
+            report_progress(0, "Manifest no trobat, important normalment...")
+            return import_sequence(seq_path, config, progress_callback)
+
+    report_progress(5, "Llegint manifest...")
+
+    # Inicialitzar resultat
+    seq_info = manifest.get("sequence", {})
+    mf_info = manifest.get("master_file", {})
+
+    result = {
+        "success": False,
+        "seq_path": seq_path,
+        "seq_name": seq_info.get("name", os.path.basename(seq_path)),
+        "method": seq_info.get("method", "COLUMN"),
+        "data_mode": seq_info.get("data_mode", "DUAL"),
+        "date": seq_info.get("date", ""),
+        "master_file": mf_info.get("path", ""),
+        "master_format": mf_info.get("format", "NEW"),
+        "master_data": None,
+        "injections": [],
+        "samples": {},
+        "khp_samples": [],
+        "control_samples": [],
+        "valid_samples": set(),
+        "orphan_files": {"uib": [], "dad": []},
+        "errors": [],
+        "warnings": ["Importat des de manifest existent"],
+        "from_manifest": True,
+        "manifest_date": manifest.get("generated_at", ""),
+    }
+
+    # Verificar que MasterFile existeix
+    master_path = mf_info.get("path", "")
+    if not master_path or not os.path.exists(master_path):
+        # Intentar trobar-lo
+        master_path_new, _ = trobar_excel_mestre(seq_path)
+        if master_path_new:
+            master_path = master_path_new
+            result["master_file"] = master_path
+        else:
+            result["errors"].append("MasterFile no trobat")
+            return result
+
+    report_progress(10, "Llegint MasterFile...")
+
+    # Llegir MasterFile per obtenir dades DOC Direct
+    try:
+        toc_df = None
+        xl = pd.ExcelFile(master_path, engine="openpyxl")
+        if "2-TOC" in xl.sheet_names:
+            toc_df = pd.read_excel(xl, sheet_name="2-TOC", header=6, engine="openpyxl")
+    except Exception as e:
+        result["errors"].append(f"Error llegint MasterFile: {e}")
+        return result
+
+    report_progress(20, "Processant mostres del manifest...")
+
+    # Processar cada mostra del manifest
+    manifest_samples = manifest.get("samples", [])
+    total = len(manifest_samples)
+
+    for i, sample_info in enumerate(manifest_samples):
+        pct = 20 + int((i / total) * 70) if total > 0 else 90
+        report_progress(pct, f"Llegint {sample_info.get('name', '?')}...")
+
+        sample_name = sample_info.get("name", "")
+        sample_type = sample_info.get("type", "SAMPLE")
+
+        if sample_name not in result["samples"]:
+            result["samples"][sample_name] = {
+                "type": sample_type,
+                "replicas": {},
+            }
+
+        # Classificar
+        if sample_type == "KHP" and sample_name not in result["khp_samples"]:
+            result["khp_samples"].append(sample_name)
+        elif sample_type == "CONTROL" and sample_name not in result["control_samples"]:
+            result["control_samples"].append(sample_name)
+
+        result["valid_samples"].add(sample_name)
+
+        # Processar cada rèplica
+        for rep_info in sample_info.get("replicas", []):
+            rep_num = str(rep_info.get("replica", "1"))
+
+            rep_data = {
+                "direct": None,
+                "uib": None,
+                "dad": None,
+                "dad_source": None,
+                "has_data": False,
+                "injection_info": rep_info.get("injection"),
+            }
+
+            # === DOC Direct ===
+            direct_info = rep_info.get("direct")
+            if direct_info and toc_df is not None:
+                row_start = direct_info.get("row_start")
+                row_end = direct_info.get("row_end")
+                if row_start is not None and row_end is not None:
+                    try:
+                        doc_result = extract_doc_from_masterfile(
+                            toc_df, row_start, row_end,
+                            t_start=None, detect_timeouts=True
+                        )
+                        if doc_result and doc_result.get("t") is not None:
+                            # Calcular baseline
+                            mode_type = "BP" if result["method"] == "BP" else "COL"
+                            baseline = get_baseline_correction(
+                                doc_result["t"], doc_result["y"], mode_type, config
+                            )
+                            y_net = np.array(doc_result["y"]) - baseline
+
+                            rep_data["direct"] = {
+                                "path": f"MasterFile:2-TOC",
+                                "df": None,
+                                "t": doc_result["t"],
+                                "y": doc_result["y"],
+                                "row_start": row_start,
+                                "row_end": row_end,
+                                "timeout_info": doc_result.get("timeout_info", {}),
+                                "y_net": y_net,
+                                "baseline": baseline,
+                            }
+                            rep_data["has_data"] = True
+                    except Exception as e:
+                        result["warnings"].append(f"{sample_name} rep {rep_num} Direct: {e}")
+
+            # === DOC UIB ===
+            uib_info = rep_info.get("uib")
+            if uib_info:
+                uib_file = uib_info.get("file", "")
+                if uib_file:
+                    # Buscar fitxer UIB
+                    uib_path = os.path.join(seq_path, "CSV", uib_file)
+                    if not os.path.exists(uib_path):
+                        # Provar altres ubicacions
+                        for subdir in ["", "CSV", "csv"]:
+                            test_path = os.path.join(seq_path, subdir, uib_file) if subdir else os.path.join(seq_path, uib_file)
+                            if os.path.exists(test_path):
+                                uib_path = test_path
+                                break
+
+                    if os.path.exists(uib_path):
+                        try:
+                            uib_result = llegir_doc_uib(uib_path)
+                            if uib_result and uib_result.get("t") is not None:
+                                t_uib = uib_result["t"]
+                                y_uib = uib_result["y"]
+
+                                # Baseline
+                                mode_type = "BP" if result["method"] == "BP" else "COL"
+                                baseline = get_baseline_correction(t_uib, y_uib, mode_type, config)
+                                y_net = np.array(y_uib) - baseline
+
+                                rep_data["uib"] = {
+                                    "path": uib_path,
+                                    "df": uib_result.get("df"),
+                                    "t": t_uib,
+                                    "y": y_uib,
+                                    "y_net": y_net,
+                                    "baseline": baseline,
+                                }
+                                rep_data["has_data"] = True
+                        except Exception as e:
+                            result["warnings"].append(f"{sample_name} rep {rep_num} UIB: {e}")
+
+            # === DAD ===
+            dad_info = rep_info.get("dad")
+            if dad_info:
+                dad_source = dad_info.get("source", "export3d")
+                rep_data["dad_source"] = dad_source
+
+                # Buscar fitxer DAD
+                if dad_source == "export3d":
+                    path_3d = os.path.join(seq_path, "Export3d")
+                    if not os.path.isdir(path_3d):
+                        path_3d = os.path.join(seq_path, "Export3D")
+
+                    if os.path.isdir(path_3d):
+                        # Buscar fitxer per aquesta mostra
+                        dad_files = list_dad_files(path_3d)
+                        for df_path in dad_files:
+                            # Match per nom mostra
+                            fname = os.path.basename(df_path).upper()
+                            sname = sample_name.upper().replace(" ", "").replace("_", "")
+                            if sname in fname.replace(" ", "").replace("_", ""):
+                                try:
+                                    df_dad = llegir_dad_export3d(df_path)
+                                    if df_dad is not None:
+                                        rep_data["dad"] = {"df": df_dad, "path": df_path}
+                                        break
+                                except Exception:
+                                    pass
+
+            result["samples"][sample_name]["replicas"][rep_num] = rep_data
+
+    # Stats
+    samples_with_data = sum(
+        1 for s in result["samples"].values()
+        for r in s.get("replicas", {}).values()
+        if r.get("has_data")
+    )
+
+    result["stats"] = {
+        "total_samples": len(result["samples"]),
+        "samples_with_data": samples_with_data,
+        "from_manifest": True,
+    }
+
+    result["success"] = True
+    report_progress(100, "Importació des de manifest completada")
+
+    return result
+
+
+# =============================================================================
 # FUNCIONS AUXILIARS PER COMPATIBILITAT
 # =============================================================================
 
@@ -1949,4 +2395,9 @@ __all__ = [
     "check_sequence_files",
     # Principal
     "import_sequence",
+    # Manifest
+    "generate_import_manifest",
+    "save_import_manifest",
+    "load_manifest",
+    "import_from_manifest",
 ]
