@@ -1,12 +1,27 @@
 # PLA DE REFACTORITZACIÓ COMPLET - HPSEC Suite
 
 **Data inici:** 2026-01-29
-**Última actualització:** 2026-01-29
+**Última actualització:** 2026-01-30
 **Objectiu:** Traçabilitat total + JSON com a font única + Eliminar duplicacions
 
 ---
 
 ## 0. REGISTRE DE CANVIS
+
+### 2026-01-30 - Sessió 3: Fix BP mode + Tests
+**Consultat:** Sí
+
+**Problemes detectats:**
+1. `hpsec_replica.py:293` - Comprovava `fit_result.get("valid")` però `fit_bigaussian()` retorna `status`
+2. `hpsec_pipeline.py:510` - Passava config global a `consolidate_sequence()` però aquest espera format diferent
+
+**Correccions:**
+- ✅ hpsec_replica.py: Canvi `fit_result.get("valid")` → `fit_result.get("status") in ("VALID", "CHECK")`
+- ✅ hpsec_pipeline.py: `config=None` per usar DEFAULT_CONSOLIDATE_CONFIG intern
+
+**Tests:**
+- ✅ 283_SEQ (COLUMN) - Passa amb tots els camps traçabilitat
+- ✅ 284_SEQ_BP (BP) - Passa amb r2=0.9979, r2_status=VALID
 
 ### 2026-01-29 - Sessió 2: Neteja duplicacions
 **Consultat:** Sí (després de fer canvis - ERROR, cal consultar ABANS)
@@ -287,7 +302,7 @@ Detectar → JSON marca batman=true → Usuari revisa → Decideix reparar → A
 | Tasca | Estat | Data |
 |-------|-------|------|
 | 5.1 Executar pipeline en 283_SEQ (COLUMN) | ✅ | 2026-01-30 |
-| 5.1 Executar pipeline en BP | ⏳ | |
+| 5.1 Executar pipeline en 284_SEQ_BP (BP) | ✅ | 2026-01-30 |
 | 5.1 Executar pipeline en DUAL | ⏳ | |
 | 5.2 Verificar JSON conté totes les mètriques | ✅ | 2026-01-30 |
 | 5.3 Actualitzar CLAUDE.md amb nova estructura | ⏳ |
@@ -322,6 +337,34 @@ Replica R1:
 
 **Observació:** BioP mostra Pearson=0.611 entre rèpliques - possible artefacte a zona inicial que cal investigar.
 
+#### Test 284_SEQ_BP (BP) - 2026-01-30
+
+**Resultat:** ✅ CORRECTE - Tots els camps nous presents
+
+**Correccions necessàries:**
+1. `hpsec_replica.py`: Canvi `fit_result.get("valid")` → `fit_result.get("status")` (fit_bigaussian retorna "status" no "valid")
+2. `hpsec_pipeline.py`: No passar config global a consolidate_sequence (usa DEFAULT_CONSOLIDATE_CONFIG intern)
+
+```
+Sample: FR2606_284_BP
+  selected: MIXED
+  R1:
+    valid: True
+    r2: 0.9979
+    r2_status: VALID
+    height: 357.8
+    t_peak: 1.08 min
+    snr: 3.0
+    smoothness: 82.67
+    anomaly_score: 0.0
+    asymmetry: 1.65
+    timeout_info: {n_timeouts: 0, severity: OK}
+    peak_indices: {left: 3, max: 16, right: 144}
+    baseline_stats: {noise: 119.1}
+```
+
+**Observació:** baseline_noise=119 mAU és alt perquè inclou la pujada del pic (primeres dades). Cal millorar càlcul baseline en futura iteració.
+
 ---
 
 ## 5. MÈTRIQUES D'ÈXIT
@@ -330,7 +373,7 @@ Replica R1:
 - [x] JSON conté 100% de les mètriques calculades (verificat 2026-01-30)
 - [ ] GUI no fa cap càlcul, només llegeix JSON
 - [x] Traçabilitat: Des de concentració final fins a paràmetres de detecció
-- [ ] Tests passen per BP, COLUMN, DUAL (1/3 completat)
+- [ ] Tests passen per BP, COLUMN, DUAL (2/3 completat)
 
 ---
 

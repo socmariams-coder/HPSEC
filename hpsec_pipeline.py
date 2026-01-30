@@ -505,9 +505,11 @@ def _step_consolidate(seq_path: str, callbacks: PipelineCallbacks,
                 current = int(pct * total / 100)
                 callbacks.on_step_progress("consolidar", current, total, sample)
 
+        # consolidate_sequence té el seu propi DEFAULT_CONSOLIDATE_CONFIG
+        # No passem config global perquè té estructura diferent
         result = consolidate_sequence(
             seq_path,
-            config=config,
+            config=None,  # Usar default intern
             progress_callback=progress_cb
         )
 
@@ -732,9 +734,15 @@ def _detect_existing_mode(seq_path: str):
             xls = pd.ExcelFile(files[0], engine='openpyxl')
             if 'ID' in xls.sheet_names:
                 df_id = pd.read_excel(xls, 'ID')
-                id_dict = dict(zip(df_id['Camp'], df_id['Valor']))
+                # Suportar ambdós formats de columnes (Field/Value o Camp/Valor)
+                if 'Field' in df_id.columns and 'Value' in df_id.columns:
+                    id_dict = dict(zip(df_id['Field'], df_id['Value']))
+                elif 'Camp' in df_id.columns and 'Valor' in df_id.columns:
+                    id_dict = dict(zip(df_id['Camp'], df_id['Valor']))
+                else:
+                    return "COLUMN", "UNKNOWN"
                 mode = id_dict.get('Method', 'COLUMN')
-                doc_mode = id_dict.get('DOC_MODE', 'UNKNOWN')
+                doc_mode = id_dict.get('DOC_Mode', id_dict.get('DOC_MODE', 'UNKNOWN'))
                 return mode, doc_mode
         except:
             pass

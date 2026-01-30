@@ -290,20 +290,16 @@ def evaluate_replica(t, y, method="COLUMN", humic_zone=None):
             peak_info["right_base"]
         )
 
-        if fit_result.get("valid", False):
+        # fit_bigaussian retorna "status" (VALID/CHECK/INVALID), no "valid"
+        fit_status = fit_result.get("status", "INVALID")
+        if fit_status in ("VALID", "CHECK"):
             r2 = fit_result.get("r2", 0)
+            r2_status = fit_status
             asymmetry = fit_result.get("asymmetry", 1.0)
-
-            # Determinar status
-            if r2 >= THRESH_R2_VALID:
-                r2_status = "VALID"
-            elif r2 >= THRESH_R2_CHECK:
-                r2_status = "CHECK"
-            else:
-                r2_status = "INVALID"
         else:
-            r2 = 0.0
+            r2 = fit_result.get("r2", 0.0)  # Mantenir r2 encara que INVALID
             r2_status = "INVALID"
+            asymmetry = fit_result.get("asymmetry")
 
     # === CALCULAR SCORE ===
     anomaly_score = 0.0
