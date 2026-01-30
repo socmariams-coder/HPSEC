@@ -303,8 +303,7 @@ Detectar → JSON marca batman=true → Usuari revisa → Decideix reparar → A
 | Tasca | Estat | Data |
 |-------|-------|------|
 | 5.1 Executar pipeline en 283_SEQ (COLUMN) | ✅ | 2026-01-30 |
-| 5.1 Executar pipeline en 284_SEQ_BP (BP) | ✅ | 2026-01-30 |
-| 5.1 Executar pipeline en DUAL | ⏳ | |
+| 5.1 Executar pipeline en 284_SEQ_BP (BP + DUAL) | ✅ | 2026-01-30 |
 | 5.2 Verificar JSON conté totes les mètriques | ✅ | 2026-01-30 |
 | 5.3 Actualitzar CLAUDE.md amb nova estructura | ⏳ |
 
@@ -374,7 +373,7 @@ Sample: FR2606_284_BP
 - [x] JSON conté 100% de les mètriques calculades (verificat 2026-01-30)
 - [ ] GUI no fa cap càlcul, només llegeix JSON
 - [x] Traçabilitat: Des de concentració final fins a paràmetres de detecció
-- [ ] Tests passen per BP, COLUMN, DUAL (2/3 completat)
+- [x] Tests passen per COLUMN i BP+DUAL (completat 2026-01-30)
 
 ---
 
