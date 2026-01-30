@@ -18,6 +18,7 @@
 **Correccions:**
 - ✅ hpsec_replica.py: Canvi `fit_result.get("valid")` → `fit_result.get("status") in ("VALID", "CHECK")`
 - ✅ hpsec_pipeline.py: `config=None` per usar DEFAULT_CONSOLIDATE_CONFIG intern
+- ✅ hpsec_replica.py: `_baseline_stats()` ara usa últims punts per BP (pic és al principi)
 
 **Tests:**
 - ✅ 283_SEQ (COLUMN) - Passa amb tots els camps traçabilitat
@@ -354,16 +355,16 @@ Sample: FR2606_284_BP
     r2_status: VALID
     height: 357.8
     t_peak: 1.08 min
-    snr: 3.0
+    snr: 14343.2
     smoothness: 82.67
     anomaly_score: 0.0
     asymmetry: 1.65
     timeout_info: {n_timeouts: 0, severity: OK}
     peak_indices: {left: 3, max: 16, right: 144}
-    baseline_stats: {noise: 119.1}
+    baseline_stats: {noise: 0.025}
 ```
 
-**Observació:** baseline_noise=119 mAU és alt perquè inclou la pujada del pic (primeres dades). Cal millorar càlcul baseline en futura iteració.
+**Correcció baseline:** Inicialment baseline_noise=119 mAU (incorrecte). Ara usa últims punts per BP → noise=0.025 mAU, SNR=14343.
 
 ---
 
