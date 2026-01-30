@@ -87,11 +87,21 @@ SCORE_WEIGHTS = {
 # FUNCIONS AUXILIARS
 # =============================================================================
 
-def _baseline_stats(y):
-    """Calcula estadístiques de baseline (primers 10% de punts)."""
+def _baseline_stats(y, method="COLUMN"):
+    """
+    Calcula estadístiques de baseline.
+
+    - COLUMN: primers 10% de punts (pic és després)
+    - BP: últims 10% de punts (pic és al principi)
+    """
     y = np.asarray(y, dtype=float)
     n = max(10, len(y) // 10)
-    baseline = y[:n]
+
+    if method == "BP":
+        baseline = y[-n:]  # Últims punts per BP
+    else:
+        baseline = y[:n]   # Primers punts per COLUMN
+
     return {
         "mean": float(np.mean(baseline)),
         "std": float(np.std(baseline)),
@@ -212,8 +222,8 @@ def evaluate_replica(t, y, method="COLUMN", humic_zone=None):
     if len(t) < 20:
         return {"valid": False, "reason": "Massa NaN/Inf"}
 
-    # Estadístiques baseline
-    bl_stats = _baseline_stats(y)
+    # Estadístiques baseline (BP usa últims punts, COLUMN primers)
+    bl_stats = _baseline_stats(y, method=method)
     max_signal = float(np.max(y))
 
     # Senyal massa baix?
