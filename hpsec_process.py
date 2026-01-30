@@ -4,13 +4,16 @@ hpsec_process.py - Mòdul de processament de dades HPSEC (Fase 3)
 
 FASE 3 del pipeline de 5 fases:
 - Aplicar alineació temporal (shifts calculats a Fase 2)
-- Correcció de baseline i smoothing
 - Detecció de pics i timeouts
 - Càlcul d'àrees per fraccions de temps
 - Càlcul de SNR, LOD, LOQ
 
+NOTA: La correcció de baseline es fa a Fase 1 (Import).
+Si les dades inclouen y_net, s'usa directament.
+Si no, es calcula baseline aquí per compatibilitat.
+
 REQUEREIX:
-- Fase 1: import_sequence() → dades RAW
+- Fase 1: import_sequence() → dades amb y_net (baseline ja restada)
 - Fase 2: calibrate_sequence() → shifts d'alineació
 
 NO fa:
@@ -22,8 +25,8 @@ NO fa:
 Usat per HPSEC_Suite.py
 """
 
-__version__ = "1.0.0"
-__version_date__ = "2026-01-29"
+__version__ = "1.1.0"
+__version_date__ = "2026-01-30"
 
 import os
 import numpy as np
@@ -593,16 +596,22 @@ def calculate_snr_info(y_doc_net, peak_info, y_doc_uib=None,
 # =============================================================================
 def process_sample(sample_data, calibration_data=None, config=None):
     """
-    Processa una mostra individual: alineació, baseline, pics, àrees.
+    Processa una mostra individual: alineació, pics, àrees.
+
+    NOTA: Si les dades inclouen y_net (baseline ja restada per import),
+    s'usa directament. Si no, es calcula baseline aquí (compatibilitat).
 
     Args:
         sample_data: Dict amb dades de la mostra (de import_sequence):
             - name: Nom de la mostra
             - replica: Número de rèplica
             - t_doc: Array de temps DOC
-            - y_doc_direct: Senyal DOC Direct (si DUAL)
-            - y_doc_uib: Senyal DOC UIB (si DUAL)
-            - y_doc: Senyal DOC (si simple)
+            - y_doc_direct: Senyal DOC Direct RAW (si DUAL)
+            - y_doc_direct_net: Senyal DOC Direct NET (si disponible)
+            - y_doc_uib: Senyal DOC UIB RAW (si DUAL)
+            - y_doc_uib_net: Senyal DOC UIB NET (si disponible)
+            - y_doc: Senyal DOC RAW (si simple)
+            - y_doc_net: Senyal DOC NET (si disponible)
             - df_dad: DataFrame DAD
         calibration_data: Dict amb dades de calibració (de calibrate_sequence):
             - shift_uib: Shift per DOC_UIB (minuts)
@@ -631,10 +640,16 @@ def process_sample(sample_data, calibration_data=None, config=None):
 
     # Obtenir dades RAW
     t_doc = sample_data.get("t_doc")
+    t_doc_uib = sample_data.get("t_doc_uib")  # Temps UIB (pot ser diferent de t_doc)
     y_doc_direct = sample_data.get("y_doc_direct")
     y_doc_uib = sample_data.get("y_doc_uib")
     y_doc = sample_data.get("y_doc")  # Mode simple
     df_dad = sample_data.get("df_dad")
+
+    # Obtenir dades NET (si disponibles, calculades per import)
+    y_doc_direct_net_precomp = sample_data.get("y_doc_direct_net")
+    y_doc_uib_net_precomp = sample_data.get("y_doc_uib_net")
+    y_doc_net_precomp = sample_data.get("y_doc_net")
 
     # Determinar mode (DUAL vs simple)
     is_dual = y_doc_direct is not None and y_doc_uib is not None
@@ -645,13 +660,19 @@ def process_sample(sample_data, calibration_data=None, config=None):
 
     t_doc = np.asarray(t_doc).flatten()
 
-    # Truncar cromatograma
+    # NO truncar - mantenir dades completes per anàlisi post-run
+    # Les visualitzacions limitaran a 70 min però les dades es preserven
     if is_dual:
-        t_doc, (y_doc_direct, y_doc_uib) = truncate_chromatogram(
-            t_doc, [y_doc_direct, y_doc_uib], config.get("max_time_min", 70.0)
-        )
+        y_doc_direct = np.asarray(y_doc_direct).flatten() if y_doc_direct is not None else None
+        y_doc_uib = np.asarray(y_doc_uib).flatten() if y_doc_uib is not None else None
+        if y_doc_direct_net_precomp is not None:
+            y_doc_direct_net_precomp = np.asarray(y_doc_direct_net_precomp).flatten()
+        if y_doc_uib_net_precomp is not None:
+            y_doc_uib_net_precomp = np.asarray(y_doc_uib_net_precomp).flatten()
     else:
-        t_doc, y_doc = truncate_chromatogram(t_doc, y_doc, config.get("max_time_min", 70.0))
+        y_doc = np.asarray(y_doc).flatten() if y_doc is not None else None
+        if y_doc_net_precomp is not None:
+            y_doc_net_precomp = np.asarray(y_doc_net_precomp).flatten()
 
     # Detectar mode BP vs COLUMN
     t_max_chromato = float(np.max(t_doc))
@@ -659,31 +680,62 @@ def process_sample(sample_data, calibration_data=None, config=None):
     mode_type = "BP" if is_bp else "COL"
 
     # Aplicar shifts d'alineació (si disponibles)
+    # NOTA: Els shifts s'apliquen als senyals RAW, després es recalcula baseline si cal
+    shifts_applied = False
     if calibration_data:
         shift_uib = calibration_data.get("shift_uib", 0.0)
         shift_direct = calibration_data.get("shift_direct", 0.0)
 
         if is_dual:
-            if abs(shift_uib) > 0.001:
-                y_doc_uib = apply_shift(t_doc, t_doc, y_doc_uib, shift_uib)
+            # UIB: usar t_doc_uib (temps propi) i interpolar a t_doc (referencia)
+            uib_interpolated = False
+            if abs(shift_uib) > 0.001 and t_doc_uib is not None:
+                t_uib_arr = np.asarray(t_doc_uib).flatten()
+                y_doc_uib = apply_shift(t_doc, t_uib_arr, y_doc_uib, shift_uib)
+                shifts_applied = True
+                uib_interpolated = True
+            elif t_doc_uib is not None and len(t_doc_uib) != len(t_doc):
+                # Sense shift pero cal interpolar UIB a escala Direct
+                t_uib_arr = np.asarray(t_doc_uib).flatten()
+                y_doc_uib = np.interp(t_doc, t_uib_arr, y_doc_uib, left=0, right=0)
+                uib_interpolated = True
+            # Si UIB s'ha interpolat, invalidar y_net precomp
+            if uib_interpolated:
+                y_doc_uib_net_precomp = None
+            # Direct: ja esta a t_doc
             if abs(shift_direct) > 0.001:
                 y_doc_direct = apply_shift(t_doc, t_doc, y_doc_direct, shift_direct)
+                shifts_applied = True
         else:
             shift = calibration_data.get("shift", 0.0)
             if abs(shift) > 0.001:
                 y_doc = apply_shift(t_doc, t_doc, y_doc, shift)
+                shifts_applied = True
 
     # Correcció de baseline
+    # Usar y_net precalculat si disponible I no s'han aplicat shifts
+    # (els shifts invaliden el y_net precalculat)
     if is_dual:
-        baseline_direct = get_baseline_correction(t_doc, y_doc_direct, mode_type, config, use_end=is_bp)
-        baseline_uib = get_baseline_correction(t_doc, y_doc_uib, mode_type, config, use_end=False)
-        y_doc_direct_net = y_doc_direct - baseline_direct
-        y_doc_uib_net = y_doc_uib - baseline_uib
+        if y_doc_direct_net_precomp is not None and not shifts_applied:
+            y_doc_direct_net = y_doc_direct_net_precomp
+        else:
+            baseline_direct = get_baseline_correction(t_doc, y_doc_direct, mode_type, config, use_end=is_bp)
+            y_doc_direct_net = y_doc_direct - baseline_direct
+
+        if y_doc_uib_net_precomp is not None and not shifts_applied:
+            y_doc_uib_net = y_doc_uib_net_precomp
+        else:
+            baseline_uib = get_baseline_correction(t_doc, y_doc_uib, mode_type, config, use_end=False)
+            y_doc_uib_net = y_doc_uib - baseline_uib
+
         # Per processament principal, usar Direct
         y_doc_net = y_doc_direct_net
     else:
-        baseline = get_baseline_correction(t_doc, y_doc, mode_type, config)
-        y_doc_net = y_doc - baseline
+        if y_doc_net_precomp is not None and not shifts_applied:
+            y_doc_net = y_doc_net_precomp
+        else:
+            baseline = get_baseline_correction(t_doc, y_doc, mode_type, config)
+            y_doc_net = y_doc - baseline
 
     # Detectar timeouts
     timeout_info = detect_timeout(t_doc)
@@ -761,7 +813,9 @@ def _flatten_samples_for_processing(imported_data, data_mode="DUAL"):
             - name: Nom de la mostra
             - replica: Número de rèplica
             - t_doc: Array de temps
-            - y_doc_direct / y_doc_uib / y_doc: Arrays de senyal segons mode
+            - y_doc_direct / y_doc_uib / y_doc: Arrays de senyal RAW segons mode
+            - y_doc_net / y_doc_uib_net: Arrays amb baseline restada (si disponible)
+            - baseline_uib: Valor de baseline aplicat (si disponible)
             - df_dad: DataFrame DAD (si disponible)
 
     Nota: En mode DUAL, si direct no està disponible (encara no extret del master),
@@ -784,31 +838,72 @@ def _flatten_samples_for_processing(imported_data, data_mode="DUAL"):
                 "sample_type": sample_type,
             }
 
-            # Extreure dades UIB
+            # Extreure dades segons data_mode (DUAL, DIRECT, UIB)
             uib = rep_data.get("uib", {})
-            has_uib = uib and "t" in uib and "y" in uib
-
-            if has_uib:
-                flat_sample["t_doc"] = uib["t"]
-                if data_mode == "DUAL":
-                    flat_sample["y_doc_uib"] = uib["y"]
-                else:
-                    flat_sample["y_doc"] = uib["y"]
-
-            # Extreure dades Direct (si disponible)
             direct = rep_data.get("direct", {})
+            has_uib = uib and "t" in uib and "y" in uib
             has_direct = direct and "t" in direct and "y" in direct
 
-            if has_direct:
-                flat_sample["t_doc"] = direct["t"]
-                if data_mode == "DUAL":
+            if data_mode == "DUAL":
+                # Mode DUAL: ambdos senyals separats, cada un amb el seu temps
+                if has_direct:
+                    flat_sample["t_doc"] = direct["t"]  # Temps principal (referencia)
+                    flat_sample["t_doc_direct"] = direct["t"]
                     flat_sample["y_doc_direct"] = direct["y"]
-                else:
+                    if "y_net" in direct:
+                        flat_sample["y_doc_direct_net"] = direct["y_net"]
+                    if "baseline" in direct:
+                        flat_sample["baseline_direct"] = direct["baseline"]
+
+                if has_uib:
+                    flat_sample["t_doc_uib"] = uib["t"]  # Temps propi UIB
+                    if "t_doc" not in flat_sample:
+                        flat_sample["t_doc"] = uib["t"]
+                    flat_sample["y_doc_uib"] = uib["y"]
+                    if "y_net" in uib:
+                        flat_sample["y_doc_uib_net"] = uib["y_net"]
+                    if "baseline" in uib:
+                        flat_sample["baseline_uib"] = uib["baseline"]
+
+                # Fallback DUAL: si nomes hi ha un senyal, convertir a mode simple
+                if has_uib and not has_direct:
+                    flat_sample["y_doc"] = uib["y"]
+                    if "y_net" in uib:
+                        flat_sample["y_doc_net"] = uib["y_net"]
+                    if "baseline" in uib:
+                        flat_sample["baseline"] = uib["baseline"]
+                    flat_sample.pop("y_doc_uib", None)
+                    flat_sample.pop("y_doc_uib_net", None)
+                    flat_sample.pop("baseline_uib", None)
+                elif has_direct and not has_uib:
                     flat_sample["y_doc"] = direct["y"]
-            elif data_mode == "DUAL" and has_uib:
-                # Fallback: usar UIB també com a "direct" si no hi ha direct
-                # Això permet processar fins que s'implementi l'extracció del master
-                flat_sample["y_doc_direct"] = uib["y"]
+                    if "y_net" in direct:
+                        flat_sample["y_doc_net"] = direct["y_net"]
+                    if "baseline" in direct:
+                        flat_sample["baseline"] = direct["baseline"]
+                    flat_sample.pop("y_doc_direct", None)
+                    flat_sample.pop("y_doc_direct_net", None)
+                    flat_sample.pop("baseline_direct", None)
+
+            elif data_mode == "DIRECT":
+                # Mode DIRECT: nomes usar Direct (ignorar UIB)
+                if has_direct:
+                    flat_sample["t_doc"] = direct["t"]
+                    flat_sample["y_doc"] = direct["y"]
+                    if "y_net" in direct:
+                        flat_sample["y_doc_net"] = direct["y_net"]
+                    if "baseline" in direct:
+                        flat_sample["baseline"] = direct["baseline"]
+
+            elif data_mode == "UIB":
+                # Mode UIB: nomes usar UIB (ignorar Direct)
+                if has_uib:
+                    flat_sample["t_doc"] = uib["t"]
+                    flat_sample["y_doc"] = uib["y"]
+                    if "y_net" in uib:
+                        flat_sample["y_doc_net"] = uib["y_net"]
+                    if "baseline" in uib:
+                        flat_sample["baseline"] = uib["baseline"]
 
             # Extreure dades DAD
             dad = rep_data.get("dad", {})
@@ -949,6 +1044,239 @@ def process_sequence(imported_data, calibration_data=None, config=None, progress
 
 
 # =============================================================================
+# ESCRIPTURA EXCEL CONSOLIDAT
+# =============================================================================
+
+def write_consolidated_excel(out_path, mostra, rep, seq_out, date_master,
+                             method, doc_mode, fitxer_doc, fitxer_dad,
+                             st_doc, st_dad, t_doc, y_doc_raw, y_doc_net,
+                             baseline, df_dad, peak_info, sample_analysis=None,
+                             master_file=None, row_start=None, row_end=None,
+                             # Paràmetres dual protocol
+                             y_doc_uib=None, y_doc_uib_raw=None, baseline_uib=None,
+                             fitxer_doc_uib=None, st_doc_uib=None,
+                             # Paràmetres de processament
+                             shift_uib=None, shift_direct=None,
+                             smoothing_applied=True,
+                             # Info del MasterFile 0-INFO
+                             master_info=None,
+                             # Detecció de timeouts TOC
+                             timeout_info=None,
+                             # SNR i baseline noise
+                             snr_info=None):
+    """
+    Escriu fitxer Excel consolidat amb àrees per fraccions de temps.
+
+    Estructura fulls:
+      ID: Identificació, fitxers, estat, processament
+      TMAX: Temps de retenció per DOC i cada wavelength DAD
+      AREAS: Àrees per fraccions de temps (BioP, HS, BB, SB, LMW, total)
+      DOC: Cromatograma DOC (net, raw, baseline)
+      DAD: Cromatograma DAD (totes les wavelengths)
+    """
+    from datetime import datetime
+
+    sample_analysis = sample_analysis or {}
+    master_info = master_info or {}
+    is_dual = y_doc_uib is not None and hasattr(y_doc_uib, '__len__') and len(y_doc_uib) > 0
+
+    # Convertir a arrays numpy si cal (no truncar - s'assumeix que les dades ja vénen truncades)
+    t_doc = np.asarray(t_doc) if t_doc is not None else np.array([])
+    y_doc_net = np.asarray(y_doc_net) if y_doc_net is not None else None
+    y_doc_raw = np.asarray(y_doc_raw) if y_doc_raw is not None and hasattr(y_doc_raw, '__len__') and len(y_doc_raw) > 0 else None
+    if is_dual:
+        y_doc_uib = np.asarray(y_doc_uib) if y_doc_uib is not None else None
+        y_doc_uib_raw = np.asarray(y_doc_uib_raw) if y_doc_uib_raw is not None and hasattr(y_doc_uib_raw, '__len__') and len(y_doc_uib_raw) > 0 else None
+
+    # NO truncar - mantenir dades completes
+
+    # Handle baseline as scalar or array
+    if baseline is not None:
+        if hasattr(baseline, '__len__') and len(baseline) > 0:
+            baseline_direct_val = float(np.mean(baseline))
+        else:
+            baseline_direct_val = float(baseline)
+    else:
+        baseline_direct_val = 0.0
+
+    if baseline_uib is not None:
+        if hasattr(baseline_uib, '__len__') and len(baseline_uib) > 0:
+            baseline_uib_val = float(np.mean(baseline_uib))
+        else:
+            baseline_uib_val = float(baseline_uib)
+    else:
+        baseline_uib_val = 0.0
+
+    # === ID SHEET ===
+    inj_vol = master_info.get("Inj_Volume (uL)", "")
+    uib_range = master_info.get("UIB_range")
+    if pd.isna(inj_vol) or inj_vol is None:
+        inj_vol = ""
+    if pd.isna(uib_range) or uib_range is None:
+        uib_range = "-"
+    else:
+        uib_range = str(uib_range)
+
+    id_rows = [
+        ("Script_Version", f"hpsec_process v{__version__}"),
+        ("Consolidation_Date", datetime.now().strftime("%Y-%m-%d %H:%M")),
+        ("---", "---"),
+        ("Sample", mostra),
+        ("Replica", rep),
+        ("SEQ", seq_out),
+        ("Method", method),
+        ("Date", date_master),
+        ("Inj_Volume_uL", inj_vol),
+        ("UIB_range", uib_range),
+    ]
+
+    id_rows.append(("File_MasterFile", master_file or ""))
+    id_rows.append(("File_DAD", fitxer_dad or ""))
+    if is_dual and fitxer_doc_uib:
+        id_rows.append(("File_DOC_UIB", fitxer_doc_uib))
+
+    id_rows.extend([
+        ("DOC_Mode", doc_mode),
+        ("Status_DOC", st_doc),
+        ("Status_DAD", st_dad),
+        ("Peak_Valid", peak_info.get("valid", False) if peak_info else False),
+    ])
+
+    id_rows.append(("DOC_N_Points", len(t_doc) if t_doc is not None else 0))
+    if row_start is not None:
+        id_rows.append(("DOC_Row_Start", row_start))
+    if row_end is not None:
+        id_rows.append(("DOC_Row_End", row_end))
+
+    id_rows.extend([
+        ("DOC_Baseline_Method", "percentile"),
+        ("DOC_Baseline_mAU", round(baseline_direct_val, 3)),
+        ("DOC_Smoothing", "YES" if smoothing_applied else "NO"),
+    ])
+    if shift_direct is not None:
+        id_rows.append(("DOC_Shift_sec", round(shift_direct * 60, 2)))
+
+    if is_dual:
+        id_rows.append(("UIB_Baseline_mAU", round(baseline_uib_val, 3)))
+        if shift_uib is not None:
+            id_rows.append(("UIB_Shift_sec", round(shift_uib * 60, 2)))
+        id_rows.append(("UIB_Status", st_doc_uib or "OK"))
+
+    if df_dad is not None and not df_dad.empty:
+        id_rows.append(("DAD_N_Points", len(df_dad)))
+
+    # Timeout info
+    if timeout_info and timeout_info.get("n_timeouts", 0) > 0:
+        id_rows.append(("---", "---"))
+        id_rows.append(("TOC_Timeout_Detected", "YES"))
+        id_rows.append(("TOC_Timeout_Count", str(timeout_info.get("n_timeouts", 0))))
+        id_rows.append(("TOC_Timeout_Severity", timeout_info.get("severity", "OK")))
+        timeouts = timeout_info.get("timeouts", [])
+        for i, to in enumerate(timeouts[:3]):
+            zone = to.get("zone", "?")
+            t_min_to = to.get("t_start_min", 0)
+            dur = to.get("duration_sec", 0)
+            sev = to.get("severity", "INFO")
+            id_rows.append((f"TOC_Timeout_{i+1}", f"{t_min_to:.1f} min ({dur:.0f}s) - {zone} [{sev}]"))
+        zone_summary = timeout_info.get("zone_summary", {})
+        if zone_summary:
+            affected_zones = [f"{z}:{n}" for z, n in zone_summary.items() if n > 0]
+            id_rows.append(("TOC_Zones_Affected", ", ".join(affected_zones)))
+        id_rows.append(("TOC_Dt_Median_sec", timeout_info.get("dt_median_sec", 0)))
+        id_rows.append(("TOC_Dt_Max_sec", timeout_info.get("dt_max_sec", 0)))
+    else:
+        id_rows.append(("TOC_Timeout_Detected", "NO"))
+
+    # SNR info
+    if snr_info:
+        id_rows.append(("---", "---"))
+        if snr_info.get("snr_direct") is not None:
+            id_rows.append(("SNR_Direct", round(snr_info["snr_direct"], 1)))
+        if snr_info.get("baseline_noise_direct") is not None:
+            id_rows.append(("Baseline_Noise_Direct_mAU", round(snr_info["baseline_noise_direct"], 3)))
+        if snr_info.get("lod_direct") is not None:
+            id_rows.append(("LOD_Direct_mAU", round(snr_info["lod_direct"], 3)))
+        if snr_info.get("loq_direct") is not None:
+            id_rows.append(("LOQ_Direct_mAU", round(snr_info["loq_direct"], 3)))
+        if is_dual and snr_info.get("snr_uib") is not None:
+            id_rows.append(("SNR_UIB", round(snr_info["snr_uib"], 1)))
+        if is_dual and snr_info.get("baseline_noise_uib") is not None:
+            id_rows.append(("Baseline_Noise_UIB_mAU", round(snr_info["baseline_noise_uib"], 3)))
+        if is_dual and snr_info.get("lod_uib") is not None:
+            id_rows.append(("LOD_UIB_mAU", round(snr_info["lod_uib"], 3)))
+        if is_dual and snr_info.get("loq_uib") is not None:
+            id_rows.append(("LOQ_UIB_mAU", round(snr_info["loq_uib"], 3)))
+
+    df_id = pd.DataFrame(id_rows, columns=["Field", "Value"])
+
+    # === TMAX SHEET ===
+    tmax_data = detectar_tmax_senyals(t_doc, y_doc_net, df_dad)
+    tmax_rows = []
+    for signal, tmax_val in tmax_data.items():
+        tmax_rows.append((signal, round(tmax_val, 3) if tmax_val > 0 else "-"))
+    df_tmax = pd.DataFrame(tmax_rows, columns=["Signal", "tmax (min)"])
+
+    # === AREAS SHEET ===
+    fraccions_data = calcular_arees_fraccions_complet(t_doc, y_doc_net, df_dad)
+    fractions_config = DEFAULT_PROCESS_CONFIG.get("time_fractions", {})
+    fraction_names = list(fractions_config.keys()) + ["total"]
+
+    header = ["Fraction", "Range (min)", "DOC"]
+    target_wls = DEFAULT_PROCESS_CONFIG.get("target_wavelengths", [220, 254, 280])
+    for wl in target_wls:
+        header.append(f"A{wl}")
+
+    areas_rows = []
+    for frac_name in fraction_names:
+        if frac_name == "total":
+            rang = "0-70"
+        else:
+            t_ini, t_fi = fractions_config.get(frac_name, [0, 0])
+            rang = f"{t_ini}-{t_fi}"
+
+        row = [frac_name, rang]
+        doc_area = fraccions_data.get("DOC", {}).get(frac_name, 0.0)
+        row.append(round(doc_area, 2) if doc_area > 0 else "-")
+        for wl in target_wls:
+            dad_area = fraccions_data.get(f"A{wl}", {}).get(frac_name, 0.0)
+            row.append(round(dad_area, 2) if dad_area > 0 else "-")
+        areas_rows.append(row)
+
+    df_areas = pd.DataFrame(areas_rows, columns=header)
+
+    # === DOC SHEET ===
+    if is_dual:
+        doc_data = {
+            "time (min)": t_doc,
+            "DOC_Direct (mAU)": y_doc_net,
+            "DOC_Direct_RAW (mAU)": y_doc_raw,
+            "BASELINE_Direct (mAU)": baseline_direct_val,  # Scalar value
+            "DOC_UIB (mAU)": y_doc_uib,
+        }
+        if y_doc_uib_raw is not None and hasattr(y_doc_uib_raw, '__len__') and len(y_doc_uib_raw) > 0:
+            doc_data["DOC_UIB_RAW (mAU)"] = y_doc_uib_raw
+        if baseline_uib is not None:
+            doc_data["BASELINE_UIB (mAU)"] = baseline_uib_val  # Scalar value
+        df_doc_out = pd.DataFrame(doc_data)
+    else:
+        df_doc_out = pd.DataFrame({
+            "time (min)": t_doc,
+            "DOC (mAU)": y_doc_net,
+            "DOC_RAW (mAU)": y_doc_raw,
+            "BASELINE (mAU)": baseline_direct_val,  # Scalar value
+        })
+
+    # Escriure Excel
+    with pd.ExcelWriter(out_path, engine="openpyxl") as writer:
+        df_id.to_excel(writer, sheet_name="ID", index=False)
+        df_tmax.to_excel(writer, sheet_name="TMAX", index=False)
+        df_areas.to_excel(writer, sheet_name="AREAS", index=False)
+        df_doc_out.to_excel(writer, sheet_name="DOC", index=False)
+        if df_dad is not None and not df_dad.empty:
+            df_dad.to_excel(writer, sheet_name="DAD", index=False)
+
+
+# =============================================================================
 # EXPORTS PER COMPATIBILITAT
 # =============================================================================
 __all__ = [
@@ -975,6 +1303,8 @@ __all__ = [
     "analyze_sample_areas",
     # SNR
     "calculate_snr_info",
+    # Escriptura
+    "write_consolidated_excel",
     # Funcions principals
     "process_sample",
     "process_sequence",
