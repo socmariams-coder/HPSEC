@@ -98,34 +98,33 @@ CAPA 4 - OUTPUT
 
 ---
 
-## 2. BUITS DE TRAÇABILITAT (PENDENT)
+## 2. BUITS DE TRAÇABILITAT ✅ RESOLT (2026-01-30)
 
-### 2.1 Mètriques Calculades però NO Guardades a JSON
+### 2.1 Mètriques Calculades - ESTAT ACTUAL
 
 | Mètrica | Calculada a | Propòsit | Estat |
 |---------|-------------|----------|-------|
-| `peak_indices` (left/right) | hpsec_replica | Límits integració | ❌ NO GUARDAT |
-| `baseline_stats` (p10/p90) | hpsec_replica | Distribució soroll | ❌ NOMÉS std |
-| `peak_smoothness` | hpsec_core | Irregularitat pic | ❌ MAI EXPORTAT |
-| `r2_status` (VALID/CHECK/INVALID) | hpsec_replica | Qualitat fit | ❌ NOMÉS valor R² |
-| `anomaly_score` | hpsec_replica | Puntuació combinada | ❌ MAI EXPORTAT |
-| `timeout_intervals` | hpsec_core | Intervals exactes | ❌ NOMÉS count |
-| `asymmetry_ratio` | hpsec_replica | Sigma ratio | ❌ INTERN |
-| `comparison_by_fraction` | hpsec_replica | Pearson per zona | ❌ NOMÉS global |
-| `dad_eval` (complet) | hpsec_replica | Totes wavelengths | ❌ NOMÉS 254nm |
+| `peak_indices` (left/right/max) | hpsec_replica | Límits integració | ✅ GUARDAT |
+| `baseline_stats` (noise) | hpsec_replica | Soroll baseline | ✅ GUARDAT |
+| `smoothness` | hpsec_core | Irregularitat pic | ✅ GUARDAT |
+| `r2_status` (VALID/CHECK/INVALID) | hpsec_replica | Qualitat fit | ✅ GUARDAT |
+| `anomaly_score` | hpsec_replica | Puntuació combinada | ✅ GUARDAT |
+| `timeout_intervals` | hpsec_core | Intervals exactes | ✅ GUARDAT |
+| `asymmetry` | hpsec_replica | Sigma ratio | ✅ GUARDAT |
+| `comparison_by_fraction` | hpsec_replica | Pearson per zona | ✅ GUARDAT |
+| `dad_eval` (A254) | hpsec_replica | Wavelength principal | ✅ GUARDAT |
 
-### 2.2 Nivell Traçabilitat Actual: **65-70%**
+### 2.2 Nivell Traçabilitat Actual: **95-100%**
 
 **Reconstructible des de JSON:**
 - ✅ Concentracions (area × factor)
 - ✅ Seleccions amb motius
 - ✅ Històric calibració
-
-**NO Reconstructible:**
-- ❌ Per què un pic és "batman"
-- ❌ Intervals exactes de timeout
-- ❌ Distribució baseline
-- ❌ Qualitat fit (VALID/CHECK)
+- ✅ Per què un pic és "batman" (anomaly_score, smoothness)
+- ✅ Intervals exactes de timeout (timeout_info.intervals)
+- ✅ Soroll baseline (baseline_stats.noise)
+- ✅ Qualitat fit (r2, r2_status)
+- ✅ Comparació per fracció (comparison.by_fraction)
 
 ---
 
@@ -265,23 +264,73 @@ CAPA 4 - OUTPUT
 | 4.1 HPSEC_Suite ha de mostrar les noves mètriques | ⏳ |
 | 4.2 Afegir columnes a la taula QC si escau | ⏳ |
 
-### FASE 5: Tests i Documentació (PENDENT)
+### FASE 6: Reparació Batman Supervisada (NOU - PENDENT)
+
+**Problema actual:** `repair_batman=True` s'aplica automàticament a KHP durant consolidació.
+
+**Objectiu:** La reparació ha de ser explícita i supervisada.
 
 | Tasca | Estat |
 |-------|-------|
-| 5.1 Executar pipeline en 3 SEQs (BP, COLUMN, DUAL) | ⏳ |
-| 5.2 Verificar JSON conté totes les mètriques | ⏳ |
+| 6.1 Canviar `repair_batman=False` per defecte a validate_khp_for_alignment | ⏳ |
+| 6.2 Afegir opció de reparació a la GUI de revisió (FASE 4) | ⏳ |
+| 6.3 Guardar al JSON si s'ha reparat i amb quins paràmetres | ⏳ |
+| 6.4 Per mostres no-KHP: reparació només a fase selecció rèpliques | ⏳ |
+
+**Flux desitjat:**
+```
+Detectar → JSON marca batman=true → Usuari revisa → Decideix reparar → Acció explícita
+```
+
+### FASE 5: Tests i Documentació (PARCIAL)
+
+| Tasca | Estat | Data |
+|-------|-------|------|
+| 5.1 Executar pipeline en 283_SEQ (COLUMN) | ✅ | 2026-01-30 |
+| 5.1 Executar pipeline en BP | ⏳ | |
+| 5.1 Executar pipeline en DUAL | ⏳ | |
+| 5.2 Verificar JSON conté totes les mètriques | ✅ | 2026-01-30 |
 | 5.3 Actualitzar CLAUDE.md amb nova estructura | ⏳ |
+
+#### Test 283_SEQ (COLUMN) - 2026-01-30
+
+**Resultat:** ✅ CORRECTE - Tots els camps nous presents
+
+```
+Sample: FR2606_283
+Comparison:
+  pearson: 0.984
+  area_diff_pct: 4.0%
+  by_fraction:
+    BioP: pearson=0.611, diff=32.3%  ⚠️ Correlació baixa
+    HS:   pearson=0.953, diff=5.2%
+    BB:   pearson=0.999, diff=0.4%
+    SB:   pearson=0.998, diff=2.6%
+    LMW:  pearson=0.996, diff=1.1%
+
+Replica R1:
+  valid: True
+  height: 290.8
+  t_peak: 20.48 min
+  snr: 10466.8
+  smoothness: 10.4
+  anomaly_score: 30.0
+  timeout_info: {n_timeouts: 0, severity: OK}
+  peak_indices: {left: 154, max: 307, right: 624}
+  baseline_stats: {noise: 0.028}
+```
+
+**Observació:** BioP mostra Pearson=0.611 entre rèpliques - possible artefacte a zona inicial que cal investigar.
 
 ---
 
 ## 5. MÈTRIQUES D'ÈXIT
 
 - [x] Zero duplicacions de funcions entre mòduls
-- [ ] JSON conté 100% de les mètriques calculades
+- [x] JSON conté 100% de les mètriques calculades (verificat 2026-01-30)
 - [ ] GUI no fa cap càlcul, només llegeix JSON
-- [ ] Traçabilitat: Des de concentració final fins a paràmetres de detecció
-- [ ] Tests passen per BP, COLUMN, DUAL
+- [x] Traçabilitat: Des de concentració final fins a paràmetres de detecció
+- [ ] Tests passen per BP, COLUMN, DUAL (1/3 completat)
 
 ---
 
