@@ -43,7 +43,7 @@ from hpsec_calibrate import (
 )
 from hpsec_replica import (
     evaluate_replica, select_best_replica, compare_replicas,
-    evaluate_dad, compare_replicas_full
+    compare_replicas_by_fraction, evaluate_dad, compare_replicas_full
 )
 from hpsec_review import review_sample
 from hpsec_config import get_config
@@ -857,9 +857,14 @@ def _process_sample(sample_name: str, files: List[str], mode: str,
                     'area_r2': comparison.get('area_r2'),
                 }
 
+                # Per COLUMN: comparació per fracció (traçabilitat)
+                if mode == "COLUMN":
+                    by_fraction = compare_replicas_by_fraction(t1, y1, t2, y2)
+                    comparison_data['by_fraction'] = by_fraction
+
                 # Guardar comparació en les rèpliques
-                eval1['comparison'] = comparison
-                eval2['comparison'] = comparison
+                eval1['comparison'] = comparison_data
+                eval2['comparison'] = comparison_data
 
                 # Selecció DOC
                 selection_doc = select_best_replica(
@@ -1215,20 +1220,52 @@ def _create_export_summary(samples: List[SampleResult],
                 "conc_fraction": s.conc_fraction,  # {BioP, HS, BB, SB, LMW, total}
                 # Paràmetres de transformació (per reproductibilitat)
                 "transformation": s.transformation,  # {shift_sec, baseline, factor, ...}
-                # Info de cada rèplica
+                # Info de cada rèplica (TRAÇABILITAT COMPLETA)
                 "replicas": {
                     rep_id: {
+                        # Estat bàsic
                         "valid": rep.get("valid"),
+                        "low_signal": rep.get("low_signal", False),
+                        # Mètriques senyal
+                        "height": rep.get("height"),
+                        "area": rep.get("area"),
+                        "t_peak": rep.get("t_peak"),
                         "snr": rep.get("snr"),
+                        # Anomalies
                         "batman": rep.get("batman"),
                         "timeout": rep.get("timeout"),
                         "irr": rep.get("irr"),
-                        "area": rep.get("area"),
+                        "smoothness": rep.get("smoothness"),
+                        "anomaly_score": rep.get("anomaly_score"),
+                        # Timeout detallat (intervals per zona)
+                        "timeout_info": {
+                            "n_timeouts": rep.get("timeout_info", {}).get("n_timeouts", 0),
+                            "severity": rep.get("timeout_info", {}).get("severity", "OK"),
+                            "intervals": rep.get("timeout_info", {}).get("timeouts", []),
+                        } if rep.get("timeout_info") else None,
+                        # Baseline stats (per verificar soroll)
+                        "baseline_stats": {
+                            "noise": rep.get("baseline_noise"),
+                            "percentile_10": rep.get("peak_info", {}).get("baseline_p10") if rep.get("peak_info") else None,
+                        },
+                        # Peak indices (per reproduir integració)
+                        "peak_indices": {
+                            "left": rep.get("peak_info", {}).get("left_base"),
+                            "right": rep.get("peak_info", {}).get("right_base"),
+                            "max": rep.get("peak_info", {}).get("peak_idx"),
+                        } if rep.get("peak_info") else None,
+                        # Bi-gaussià (només BP)
+                        "r2": rep.get("r2"),
+                        "r2_status": rep.get("r2_status"),
+                        "asymmetry": rep.get("asymmetry"),
+                        # Àrees per fracció
                         "areas_fraction": rep.get("areas_fraction"),
+                        # DAD evaluation
                         "dad_eval": {
                             "valid": rep.get("dad_eval", {}).get("valid"),
                             "quality": rep.get("dad_eval", {}).get("quality"),
                             "drift": rep.get("dad_eval", {}).get("drift"),
+                            "noise": rep.get("dad_eval", {}).get("noise"),
                             "snr": rep.get("dad_eval", {}).get("snr"),
                         } if rep.get("dad_eval") else None,
                     }

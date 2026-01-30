@@ -27,6 +27,25 @@
 - ✅ Funcions retornen valors correctes
 - ✅ Test amb seqüència real (283_SEQ) passa
 
+### 2026-01-29 - Sessió 2 (cont.): Ampliar JSON per traçabilitat
+**Consultat:** Sí
+
+**Canvis realitzats:**
+- ✅ hpsec_replica.py: Afegida funció `compare_replicas_by_fraction()` amb FRACTION_ZONES
+- ✅ hpsec_pipeline.py: Ampliat `_create_export_summary()` per incloure:
+  - peak_indices (left, right, max)
+  - baseline_stats (noise, percentile_10)
+  - timeout_info (n_timeouts, severity, intervals[])
+  - smoothness, anomaly_score
+  - r2, r2_status, asymmetry (per BP)
+  - low_signal flag
+  - height, t_peak
+- ✅ hpsec_pipeline.py: Afegit comparison.by_fraction per COLUMN mode
+
+**Pendent:**
+- ⏳ Reprocessar seqüències per generar nous JSONs
+- ⏳ Verificar que GUI llegeix correctament els nous camps
+
 ---
 
 ## 1. ESTAT ACTUAL (Actualitzat)
@@ -176,7 +195,7 @@ CAPA 4 - OUTPUT
 | 1.5 Netejar duplicats a hpsec_calibrate | ✅ | 2026-01-29 |
 | 1.6 Actualitzar imports a hpsec_reports | ✅ | 2026-01-29 |
 
-### FASE 2: Ampliar JSON per Traçabilitat (PENDENT)
+### FASE 2: Ampliar JSON per Traçabilitat ✅ COMPLETAT
 
 **Tasca 2.1:** Afegir a `processing_summary.json` per cada rèplica:
 ```json
@@ -231,13 +250,13 @@ CAPA 4 - OUTPUT
 }
 ```
 
-### FASE 3: Refactor hpsec_replica per Exportar Tot (PENDENT)
+### FASE 3: Refactor hpsec_replica per Exportar Tot ✅ COMPLETAT
 
-| Tasca | Estat |
-|-------|-------|
-| 3.1 Modificar evaluate_replica() per retornar TOTES les mètriques | ⏳ |
-| 3.2 Modificar compare_replicas() per retornar comparison_by_fraction | ⏳ |
-| 3.3 Actualitzar hpsec_pipeline per guardar totes les mètriques noves | ⏳ |
+| Tasca | Estat | Data |
+|-------|-------|------|
+| 3.1 Modificar evaluate_replica() per retornar TOTES les mètriques | ✅ | 2026-01-29 (ja ho feia) |
+| 3.2 Afegir compare_replicas_by_fraction() | ✅ | 2026-01-29 |
+| 3.3 Actualitzar hpsec_pipeline per guardar totes les mètriques noves | ✅ | 2026-01-29 |
 
 ### FASE 4: Validar GUI Llegeix Correctament (PENDENT)
 

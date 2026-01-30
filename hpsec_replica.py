@@ -662,6 +662,55 @@ def compare_replicas(t1, y1, t2, y2, window=None):
     }
 
 
+# Zones temporals per fraccions COLUMN (minuts)
+FRACTION_ZONES = {
+    "BioP": (0, 18),
+    "HS": (18, 23),
+    "BB": (23, 30),
+    "SB": (30, 40),
+    "LMW": (40, 70),
+}
+
+
+def compare_replicas_by_fraction(t1, y1, t2, y2):
+    """
+    Compara dues rèpliques per cada fracció temporal (COLUMN mode).
+
+    Parameters
+    ----------
+    t1, y1 : array-like
+        Temps i senyal de rèplica 1
+    t2, y2 : array-like
+        Temps i senyal de rèplica 2
+
+    Returns
+    -------
+    dict
+        {
+            "BioP": {"pearson": 0.998, "area_diff_pct": 2.1},
+            "HS": {"pearson": 0.983, "area_diff_pct": 15.3},
+            ...
+        }
+    """
+    result = {}
+
+    for zone_name, (t_start, t_end) in FRACTION_ZONES.items():
+        comparison = compare_replicas(t1, y1, t2, y2, window=(t_start, t_end))
+
+        if comparison.get("valid", False):
+            result[zone_name] = {
+                "pearson": comparison.get("pearson"),
+                "area_diff_pct": comparison.get("area_diff_pct"),
+            }
+        else:
+            result[zone_name] = {
+                "pearson": None,
+                "area_diff_pct": None,
+            }
+
+    return result
+
+
 def compare_replicas_full(t1, y1, t2, y2,
                           t_dad1=None, dad1=None,
                           t_dad2=None, dad2=None,
