@@ -687,19 +687,23 @@ def process_sample(sample_data, calibration_data=None, config=None):
         shift_direct = calibration_data.get("shift_direct", 0.0)
 
         if is_dual:
-            # UIB: usar t_doc_uib (temps propi) i interpolar a t_doc (referencia)
+            # UIB: SEMPRE interpolar a escala t_doc (referencia Direct)
+            # Això assegura que tots els arrays tinguin la mateixa longitud
             uib_interpolated = False
-            if abs(shift_uib) > 0.001 and t_doc_uib is not None:
+            if t_doc_uib is not None and len(y_doc_uib) > 0:
                 t_uib_arr = np.asarray(t_doc_uib).flatten()
-                y_doc_uib = apply_shift(t_doc, t_uib_arr, y_doc_uib, shift_uib)
-                shifts_applied = True
+                if abs(shift_uib) > 0.001:
+                    y_doc_uib = apply_shift(t_doc, t_uib_arr, y_doc_uib, shift_uib)
+                    shifts_applied = True
+                elif len(t_uib_arr) != len(t_doc):
+                    # Sense shift pero cal interpolar UIB a escala Direct
+                    y_doc_uib = np.interp(t_doc, t_uib_arr, y_doc_uib, left=0, right=0)
                 uib_interpolated = True
-            elif t_doc_uib is not None and len(t_doc_uib) != len(t_doc):
-                # Sense shift pero cal interpolar UIB a escala Direct
-                t_uib_arr = np.asarray(t_doc_uib).flatten()
-                y_doc_uib = np.interp(t_doc, t_uib_arr, y_doc_uib, left=0, right=0)
-                uib_interpolated = True
-            # Si UIB s'ha interpolat, invalidar y_net precomp
+            elif len(y_doc_uib) != len(t_doc):
+                # t_doc_uib no disponible pero longitud diferent - no podem processar UIB
+                y_doc_uib = None
+                y_doc_uib_net_precomp = None
+            # Si UIB s'ha interpolat, invalidar y_net precomp (calculat amb temps original)
             if uib_interpolated:
                 y_doc_uib_net_precomp = None
             # Direct: ja esta a t_doc
@@ -722,11 +726,14 @@ def process_sample(sample_data, calibration_data=None, config=None):
             baseline_direct = get_baseline_correction(t_doc, y_doc_direct, mode_type, config, use_end=is_bp)
             y_doc_direct_net = y_doc_direct - baseline_direct
 
-        if y_doc_uib_net_precomp is not None and not shifts_applied:
-            y_doc_uib_net = y_doc_uib_net_precomp
+        if y_doc_uib is not None and len(y_doc_uib) > 0:
+            if y_doc_uib_net_precomp is not None and not shifts_applied and len(y_doc_uib_net_precomp) == len(t_doc):
+                y_doc_uib_net = y_doc_uib_net_precomp
+            else:
+                baseline_uib = get_baseline_correction(t_doc, y_doc_uib, mode_type, config, use_end=False)
+                y_doc_uib_net = y_doc_uib - baseline_uib
         else:
-            baseline_uib = get_baseline_correction(t_doc, y_doc_uib, mode_type, config, use_end=False)
-            y_doc_uib_net = y_doc_uib - baseline_uib
+            y_doc_uib_net = None
 
         # Per processament principal, usar Direct
         y_doc_net = y_doc_direct_net

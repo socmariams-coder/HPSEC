@@ -166,9 +166,23 @@ def write_excels_from_processed(seq_path, processed_data, imported_data, calibra
                 baseline_uib = None
                 fitxer_doc_uib = None
             else:
-                # Sense dades DOC, saltar
-                print(f"  SKIP {mostra}: no DOC data")
-                continue
+                # Sense dades DOC - verificar si hi ha DAD
+                has_dad = dad_data is not None and dad_data.get("df") is not None
+                if has_dad:
+                    doc_mode = "DAD_ONLY"
+                    t_doc = None
+                    y_doc_raw = None
+                    y_doc_net = None
+                    baseline = None
+                    fitxer_doc = ""
+                    y_doc_uib = None
+                    y_doc_uib_raw = None
+                    baseline_uib = None
+                    fitxer_doc_uib = None
+                    print(f"  WARN {mostra}: no DOC data, only DAD available")
+                else:
+                    print(f"  SKIP {mostra}: no DOC nor DAD data")
+                    continue
 
             st_doc = ""
             st_doc_uib = ""
