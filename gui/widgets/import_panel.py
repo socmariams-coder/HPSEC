@@ -1796,10 +1796,17 @@ class ImportPanel(QWidget):
     def _go_next(self):
         # Verificar si hi ha orfes sense assignar
         unassigned_uib, unassigned_dad = self._count_unassigned_orphans()
+        has_orphans = unassigned_uib > 0 or unassigned_dad > 0
+        has_unsaved = self.main_window.has_unsaved_changes
+
+        # Si no hi ha orfes ni canvis sense guardar, passar directament
+        if not has_orphans and not has_unsaved:
+            self.main_window.go_to_tab(1)
+            return
 
         # Construir missatge de confirmació
         msg_parts = []
-        if unassigned_uib or unassigned_dad:
+        if has_orphans:
             msg_parts.append("Hi ha fitxers orfes sense assignar:")
             if unassigned_uib:
                 msg_parts.append(f"  • {unassigned_uib} fitxers UIB")
@@ -1807,11 +1814,15 @@ class ImportPanel(QWidget):
                 msg_parts.append(f"  • {unassigned_dad} fitxers DAD")
             msg_parts.append("")
 
-        msg_parts.append("Es guardaran els canvis i es passarà a la fase de calibració.")
+        if has_unsaved:
+            msg_parts.append("Es guardaran els canvis i es passarà a la fase de calibració.")
+        else:
+            msg_parts.append("Es passarà a la fase de calibració.")
+
         msg_parts.append("\nVols continuar?")
 
         reply = QMessageBox.question(
-            self, "Guardar i continuar",
+            self, "Continuar",
             "\n".join(msg_parts),
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.Yes
@@ -1819,15 +1830,14 @@ class ImportPanel(QWidget):
         if reply != QMessageBox.Yes:
             return
 
-        # Aplicar assignacions manuals a imported_data
-        self._apply_manual_assignments()
-
-        # Guardar manifest
-        try:
-            save_import_manifest(self.imported_data)
-            self.main_window.mark_manifest_saved()
-        except Exception as e:
-            print(f"Warning: No s'ha pogut guardar manifest: {e}")
+        # Aplicar assignacions manuals i guardar si hi ha canvis
+        if has_unsaved:
+            self._apply_manual_assignments()
+            try:
+                save_import_manifest(self.imported_data)
+                self.main_window.mark_manifest_saved()
+            except Exception as e:
+                print(f"Warning: No s'ha pogut guardar manifest: {e}")
 
         self.main_window.go_to_tab(1)
 
