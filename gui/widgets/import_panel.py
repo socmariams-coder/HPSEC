@@ -657,6 +657,7 @@ class ImportPanel(QWidget):
 
         try:
             save_import_manifest(result)
+            self.main_window.mark_manifest_saved()
         except Exception as e:
             print(f"Warning: No s'ha pogut guardar manifest: {e}")
 
@@ -1211,6 +1212,8 @@ class ImportPanel(QWidget):
                         self._manual_assignments = {}
                     key = (sample_name, replica)
                     self._manual_assignments.setdefault(key, {})[col] = actual_filename
+                    # Marcar que hi ha canvis sense guardar
+                    self.main_window.mark_unsaved_changes()
                     # Si era un suggeriment, marcar com CONFIRMED (verd)
                     # Sinó, marcar com MANUAL (blau)
                     prev_type = self._match_types.get((row, col), "")
@@ -1785,6 +1788,7 @@ class ImportPanel(QWidget):
             self._apply_manual_assignments()
             # Guardar manifest
             save_import_manifest(self.imported_data)
+            self.main_window.mark_manifest_saved()
             self.main_window.set_status("Manifest guardat correctament", 3000)
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Error guardant manifest:\n{e}")
@@ -1821,6 +1825,7 @@ class ImportPanel(QWidget):
         # Guardar manifest
         try:
             save_import_manifest(self.imported_data)
+            self.main_window.mark_manifest_saved()
         except Exception as e:
             print(f"Warning: No s'ha pogut guardar manifest: {e}")
 

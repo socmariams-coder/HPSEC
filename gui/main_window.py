@@ -45,6 +45,8 @@ class HPSECSuiteWindow(QMainWindow):
         self.processed_data = None
         self.review_data = None
         self.review_completed = False  # Indica si s'ha completat la revisió
+        self.manifest_saved = False  # Indica si el manifest s'ha guardat
+        self.has_unsaved_changes = False  # Indica si hi ha canvis sense guardar
 
         # Configurar UI
         self._setup_ui()
@@ -222,6 +224,15 @@ class HPSECSuiteWindow(QMainWindow):
         """Marca que la revisió s'ha completat."""
         self.review_completed = True
 
+    def mark_manifest_saved(self):
+        """Marca que el manifest s'ha guardat."""
+        self.manifest_saved = True
+        self.has_unsaved_changes = False
+
+    def mark_unsaved_changes(self):
+        """Marca que hi ha canvis sense guardar."""
+        self.has_unsaved_changes = True
+
     def closeEvent(self, event):
         """Gestiona el tancament de la finestra."""
         # Si no hi ha dades importades, tancar directament
@@ -234,18 +245,29 @@ class HPSECSuiteWindow(QMainWindow):
             event.accept()
             return
 
+        # Si el manifest està guardat i no hi ha canvis pendents, tancar directament
+        if self.manifest_saved and not self.has_unsaved_changes:
+            event.accept()
+            return
+
         # Determinar en quina fase estem
         current_tab = self.tab_widget.currentIndex()
         tab_names = ["Importar", "Calibrar", "Processar", "Revisar", "Exportar"]
         current_phase = tab_names[current_tab] if current_tab < len(tab_names) else "?"
 
         # Mostrar avís
-        msg = (
-            f"El procés no s'ha completat (fase actual: {current_phase}).\n\n"
-            "Si tanques ara, hauràs de repetir el procés.\n"
-            "El manifest d'importació es manté guardat.\n\n"
-            "Segur que vols tancar?"
-        )
+        if self.has_unsaved_changes:
+            msg = (
+                "Hi ha canvis sense guardar.\n\n"
+                "Vols tancar sense guardar?"
+            )
+        else:
+            msg = (
+                f"El procés no s'ha completat (fase actual: {current_phase}).\n\n"
+                "Si tanques ara, hauràs de repetir el procés.\n"
+                "El manifest d'importació es manté guardat.\n\n"
+                "Segur que vols tancar?"
+            )
 
         reply = QMessageBox.warning(
             self,
