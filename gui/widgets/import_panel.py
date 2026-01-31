@@ -1858,7 +1858,8 @@ class ImportPanel(QWidget):
                     continue
 
                 # Marcar com a assignació manual
-                if signal_type not in rep_data:
+                # Assegurar que el dict existeix (pot ser None o absent)
+                if signal_type not in rep_data or rep_data[signal_type] is None:
                     rep_data[signal_type] = {}
                 rep_data[signal_type]["manual_assignment"] = True
                 rep_data[signal_type]["manual_file"] = filename
