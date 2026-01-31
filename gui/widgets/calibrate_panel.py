@@ -272,6 +272,9 @@ class CalibratePanel(QWidget):
         self.metrics_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.metrics_table.setAlternatingRowColors(True)
         self.metrics_table.setMaximumHeight(200)
+        # Permetre selecció i còpia
+        self.metrics_table.setSelectionMode(QTableWidget.ExtendedSelection)
+        self.metrics_table.setSelectionBehavior(QTableWidget.SelectItems)
         metrics_layout.addWidget(self.metrics_table)
 
         content_layout.addWidget(self.metrics_group)
@@ -283,6 +286,7 @@ class CalibratePanel(QWidget):
 
         self.validation_label = QLabel()
         self.validation_label.setWordWrap(True)
+        self.validation_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         validation_layout.addWidget(self.validation_label)
 
         content_layout.addWidget(self.validation_group)
@@ -294,6 +298,7 @@ class CalibratePanel(QWidget):
 
         self.history_label = QLabel()
         self.history_label.setWordWrap(True)
+        self.history_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         history_layout.addWidget(self.history_label)
 
         content_layout.addWidget(self.history_group)
@@ -511,17 +516,22 @@ class CalibratePanel(QWidget):
 
         # Recopilar datos Direct - todas las réplicas
         direct_list = self._extract_all_replicas(khp_data_direct)
+        print(f"[DEBUG] direct_list: {len(direct_list)} replicas")
         for d in direct_list:
             d_copy = d.copy()  # No modificar original
             d_copy['_signal'] = 'Direct'
             all_data.append(d_copy)
+            print(f"  - {d.get('filename')}: SNR={d.get('snr', 0):.1f}")
 
         # Recopilar datos UIB - todas las réplicas
         uib_list = self._extract_all_replicas(khp_data_uib)
+        print(f"[DEBUG] uib_list: {len(uib_list)} replicas")
         for d in uib_list:
             d_copy = d.copy()
             d_copy['_signal'] = 'UIB'
             all_data.append(d_copy)
+
+        print(f"[DEBUG] all_data total: {len(all_data)}")
 
         if not all_data:
             self.metrics_group.setVisible(False)
