@@ -239,7 +239,7 @@ def get_cr_thresholds(is_bp, volume_uL):
 # FUNCIONS DE BASELINE I ESTADÍSTIQUES
 # =============================================================================
 
-def baseline_stats_time(t, y, t_start=0, t_end=2.0, fallback_pct=10):
+def baseline_stats_time(t, y, t_start=0, t_end=2.0, fallback_pct=10, robust=True):
     """
     Calcula estadístiques de baseline en una finestra temporal.
 
@@ -249,9 +249,10 @@ def baseline_stats_time(t, y, t_start=0, t_end=2.0, fallback_pct=10):
         t_start: Temps inicial de la finestra
         t_end: Temps final de la finestra
         fallback_pct: Percentatge de dades a usar si la finestra és buida
+        robust: Si True, usa mètode robust (percentils) per ignorar pics/outliers
 
     Returns:
-        Dict amb mean, std, min, max
+        Dict amb mean, std, min, max, robust (bool)
     """
     mask = (t >= t_start) & (t <= t_end)
 
@@ -262,11 +263,24 @@ def baseline_stats_time(t, y, t_start=0, t_end=2.0, fallback_pct=10):
     else:
         baseline_data = y[mask]
 
+    used_robust = False
+    if robust and len(baseline_data) >= 20:
+        # Mètode robust: usar percentils per excloure pics i outliers
+        # Seleccionar valors entre percentil 5 i 40 (zona baixa sense pics)
+        p5 = np.percentile(baseline_data, 5)
+        p40 = np.percentile(baseline_data, 40)
+        robust_mask = (baseline_data >= p5) & (baseline_data <= p40)
+
+        if np.sum(robust_mask) >= 10:
+            baseline_data = baseline_data[robust_mask]
+            used_robust = True
+
     return {
         "mean": float(np.mean(baseline_data)),
         "std": float(np.std(baseline_data)),
         "min": float(np.min(baseline_data)),
         "max": float(np.max(baseline_data)),
+        "robust": used_robust,
     }
 
 
