@@ -609,14 +609,16 @@ def get_historical_khp_stats(seq_path, mode="COLUMN", conc_ppm=None, volume_uL=N
         # Filtrar per doc_mode si s'especifica
         if doc_mode is not None:
             cal_doc_mode = cal.get('doc_mode', 'N/A')
-            # Si doc_mode actual és DUAL, acceptar DUAL o el mateix senyal
-            # Si doc_mode actual és Direct/UIB, només acceptar exacte o DUAL
-            if doc_mode == "DUAL":
-                if cal_doc_mode not in ["DUAL", "Direct", "UIB"]:
-                    continue
-            else:
-                if cal_doc_mode != doc_mode and cal_doc_mode != "DUAL":
-                    continue
+            # N/A és comodí (calibracions antigues) - acceptar sempre
+            if cal_doc_mode != 'N/A':
+                # Si doc_mode actual és DUAL, acceptar DUAL o el mateix senyal
+                # Si doc_mode actual és Direct/UIB, només acceptar exacte o DUAL
+                if doc_mode == "DUAL":
+                    if cal_doc_mode not in ["DUAL", "Direct", "UIB"]:
+                        continue
+                else:
+                    if cal_doc_mode != doc_mode and cal_doc_mode != "DUAL":
+                        continue
         # Filtrar per sensibilitat UIB si s'especifica i és UIB
         if uib_sensitivity is not None and doc_mode in ["UIB", "DUAL"]:
             cal_sensitivity = cal.get('uib_sensitivity')
@@ -660,7 +662,8 @@ def get_historical_khp_stats(seq_path, mode="COLUMN", conc_ppm=None, volume_uL=N
 
 
 def compare_khp_historical(current_area, current_concentration_ratio, seq_path, mode="COLUMN",
-                          conc_ppm=None, volume_uL=None, doc_mode=None, uib_sensitivity=None):
+                          conc_ppm=None, volume_uL=None, doc_mode=None, uib_sensitivity=None,
+                          exclude_outliers=False):
     """
     Compara el KHP actual amb l'històric.
 
@@ -676,6 +679,7 @@ def compare_khp_historical(current_area, current_concentration_ratio, seq_path, 
         volume_uL: Volum d'injecció en µL
         doc_mode: "Direct", "UIB" o "DUAL"
         uib_sensitivity: 700 o 1000 (ppb) - només si UIB
+        exclude_outliers: Si True, exclou calibracions marcades com outlier
 
     Returns:
         Dict amb resultat de la comparació:
@@ -689,7 +693,8 @@ def compare_khp_historical(current_area, current_concentration_ratio, seq_path, 
         }
     """
     stats = get_historical_khp_stats(seq_path, mode, conc_ppm=conc_ppm, volume_uL=volume_uL,
-                                     doc_mode=doc_mode, uib_sensitivity=uib_sensitivity)
+                                     doc_mode=doc_mode, uib_sensitivity=uib_sensitivity,
+                                     exclude_outliers=exclude_outliers)
 
     result = {
         'status': 'OK',
@@ -3726,6 +3731,67 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
 
     if result["factor"] == 0:
         result["errors"].append("WARN: KHP area is zero")
+
+    # Afegir comparació històrica
+    report_progress(85, "Comparant amb històric...")
+
+    def add_historical_comparison(khp_data, signal_name):
+        """Afegeix comparació històrica a khp_data."""
+        if not khp_data:
+            return
+        mode = "BP" if khp_data.get('is_bp', False) else "COLUMN"
+        conc_ppm = khp_data.get('conc_ppm')
+
+        # Obtenir volume_uL - primer del khp_data, després de les rèpliques
+        volume_uL = khp_data.get('volume_uL')
+        if volume_uL is None:
+            replicas = khp_data.get('replicas', [])
+            if replicas:
+                volume_uL = replicas[0].get('volume_uL')
+        if volume_uL is None:
+            volume_uL = 400 if mode == "COLUMN" else 100
+
+        area = khp_data.get('area', 0)
+
+        # Calcular concentration_ratio
+        area_total = khp_data.get('area_total', area)
+        concentration_ratio = area / area_total if area_total > 0 else 1.0
+
+        hist_comparison = compare_khp_historical(
+            current_area=area,
+            current_concentration_ratio=concentration_ratio,
+            seq_path=seq_path,
+            mode=mode,
+            conc_ppm=conc_ppm,
+            volume_uL=volume_uL,
+            doc_mode=None,  # No filtrar per doc_mode (calibracions antigues són N/A)
+            uib_sensitivity=None,
+            exclude_outliers=False  # Incloure totes les calibracions
+        )
+        khp_data['historical_comparison'] = hist_comparison
+
+        # També afegir a cada rèplica
+        for rep in khp_data.get('replicas', []):
+            rep_area = rep.get('area', 0)
+            rep_area_total = rep.get('area_total', rep_area)
+            rep_cr = rep_area / rep_area_total if rep_area_total > 0 else 1.0
+            rep['historical_comparison'] = compare_khp_historical(
+                current_area=rep_area,
+                current_concentration_ratio=rep_cr,
+                seq_path=seq_path,
+                mode=mode,
+                conc_ppm=conc_ppm,
+                volume_uL=volume_uL,
+                doc_mode=None,  # No filtrar per doc_mode
+                uib_sensitivity=None,
+                exclude_outliers=False
+            )
+
+    if result.get("khp_data_direct"):
+        add_historical_comparison(result["khp_data_direct"], "Direct")
+
+    if result.get("khp_data_uib"):
+        add_historical_comparison(result["khp_data_uib"], "UIB")
 
     report_progress(90, "Registrant calibracio...")
 
