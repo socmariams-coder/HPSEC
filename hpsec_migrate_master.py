@@ -299,13 +299,8 @@ def _extract_info(data: Dict, seq_path: str) -> Dict[str, Any]:
     if '_BP' in folder_name or folder_name.endswith('BP'):
         info['method'] = 'BP'
 
-    # Detectar UIB range
-    seq_num = _extract_seq_number(info['seq_id'])
-    if seq_num:
-        if seq_num >= 275:
-            info['uib_range'] = '1000 ppb'
-        elif seq_num >= 269:
-            info['uib_range'] = '700 ppb'
+    # UIB range es determina a la GUI si no està definit
+    # (ja no s'assigna automàticament per número de seqüència)
 
     return info
 

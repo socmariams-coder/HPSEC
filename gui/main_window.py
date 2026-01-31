@@ -44,6 +44,7 @@ class HPSECSuiteWindow(QMainWindow):
         self.calibration_data = None
         self.processed_data = None
         self.review_data = None
+        self.review_completed = False  # Indica si s'ha completat la revisió
 
         # Configurar UI
         self._setup_ui()
@@ -216,6 +217,48 @@ class HPSECSuiteWindow(QMainWindow):
             self.progress_bar.setVisible(True)
             self.progress_bar.setMaximum(maximum)
             self.progress_bar.setValue(value)
+
+    def mark_review_completed(self):
+        """Marca que la revisió s'ha completat."""
+        self.review_completed = True
+
+    def closeEvent(self, event):
+        """Gestiona el tancament de la finestra."""
+        # Si no hi ha dades importades, tancar directament
+        if self.imported_data is None:
+            event.accept()
+            return
+
+        # Si la revisió s'ha completat, tancar directament
+        if self.review_completed:
+            event.accept()
+            return
+
+        # Determinar en quina fase estem
+        current_tab = self.tab_widget.currentIndex()
+        tab_names = ["Importar", "Calibrar", "Processar", "Revisar", "Exportar"]
+        current_phase = tab_names[current_tab] if current_tab < len(tab_names) else "?"
+
+        # Mostrar avís
+        msg = (
+            f"El procés no s'ha completat (fase actual: {current_phase}).\n\n"
+            "Si tanques ara, hauràs de repetir el procés.\n"
+            "El manifest d'importació es manté guardat.\n\n"
+            "Segur que vols tancar?"
+        )
+
+        reply = QMessageBox.warning(
+            self,
+            "Tancar sense completar",
+            msg,
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+
+        if reply == QMessageBox.Yes:
+            event.accept()
+        else:
+            event.ignore()
 
 
 def main():

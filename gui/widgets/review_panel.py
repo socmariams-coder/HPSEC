@@ -154,4 +154,8 @@ class ReviewPanel(QWidget):
             self.review_data[name]["selected"] = combo.currentText()
 
         self.main_window.review_data = self.review_data
+
+        # Marcar revisió com a completada
+        self.main_window.mark_review_completed()
+
         self.main_window.go_to_tab(4)

@@ -147,9 +147,11 @@ QPushButton {{
     color: {COLORS['text_on_primary']};
     border: none;
     border-radius: {RADIUS['sm']};
-    padding: 10px 20px;
+    padding: 6px 16px;
     font-weight: 500;
     min-width: 80px;
+    min-height: 32px;
+    line-height: 20px;
 }}
 
 QPushButton:hover {{

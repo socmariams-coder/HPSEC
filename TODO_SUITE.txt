@@ -19,6 +19,47 @@ PRINCIPI 1: JSON COMPLET > LECTURA EXCEL
   - Menys dependències a la GUI
 
 ################################################################################
+🔴 PRIORITARI - NAMING FITXERS UIB/DAD
+################################################################################
+
+[ ] PARLAR AMB TÈCNICS: Naming fitxers exportats
+    PROBLEMA: Els noms dels fitxers UIB/DAD (cromatògraf) no coincideixen amb MasterFile
+    EXEMPLE: MasterFile té "NaOH 0.1mM_1", fitxer es diu "NAOH 0.1MM_UIB1B.CSV"
+    IMPACTE: Fitxers queden orfes, cal assignació manual
+
+    SOLUCIÓ PROPOSADA: Identificar mostres per Line# a l'exportar
+    - Si el cromatògraf pot incloure Line# al nom del fitxer → matching garantit
+    - Format ideal: "L01_MQ_R1_UIB1B.CSV" (L=Line, R=Replica)
+
+    WORKAROUND ACTUAL:
+    - GUI permet assignació manual de fitxers orfes (doble-clic)
+    - Botó "Actualitzar" per refrescar comptador orfes
+    - BUG PENDENT: La llista d'orfes no s'actualitza correctament després d'assignacions
+
+################################################################################
+🟡 PENDENT - STATUS I COMENTARIS MOSTRES
+################################################################################
+
+[ ] AFEGIR CAMP STATUS A MOSTRES
+    IDEA: Permetre etiquetar mostres amb status com:
+    - NO CONFORME
+    - ANÒMALA
+    - REVISAR
+    - OK
+
+    OPCIONS:
+    a) Camp desplegable amb opcions predefinides
+    b) Columna addicional amb comentaris lliures
+    c) Combinació d'ambdós (status + comentari)
+
+    UBICACIÓ: Panell d'importació o revisió?
+
+    IMPACTE:
+    - Cal modificar estructura JSON/manifest
+    - Cal afegir columna a taula de mostres
+    - Filtrar per status a la revisió?
+
+################################################################################
 BUGS CONSOLIDACIÓ (hpsec_consolidate.py)
 ################################################################################
 
