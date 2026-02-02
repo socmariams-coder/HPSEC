@@ -8,6 +8,22 @@
 
 ## 0. REGISTRE DE CANVIS
 
+### 2026-01-30 - Sessió 4: Pla Refactor Pipeline 5 Fases
+**Consultat:** Sí
+
+**Anàlisi realitzada:**
+- Revisat flux actual: pipeline llegeix Excels ja processats (de consolidate antic)
+- Identificat que `hpsec_process.py` té funcions però pipeline NO les crida
+- Definida arquitectura objectiu: pipeline com a orquestra (no processa)
+- Documentat input/output esperat per cada fase
+
+**Pla creat:** Secció 8 - PLA REFACTOR PIPELINE
+
+**Pròxims passos:**
+1. Verificar `hpsec_process.process_sequence()`
+2. Verificar/crear `hpsec_review.review_sequence()`
+3. Verificar/crear `hpsec_reports.export_sequence()`
+
 ### 2026-01-30 - Sessió 3: Fix BP mode + Tests
 **Consultat:** Sí
 
@@ -391,7 +407,202 @@ Sample: FR2606_284_BP
 
 **⚠️ REGLA: Sempre consultar aquest document ABANS de fer canvis!**
 
-- hpsec_consolidate.py és una capa de compatibilitat que re-exporta funcions
+- hpsec_consolidate.py ÉS DEPRECATED - no usar per nou desenvolupament
 - hpsec_import.py conté les funcions d'identificació (is_khp, extract_khp_conc, obtenir_seq)
 - hpsec_utils.py conté utilitats matemàtiques (baseline_stats, mode_robust, t_at_max)
 - hpsec_core.py conté funcions de detecció (detect_main_peak, detect_batman, detect_timeout)
+
+---
+
+## 8. PLA REFACTOR PIPELINE - Arquitectura 5 Fases (2026-01-30)
+
+### 8.1 Arquitectura Objectiu
+
+```
+PIPELINE (orquestra - NO processa)
+    │
+    ├── Fase 1: hpsec_import.import_sequence()
+    │           └── OUTPUT: dades RAW (t, y, DAD, master_info)
+    │
+    ├── Fase 2: hpsec_calibrate.calibrate_sequence()
+    │           └── OUTPUT: shifts, factor, àrea KHP
+    │
+    ├── Fase 3: hpsec_process.process_sequence()
+    │           └── OUTPUT: dades processades (baseline, smooth, àrees)
+    │
+    ├── Fase 4: hpsec_review.review_sequence()
+    │           └── OUTPUT: seleccions, comparacions, warnings
+    │
+    └── Fase 5: hpsec_reports.export_sequence()
+                └── OUTPUT: JSON, Excel, PDF
+```
+
+### 8.2 FASE 3: hpsec_process.py
+
+**Estat actual:** ✅ Funcions implementades, ❌ No cridat pel pipeline
+
+**Funcions existents:**
+| Funció | Estat | Descripció |
+|--------|-------|------------|
+| `truncate_chromatogram()` | ✅ | Tallar a temps màxim |
+| `get_baseline_correction()` | ✅ | Correcció baseline (BP usa finals) |
+| `apply_smoothing()` | ✅ | Suavitzat Savgol |
+| `apply_shift()` | ✅ | Aplicar shift temporal |
+| `process_dad()` | ✅ | Processar DAD multi-λ |
+| `calcular_fraccions_temps()` | ✅ | Àrees per fraccions |
+| `calcular_arees_fraccions_complet()` | ✅ | Àrees DOC + DAD |
+| `calculate_snr_info()` | ✅ | SNR, LOD, LOQ |
+| `process_sample()` | ✅ | Processar 1 mostra |
+| `process_sequence()` | ✅ | Processar seqüència completa |
+
+**Input esperat (de calibrate):**
+```python
+calibration_data = {
+    "shift_uib": float,      # Shift per senyal UIB (min)
+    "shift_direct": float,   # Shift per senyal Direct (min)
+    "factor": float,         # Factor quantificació (ppm/àrea)
+    "khp_area": float,       # Àrea KHP referència
+    "khp_conc": float,       # Concentració KHP (ppm)
+}
+```
+
+**Output esperat (per review):**
+```python
+processed_data = {
+    "samples": {
+        "FR2606": {
+            "R1": {
+                "t": array,           # Temps processat
+                "y_doc": array,       # DOC net (baseline corregit)
+                "y_dad": dict,        # DAD per λ
+                "areas": dict,        # Àrees per fracció
+                "snr_info": dict,     # SNR, LOD, LOQ
+                "peak_info": dict,    # Índexs pic
+                "timeout_info": dict, # Timeouts detectats
+                "anomalies": list,    # Batman, etc.
+            },
+            "R2": {...}
+        }
+    }
+}
+```
+
+**PENDENT:**
+- [ ] Verificar que `process_sequence()` accepta output de `import_sequence()`
+- [ ] Verificar mapeig shifts calibrate → process
+- [ ] Afegir càlcul concentracions (area × factor)
+
+### 8.3 FASE 4: hpsec_review.py
+
+**Estat actual:** ⚠️ Parcialment implementat
+
+**Funcions existents:**
+| Funció | Estat | Descripció |
+|--------|-------|------------|
+| `review_sequence()` | ❓ Verificar | Funció principal |
+| Comparació rèpliques | ⚠️ A hpsec_replica | Cal integrar |
+| Selecció millor | ⚠️ A hpsec_replica | Cal integrar |
+
+**Input esperat (de process):**
+```python
+processed_data  # Output de process_sequence()
+```
+
+**Output esperat (per export):**
+```python
+review_result = {
+    "samples": {
+        "FR2606": {
+            "selected": "R1",           # o "R2", "MIXED", None
+            "selected_doc": "R1",
+            "selected_dad": "R1",
+            "selection_reason": str,
+            "confidence": float,
+            "comparison": {
+                "pearson": float,
+                "area_diff_pct": float,
+                "by_fraction": dict,    # COLUMN only
+            },
+            "warnings": list,
+            "replicas": {
+                "R1": {eval_data},
+                "R2": {eval_data},
+            }
+        }
+    }
+}
+```
+
+**PENDENT:**
+- [ ] Verificar existència `review_sequence()`
+- [ ] Integrar funcions de hpsec_replica.py
+- [ ] Assegurar output compatible amb export
+
+### 8.4 FASE 5: hpsec_reports.py
+
+**Estat actual:** ⚠️ Orientat a PDF, falta JSON/Excel
+
+**Funcions existents:**
+| Funció | Estat | Descripció |
+|--------|-------|------------|
+| `generate_report_*()` | ✅ | Generació PDF |
+| `export_sequence()` | ❓ Verificar | Funció principal |
+| JSON export | ❌ Falta | processing_summary.json |
+| Excel export | ❌ Falta | Resultats finals |
+
+**Input esperat (de review):**
+```python
+review_result  # Output de review_sequence()
+calibration    # Dades calibració
+```
+
+**Output esperat:**
+- `CHECK/processing_summary.json` - Tot el JSON traçabilitat
+- `CHECK/resultats_SEQXX.xlsx` - Excel amb seleccions
+- `CHECK/SEQXX_report.pdf` - Informe PDF (opcional)
+
+**PENDENT:**
+- [ ] Verificar/crear `export_sequence()`
+- [ ] Moure lògica JSON del pipeline actual a reports
+- [ ] Moure lògica Excel del pipeline actual a reports
+
+### 8.5 PIPELINE: hpsec_pipeline.py
+
+**Canvis necessaris:**
+
+```python
+# ABANS (incorrecte):
+def _step_process():
+    files = glob("Resultats_Consolidats/*.xlsx")  # Llegeix processats!
+    for f in files:
+        eval = evaluate_replica(...)  # Avalua, no processa
+
+# DESPRÉS (correcte):
+def _step_process():
+    return hpsec_process.process_sequence(
+        imported_data,      # De Fase 1
+        calibration_data    # De Fase 2
+    )
+
+def _step_review():
+    return hpsec_review.review_sequence(
+        processed_data      # De Fase 3
+    )
+
+def _step_export():
+    return hpsec_reports.export_sequence(
+        review_result,      # De Fase 4
+        calibration_data
+    )
+```
+
+### 8.6 Ordre d'Implementació
+
+| Pas | Tasca | Dependència |
+|-----|-------|-------------|
+| 1 | Verificar `hpsec_process.process_sequence()` | - |
+| 2 | Verificar/crear `hpsec_review.review_sequence()` | Pas 1 |
+| 3 | Verificar/crear `hpsec_reports.export_sequence()` | Pas 2 |
+| 4 | Refactoritzar pipeline per cridar fases | Pas 1-3 |
+| 5 | Tests amb 283_SEQ i 284_SEQ_BP | Pas 4 |
+| 6 | Eliminar codi duplicat del pipeline | Pas 5 |

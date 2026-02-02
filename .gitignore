@@ -12,11 +12,14 @@ dist/
 *.exe
 *.spec
 
-# Generated debug/analysis images
+# Generated files
 *.png
+*.pdf
+*.csv
 
 # Backup files
 *.backup_*
+*_backup_*.py
 
 # Windows artifacts
 nul
@@ -27,3 +30,34 @@ nul
 
 # Output directories
 CHECK/
+BATCH_REPORTS/
+
+# Obsolete/Development scripts
+_OBSOLET/
+_DEV/
+PROVES/
+
+# Temporary analysis scripts (not part of main product)
+analyze_*.py
+compare_*.py
+explore_*.py
+debug_*.py
+check_*.py
+extract_*.py
+create_*.py
+cleanup_*.py
+
+# Development logs
+recalibrate_log_*.txt
+*.log
+
+# Data files (keep templates only)
+*.xlsx
+!MasterFile_Template.xlsx
+
+# Draft documentation
+*_Draft.txt
+*_draft.md
+
+# JSON batch reports
+batch_*.json

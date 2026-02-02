@@ -373,6 +373,7 @@ class ImportPanel(QWidget):
         self._manual_assignments = {}  # (sample_name, replica) -> {col: filename}
         self._data_mode = "DUAL"  # DUAL, DIRECT, UIB
         self._import_warnings = []  # Warnings d'importació
+        self._loaded_from_manifest = False  # Si s'ha carregat des de manifest existent
 
         self._setup_ui()
 
@@ -571,6 +572,7 @@ class ImportPanel(QWidget):
 
     def set_sequence_path(self, path):
         self.seq_path = path
+        self.main_window.seq_path = path  # Actualitzar també el main_window
         self.path_input.setText(path)
         self._check_manifest()
 
@@ -623,6 +625,7 @@ class ImportPanel(QWidget):
         self.main_window.show_progress(0)
 
         use_manifest = self.existing_manifest and self.use_manifest_radio.isChecked()
+        self._loaded_from_manifest = use_manifest  # Marcar si s'usa manifest anterior
 
         self.worker = ImportWorker(
             self.seq_path,
@@ -941,10 +944,17 @@ class ImportPanel(QWidget):
                     # Nom segons llistat d'injeccions
                     replica_num = rep.get("replica", 1)
                     display_name = f"{sample_name}_R{replica_num}"
-                    self._add_suggestion_cell(row, self.COL_UIB_FILE_ACTUAL, suggested_file, confidence, display_name)
-                    if requires_assignment:
-                        review_signals.append(f"UIB {int(confidence)}%")
-                    needs_review = True
+
+                    # Si carregat des de manifest, el suggeriment ja estava confirmat
+                    if self._loaded_from_manifest:
+                        self._add_simple_cell(row, self.COL_UIB_FILE_ACTUAL, display_name)
+                        # No cal revisar - ja estava confirmat
+                    else:
+                        self._add_suggestion_cell(row, self.COL_UIB_FILE_ACTUAL, suggested_file, confidence, display_name)
+                        if requires_assignment:
+                            review_signals.append(f"UIB {int(confidence)}%")
+                        needs_review = True
+
                     # Comptar punts del fitxer suggerit
                     n_points = self._count_file_points(suggested_file, "uib")
                     if n_points > 0:
@@ -990,10 +1000,17 @@ class ImportPanel(QWidget):
                 # Nom segons llistat d'injeccions
                 replica_num = rep.get("replica", 1)
                 display_name = f"{sample_name}_R{replica_num}"
-                self._add_suggestion_cell(row, self.COL_DAD_FILE_ACTUAL, suggested_file, confidence, display_name)
-                if requires_assignment:
-                    review_signals.append(f"DAD {int(confidence)}%")
-                needs_review = True
+
+                # Si carregat des de manifest, el suggeriment ja estava confirmat
+                if self._loaded_from_manifest:
+                    self._add_simple_cell(row, self.COL_DAD_FILE_ACTUAL, display_name)
+                    # No cal revisar - ja estava confirmat
+                else:
+                    self._add_suggestion_cell(row, self.COL_DAD_FILE_ACTUAL, suggested_file, confidence, display_name)
+                    if requires_assignment:
+                        review_signals.append(f"DAD {int(confidence)}%")
+                    needs_review = True
+
                 # Comptar punts del fitxer suggerit
                 n_points = self._count_file_points(suggested_file, "dad")
                 if n_points > 0:
@@ -1546,6 +1563,15 @@ class ImportPanel(QWidget):
 
     def _update_warnings(self):
         """Actualitza warnings i orfes."""
+        # Si carregat des de manifest, no mostrar avisos d'orfes/suggeriments
+        # (ja estaven gestionats quan es va guardar el manifest)
+        if self._loaded_from_manifest:
+            self.warnings_frame.setVisible(False)
+            self.confirm_btn.setVisible(False)
+            self.orphans_btn.setVisible(False)
+            self.refresh_btn.setVisible(False)
+            return
+
         # Comptar orfes que encara no estan assignats
         unassigned_uib, unassigned_dad = self._count_unassigned_orphans()
 
@@ -1798,6 +1824,12 @@ class ImportPanel(QWidget):
         unassigned_uib, unassigned_dad = self._count_unassigned_orphans()
         has_orphans = unassigned_uib > 0 or unassigned_dad > 0
         has_unsaved = self.main_window.has_unsaved_changes
+
+        # Si s'ha carregat des de manifest sense fer canvis, passar directament
+        # (els orfes ja eren coneguts quan es va guardar el manifest)
+        if self._loaded_from_manifest and not has_unsaved:
+            self.main_window.go_to_tab(1)
+            return
 
         # Si no hi ha orfes ni canvis sense guardar, passar directament
         if not has_orphans and not has_unsaved:

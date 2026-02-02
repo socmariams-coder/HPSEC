@@ -258,7 +258,7 @@ def process_sequence(
             if existing_cal:
                 result.calibration = StepResult(
                     success=True, step="calibrar",
-                    message=f"Usant calibració existent (factor={existing_cal.get('factor', 0):.4f})",
+                    message=f"Usant calibració existent (RF={existing_cal.get('rf', 0):.2f})",
                     data={"calibration": existing_cal}
                 )
             else:
@@ -575,10 +575,10 @@ def _step_calibrate(seq_path: str, mode: str, callbacks: PipelineCallbacks,
 
         if cal_result.get("success"):
             cal_data = cal_result.get("calibration", {})
-            factor = cal_data.get("factor", 0)
+            rf = cal_data.get("rf", 0)
             return StepResult(
                 success=True, step="calibrar",
-                message=f"Factor = {factor:.6f} (font: {source})",
+                message=f"RF = {rf:.2f} (font: {source})",
                 data={"calibration": cal_data, "source": source}
             )
         else:
@@ -965,18 +965,24 @@ def _process_sample(sample_name: str, files: List[str], mode: str,
         transformation = transformation_by_replica[selected_doc]
 
     # Calcular concentracions si tenim calibració
+    # conc = area / RF (RF = Response Factor = area_khp / conc_khp)
     conc_fraction = {}
     calibrated_conc = None
     if calibration and areas_fraction:
-        factor = calibration.get('factor', 0)
-        if factor > 0:
+        rf = calibration.get('rf', 0)
+        # Fallback: calcular RF des de factor antic si existeix
+        if rf == 0:
+            old_factor = calibration.get('factor', 0)
+            if old_factor > 0:
+                rf = 1.0 / old_factor  # factor=conc/area -> RF=area/conc=1/factor
+        if rf > 0:
             for frac, area in areas_fraction.items():
                 if isinstance(area, (int, float)) and area > 0:
-                    conc_fraction[frac] = area * factor
+                    conc_fraction[frac] = area / rf  # conc = area / RF
             calibrated_conc = conc_fraction.get('total')
 
             # Afegir info calibració a transformation
-            transformation['factor_used'] = factor
+            transformation['rf_used'] = rf
             transformation['khp_source'] = calibration.get('seq_name', calibration.get('khp_source', 'N/A'))
             transformation['khp_area'] = calibration.get('area', 0)
             transformation['khp_conc'] = calibration.get('conc_ppm', 0)

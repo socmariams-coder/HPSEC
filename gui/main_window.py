@@ -27,6 +27,9 @@ from gui.widgets.calibrate_panel import CalibratePanel
 from gui.widgets.process_panel import ProcessPanel
 from gui.widgets.review_panel import ReviewPanel
 from gui.widgets.export_panel import ExportPanel
+from gui.widgets.maintenance_panel import MaintenancePanel
+from gui.widgets.history_panel import HistoryPanel
+from gui.widgets.config_panel import ConfigPanel
 
 
 class HPSECSuiteWindow(QMainWindow):
@@ -75,23 +78,36 @@ class HPSECSuiteWindow(QMainWindow):
         self.tab_widget.setDocumentMode(True)
         self.tab_widget.setTabPosition(QTabWidget.North)
 
-        # Crear paneles
+        # Crear paneles de pipeline
         self.import_panel = ImportPanel(self)
         self.calibrate_panel = CalibratePanel(self)
         self.process_panel = ProcessPanel(self)
         self.review_panel = ReviewPanel(self)
         self.export_panel = ExportPanel(self)
 
-        # Añadir tabs
+        # Crear paneles auxiliars (fora de pipeline)
+        self.maintenance_panel = MaintenancePanel(self)
+        self.history_panel = HistoryPanel(self)
+        self.config_panel = ConfigPanel(self)
+
+        # Añadir tabs de pipeline
         self.tab_widget.addTab(self.import_panel, "1. Importar")
         self.tab_widget.addTab(self.calibrate_panel, "2. Calibrar")
         self.tab_widget.addTab(self.process_panel, "3. Procesar")
         self.tab_widget.addTab(self.review_panel, "4. Revisar")
         self.tab_widget.addTab(self.export_panel, "5. Exportar")
 
-        # Deshabilitar tabs hasta que se complete el anterior
+        # Separador visual i tabs auxiliars (sempre habilitats)
+        self.tab_widget.addTab(QWidget(), "")  # Separador buit (índex 5)
+        self.tab_widget.setTabEnabled(5, False)  # Separador no clicable
+        self.tab_widget.addTab(self.history_panel, "📊 Històric")      # índex 6
+        self.tab_widget.addTab(self.maintenance_panel, "🔧 Manteniment")  # índex 7
+        self.tab_widget.addTab(self.config_panel, "⚙️ Configuració")    # índex 8
+
+        # Deshabilitar tabs de pipeline fins completar l'anterior
         for i in range(1, 5):
             self.tab_widget.setTabEnabled(i, False)
+        # Tabs auxiliars (6, 7, 8) sempre habilitats
 
         # Conectar señales
         self.tab_widget.currentChanged.connect(self._on_tab_changed)
@@ -250,10 +266,16 @@ class HPSECSuiteWindow(QMainWindow):
             event.accept()
             return
 
-        # Determinar en quina fase estem
+        # Determinar en quina fase estem (només tabs de pipeline)
         current_tab = self.tab_widget.currentIndex()
         tab_names = ["Importar", "Calibrar", "Processar", "Revisar", "Exportar"]
-        current_phase = tab_names[current_tab] if current_tab < len(tab_names) else "?"
+        if current_tab < len(tab_names):
+            current_phase = tab_names[current_tab]
+        elif current_tab >= 6:
+            # Tabs auxiliars (Històric, Manteniment, Configuració) - no cal avís especial
+            current_phase = "Auxiliar"
+        else:
+            current_phase = "?"
 
         # Mostrar avís
         if self.has_unsaved_changes:

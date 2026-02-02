@@ -44,6 +44,32 @@ from hpsec_migrate_master import migrate_single
 # CONSTANTS
 # =============================================================================
 CONFIDENCE_THRESHOLD = 85.0  # Llindar per acceptar match automàticament
+DATA_FOLDER_NAME = "data"  # Subcarpeta dins CHECK per JSONs
+
+
+# =============================================================================
+# CARPETA DADES (JSONs)
+# =============================================================================
+def get_data_folder(seq_path, create=True):
+    """
+    Retorna la carpeta on guardar JSONs i dades processades.
+
+    Ubicació: SEQ_PATH/CHECK/data/
+
+    Args:
+        seq_path: Ruta a la carpeta SEQ
+        create: Si True, crea la carpeta si no existeix
+
+    Returns:
+        Path a la carpeta de dades
+    """
+    check_folder = os.path.join(seq_path, "CHECK")
+    data_folder = os.path.join(check_folder, DATA_FOLDER_NAME)
+
+    if create:
+        os.makedirs(data_folder, exist_ok=True)
+
+    return data_folder
 
 # Configuració baseline per defecte
 DEFAULT_BASELINE_CONFIG = {
@@ -84,13 +110,15 @@ def get_baseline_correction(t, y, mode_type="COL", config=None, use_end=False):
             return float(np.median(y[-n_edge:]))
         else:
             # Per BP: usar finestra inicial
-            mask = t < config.get("bp_baseline_win", 1.0)
+            bp_win = config.get("bp_baseline_win") or 1.0
+            mask = t < bp_win
             if np.sum(mask) > 10:
                 return float(mode_robust(y[mask]))
             return float(np.nanmin(y))
 
     # COLUMN: usar primers punts
-    mask = t < config.get("col_baseline_start", 10.0)
+    col_start = config.get("col_baseline_start") or 10.0
+    mask = t < col_start
     if np.sum(mask) > 10:
         return float(mode_robust(y[mask]))
     return float(np.nanmin(y))
@@ -434,6 +462,12 @@ def llegir_masterfile_nou(filepath):
                 if key:
                     result["info"][key] = val
 
+            # Sensibilitat UIB a B5 (fila 4, columna 1 en 0-indexed)
+            if len(df_info) > 4 and len(df_info.columns) > 1:
+                uib_sens = df_info.iloc[4, 1]
+                if pd.notna(uib_sens):
+                    result["info"]["uib_sensitivity"] = uib_sens
+
         # 1-HPLC-SEQ (o 1-HPLC-SEQ_RAW per format antic v11)
         if "1-HPLC-SEQ" in xl.sheet_names:
             result["hplc_seq"] = pd.read_excel(xl, sheet_name="1-HPLC-SEQ", engine="openpyxl")
@@ -486,7 +520,8 @@ def llegir_master_direct(mestre):
         return None, None
 
 
-def extract_doc_from_masterfile(toc_df, row_start, row_end, t_start=None, detect_timeouts=True):
+def extract_doc_from_masterfile(toc_df, row_start, row_end, t_start=None, detect_timeouts=True,
+                                  max_duration_min=None):
     """
     Extreu segment DOC del nou MasterFile.
 
@@ -496,6 +531,8 @@ def extract_doc_from_masterfile(toc_df, row_start, row_end, t_start=None, detect
         row_end: Fila final
         t_start: Timestamp d'inici (opcional, per calcular temps relatiu)
         detect_timeouts: Si True, també detecta i retorna info de timeouts
+        max_duration_min: Durada màxima en minuts (per truncar última mostra)
+                         Si None, no trunca. Típic: 75-80 min per COLUMN
 
     Returns:
         Si detect_timeouts=False: DataFrame amb columns "time (min)" i "DOC"
@@ -561,6 +598,12 @@ def extract_doc_from_masterfile(toc_df, row_start, row_end, t_start=None, detect
     })
     df_doc = df_doc.dropna(subset=["time (min)", "DOC"])
 
+    # Truncar si supera la durada màxima (útil per última mostra)
+    if max_duration_min is not None and len(df_doc) > 0:
+        max_time = df_doc["time (min)"].max()
+        if max_time > max_duration_min:
+            df_doc = df_doc[df_doc["time (min)"] <= max_duration_min].copy()
+
     # Detectar timeouts si s'ha sol·licitat
     if detect_timeouts:
         timeout_info = detect_timeout(df_doc["time (min)"].values)
@@ -569,7 +612,8 @@ def extract_doc_from_masterfile(toc_df, row_start, row_end, t_start=None, detect
     return df_doc
 
 
-def extract_doc_from_master(df_toc, row_ini, row_fi, start_dt, detect_timeouts=True):
+def extract_doc_from_master(df_toc, row_ini, row_fi, start_dt, detect_timeouts=True,
+                            max_duration_min=None):
     """
     Extreu segment DOC del format antic de master.
 
@@ -579,13 +623,15 @@ def extract_doc_from_master(df_toc, row_ini, row_fi, start_dt, detect_timeouts=T
         row_fi: Fila final
         start_dt: Datetime d'inici
         detect_timeouts: Si True, detecta timeouts
+        max_duration_min: Durada màxima en minuts (per truncar última mostra)
 
     Returns:
         Si detect_timeouts=False: DataFrame amb columns "time (min)" i "DOC"
         Si detect_timeouts=True: tuple (DataFrame, timeout_info dict)
     """
     # Reutilitzar la funció del nou format
-    return extract_doc_from_masterfile(df_toc, row_ini, row_fi, start_dt, detect_timeouts)
+    return extract_doc_from_masterfile(df_toc, row_ini, row_fi, start_dt, detect_timeouts,
+                                       max_duration_min)
 
 
 # =============================================================================
@@ -735,18 +781,21 @@ def llegir_dad_amb_fallback(path_export3d, path_dad1a=None, wavelength="254"):
 
 def list_dad_files(folder_export3d, folder_csv=None):
     """
-    Llista tots els fitxers DAD (excloent UIB).
+    Llista tots els fitxers DAD (matriu 3D completa).
+
+    NOMÉS busca a Export3d - els fitxers CSV són UIB (DOC), no DAD.
 
     Returns:
         Llista de paths a fitxers DAD
     """
     dad_files = []
 
+    # Només Export3d conté fitxers DAD (matriu 3D)
     if folder_export3d and os.path.isdir(folder_export3d):
         for ext in ("*.csv", "*.CSV"):
             dad_files.extend(glob.glob(os.path.join(folder_export3d, ext)))
 
-    # Excloure fitxers UIB
+    # Excloure fitxers UIB (contenen "UIB1B") per si de cas
     dad_files = [f for f in dad_files if "UIB1B" not in os.path.basename(f).upper()]
 
     return sorted(set(dad_files))
@@ -907,6 +956,209 @@ def is_sample_in_seq(sample_name, valid_samples):
     """Verifica si una mostra pertany a la seqüència."""
     match_info = match_sample_confidence(sample_name, valid_samples)
     return match_info["matched"] and match_info["confidence"] >= CONFIDENCE_THRESHOLD
+
+
+# =============================================================================
+# MATCHING INTEL·LIGENT D'ORFES
+# =============================================================================
+
+def extract_sample_from_filename(filename):
+    """
+    Extreu el nom de mostra i rèplica d'un nom de fitxer.
+
+    Exemples:
+        "MOSTRA_A_R1.csv" → ("MOSTRA_A", 1)
+        "KHP2_R2_UIB1B.csv" → ("KHP2", 2)
+        "MOSTRA-B-F_1.csv" → ("MOSTRA-B-F", 1)
+    """
+    stem = os.path.splitext(os.path.basename(filename))[0]
+
+    # Eliminar sufixos comuns (UIB1B, etc.)
+    stem_clean = re.sub(r"_?UIB1B\d*", "", stem, flags=re.IGNORECASE)
+
+    # Buscar patró _R# o _#
+    match_r = re.search(r"[_\-]R(\d+)$", stem_clean, flags=re.IGNORECASE)
+    match_us = re.search(r"_(\d+)$", stem_clean)
+
+    if match_r:
+        sample = stem_clean[:match_r.start()]
+        rep = int(match_r.group(1))
+    elif match_us:
+        sample = stem_clean[:match_us.start()]
+        rep = int(match_us.group(1))
+    else:
+        sample = stem_clean
+        rep = 1
+
+    return sample, rep
+
+
+def compute_orphan_suggestions(samples, orphan_files, file_type="dad"):
+    """
+    Calcula suggeriments de matching entre mostres sense dades i fitxers orfes.
+
+    Args:
+        samples: Dict de mostres {nom: {type, replicas: {rep: {dad, uib, ...}}}}
+        orphan_files: Llista de paths de fitxers orfes
+        file_type: "dad" o "uib"
+
+    Returns:
+        Dict de suggeriments:
+        {
+            (sample_name, replica): {
+                "suggested_file": path,
+                "suggested_filename": nom_fitxer,
+                "confidence": 0-100,
+                "match_type": "FUZZY" | "NORMALIZED" | "EXACT",
+                "auto_assign": True si confidence > 85
+            }
+        }
+    """
+    suggestions = {}
+
+    if not orphan_files:
+        return suggestions
+
+    # Construir índex d'orfes: {(sample_norm, rep): [files]}
+    orphan_index = {}
+    for fpath in orphan_files:
+        sample, rep = extract_sample_from_filename(fpath)
+        sample_norm = normalize_key(sample)
+        key = (sample_norm, rep)
+        if key not in orphan_index:
+            orphan_index[key] = []
+        orphan_index[key].append({
+            "path": fpath,
+            "filename": os.path.basename(fpath),
+            "sample_extracted": sample,
+        })
+
+    # Per cada mostra/rèplica sense dades del tipus especificat
+    for sample_name, sample_info in samples.items():
+        for rep_str, rep_data in sample_info.get("replicas", {}).items():
+            rep_num = int(rep_str) if rep_str.isdigit() else 1
+
+            # Comprovar si falta el tipus de dades
+            has_data = False
+            if file_type == "dad":
+                has_data = rep_data.get("dad") is not None
+            elif file_type == "uib":
+                has_data = rep_data.get("uib") is not None and rep_data["uib"].get("t") is not None
+
+            if has_data:
+                continue  # Ja té dades, no cal suggeriment
+
+            sample_norm = normalize_key(sample_name)
+
+            # Buscar el millor match entre els orfes
+            sample_norm = normalize_key(sample_name)
+            best_match = None
+            best_confidence = 0
+            best_match_type = "NONE"
+
+            for (orphan_sample_norm, orphan_rep), orphan_list in orphan_index.items():
+                # Primer, comprovar si la rèplica coincideix
+                rep_matches = (orphan_rep == rep_num)
+                orphan_sample_orig = orphan_list[0]["sample_extracted"].upper()
+
+                # Calcular similitud del nom amb diverses estratègies
+                if sample_norm == orphan_sample_norm:
+                    # Match exacte (normalitzat)
+                    confidence = 100 if rep_matches else 80
+                    match_type = "EXACT"
+                elif sample_norm.endswith(orphan_sample_norm) or sample_name.upper().endswith(orphan_sample_orig):
+                    # La mostra ACABA amb el nom de l'orfe (ex: "3S101H HA" acaba amb "HA")
+                    confidence = 95 if rep_matches else 75
+                    match_type = "SUFFIX"
+                elif orphan_sample_norm in sample_norm or orphan_sample_orig in sample_name.upper():
+                    # L'orfe està CONTINGUT dins la mostra
+                    confidence = 85 if rep_matches else 65
+                    match_type = "CONTAINS"
+                else:
+                    # Fuzzy match
+                    ratio1 = SequenceMatcher(None, sample_norm, orphan_sample_norm).ratio()
+                    ratio2 = SequenceMatcher(None, sample_name.upper(), orphan_sample_orig).ratio()
+                    ratio = max(ratio1, ratio2)
+
+                    # Penalitzar si la rèplica no coincideix
+                    if not rep_matches:
+                        ratio *= 0.7
+
+                    confidence = ratio * 100
+                    match_type = "FUZZY"
+
+
+                if confidence > best_confidence:
+                    best_confidence = confidence
+                    best_match = orphan_list[0]  # Primer fitxer de la llista
+                    best_match_type = match_type
+
+            # Guardar suggeriment si la confiança és suficient
+            if best_match and best_confidence >= 60:
+                suggestions[(sample_name, rep_num)] = {
+                    "suggested_file": best_match["path"],
+                    "suggested_filename": best_match["filename"],
+                    "confidence": round(best_confidence, 1),
+                    "match_type": best_match_type,
+                    "auto_assign": best_confidence >= 85,
+                }
+
+    return suggestions
+
+
+def apply_orphan_suggestions(samples, suggestions, orphan_files, file_type="dad"):
+    """
+    Aplica els suggeriments d'alta confiança automàticament.
+
+    Args:
+        samples: Dict de mostres (es modifica in-place)
+        suggestions: Dict de suggeriments de compute_orphan_suggestions
+        orphan_files: Llista d'orfes (es modifica per treure els assignats)
+        file_type: "dad" o "uib"
+
+    Returns:
+        Tuple (applied_count, remaining_orphans)
+    """
+    applied = []
+
+    for (sample_name, rep_num), suggestion in suggestions.items():
+        if not suggestion.get("auto_assign"):
+            continue
+
+        # Trobar la mostra i rèplica
+        if sample_name not in samples:
+            continue
+
+        rep_str = str(rep_num)
+        if rep_str not in samples[sample_name].get("replicas", {}):
+            continue
+
+        rep_data = samples[sample_name]["replicas"][rep_str]
+
+        # Marcar com a assignació suggerida (no carregar dades encara)
+        if file_type == "dad":
+            rep_data["dad_suggestion"] = {
+                "file": suggestion["suggested_file"],
+                "filename": suggestion["suggested_filename"],
+                "confidence": suggestion["confidence"],
+                "match_type": suggestion["match_type"],
+                "status": "SUGGESTED",  # Per revisar a la GUI
+            }
+        elif file_type == "uib":
+            rep_data["uib_suggestion"] = {
+                "file": suggestion["suggested_file"],
+                "filename": suggestion["suggested_filename"],
+                "confidence": suggestion["confidence"],
+                "match_type": suggestion["match_type"],
+                "status": "SUGGESTED",
+            }
+
+        applied.append(suggestion["suggested_file"])
+
+    # Treure els fitxers aplicats de la llista d'orfes
+    remaining = [f for f in orphan_files if f not in applied]
+
+    return len(applied), remaining
 
 
 # =============================================================================
@@ -1311,12 +1563,13 @@ def parse_injections_from_masterfile(master_data, config=None):
     if df_seq is None:
         df_seq = master_data.get("seq")
     if df_seq is None or (hasattr(df_seq, 'empty') and df_seq.empty):
-        return [], ["No s'ha trobat fulla 1-HPLC-SEQ al MasterFile"]
+        return [], ["No s'ha trobat fulla 1-HPLC-SEQ al MasterFile"], 0
 
     # Identificar columnes
     sample_col = None
     inj_col = None
     line_col = None
+    volume_col = None
 
     for col in df_seq.columns:
         col_lower = str(col).lower().strip()
@@ -1326,6 +1579,26 @@ def parse_injections_from_masterfile(master_data, config=None):
             inj_col = col
         elif col_lower == "line#" or col_lower == "line":
             line_col = col
+        elif "volume" in col_lower or "vol" in col_lower:
+            volume_col = col
+
+    # Columna N (índex 13) per volum si no té etiqueta
+    # En Excel v11/v12, el volum està a la columna N sense etiqueta
+    if volume_col is None:
+        col_list = list(df_seq.columns)
+        # Columna N = índex 13 (A=0, B=1, ..., N=13)
+        if len(col_list) > 13:
+            potential_vol_col = col_list[13]
+            # Verificar que sembla una columna de volum (valors numèrics típics: 100, 400, etc.)
+            try:
+                sample_vals = df_seq[potential_vol_col].dropna().head(5)
+                if len(sample_vals) > 0:
+                    # Verificar que són valors numèrics raonables per volum (50-1000 µL)
+                    numeric_vals = pd.to_numeric(sample_vals, errors='coerce').dropna()
+                    if len(numeric_vals) > 0 and all(50 <= v <= 1000 for v in numeric_vals):
+                        volume_col = potential_vol_col
+            except Exception:
+                pass
 
     if sample_col is None:
         # Fallback: buscar columna amb "sample"
@@ -1335,17 +1608,44 @@ def parse_injections_from_masterfile(master_data, config=None):
                 break
 
     if sample_col is None:
-        return [], ["No s'ha trobat columna 'Sample Name' al MasterFile"]
+        return [], ["No s'ha trobat columna 'Sample Name' al MasterFile"], 0
 
     # Comptador per controls repetits
-    control_counts = {}
+    control_counts = {}  # base_name -> total count
+    control_sets = {}    # base_name -> current set number
+    control_last_inj = {} # base_name -> last inj_num (per detectar nou set)
     control_patterns = ["naoh", "mq", "blank", "buffer", "wash"]
+
+    # Pre-calcular tots els noms de mostra per detectar duplicats exactes
+    all_sample_names = [
+        str(row.get(sample_col, "")).strip()
+        for _, row in df_seq.iterrows()
+        if str(row.get(sample_col, "")).strip() not in ["", "nan"]
+    ]
+
+    # Comptar total de files amb dades (per validació posterior)
+    total_rows_with_line = 0
+    skipped_rows = []
 
     # Processar cada fila
     prev_line = 0
     for idx, row in df_seq.iterrows():
+        # Detectar si la fila té número de línia (indica que és una injecció real)
+        line_val = row.get(line_col) if line_col else None
+        has_line_num = line_val is not None and str(line_val).strip() not in ["", "nan"]
+        if has_line_num:
+            total_rows_with_line += 1
+
         sample_name = str(row.get(sample_col, "")).strip()
         if not sample_name or sample_name.lower() in ["nan", ""]:
+            # Si té número de línia però no té nom, és un error al MasterFile
+            if has_line_num:
+                try:
+                    line_num_val = int(line_val)
+                    skipped_rows.append(line_num_val)
+                    warnings.append(f"⚠️ Línia {line_num_val}: falta nom de mostra (columna buida)")
+                except (ValueError, TypeError):
+                    pass
             continue
 
         # Obtenir número de línia/injecció
@@ -1378,15 +1678,39 @@ def parse_injections_from_masterfile(master_data, config=None):
             if not base_name:
                 base_name = sample_name
 
-            # Incrementar comptador
+            # Detectar si és un nou "set" de control (quan Inj# torna a 1 o és menor que l'anterior)
+            if base_name not in control_sets:
+                control_sets[base_name] = 1
+                control_last_inj[base_name] = 0
+
+            # Si Inj# <= últim Inj# vist per aquest control, és un nou set
+            if inj_num <= control_last_inj.get(base_name, 0):
+                control_sets[base_name] += 1
+
+            control_last_inj[base_name] = inj_num
+            current_set = control_sets[base_name]
+
+            # Incrementar comptador total
             if base_name not in control_counts:
                 control_counts[base_name] = 0
             control_counts[base_name] += 1
 
-            unique_name = f"{base_name}_{control_counts[base_name]}"
+            # IMPORTANT: Només renombrar si el nom original apareix més d'una vegada
+            # Si els noms ja són diferents (ex: NaOH 0.1mM_1 vs NaOH 0.1mM), no cal renombrar
+            original_name_count = all_sample_names.count(sample_name)
+            if original_name_count > 1:
+                # Hi ha duplicats exactes - cal generar nom únic
+                unique_name = f"{base_name}_{control_counts[base_name]}"
+            else:
+                # Nom ja és únic - mantenir original
+                unique_name = sample_name
             sample_type = "CONTROL"
-            # Controls repetits: cada un és una "mostra" independent amb replica 1
-            effective_inj_num = 1
+
+            # Guardar info de set i rèplica per matching amb fitxers
+            # El fitxer es dirà MQ1_R1, MQ1_R2, MQ2_R1, etc.
+            # On el número després de MQ és el set, i R és la rèplica (inj_num original)
+            effective_inj_num = control_counts[base_name]
+
         else:
             unique_name = sample_name
             effective_inj_num = inj_num
@@ -1400,6 +1724,26 @@ def parse_injections_from_masterfile(master_data, config=None):
             else:
                 sample_type = "SAMPLE"
 
+        # Obtenir volum d'injecció (si disponible)
+        inj_volume = None
+        if volume_col is not None:
+            try:
+                vol_val = row.get(volume_col)
+                if vol_val is not None and str(vol_val).strip() not in ["", "nan"]:
+                    inj_volume = float(vol_val)
+            except (ValueError, TypeError):
+                pass
+
+        # Info de set per controls (per matching amb fitxers MQ1_R1, MQ2_R1, etc.)
+        # NOMÉS usar set/rep si hi ha duplicats exactes - si els noms ja són únics, fer match directe
+        if is_repeated_control and original_name_count > 1:
+            control_set_num = control_sets.get(base_name)
+            control_rep_in_set = inj_num
+        else:
+            control_set_num = None
+            control_rep_in_set = None
+
+
         injections.append({
             "line_num": line_num,
             "inj_num": effective_inj_num,  # Replica efectiva
@@ -1407,10 +1751,19 @@ def parse_injections_from_masterfile(master_data, config=None):
             "sample_name_original": sample_name,
             "sample_name": unique_name,
             "sample_type": sample_type,
+            "inj_volume": inj_volume,  # Volum d'injecció en µL (pot ser None)
+            "control_set": control_set_num,  # Número de set per controls (MQ1, MQ2, ...)
+            "control_rep": control_rep_in_set,  # Rèplica dins del set (R1, R2, ...)
             "row_data": row.to_dict(),
         })
 
-    return injections, warnings
+    # Validar: comparar total de files amb Line# vs injeccions processades
+    if total_rows_with_line > len(injections):
+        missing = total_rows_with_line - len(injections)
+        warnings.insert(0, f"⚠️ ATENCIÓ: {missing} injecció(ns) no processada(es) - revisar MasterFile (files: {skipped_rows})")
+
+    # Retornar també el total de línies del MasterFile per validació posterior
+    return injections, warnings, total_rows_with_line
 
 
 def find_data_for_injection(injection, seq_path, uib_files, dad_files, dad_csv_files,
@@ -1442,6 +1795,8 @@ def find_data_for_injection(injection, seq_path, uib_files, dad_files, dad_csv_f
     sample_type = injection["sample_type"]
     original_name = injection["sample_name_original"]
     inj_num_original = injection.get("inj_num_original", inj_num)
+    control_set = injection.get("control_set")  # Número de set per controls (MQ1, MQ2, ...)
+    control_rep = injection.get("control_rep")  # Rèplica dins del set (R1, R2, ...)
 
     # 0. Extreure DOC Direct del MasterFile (SEMPRE si disponible)
     if toc_df is not None and toc_calc_df is not None and not toc_calc_df.empty:
@@ -1454,13 +1809,26 @@ def find_data_for_injection(injection, seq_path, uib_files, dad_files, dad_csv_f
 
         if is_new_format:
             # Format nou: 4-TOC_CALC amb Sample, TOC_Row, Inj_Index
-            sample_key_r = f"{original_name}_R{inj_num_original}"
-            mask = (toc_calc_df["Sample"] == sample_key_r)
-            if not mask.any():
-                mask = (toc_calc_df["Sample"].str.contains(original_name, case=False, na=False)) & \
-                       (toc_calc_df["Inj_Index"] == line_num)
+            # Prioritzar cerca per line_num (Inj_Index) que és més fiable per controls
+            mask = None
 
-            sample_rows = toc_calc_df[mask]
+            # 1. Primer intentar per Inj_Index (line_num) - més fiable
+            if "Inj_Index" in toc_calc_df.columns:
+                mask = (toc_calc_df["Inj_Index"] == line_num)
+                if not mask.any():
+                    mask = None
+
+            # 2. Si no, intentar per nom exacte amb rèplica
+            if mask is None:
+                sample_key_r = f"{original_name}_R{inj_num_original}"
+                mask = (toc_calc_df["Sample"] == sample_key_r)
+                if not mask.any():
+                    # 3. Fallback: nom parcial + line_num
+                    # Treure sufixos _1, _2 del original_name per matching més flexible
+                    original_base = re.sub(r'[_\-]?\d+$', '', original_name).strip()
+                    mask = (toc_calc_df["Sample"].str.contains(original_base, case=False, na=False))
+
+            sample_rows = toc_calc_df[mask] if mask is not None else pd.DataFrame()
             if not sample_rows.empty:
                 toc_rows = sample_rows["TOC_Row"].dropna()
                 if len(toc_rows) > 0:
@@ -1488,9 +1856,11 @@ def find_data_for_injection(injection, seq_path, uib_files, dad_files, dad_csv_f
                     row_end = None
 
         if row_start is not None and row_end is not None and row_start > 0:
-            # Extreure DOC Direct
+            # Extreure DOC Direct (amb truncat per última mostra)
+            max_dur = config.get("max_duration_min", 80.0)
             df_doc, timeout_info = extract_doc_from_masterfile(
-                toc_df, row_start, row_end, detect_timeouts=True
+                toc_df, row_start, row_end, detect_timeouts=True,
+                max_duration_min=max_dur
             )
 
             if not df_doc.empty:
@@ -1517,15 +1887,54 @@ def find_data_for_injection(injection, seq_path, uib_files, dad_files, dad_csv_f
         file_sample, file_rep = netejar_nom_uib(filename)
 
         # Match per nom original o nom únic
-        if (normalize_key(file_sample) == normalize_key(original_name) or
-            normalize_key(file_sample) == normalize_key(sample_name)):
-            # Verificar replica
+        file_sample_norm = normalize_key(file_sample)
+        original_norm = normalize_key(original_name)
+        unique_norm = normalize_key(sample_name)
+
+        # També comparar amb el nom base sense sufix _1, _2, etc.
+        # (El MasterFile pot tenir "NaOH 0.1mM_1" però el fitxer "NAOH 0.1MM")
+        original_base_norm = re.sub(r'\d+$', '', original_norm)  # Treure números del final
+
+        # Match directe
+        name_match = (file_sample_norm == original_norm or
+                      file_sample_norm == unique_norm or
+                      file_sample_norm == original_base_norm)
+
+        # Match per controls: MQ1 → MQ_1, MQ2 → MQ_2, etc.
+        # El número al nom del fitxer (MQ1) correspon al comptador del control (MQ_1)
+        file_control_num = None
+        if not name_match:
+            # Extreure base i número del nom del fitxer
+            match = re.match(r'^(.+?)(\d+)$', file_sample_norm)
+            if match:
+                file_sample_base = match.group(1)
+                file_control_num = int(match.group(2))
+                # Comparar base amb original
+                if file_sample_base == original_norm:
+                    name_match = True
+
+        if name_match:
+            # Verificar replica o número de control
             try:
                 file_rep_int = int(file_rep) if file_rep else 1
             except ValueError:
                 file_rep_int = 1
 
-            if file_rep_int == inj_num:
+            # Per controls amb set (MQ1_R1 → control_set=1, control_rep=1):
+            # - file_control_num (MQ1 → 1) ha de coincidir amb control_set
+            # - file_rep_int (R1 → 1) ha de coincidir amb control_rep
+            # Per mostres normals: la rèplica del fitxer ha de coincidir amb inj_num
+            if control_set is not None and file_control_num is not None:
+                # Control: fitxer MQ1_R2 → set 1, rep 2
+                rep_match = (file_control_num == control_set and file_rep_int == control_rep)
+            elif file_control_num is not None:
+                # Fallback: comparar número del nom amb inj_num
+                rep_match = (file_control_num == inj_num)
+            else:
+                # Mostra normal: comparar rèplica del fitxer amb inj_num
+                rep_match = (file_rep_int == inj_num)
+
+            if rep_match:
                 # Llegir UIB
                 df_uib, status = llegir_doc_uib(uib_path)
                 if status.startswith("OK"):
@@ -1551,14 +1960,52 @@ def find_data_for_injection(injection, seq_path, uib_files, dad_files, dad_csv_f
         filename = os.path.basename(dad_path)
         file_sample, file_rep, _ = dad_sample_rep_from_path(dad_path)
 
-        if (normalize_key(file_sample) == normalize_key(original_name) or
-            normalize_key(file_sample) == normalize_key(sample_name)):
+        file_sample_norm = normalize_key(file_sample)
+        original_norm = normalize_key(original_name)
+        unique_norm = normalize_key(sample_name)
+
+        # També comparar amb el nom base sense sufix numèric
+        original_base_norm = re.sub(r'\d+$', '', original_norm)
+
+        # Match directe
+        name_match = (file_sample_norm == original_norm or
+                      file_sample_norm == unique_norm or
+                      file_sample_norm == original_base_norm)
+
+        # Match per controls: MQ1 → MQ_1, MQ2 → MQ_2, etc.
+        file_control_num = None
+        file_sample_base = None
+        if not name_match:
+            # Extreure base i número del nom del fitxer (MQ1 → base=MQ, num=1)
+            match = re.match(r'^(.+?)(\d+)$', file_sample_norm)
+            if match:
+                file_sample_base = match.group(1)
+                file_control_num = int(match.group(2))
+                # Comparar base amb original
+                if file_sample_base == original_norm or file_sample_base == original_base_norm:
+                    name_match = True
+
+        if name_match:
             try:
                 file_rep_int = int(file_rep) if file_rep else 1
             except ValueError:
                 file_rep_int = 1
 
-            if file_rep_int == inj_num:
+            # Per controls amb set (MQ1_R1 → control_set=1, control_rep=1):
+            # - file_control_num (MQ1 → 1) ha de coincidir amb control_set
+            # - file_rep_int (R1 → 1) ha de coincidir amb control_rep
+            # Per mostres normals: la rèplica del fitxer ha de coincidir amb inj_num
+            if control_set is not None and file_control_num is not None:
+                # Control: fitxer MQ1_R2 → set 1, rep 2
+                rep_match = (file_control_num == control_set and file_rep_int == control_rep)
+            elif file_control_num is not None:
+                # Fallback: comparar número del nom amb inj_num
+                rep_match = (file_control_num == inj_num)
+            else:
+                # Mostra normal: comparar rèplica del fitxer amb inj_num
+                rep_match = (file_rep_int == inj_num)
+
+            if rep_match:
                 df_dad, status = llegir_dad_export3d(dad_path)
                 if status.startswith("OK"):
                     used_files.setdefault("dad", set()).add(dad_path)
@@ -1577,17 +2024,20 @@ def find_data_for_injection(injection, seq_path, uib_files, dad_files, dad_csv_f
 
         for col in master_khp_data.columns:
             if normalize_key(col) == normalize_key(khp_key):
-                # Trobar columna de temps (anterior)
                 col_idx = master_khp_data.columns.get_loc(col)
-                if col_idx > 0:
-                    time_col = master_khp_data.columns[col_idx - 1]
-                    # Construir DataFrame
+                # Format 3-DAD_KHP: columna KHP té temps, següent té valors
+                # Estructura: KHP5_R1 | Unnamed:1 | NaN | KHP5_R2 | Unnamed:4
+                #             time     | value     | NaN | time    | value
+                if col_idx + 1 < len(master_khp_data.columns):
+                    time_col = col
+                    value_col = master_khp_data.columns[col_idx + 1]
+                    # Construir DataFrame (saltar primera fila que és capçalera "time (min)", "value (mAU)")
                     df_khp = pd.DataFrame({
                         "time (min)": pd.to_numeric(master_khp_data[time_col], errors="coerce"),
-                        "254nm": pd.to_numeric(master_khp_data[col], errors="coerce"),
+                        "254": pd.to_numeric(master_khp_data[value_col], errors="coerce"),
                     }).dropna()
 
-                    if not df_khp.empty:
+                    if not df_khp.empty and len(df_khp) > 5:
                         result["dad"] = {
                             "path": "MasterFile:3-DAD_KHP",
                             "df": df_khp,
@@ -1705,11 +2155,18 @@ def import_sequence(seq_path, config=None, progress_callback=None):
 
         result["date"] = read_master_date(seq_path)
 
+        # Extreure sensibilitat UIB si disponible (de 0-INFO B5)
+        master_info = result["master_data"].get("info", {})
+        uib_sensitivity = master_info.get("uib_sensitivity")
+        if uib_sensitivity is not None:
+            result["uib_sensitivity"] = uib_sensitivity
+
         report_progress(20, "Parsejant injeccions del MasterFile...")
 
         # 3. Parsejar injeccions del MasterFile (FONT DE VERITAT)
-        injections, parse_warnings = parse_injections_from_masterfile(result["master_data"], config)
+        injections, parse_warnings, master_line_count = parse_injections_from_masterfile(result["master_data"], config)
         result["injections"] = injections
+        result["master_line_count"] = master_line_count  # Total línies al MasterFile (Line#)
         result["warnings"].extend(parse_warnings)
 
         if not injections:
@@ -1827,6 +2284,11 @@ def import_sequence(seq_path, config=None, progress_callback=None):
 
             # Guardar rèplica
             rep_key = str(inj_num)
+            # Detectar sobreescriptura (duplicats al MasterFile)
+            if rep_key in result["samples"][sample_name]["replicas"]:
+                result["warnings"].append(
+                    f"⚠️ ATENCIÓ: '{sample_name}' rèplica {rep_key} duplicada (línia {inj['line_num']}) - revisar MasterFile"
+                )
             result["samples"][sample_name]["replicas"][rep_key] = {
                 "direct": direct_data,  # DOC Direct del MasterFile
                 "uib": uib_data,        # DOC UIB del CSV (si disponible)
@@ -1836,6 +2298,7 @@ def import_sequence(seq_path, config=None, progress_callback=None):
                 "injection_info": {
                     "line_num": inj["line_num"],
                     "inj_num": inj_num,
+                    "inj_volume": inj.get("inj_volume"),  # Volum d'injecció en µL
                 },
             }
 
@@ -1845,10 +2308,54 @@ def import_sequence(seq_path, config=None, progress_callback=None):
         orphan_uib = [f for f in uib_files if f not in used_files["uib"]]
         orphan_dad = [f for f in dad_files if f not in used_files["dad"]]
 
+
+        # 7. Matching intel·ligent: suggerir assignacions per orfes
+        report_progress(92, "Calculant suggeriments de matching...")
+
+        # Guardar tots els orfes ABANS d'aplicar suggeriments (per comptar punts)
+        all_orphan_uib = orphan_uib.copy()
+        all_orphan_dad = orphan_dad.copy()
+
+        dad_suggestions = compute_orphan_suggestions(
+            result["samples"], orphan_dad, file_type="dad"
+        )
+        uib_suggestions = compute_orphan_suggestions(
+            result["samples"], orphan_uib, file_type="uib"
+        )
+
+        # Aplicar suggeriments d'alta confiança (>= 85%)
+        dad_applied, orphan_dad = apply_orphan_suggestions(
+            result["samples"], dad_suggestions, orphan_dad, file_type="dad"
+        )
+        uib_applied, orphan_uib = apply_orphan_suggestions(
+            result["samples"], uib_suggestions, orphan_uib, file_type="uib"
+        )
+
+        # Guardar orfes restants (sense suggeriments aplicats)
         result["orphan_files"] = {
             "uib": orphan_uib,
             "dad": orphan_dad,
         }
+
+        # Guardar TOTS els orfes originals (per comptar punts)
+        result["all_orphan_files"] = {
+            "uib": all_orphan_uib,
+            "dad": all_orphan_dad,
+        }
+
+        result["orphan_suggestions"] = {
+            "dad": {f"{k[0]}_R{k[1]}": v for k, v in dad_suggestions.items()},
+            "uib": {f"{k[0]}_R{k[1]}": v for k, v in uib_suggestions.items()},
+        }
+
+        if dad_applied:
+            result["warnings"].append(
+                f"Suggerits {dad_applied} fitxers DAD per revisar (matching automàtic)"
+            )
+        if uib_applied:
+            result["warnings"].append(
+                f"Suggerits {uib_applied} fitxers UIB per revisar (matching automàtic)"
+            )
 
         if orphan_uib:
             result["warnings"].append(
@@ -1874,6 +2381,7 @@ def import_sequence(seq_path, config=None, progress_callback=None):
         )
 
         result["stats"] = {
+            "master_line_count": result.get("master_line_count", len(injections)),  # Line# al MasterFile
             "total_injections": len(injections),
             "total_samples": len(result["samples"]),
             "samples_with_data": samples_with_data,
@@ -1885,6 +2393,30 @@ def import_sequence(seq_path, config=None, progress_callback=None):
             "orphan_uib": len(orphan_uib),
             "orphan_dad": len(orphan_dad),
         }
+
+        # Validar que els KHP tenen dades DOC (necessari per calibrar)
+        khp_without_doc = []
+        for khp_name in result["khp_samples"]:
+            sample = result["samples"].get(khp_name, {})
+            replicas = sample.get("replicas", {})
+            has_any_doc = False
+            for rep_data in replicas.values():
+                direct = rep_data.get("direct") if rep_data else None
+                uib = rep_data.get("uib") if rep_data else None
+                direct_t = direct.get("t") if direct else None
+                uib_t = uib.get("t") if uib else None
+                if (direct_t is not None and len(direct_t) > 0) or \
+                   (uib_t is not None and len(uib_t) > 0):
+                    has_any_doc = True
+                    break
+            if not has_any_doc:
+                khp_without_doc.append(khp_name)
+
+        if khp_without_doc:
+            result["warnings"].append(
+                f"⚠️ KHP sense dades DOC: {', '.join(khp_without_doc)} - no es podrà calibrar (falten fitxers TOC?)"
+            )
+            result["khp_without_doc"] = khp_without_doc
 
         result["success"] = True
         report_progress(100, "Importació completada")
@@ -1950,6 +2482,9 @@ def generate_import_manifest(imported_data, include_injection_details=True):
             "uib": [os.path.basename(f) for f in imported_data.get("orphan_files", {}).get("uib", [])],
             "dad": [os.path.basename(f) for f in imported_data.get("orphan_files", {}).get("dad", [])],
         },
+
+        # Suggeriments de matching (orfes → mostres)
+        "orphan_suggestions": imported_data.get("orphan_suggestions", {"dad": {}, "uib": {}}),
     }
 
     # Detall per mostra
@@ -1983,6 +2518,16 @@ def generate_import_manifest(imported_data, include_injection_details=True):
                 }
                 if direct.get("timeout_info", {}).get("has_timeout"):
                     replica_entry["direct"]["timeout_ranges"] = direct["timeout_info"].get("timeout_ranges", [])
+            elif direct.get("row_start") is not None or direct.get("n_points"):
+                # Preservar metadades encara que no hi hagi dades reals
+                replica_entry["direct"] = {
+                    "source": "MasterFile:2-TOC",
+                    "row_start": direct.get("row_start"),
+                    "row_end": direct.get("row_end"),
+                    "n_points": direct.get("n_points", 0),
+                    "baseline": direct.get("baseline"),
+                    "has_timeout": False,
+                }
 
             # DOC UIB
             uib = rep_data.get("uib") or {}
@@ -1990,10 +2535,18 @@ def generate_import_manifest(imported_data, include_injection_details=True):
                 t_arr = uib["t"]
                 replica_entry["uib"] = {
                     "source": "CSV",
-                    "file": os.path.basename(uib.get("path", "")),
+                    "file": os.path.basename(uib.get("path", "") or uib.get("file", "")),
                     "n_points": len(t_arr),
                     "t_min": float(min(t_arr)),
                     "t_max": float(max(t_arr)),
+                    "baseline": uib.get("baseline"),
+                }
+            elif uib.get("file") or uib.get("n_points"):
+                # Preservar metadades encara que no hi hagi dades reals
+                replica_entry["uib"] = {
+                    "source": "CSV",
+                    "file": uib.get("file", ""),
+                    "n_points": uib.get("n_points", 0),
                     "baseline": uib.get("baseline"),
                 }
 
@@ -2004,11 +2557,31 @@ def generate_import_manifest(imported_data, include_injection_details=True):
                 t_col = df.columns[0]
                 replica_entry["dad"] = {
                     "source": rep_data.get("dad_source", "unknown"),
+                    "file": os.path.basename(dad.get("path", "")),
                     "n_points": len(df),
                     "n_wavelengths": len(df.columns) - 1,  # -1 per columna temps
                     "t_min": float(df[t_col].min()),
                     "t_max": float(df[t_col].max()),
                     "wavelengths_range": f"{df.columns[1]}-{df.columns[-1]}",
+                }
+
+            # Suggeriments de matching (si n'hi ha)
+            dad_suggestion = rep_data.get("dad_suggestion")
+            if dad_suggestion:
+                replica_entry["dad_suggestion"] = {
+                    "file": dad_suggestion.get("filename", ""),
+                    "confidence": dad_suggestion.get("confidence", 0),
+                    "match_type": dad_suggestion.get("match_type", ""),
+                    "status": dad_suggestion.get("status", "SUGGESTED"),
+                }
+
+            uib_suggestion = rep_data.get("uib_suggestion")
+            if uib_suggestion:
+                replica_entry["uib_suggestion"] = {
+                    "file": uib_suggestion.get("filename", ""),
+                    "confidence": uib_suggestion.get("confidence", 0),
+                    "match_type": uib_suggestion.get("match_type", ""),
+                    "status": uib_suggestion.get("status", "SUGGESTED"),
                 }
 
             # Info injecció original (si disponible)
@@ -2017,6 +2590,7 @@ def generate_import_manifest(imported_data, include_injection_details=True):
                 replica_entry["injection"] = {
                     "line_num": inj_info.get("line_num"),
                     "inj_num": inj_info.get("inj_num"),
+                    "inj_volume": inj_info.get("inj_volume"),  # Volum d'injecció en µL
                     "location": inj_info.get("row_data", {}).get("Location"),
                     "acq_date": str(inj_info.get("row_data", {}).get("Injection Acquired Date", "")),
                     "method": inj_info.get("row_data", {}).get("Injection Acq Method Name"),
@@ -2060,7 +2634,7 @@ def save_import_manifest(imported_data, output_path=None):
 
     Args:
         imported_data: Dict retornat per import_sequence()
-        output_path: Ruta de sortida (default: SEQ_PATH/import_manifest.json)
+        output_path: Ruta de sortida (default: SEQ_PATH/CHECK/data/import_manifest.json)
 
     Returns:
         Path del fitxer generat
@@ -2069,7 +2643,11 @@ def save_import_manifest(imported_data, output_path=None):
 
     if output_path is None:
         seq_path = imported_data.get("seq_path", ".")
-        output_path = os.path.join(seq_path, "import_manifest.json")
+        data_folder = get_data_folder(seq_path, create=True)
+        output_path = os.path.join(data_folder, "import_manifest.json")
+
+    # Assegurar que la carpeta existeix
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(manifest, f, indent=2, ensure_ascii=False)
@@ -2081,19 +2659,29 @@ def load_manifest(seq_path):
     """
     Carrega el manifest JSON si existeix.
 
+    Busca primer a la nova ubicació (CHECK/data/) i després a l'antiga (arrel SEQ).
+
     Args:
         seq_path: Ruta a la carpeta SEQ
 
     Returns:
         dict amb manifest o None si no existeix
     """
-    manifest_path = os.path.join(seq_path, "import_manifest.json")
-    if os.path.exists(manifest_path):
-        try:
-            with open(manifest_path, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            return None
+    # Nova ubicació: CHECK/data/import_manifest.json
+    data_folder = get_data_folder(seq_path, create=False)
+    new_path = os.path.join(data_folder, "import_manifest.json")
+
+    # Antiga ubicació: SEQ/import_manifest.json (compatibilitat)
+    old_path = os.path.join(seq_path, "import_manifest.json")
+
+    # Prioritzar nova ubicació
+    for manifest_path in [new_path, old_path]:
+        if os.path.exists(manifest_path):
+            try:
+                with open(manifest_path, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception:
+                continue
     return None
 
 
@@ -2130,6 +2718,20 @@ def import_from_manifest(seq_path, manifest=None, config=None, progress_callback
             return import_sequence(seq_path, config, progress_callback)
 
     report_progress(5, "Llegint manifest...")
+
+    # Verificar si el manifest és antic (no té informació DOC Direct)
+    manifest_samples = manifest.get("samples", [])
+    has_direct_info = any(
+        rep.get("direct") is not None
+        for sample in manifest_samples
+        for rep in sample.get("replicas", [])
+    )
+
+    if not has_direct_info and manifest_samples:
+        # Manifest antic sense informació DOC Direct - reimportar completament
+        report_progress(0, "Manifest antic detectat, reimportant...")
+        print("[INFO] Manifest antic sense DOC Direct, fent reimportació completa")
+        return import_sequence(seq_path, config, progress_callback)
 
     # Inicialitzar resultat
     seq_info = manifest.get("sequence", {})
@@ -2223,31 +2825,53 @@ def import_from_manifest(seq_path, manifest=None, config=None, progress_callback
 
             # === DOC Direct ===
             direct_info = rep_info.get("direct")
-            if direct_info and toc_df is not None:
+            if direct_info:
                 row_start = direct_info.get("row_start")
                 row_end = direct_info.get("row_end")
-                if row_start is not None and row_end is not None:
+
+                # Preservar metadades del manifest encara que no es puguin llegir les dades
+                rep_data["direct"] = {
+                    "path": f"MasterFile:2-TOC",
+                    "df": None,
+                    "t": None,
+                    "y": None,
+                    "row_start": row_start,
+                    "row_end": row_end,
+                    "n_points": direct_info.get("n_points", 0),
+                    "timeout_info": {},
+                    "y_net": None,
+                    "baseline": None,
+                }
+
+                # Intentar llegir les dades reals si tenim MasterFile
+                if toc_df is not None and row_start is not None and row_end is not None:
                     try:
-                        doc_result = extract_doc_from_masterfile(
+                        max_dur = config.get("max_duration_min", 80.0)
+                        df_doc, timeout_info = extract_doc_from_masterfile(
                             toc_df, row_start, row_end,
-                            t_start=None, detect_timeouts=True
+                            t_start=None, detect_timeouts=True,
+                            max_duration_min=max_dur
                         )
-                        if doc_result and doc_result.get("t") is not None:
+                        if df_doc is not None and not df_doc.empty:
+                            t_direct = df_doc["time (min)"].values
+                            y_direct = df_doc["DOC"].values
+
                             # Calcular baseline
                             mode_type = "BP" if result["method"] == "BP" else "COL"
                             baseline = get_baseline_correction(
-                                doc_result["t"], doc_result["y"], mode_type, config
+                                t_direct, y_direct, mode_type, config
                             )
-                            y_net = np.array(doc_result["y"]) - baseline
+                            y_net = np.array(y_direct) - baseline
 
                             rep_data["direct"] = {
                                 "path": f"MasterFile:2-TOC",
-                                "df": None,
-                                "t": doc_result["t"],
-                                "y": doc_result["y"],
+                                "df": df_doc,
+                                "t": t_direct,
+                                "y": y_direct,
                                 "row_start": row_start,
                                 "row_end": row_end,
-                                "timeout_info": doc_result.get("timeout_info", {}),
+                                "n_points": len(t_direct),
+                                "timeout_info": timeout_info,
                                 "y_net": y_net,
                                 "baseline": baseline,
                             }
@@ -2259,6 +2883,19 @@ def import_from_manifest(seq_path, manifest=None, config=None, progress_callback
             uib_info = rep_info.get("uib")
             if uib_info:
                 uib_file = uib_info.get("file", "")
+
+                # Preservar metadades del manifest encara que no es puguin llegir les dades
+                rep_data["uib"] = {
+                    "path": uib_file,
+                    "df": None,
+                    "t": None,
+                    "y": None,
+                    "file": uib_file,
+                    "n_points": uib_info.get("n_points", 0),
+                    "y_net": None,
+                    "baseline": None,
+                }
+
                 if uib_file:
                     # Buscar fitxer UIB
                     uib_path = os.path.join(seq_path, "CSV", uib_file)
@@ -2272,10 +2909,10 @@ def import_from_manifest(seq_path, manifest=None, config=None, progress_callback
 
                     if os.path.exists(uib_path):
                         try:
-                            uib_result = llegir_doc_uib(uib_path)
-                            if uib_result and uib_result.get("t") is not None:
-                                t_uib = uib_result["t"]
-                                y_uib = uib_result["y"]
+                            df_uib, status = llegir_doc_uib(uib_path)
+                            if not df_uib.empty and "OK" in status:
+                                t_uib = df_uib["time (min)"].values
+                                y_uib = df_uib["DOC"].values
 
                                 # Baseline
                                 mode_type = "BP" if result["method"] == "BP" else "COL"
@@ -2284,9 +2921,11 @@ def import_from_manifest(seq_path, manifest=None, config=None, progress_callback
 
                                 rep_data["uib"] = {
                                     "path": uib_path,
-                                    "df": uib_result.get("df"),
+                                    "df": df_uib,
                                     "t": t_uib,
                                     "y": y_uib,
+                                    "file": uib_file,
+                                    "n_points": len(t_uib),
                                     "y_net": y_net,
                                     "baseline": baseline,
                                 }
@@ -2315,9 +2954,11 @@ def import_from_manifest(seq_path, manifest=None, config=None, progress_callback
                             sname = sample_name.upper().replace(" ", "").replace("_", "")
                             if sname in fname.replace(" ", "").replace("_", ""):
                                 try:
-                                    df_dad = llegir_dad_export3d(df_path)
-                                    if df_dad is not None:
+                                    df_dad, status = llegir_dad_export3d(df_path)
+                                    if df_dad is not None and status.startswith("OK"):
                                         rep_data["dad"] = {"df": df_dad, "path": df_path}
+                                        rep_data["dad_source"] = "export3d"
+                                        rep_data["has_data"] = True
                                         break
                                 except Exception:
                                     pass
@@ -2337,6 +2978,96 @@ def import_from_manifest(seq_path, manifest=None, config=None, progress_callback
         "from_manifest": True,
     }
 
+    # Recuperar informació d'orfes i suggeriments del manifest
+    orphan_info = manifest.get("orphan_files", {})
+
+    # Reconstruir paths complets per fitxers orfes
+    def find_full_path(filename, search_dirs):
+        """Busca el path complet d'un fitxer."""
+        for subdir in search_dirs:
+            test_path = os.path.join(seq_path, subdir, filename) if subdir else os.path.join(seq_path, filename)
+            if os.path.exists(test_path):
+                return test_path
+        return None
+
+    # Directoris on buscar cada tipus
+    dad_dirs = ["Export3d", "Export3D", "CSV", "csv", ""]
+    uib_dirs = ["CSV", "csv", ""]
+
+    # Reconstruir paths per orfes UIB
+    orphan_uib_full = []
+    for fname in orphan_info.get("uib", []):
+        full_path = find_full_path(fname, uib_dirs)
+        if full_path:
+            orphan_uib_full.append(full_path)
+
+    # Reconstruir paths per orfes DAD
+    orphan_dad_full = []
+    for fname in orphan_info.get("dad", []):
+        full_path = find_full_path(fname, dad_dirs)
+        if full_path:
+            orphan_dad_full.append(full_path)
+
+    result["orphan_files"] = {
+        "uib": orphan_uib_full,
+        "dad": orphan_dad_full,
+    }
+
+    # Llista completa d'orfes (incloent suggeriments)
+    all_orphan_uib = list(orphan_uib_full)
+    all_orphan_dad = list(orphan_dad_full)
+
+    # Afegir suggeriments des del manifest a cada rèplica
+    for sample_info in manifest_samples:
+        sample_name = sample_info.get("name", "")
+        if sample_name not in result["samples"]:
+            continue
+
+        for rep_info in sample_info.get("replicas", []):
+            rep_num = str(rep_info.get("replica", "1"))
+            rep_data = result["samples"][sample_name]["replicas"].get(rep_num)
+            if not rep_data:
+                continue
+
+            # Recuperar suggeriments DAD
+            dad_suggestion = rep_info.get("dad_suggestion")
+            if dad_suggestion:
+                suggested_file = dad_suggestion.get("file", "")
+                rep_data["dad_suggestion"] = {
+                    "file": suggested_file,
+                    "filename": suggested_file,
+                    "confidence": dad_suggestion.get("confidence", 0),
+                    "match_type": dad_suggestion.get("match_type", "SUGGESTED"),
+                    "status": dad_suggestion.get("status", "SUGGESTED"),
+                }
+                # Afegir a llista completa d'orfes si no hi és
+                if suggested_file:
+                    full_path = find_full_path(suggested_file, dad_dirs)
+                    if full_path and full_path not in all_orphan_dad:
+                        all_orphan_dad.append(full_path)
+
+            # Recuperar suggeriments UIB
+            uib_suggestion = rep_info.get("uib_suggestion")
+            if uib_suggestion:
+                suggested_file = uib_suggestion.get("file", "")
+                rep_data["uib_suggestion"] = {
+                    "file": suggested_file,
+                    "filename": suggested_file,
+                    "confidence": uib_suggestion.get("confidence", 0),
+                    "match_type": uib_suggestion.get("match_type", "SUGGESTED"),
+                    "status": uib_suggestion.get("status", "SUGGESTED"),
+                }
+                # Afegir a llista completa d'orfes si no hi és
+                if suggested_file:
+                    full_path = find_full_path(suggested_file, uib_dirs)
+                    if full_path and full_path not in all_orphan_uib:
+                        all_orphan_uib.append(full_path)
+
+    result["all_orphan_files"] = {
+        "uib": all_orphan_uib,
+        "dad": all_orphan_dad,
+    }
+
     result["success"] = True
     report_progress(100, "Importació des de manifest completada")
 
@@ -2349,6 +3080,9 @@ def import_from_manifest(seq_path, manifest=None, config=None, progress_callback
 
 # Re-exportar funcions que altres mòduls poden necessitar
 __all__ = [
+    # Carpeta dades
+    "get_data_folder",
+    "DATA_FOLDER_NAME",
     # Utilitats
     "normalize_key",
     "normalize_rep",
@@ -2385,6 +3119,10 @@ __all__ = [
     "match_sample_confidence",
     "is_sample_in_seq",
     "CONFIDENCE_THRESHOLD",
+    # Matching intel·ligent d'orfes
+    "extract_sample_from_filename",
+    "compute_orphan_suggestions",
+    "apply_orphan_suggestions",
     # DAD matching
     "detect_dad_rep_style",
     "dad_sample_rep_from_path",

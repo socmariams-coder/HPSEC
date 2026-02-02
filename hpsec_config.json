@@ -183,5 +183,36 @@
     "warning_color": "#F6AE2D",
     "error_color": "#E63946",
     "success_color": "#2A9D8F"
+  },
+  "sample_types": {
+    "MOSTRA": {
+      "label": "MOSTRA",
+      "description": "Mostra estàndard per analitzar",
+      "color": "#2E86AB"
+    },
+    "PATRÓ_CAL": {
+      "label": "PATRÓ_CAL",
+      "description": "Patró de calibració (KHP)",
+      "patterns": ["KHP"],
+      "color": "#2A9D8F"
+    },
+    "PATRÓ_REF": {
+      "label": "PATRÓ_REF",
+      "description": "Patró de referència per QC",
+      "patterns": ["REF", "QC", "CHECK", "SUWANNEE", "SRNOM"],
+      "color": "#9B59B6"
+    },
+    "CONTROL": {
+      "label": "CONTROL",
+      "description": "Control de neteja o verificació",
+      "patterns": ["CONTROL", "NaOH", "NAOH"],
+      "color": "#F6AE2D"
+    },
+    "BLANC": {
+      "label": "BLANC",
+      "description": "Blanc o aigua MQ",
+      "patterns": ["BLANC", "BLANK", "BLK", "MQ", "H2O", "WATER", "MILLI"],
+      "color": "#888888"
+    }
   }
 }
