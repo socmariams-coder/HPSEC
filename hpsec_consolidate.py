@@ -55,6 +55,10 @@ def detect_seq_type(seq_name: str) -> str:
     """
     Detecta el tipus de seqüència (COLUMN o BP).
 
+    Convenció:
+    - *_SEQ_BP, *_BP -> BP mode
+    - *_SEQ (sense sufix), *_SEQ_COLUMN, *_C -> COLUMN mode
+
     Args:
         seq_name: Nom de la seqüència
 
@@ -63,10 +67,15 @@ def detect_seq_type(seq_name: str) -> str:
     """
     name_upper = seq_name.upper()
 
-    if "COLUMN" in name_upper or "_C_" in name_upper or name_upper.endswith("_C"):
-        return "COLUMN"
-    elif "BP" in name_upper or "BYPASS" in name_upper:
+    # Primer comprovar BP (més específic)
+    if "_BP" in name_upper or "BYPASS" in name_upper:
         return "BP"
+    # Després COLUMN (o sense sufix = COLUMN per defecte)
+    elif "COLUMN" in name_upper or "_C_" in name_upper or name_upper.endswith("_C"):
+        return "COLUMN"
+    elif name_upper.endswith("_SEQ") or re.match(r'^\d+[A-Z]?_SEQ$', name_upper):
+        # Pattern: 256_SEQ, 256B_SEQ -> COLUMN (sense sufix = columna)
+        return "COLUMN"
     else:
         return "UNKNOWN"
 
