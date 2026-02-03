@@ -379,11 +379,11 @@ class AnalyzePanel(QWidget):
             row = self.results_table.rowCount()
             self.results_table.insertRow(row)
 
-            replicas = sample_data.get("replicas", {})
-            comparison = sample_data.get("comparison", {})
-            recommendation = sample_data.get("recommendation", {})
-            selected = sample_data.get("selected", {"doc": "1", "dad": "1"})
-            quantification = sample_data.get("quantification", {})
+            replicas = sample_data.get("replicas") or {}
+            comparison = sample_data.get("comparison") or {}
+            recommendation = sample_data.get("recommendation") or {}
+            selected = sample_data.get("selected") or {"doc": "1", "dad": "1"}
+            quantification = sample_data.get("quantification") or {}
 
             # Col 0: Mostra
             item_name = QTableWidgetItem(sample_name)
@@ -394,7 +394,7 @@ class AnalyzePanel(QWidget):
             replica_combo = QComboBox()
             replica_combo.setStyleSheet("QComboBox { border: none; background: transparent; }")
 
-            doc_rec = recommendation.get("doc", {}).get("replica", "1")
+            doc_rec = (recommendation.get("doc") or {}).get("replica", "1")
             doc_sel = selected.get("doc", doc_rec)
 
             for rep_num in sorted(replicas.keys()):
@@ -797,7 +797,7 @@ class SampleDetailDialog(QDialog):
 
         selected = self.sample_data.get("selected", {})
         doc_sel = selected.get("doc", "1")
-        rep_data = self.sample_data.get("replicas", {}).get(doc_sel, {})
+        rep_data = (self.sample_data.get("replicas") or {}).get(doc_sel, {})
 
         snr_info = rep_data.get("snr_info", {})
         snr_dad = rep_data.get("snr_info_dad", {})
@@ -840,7 +840,7 @@ class SampleDetailDialog(QDialog):
 
         selected = self.sample_data.get("selected", {})
         doc_sel = selected.get("doc", "1")
-        rep_data = self.sample_data.get("replicas", {}).get(doc_sel, {})
+        rep_data = (self.sample_data.get("replicas") or {}).get(doc_sel, {})
 
         fractions = rep_data.get("fractions", {})
 
