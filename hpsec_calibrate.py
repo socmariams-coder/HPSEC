@@ -1,22 +1,28 @@
 """
-hpsec_calibrate.py - Mòdul de calibració HPSEC standalone
+hpsec_calibrate.py - Mòdul de calibració HPSEC
 
-Funcions per:
-- Anàlisi de KHP (analizar_khp_consolidado, analizar_khp_lote)
-- Cerca de KHP (buscar_khp_consolidados, find_khp_in_folder)
-- Gestió historial calibracions (CALDATA local, KHP_History global)
-- Càlcul de factors de calibració
-- Validació qualitat KHP (validate_khp_quality)
+Funcions principals:
+- calibrate_from_import(): Calibració des de dades importades (import_manifest.json)
+- analizar_khp_data(): Anàlisi de dades KHP en memòria
+- register_calibration(): Registre de calibracions amb suport múltiples condicions
+- get_all_active_calibrations(): Obté totes les calibracions actives (una per condition_key)
+- validate_khp_quality(): Validació de qualitat KHP
 
-Pot usar-se standalone o importat des de HPSEC_Suite.
+Suport múltiples condicions:
+- Cada combinació (mode, volume, conc) genera un condition_key únic
+- Una SEQ pot tenir N calibracions actives (una per condition_key)
+- Ex: KHP2@100µL i KHP2@50µL poden coexistir
 
-v1.1 - 2026-01-26: Refactor - funcions detecció mogudes a hpsec_core.py
-v1.0 - Versió inicial
+v1.5.1 - 2026-02-03: Eliminat calculate_peak_symmetry/snr locals, usar funcions de core
+v1.5.0 - 2026-02-03: Suport múltiples calibracions per SEQ (condition_key)
+v1.4.0 - 2026-01-30: Eliminat codi obsolet (fitxers consolidats Excel)
+v1.3.0 - 2026-01-29: Migrades funcions alineació des de hpsec_consolidate.py
+v1.1.0 - 2026-01-26: Refactor - funcions detecció mogudes a hpsec_core.py
+v1.0.0 - Versió inicial
 """
 
-__version__ = "1.4.0"
-__version_date__ = "2026-01-30"
-# v1.3.0: Migrades funcions alineació des de hpsec_consolidate.py
+__version__ = "1.5.1"
+__version_date__ = "2026-02-03"
 
 import os
 import re
@@ -27,6 +33,7 @@ import pandas as pd
 from datetime import datetime
 from scipy.signal import savgol_filter
 from scipy.integrate import trapezoid
+from hpsec_config import get_registry_path
 
 # Import funcions de detecció des de hpsec_core (Single Source of Truth)
 from hpsec_core import (
@@ -37,14 +44,18 @@ from hpsec_core import (
     detect_all_peaks,
     integrate_chromatogram,
     integrate_above_baseline,
+    calculate_fwhm,
+    calculate_symmetry,
     TIMEOUT_CONFIG
 )
 
 # Import funcions d'identificació des de hpsec_import (Single Source of Truth)
 from hpsec_import import is_khp, extract_khp_conc, obtenir_seq
 
-# Import funcions utilitàries des de hpsec_utils (Single Source of Truth)
-from hpsec_utils import mode_robust, t_at_max
+# Import funcions utilitàries
+# NOTA (2026-02-03): Baseline functions ara a hpsec_core.py
+from hpsec_core import mode_robust, get_baseline_value, get_baseline_stats
+from hpsec_utils import t_at_max
 
 # =============================================================================
 # JSON ENCODER PER NUMPY TYPES
@@ -68,18 +79,16 @@ class NumpyEncoder(json.JSONEncoder):
 # CONSTANTS
 # =============================================================================
 
-# Fitxers d'historial
+# Fitxers d'historial GLOBAL (a REGISTRY/)
+REGISTRY_FOLDER = "REGISTRY"
 KHP_HISTORY_FILENAME = "KHP_History.json"
 KHP_HISTORY_EXCEL_FILENAME = "KHP_History.xlsx"
 SAMPLES_HISTORY_FILENAME = "Samples_History.json"
 
-# Sistema CALDATA - Carpeta local per cada SEQ
-CALDATA_FOLDER = "CALDATA"
-CALDATA_FILENAME = "calibrations.json"
+# Fitxers locals per SEQ (a CHECK/data/)
+LOCAL_DATA_FOLDER = "data"  # Subcarpeta dins CHECK
+CALIBRATION_FILENAME = "calibration_result.json"
 
-# Sistema QAQC - Carpeta global per alineació (a nivell Dades2)
-QAQC_FOLDER = "HPSEC_QAQC"
-ALIGNMENT_LOG_FILE = "Alignment_History.json"
 
 # Configuració per defecte
 DEFAULT_CONFIG = {
@@ -174,6 +183,27 @@ def extract_seq_number(seq_path):
 # NOTA: obtenir_seq s'ha mogut a hpsec_import.py (2026-01-29)
 
 
+def get_condition_key(mode: str, volume_uL: int, conc_ppm: float = None) -> str:
+    """
+    Genera clau única per identificar condicions de calibració.
+
+    Permet tenir múltiples calibracions actives per SEQ amb diferents condicions
+    (ex: KHP2@100µL i KHP2@50µL).
+
+    Args:
+        mode: "COLUMN" o "BP"
+        volume_uL: Volum d'injecció en µL
+        conc_ppm: Concentració KHP en ppm (opcional)
+
+    Returns:
+        Clau única format: "{mode}_{volume}_{conc}"
+        Ex: "COLUMN_400_5", "BP_100_2", "BP_50_2"
+    """
+    vol = int(volume_uL) if volume_uL else 0
+    conc = int(conc_ppm) if conc_ppm else 0
+    return f"{mode}_{vol}_{conc}"
+
+
 def get_cr_thresholds(is_bp, volume_uL):
     """
     Retorna els thresholds de CR segons mode i volum.
@@ -236,53 +266,8 @@ def get_cr_thresholds(is_bp, volume_uL):
 
 
 # =============================================================================
-# FUNCIONS DE BASELINE I ESTADÍSTIQUES
-# =============================================================================
-
-def baseline_stats_time(t, y, t_start=0, t_end=2.0, fallback_pct=10, robust=True):
-    """
-    Calcula estadístiques de baseline en una finestra temporal.
-
-    Args:
-        t: Array de temps
-        y: Array de senyal
-        t_start: Temps inicial de la finestra
-        t_end: Temps final de la finestra
-        fallback_pct: Percentatge de dades a usar si la finestra és buida
-        robust: Si True, usa mètode robust (percentils) per ignorar pics/outliers
-
-    Returns:
-        Dict amb mean, std, min, max, robust (bool)
-    """
-    mask = (t >= t_start) & (t <= t_end)
-
-    if np.sum(mask) < 10:
-        # Fallback: usar primers X% de dades
-        n_points = max(10, int(len(y) * fallback_pct / 100))
-        baseline_data = y[:n_points]
-    else:
-        baseline_data = y[mask]
-
-    used_robust = False
-    if robust and len(baseline_data) >= 20:
-        # Mètode robust: usar percentils per excloure pics i outliers
-        # Seleccionar valors entre percentil 5 i 40 (zona baixa sense pics)
-        p5 = np.percentile(baseline_data, 5)
-        p40 = np.percentile(baseline_data, 40)
-        robust_mask = (baseline_data >= p5) & (baseline_data <= p40)
-
-        if np.sum(robust_mask) >= 10:
-            baseline_data = baseline_data[robust_mask]
-            used_robust = True
-
-    return {
-        "mean": float(np.mean(baseline_data)),
-        "std": float(np.std(baseline_data)),
-        "min": float(np.min(baseline_data)),
-        "max": float(np.max(baseline_data)),
-        "robust": used_robust,
-    }
-
+# NOTA: Funcions de baseline/stats ara estan a hpsec_utils.py (Single Source of Truth)
+# Usar get_baseline_stats() i get_baseline_value() directament
 
 # NOTA: detect_main_peak i detect_all_peaks ara estan a hpsec_core.py
 # (Single Source of Truth per evitar duplicació)
@@ -348,132 +333,9 @@ def timeout_affects_peak(timeout_info, t_doc, left_idx, right_idx):
 # =============================================================================
 # QUALITAT DEL PIC
 # =============================================================================
-
-def calculate_peak_symmetry(t, y, peak_idx, left_idx, right_idx):
-    """
-    Calcula la simetria (tailing factor) d'un pic.
-
-    Returns:
-        Factor de simetria (1.0 = simètric, >1 = tailing, <1 = fronting)
-    """
-    if peak_idx <= left_idx or peak_idx >= right_idx:
-        return 1.0
-
-    t_peak = t[peak_idx]
-
-    # Amplada esquerra i dreta al 10% de l'altura
-    h_peak = y[peak_idx]
-    h_10 = h_peak * 0.1
-
-    # Trobar punts al 10% d'altura
-    left_10_idx = peak_idx
-    for i in range(peak_idx, left_idx - 1, -1):
-        if y[i] <= h_10:
-            left_10_idx = i
-            break
-
-    right_10_idx = peak_idx
-    for i in range(peak_idx, right_idx + 1):
-        if y[i] <= h_10:
-            right_10_idx = i
-            break
-
-    w_left = t_peak - t[left_10_idx]
-    w_right = t[right_10_idx] - t_peak
-
-    if w_left <= 0:
-        return 1.0
-
-    return float(w_right / w_left)
-
-
-def calculate_peak_snr(y, peak_idx, baseline_mean, baseline_std):
-    """
-    Calcula el Signal-to-Noise Ratio d'un pic.
-
-    El mínim baseline_std es basa en el rang del senyal per evitar divisions
-    per valors massa petits (p.ex. quan les dades tenen pocs punts a la zona baseline).
-    """
-    # Mínim baseline_std: 0.1% del rang del senyal o 0.5 (el que sigui major)
-    signal_range = float(np.max(y) - np.min(y)) if len(y) > 0 else 1.0
-    min_std = max(0.5, signal_range * 0.001)
-
-    if baseline_std <= min_std:
-        baseline_std = min_std
-
-    signal = y[peak_idx] - baseline_mean
-    return float(signal / baseline_std)
-
-
-def calculate_fwhm(t, y, peak_idx, left_idx=None, right_idx=None):
-    """
-    Calcula Full Width at Half Maximum (FWHM) d'un pic.
-
-    Args:
-        t: Array de temps (minuts)
-        y: Array de senyal
-        peak_idx: Índex del màxim del pic
-        left_idx: Límit esquerre opcional (si None, busca en tot l'array)
-        right_idx: Límit dret opcional (si None, busca en tot l'array)
-
-    Returns:
-        FWHM en minuts, o np.nan si no es pot calcular
-    """
-    try:
-        t = np.asarray(t, dtype=float)
-        y = np.asarray(y, dtype=float)
-
-        if len(t) < 3 or peak_idx < 0 or peak_idx >= len(y):
-            return np.nan
-
-        # Límits de cerca
-        if left_idx is None:
-            left_idx = 0
-        if right_idx is None:
-            right_idx = len(y) - 1
-
-        left_idx = max(0, left_idx)
-        right_idx = min(len(y) - 1, right_idx)
-
-        if peak_idx <= left_idx or peak_idx >= right_idx:
-            return np.nan
-
-        # Altura del pic i mitja altura
-        h_peak = y[peak_idx]
-        h_half = h_peak / 2
-
-        # Buscar punt esquerre on creua h_half
-        t_left = None
-        for i in range(peak_idx, left_idx - 1, -1):
-            if y[i] <= h_half:
-                # Interpolació lineal per més precisió
-                if i < peak_idx:
-                    frac = (h_half - y[i]) / (y[i + 1] - y[i]) if y[i + 1] != y[i] else 0
-                    t_left = t[i] + frac * (t[i + 1] - t[i])
-                else:
-                    t_left = t[i]
-                break
-
-        # Buscar punt dret on creua h_half
-        t_right = None
-        for i in range(peak_idx, right_idx + 1):
-            if y[i] <= h_half:
-                # Interpolació lineal
-                if i > peak_idx:
-                    frac = (h_half - y[i - 1]) / (y[i] - y[i - 1]) if y[i] != y[i - 1] else 0
-                    t_right = t[i - 1] + frac * (t[i] - t[i - 1])
-                else:
-                    t_right = t[i]
-                break
-
-        if t_left is None or t_right is None:
-            return np.nan
-
-        fwhm = t_right - t_left
-        return float(fwhm) if fwhm > 0 else np.nan
-
-    except Exception:
-        return np.nan
+# NOTA (2026-02-03): calculate_peak_symmetry() i calculate_peak_snr() eliminades.
+# Usar calculate_symmetry() de hpsec_core.py (50% d'altura, estàndard cromatogràfic).
+# SNR es calcula inline: (peak_height - baseline_mean) / baseline_std
 
 
 def calculate_integration_limits(t, y, peak_idx, min_width_min=1.0, max_width_min=6.0):
@@ -693,6 +555,114 @@ def validate_integration_baseline(t, y, left_idx, right_idx, peak_idx, baseline_
 # NOTA: detect_batman i detect_timeout ara estan a hpsec_core.py
 # (Single Source of Truth per evitar duplicació)
 # Usar: from hpsec_core import detect_batman, detect_timeout, detect_peak_anomaly
+
+
+# =============================================================================
+# HELPER: QUANTIFICACIÓ AMB CALIBRACIONS
+# =============================================================================
+
+def get_calibration_for_conditions(calibration_data, volume_uL, signal="direct"):
+    """
+    Troba la calibració que coincideix amb les condicions donades.
+
+    Args:
+        calibration_data: Resultat de calibrate_sequence()
+        volume_uL: Volum d'injecció de la mostra (µL)
+        signal: "direct", "uib", o "primary"
+
+    Returns:
+        dict: Calibració amb les mateixes condicions, o la principal si no hi ha match
+    """
+    if not calibration_data:
+        return None
+
+    # Seleccionar llista de calibracions segons senyal
+    if signal == "uib":
+        calibrations = calibration_data.get("calibrations_uib", [])
+    elif signal == "direct":
+        calibrations = calibration_data.get("calibrations_direct", [])
+    else:
+        calibrations = calibration_data.get("calibrations", [])
+
+    if not calibrations:
+        # Fallback: retornar khp_data si existeix (compatibilitat)
+        return calibration_data.get("khp_data")
+
+    # Buscar calibració pel volum
+    vol_int = int(volume_uL) if volume_uL else 0
+    for cal in calibrations:
+        if cal.get('volume_uL') == vol_int:
+            return cal
+
+    # Fallback: primera calibració (la de major conc/vol)
+    return calibrations[0]
+
+
+def quantify_sample(area, volume_uL, calibration_data, signal="direct"):
+    """
+    Calcula la concentració d'una mostra usant la calibració de les seves condicions.
+
+    Args:
+        area: Àrea integrada del cromatograma (mAU·min)
+        volume_uL: Volum d'injecció de la mostra (µL)
+        calibration_data: Resultat de calibrate_sequence()
+        signal: "direct", "uib", o "primary"
+
+    Returns:
+        float: Concentració en ppm (mg/L)
+
+    Fórmula:
+        conc_ppm = Area × 1000 / (RF_mass × volume_µL)
+
+    Example:
+        >>> cal = calibrate_sequence(seq_path, samples)
+        >>> for sample in samples:
+        ...     area = sample.get("area", 0)
+        ...     vol = sample.get("inj_volume", 400)
+        ...     conc = quantify_sample(area, vol, cal, signal="direct")
+    """
+    cal = get_calibration_for_conditions(calibration_data, volume_uL, signal)
+    if not cal:
+        return 0.0
+
+    rf_mass = cal.get('rf_mass', 0)
+    if rf_mass <= 0 or volume_uL <= 0:
+        return 0.0
+    return area * 1000 / (rf_mass * volume_uL)
+
+
+def get_all_calibrations(calibration_data, signal="direct"):
+    """
+    Retorna totes les calibracions disponibles per un senyal.
+
+    Cada calibració correspon a una combinació de condicions (nom, volum, conc).
+
+    Args:
+        calibration_data: Resultat de calibrate_sequence()
+        signal: "direct", "uib", o "primary"
+
+    Returns:
+        list of dict: Llista de calibracions amb estructura idèntica
+    """
+    if not calibration_data:
+        return []
+
+    # Seleccionar llista segons senyal
+    if signal == "uib":
+        calibrations = calibration_data.get("calibrations_uib", [])
+    elif signal == "direct":
+        calibrations = calibration_data.get("calibrations_direct", [])
+    else:
+        calibrations = calibration_data.get("calibrations", [])
+
+    # Si no hi ha llista, intentar compatibilitat amb format antic
+    if not calibrations:
+        khp_data = calibration_data.get("khp_data", {})
+        if khp_data:
+            return [khp_data]
+        return []
+
+    return calibrations
 
 
 # =============================================================================
@@ -1431,211 +1401,6 @@ def validate_khp_for_alignment(t_doc, y_doc, t_dad, y_a254, t_uib=None, y_uib=No
     return result
 
 
-# =============================================================================
-# GESTIÓ QAQC I ALINEACIÓ (GLOBAL)
-# =============================================================================
-
-def get_qaqc_folder(base_folder):
-    """Retorna el path a la carpeta QAQC (a la carpeta pare de les SEQs)."""
-    parent = os.path.dirname(os.path.normpath(base_folder))
-    qaqc_path = os.path.join(parent, QAQC_FOLDER)
-    return qaqc_path
-
-
-def ensure_qaqc_folder(base_folder):
-    """Crea la carpeta QAQC si no existeix i retorna el path."""
-    qaqc_path = get_qaqc_folder(base_folder)
-    os.makedirs(qaqc_path, exist_ok=True)
-    return qaqc_path
-
-
-def get_alignment_log_path(base_folder):
-    """Retorna el path al fitxer de log d'alineació."""
-    qaqc_path = get_qaqc_folder(base_folder)
-    return os.path.join(qaqc_path, ALIGNMENT_LOG_FILE)
-
-
-def load_alignment_log(base_folder):
-    """Carrega el log d'alineació."""
-    log_path = get_alignment_log_path(base_folder)
-    if os.path.exists(log_path):
-        try:
-            with open(log_path, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except Exception:
-            pass
-    return {"entries": [], "version": "1.0"}
-
-
-def save_alignment_log(base_folder, log_data):
-    """Guarda el log d'alineació."""
-    ensure_qaqc_folder(base_folder)
-    log_path = get_alignment_log_path(base_folder)
-    try:
-        with open(log_path, 'w', encoding='utf-8') as f:
-            json.dump(log_data, f, indent=2, ensure_ascii=False, cls=NumpyEncoder)
-        return True
-    except Exception:
-        return False
-
-
-def add_alignment_entry(base_folder, seq_name, seq_date, method, shift_uib, shift_direct, khp_file, details=None):
-    """
-    Afegeix una entrada al log d'alineació.
-
-    Args:
-        base_folder: Carpeta de la SEQ
-        seq_name: Nom de la SEQ (ex: "275", "284_BP")
-        seq_date: Data de la SEQ
-        method: "BP" o "COLUMN"
-        shift_uib: Shift aplicat a DOC_UIB (minuts)
-        shift_direct: Shift aplicat a DOC_Direct (minuts)
-        khp_file: Nom del fitxer KHP usat
-        details: Dict amb detalls adicionals
-    """
-    log_data = load_alignment_log(base_folder)
-
-    entry = {
-        "timestamp": datetime.now().isoformat(),
-        "seq_name": seq_name,
-        "seq_date": str(seq_date) if seq_date else "",
-        "method": method,
-        "shift_uib_min": shift_uib,
-        "shift_uib_sec": shift_uib * 60,
-        "shift_direct_min": shift_direct,
-        "shift_direct_sec": shift_direct * 60,
-        "khp_file": khp_file,
-        "details": details or {}
-    }
-
-    # Evitar duplicats: actualitzar si ja existeix entrada per aquesta SEQ
-    existing_idx = None
-    for i, e in enumerate(log_data["entries"]):
-        if e.get("seq_name") == seq_name:
-            existing_idx = i
-            break
-
-    if existing_idx is not None:
-        log_data["entries"][existing_idx] = entry
-    else:
-        log_data["entries"].append(entry)
-
-    save_alignment_log(base_folder, log_data)
-    return entry
-
-
-def find_sibling_alignment(base_folder, seq_name, method):
-    """
-    Busca l'alineació d'una SEQ sibling (mateixa SEQ numèrica).
-
-    Siblings són carpetes amb el mateix prefix numèric:
-    - 256_SEQ, 256B_SEQ, 256C_SEQ són siblings
-    - 257_SEQ NO és sibling de 256_SEQ
-
-    Args:
-        base_folder: Carpeta base (Dades2)
-        seq_name: Nom de la SEQ actual (ex: "256B", "275")
-        method: "BP" o "COLUMN"
-
-    Returns:
-        Dict amb shift_uib, shift_direct, source_seq, khp_validation o None
-    """
-    log_data = load_alignment_log(base_folder)
-
-    # Extreure prefix numèric de la SEQ actual
-    match = re.match(r'^(\d+)', seq_name)
-    if not match:
-        return None
-
-    seq_num = match.group(1)
-
-    # Buscar siblings a l'historial (mateix prefix numèric, diferent nom)
-    candidates = []
-    for e in log_data.get("entries", []):
-        entry_seq = e.get("seq_name", "")
-        entry_method = e.get("method", "")
-
-        # Mateix mètode
-        if entry_method != method:
-            continue
-
-        # Mateix prefix numèric però diferent SEQ
-        entry_match = re.match(r'^(\d+)', entry_seq)
-        if entry_match and entry_match.group(1) == seq_num and entry_seq != seq_name:
-            candidates.append(e)
-
-    if not candidates:
-        return None
-
-    # Preferir el sibling amb KHP vàlid
-    valid_siblings = [c for c in candidates
-                      if c.get("details", {}).get("khp_validation", "").startswith("VALID")]
-
-    best = valid_siblings[0] if valid_siblings else candidates[0]
-
-    return {
-        "shift_uib": best.get("shift_uib_min", 0.0),
-        "shift_direct": best.get("shift_direct_min", 0.0),
-        "source_seq": best.get("seq_name", ""),
-        "source_date": best.get("seq_date", ""),
-        "source_khp": best.get("khp_file", ""),
-        "khp_validation": best.get("details", {}).get("khp_validation", "UNKNOWN"),
-        "khp_issues": best.get("details", {}).get("khp_issues", []),
-    }
-
-
-def find_nearest_alignment(base_folder, method, seq_date=None):
-    """
-    DEPRECATED: No usar per shifts. Mantingut per compatibilitat.
-
-    Busca l'alineació més propera en el temps per usar quan no hi ha KHP.
-    NOTA: Aquesta funció NO s'hauria d'usar per aplicar shifts.
-          Usar find_sibling_alignment() per siblings.
-
-    Args:
-        base_folder: Carpeta de la SEQ
-        method: "BP" o "COLUMN" (només busca del mateix mètode)
-        seq_date: Data de la SEQ actual (per trobar la més propera)
-
-    Returns:
-        Dict amb shift_uib, shift_direct, source_seq o None si no es troba
-    """
-    log_data = load_alignment_log(base_folder)
-
-    # Filtrar per mètode
-    candidates = [e for e in log_data.get("entries", []) if e.get("method") == method]
-
-    if not candidates:
-        return None
-
-    # Si tenim data, ordenar per proximitat temporal
-    if seq_date:
-        try:
-            target_date = pd.to_datetime(seq_date)
-            for c in candidates:
-                c_date = pd.to_datetime(c.get("seq_date", ""), errors='coerce')
-                if pd.notna(c_date):
-                    c["_date_diff"] = abs((target_date - c_date).days)
-                else:
-                    c["_date_diff"] = 9999
-            candidates.sort(key=lambda x: x.get("_date_diff", 9999))
-        except Exception:
-            pass
-
-    # Retornar el més proper (o el més recent si no hi ha dates)
-    if candidates:
-        best = candidates[0]
-        return {
-            "shift_uib": best.get("shift_uib_min", 0.0),
-            "shift_direct": best.get("shift_direct_min", 0.0),
-            "source_seq": best.get("seq_name", ""),
-            "source_date": best.get("seq_date", ""),
-            "source_khp": best.get("khp_file", "")
-        }
-
-    return None
-
-
 def find_khp_for_alignment(seq_folder):
     """
     Cerca KHP per alineació: LOCAL → SIBLINGS.
@@ -1822,33 +1587,39 @@ def get_a254_for_alignment(df_dad_khp=None, path_export3d=None, path_dad1a=None)
 
 
 # =============================================================================
-# GESTIÓ CALDATA (LOCAL)
+# GESTIÓ CALIBRACIONS LOCALS (CHECK/data/)
 # =============================================================================
 
-def get_caldata_path(seq_path):
-    """Retorna el path de la carpeta CALDATA d'una SEQ."""
+def get_local_data_path(seq_path):
+    """
+    Retorna el path de la carpeta CHECK/data/ d'una SEQ.
+    Nova ubicació unificada per tots els JSONs locals.
+    """
     if not seq_path:
         return None
-    return os.path.join(seq_path, CALDATA_FOLDER)
+    return os.path.join(seq_path, "CHECK", LOCAL_DATA_FOLDER)
 
 
-def ensure_caldata_folder(seq_path):
-    """Crea la carpeta CALDATA si no existeix."""
-    caldata_path = get_caldata_path(seq_path)
-    if caldata_path and not os.path.exists(caldata_path):
-        os.makedirs(caldata_path, exist_ok=True)
-    return caldata_path
+def ensure_local_data_folder(seq_path):
+    """Crea la carpeta CHECK/data/ si no existeix."""
+    data_path = get_local_data_path(seq_path)
+    if data_path and not os.path.exists(data_path):
+        os.makedirs(data_path, exist_ok=True)
+    return data_path
+
+
 
 
 def load_local_calibrations(seq_path):
     """
-    Carrega l'historial LOCAL de calibracions d'una SEQ (CALDATA).
+    Carrega l'historial LOCAL de calibracions d'una SEQ.
+    Ubicació: CHECK/data/calibration_result.json
     """
-    caldata_path = get_caldata_path(seq_path)
-    if not caldata_path:
+    data_path = get_local_data_path(seq_path)
+    if not data_path:
         return []
 
-    filepath = os.path.join(caldata_path, CALDATA_FILENAME)
+    filepath = os.path.join(data_path, CALIBRATION_FILENAME)
     if not os.path.exists(filepath):
         return []
 
@@ -1857,19 +1628,19 @@ def load_local_calibrations(seq_path):
             data = json.load(f)
             return data.get("calibrations", [])
     except Exception as e:
-        print(f"Error carregant CALDATA: {e}")
+        print(f"Error carregant calibracions: {e}")
         return []
 
 
 def save_local_calibrations(seq_path, calibrations):
     """
-    Guarda l'historial LOCAL de calibracions d'una SEQ (CALDATA).
+    Guarda l'historial LOCAL de calibracions d'una SEQ a CHECK/data/.
     """
-    caldata_path = ensure_caldata_folder(seq_path)
-    if not caldata_path:
+    data_path = ensure_local_data_folder(seq_path)
+    if not data_path:
         return False
 
-    filepath = os.path.join(caldata_path, CALDATA_FILENAME)
+    filepath = os.path.join(data_path, CALIBRATION_FILENAME)
 
     try:
         data = {
@@ -1882,7 +1653,7 @@ def save_local_calibrations(seq_path, calibrations):
             json.dump(data, f, indent=2, ensure_ascii=False, cls=NumpyEncoder)
         return True
     except Exception as e:
-        print(f"Error guardant CALDATA: {e}")
+        print(f"Error guardant CHECK/data: {e}")
         return False
 
 
@@ -1902,6 +1673,74 @@ def get_active_calibration(seq_path, mode=None):
         if not cal.get("is_outlier", False):
             if mode is None or cal.get("mode") == mode:
                 return cal
+
+    return None
+
+
+def get_all_active_calibrations(seq_path, mode=None):
+    """
+    Retorna TOTES les calibracions actives d'una SEQ (una per condition_key).
+
+    Permet tenir múltiples calibracions actives per a diferents condicions
+    (ex: KHP2@100µL i KHP2@50µL).
+
+    Args:
+        seq_path: Path de la seqüència
+        mode: Filtre opcional per mode ("COLUMN" o "BP")
+
+    Returns:
+        Llista de calibracions actives, una per cada condition_key única.
+    """
+    calibrations = load_local_calibrations(seq_path)
+    active_by_condition = {}
+
+    for cal in calibrations:
+        # Ignorar outliers i inactives
+        if not cal.get("is_active", False) or cal.get("is_outlier", False):
+            continue
+        # Filtre de mode si especificat
+        if mode and cal.get("mode") != mode:
+            continue
+
+        # Clau única per condició
+        key = get_condition_key(
+            cal.get("mode", ""),
+            cal.get("volume_uL", 0),
+            cal.get("conc_ppm", 0)
+        )
+
+        # Només guardar la primera (més recent) per cada condition_key
+        if key not in active_by_condition:
+            active_by_condition[key] = cal
+
+    return list(active_by_condition.values())
+
+
+def get_calibration_for_conditions(seq_path, volume_uL, mode=None, conc_ppm=None):
+    """
+    Retorna la calibració que coincideix amb les condicions especificades.
+
+    Args:
+        seq_path: Path de la seqüència
+        volume_uL: Volum d'injecció de la mostra
+        mode: Mode opcional ("COLUMN" o "BP")
+        conc_ppm: Concentració KHP opcional (si None, busca qualsevol conc)
+
+    Returns:
+        Calibració que coincideix o None si no es troba.
+    """
+    active_cals = get_all_active_calibrations(seq_path, mode)
+
+    # Buscar calibració amb volum coincident
+    for cal in active_cals:
+        cal_volume = cal.get("volume_uL", 0)
+        if cal_volume == volume_uL:
+            if conc_ppm is None or cal.get("conc_ppm", 0) == conc_ppm:
+                return cal
+
+    # Si no es troba exacta, retornar la primera activa del mode (fallback)
+    if active_cals:
+        return active_cals[0]
 
     return None
 
@@ -1926,20 +1765,42 @@ def generate_calibration_id():
 # GESTIÓ KHP_HISTORY (GLOBAL)
 # =============================================================================
 
+def get_registry_folder(seq_path=None):
+    """
+    Retorna la carpeta REGISTRY on es guarden els històrics globals.
+    Ubicació: Definida a hpsec_config.json (paths.registry_folder)
+
+    El paràmetre seq_path es manté per compatibilitat però s'ignora.
+    """
+    return get_registry_path()
+
+
 def get_history_path(seq_path):
     """
     Retorna el path del fitxer d'històric KHP.
-    Cerca a la carpeta pare (carpeta compartida) on estan totes les SEQ.
+    Ubicació: PARENT_FOLDER/REGISTRY/KHP_History.json
     """
-    if not seq_path:
+    registry = get_registry_folder(seq_path)
+    if not registry:
         return None
-    parent_folder = os.path.dirname(seq_path)
-    return os.path.join(parent_folder, KHP_HISTORY_FILENAME)
+    return os.path.join(registry, KHP_HISTORY_FILENAME)
+
+
+def get_samples_history_path(seq_path):
+    """
+    Retorna el path del fitxer d'històric de mostres.
+    Ubicació: PARENT_FOLDER/REGISTRY/Samples_History.json
+    """
+    registry = get_registry_folder(seq_path)
+    if not registry:
+        return None
+    return os.path.join(registry, SAMPLES_HISTORY_FILENAME)
 
 
 def load_khp_history(seq_path):
     """
     Carrega l'històric de calibracions KHP.
+    Ubicació: PARENT_FOLDER/REGISTRY/KHP_History.json
     """
     history_path = get_history_path(seq_path)
     if not history_path or not os.path.exists(history_path):
@@ -2085,95 +1946,6 @@ def migrate_history_to_v2(seq_path, dry_run=False):
     return result
 
 
-# Alias per compatibilitat
-migrate_history_factor_to_rf = migrate_history_to_v2
-
-
-# =============================================================================
-# CERCA DE KHP
-# =============================================================================
-
-def find_khp_in_folder(folder):
-    """Cerca fitxers KHP en una carpeta."""
-    if not os.path.exists(folder):
-        return []
-    files = glob.glob(os.path.join(folder, "*KHP*.xlsx"))
-    files = [f for f in files if not os.path.basename(f).startswith("~$")]
-    return files
-
-
-def buscar_khp_consolidados(input_folder, allow_manual=True, gui_callbacks=None):
-    """
-    Cerca KHP en tres fases: LOCAL → SIBLINGS → MANUAL
-
-    Args:
-        input_folder: Carpeta SEQ on buscar
-        allow_manual: Si True, permet selecció manual si no es troba
-        gui_callbacks: Dict amb funcions GUI (messagebox, filedialog)
-
-    Returns:
-        (llista_fitxers, origen)
-    """
-    # FASE 1: LOCAL (Resultats_Consolidats o Consolidat)
-    res_cons = os.path.join(input_folder, "Resultats_Consolidats")
-    khp_files = find_khp_in_folder(res_cons)
-
-    if khp_files:
-        return khp_files, "LOCAL"
-
-    # Fallback a carpeta antiga "Consolidat"
-    consolidat_old = os.path.join(input_folder, "Consolidat")
-    khp_files = find_khp_in_folder(consolidat_old)
-
-    if khp_files:
-        return khp_files, "LOCAL"
-
-    # FASE 2: SIBLINGS (carpetes germanes amb mateix prefix numèric)
-    folder_name = os.path.basename(input_folder)
-    parent_dir = os.path.dirname(input_folder)
-
-    match = re.match(r'^(\d+)', folder_name)
-    if match:
-        seq_id = match.group(1)
-
-        try:
-            all_folders = [d for d in os.listdir(parent_dir)
-                          if os.path.isdir(os.path.join(parent_dir, d))]
-
-            siblings = [d for d in all_folders
-                       if d.startswith(seq_id) and d != folder_name]
-
-            for sib in siblings:
-                sib_res_cons = os.path.join(parent_dir, sib, "Resultats_Consolidats")
-                khp_files = find_khp_in_folder(sib_res_cons)
-
-                if khp_files:
-                    return khp_files, f"SIBLING:{sib}"
-        except Exception:
-            pass
-
-    # FASE 3: MANUAL (si permès i hi ha GUI)
-    if allow_manual and gui_callbacks:
-        messagebox = gui_callbacks.get('messagebox')
-        filedialog = gui_callbacks.get('filedialog')
-
-        if messagebox and filedialog:
-            if messagebox.askyesno("KHP NO TROBAT",
-                                   "No s'ha trobat cap KHP.\n\nVols seleccionar manualment una carpeta amb KHP?"):
-                d = filedialog.askdirectory(title="Selecciona Carpeta SEQ amb KHP")
-                if d:
-                    manual_res = os.path.join(d, "Resultats_Consolidats")
-                    if os.path.exists(manual_res):
-                        khp_files = find_khp_in_folder(manual_res)
-                        if khp_files:
-                            return khp_files, "MANUAL"
-                    khp_files = find_khp_in_folder(d)
-                    if khp_files:
-                        return khp_files, "MANUAL"
-
-    return [], "NONE"
-
-
 # =============================================================================
 # ANÀLISI KHP
 # =============================================================================
@@ -2208,6 +1980,7 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
     replica = metadata.get("replica", "1")
     method = metadata.get("method", "COLUMN")
     seq_path = metadata.get("seq_path", "")
+    volume_uL_meta = metadata.get("volume_uL")  # Volum del metadata (si disponible)
 
     if conc == 0:
         # Intentar extreure de nom
@@ -2239,10 +2012,8 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
     t_retention = peak_info.get('t_max', 0)
 
     # Baseline stats
-    if is_bp_chromato:
-        bl_stats = baseline_stats_time(t_doc, y_doc_net, t_start=0, t_end=2.0)
-    else:
-        bl_stats = baseline_stats_time(t_doc, y_doc_net, t_start=0, t_end=10.0)
+    mode = "BP" if is_bp_chromato else "COLUMN"
+    bl_stats = get_baseline_stats(t_doc, y_doc_net, mode=mode)
 
     # Límits del pic
     peak_idx = peak_info.get('peak_idx', int(np.argmax(y_doc_net)))
@@ -2282,9 +2053,14 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
         peak_info['t_end'] = float(t_doc[right_idx])
         peak_info['limits_expanded'] = True
 
-    # Simetria i SNR
-    symmetry = calculate_peak_symmetry(t_doc, y_doc_net, peak_idx, left_idx, right_idx)
-    snr = calculate_peak_snr(y_doc_net, peak_idx, bl_stats["mean"], bl_stats["std"])
+    # Simetria i SNR (usant funcions de hpsec_core)
+    symmetry = calculate_symmetry(t_doc, y_doc_net, peak_idx, left_idx, right_idx)
+    # SNR inline: garantir mínim noise per evitar divisions per zero
+    baseline_std = bl_stats.get("std", 0.01)
+    signal_range = float(np.max(y_doc_net) - np.min(y_doc_net)) if len(y_doc_net) > 0 else 1.0
+    min_std = max(0.5, signal_range * 0.001)
+    noise = max(baseline_std, min_std)
+    snr = float((y_doc_net[peak_idx] - bl_stats["mean"]) / noise)
 
     # Timeout detection
     timeout_info = detect_timeout(t_doc)
@@ -2373,8 +2149,13 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
     area_total = total_integration['area']
     concentration_ratio = area_main_peak / area_total if area_total > 0 else 1.0
 
-    # Volum injecció
-    volume_uL = get_injection_volume(seq_path, is_bp_chromato) if seq_path else 100
+    # Volum injecció (prioritza metadata, després calcula)
+    if volume_uL_meta is not None:
+        volume_uL = volume_uL_meta
+    elif seq_path:
+        volume_uL = get_injection_volume(seq_path, is_bp_chromato)
+    else:
+        volume_uL = 100
 
     # Qualitat
     quality_score = 0
@@ -2407,10 +2188,7 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
             else:  # <10% afectat
                 quality_score += 20
                 quality_issues.append(f"TimeOUT marginal ({overlap:.0f}% afectat)")
-        else:
-            # Timeout fora del pic - no penalitza severament
-            quality_score += 5
-            quality_issues.append("TimeOUT fora del pic (no afecta integració)")
+        # else: Timeout fora del pic - NO penalitza ni mostra warning
     if len(all_peaks) > 3:
         quality_score += 5 * (len(all_peaks) - 3)
         quality_issues.append(f"Múltiples pics ({len(all_peaks)})")
@@ -2454,6 +2232,7 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
             cr_254 = a254_area / a254_area_total
 
     return {
+        'name': name,  # Nom del KHP (ex: "KHP2", "KHP2_50")
         'filename': f"{name}_R{replica}",
         'filepath': seq_path,
         'conc_ppm': conc,
@@ -2512,544 +2291,13 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
     }
 
 
-def analizar_khp_consolidado(khp_file, config=None):
-    """
-    Analitza un fitxer KHP consolidat amb detall complet.
-
-    Returns:
-        Dict amb conc, area, shift_min, qualitat, dades per gràfics, etc.
-    """
-    # Merge config amb DEFAULT_CONFIG
-    config = {**DEFAULT_CONFIG, **(config or {})}
-    fname = os.path.basename(khp_file)
-
-    conc = extract_khp_conc(fname)
-    if conc == 0:
-        return None
-
-    try:
-        xls = pd.ExcelFile(khp_file, engine="openpyxl")
-
-        # Llegir metadades del full ID
-        doc_mode = "N/A"
-        seq_date = ""
-        method_from_file = None
-        uib_sensitivity = None
-        inj_volume = None
-
-        if "ID" in xls.sheet_names:
-            df_id = pd.read_excel(xls, "ID", engine="openpyxl")
-            # Compatible amb format antic (Camp/Valor) i nou (Field/Value)
-            if "Field" in df_id.columns:
-                id_dict = dict(zip(df_id["Field"], df_id["Value"]))
-            elif "Camp" in df_id.columns:
-                id_dict = dict(zip(df_id["Camp"], df_id["Valor"]))
-            else:
-                id_dict = {}
-
-            # DOC_Mode: buscar amb diferents variants de majúscules
-            doc_mode = str(id_dict.get("DOC_Mode",
-                          id_dict.get("DOC_MODE",
-                          id_dict.get("doc_mode",
-                          id_dict.get("Source", "N/A")))))
-
-            # UIB sensitivity (700 ppb o 1000 ppb)
-            uib_range = str(id_dict.get("UIB_range", id_dict.get("UIB_Range", "")))
-            if "700" in uib_range:
-                uib_sensitivity = 700
-            elif "1000" in uib_range:
-                uib_sensitivity = 1000
-
-            # Injection volume
-            inj_vol_raw = id_dict.get("Inj_Volume_uL", id_dict.get("Inj_Volume", None))
-            if inj_vol_raw is not None:
-                try:
-                    inj_volume = int(float(inj_vol_raw))
-                except (ValueError, TypeError):
-                    pass
-
-            seq_date = str(id_dict.get("Date", ""))
-            method_from_file = str(id_dict.get("Method", id_dict.get("MODE", ""))).upper()
-            if method_from_file not in ["BP", "COLUMN", "COL"]:
-                method_from_file = None
-
-        df_doc = pd.read_excel(xls, "DOC", engine="openpyxl")
-        t_doc = pd.to_numeric(df_doc["time (min)"], errors="coerce").to_numpy()
-
-        # Buscar columna DOC
-        doc_col = None
-        for c in df_doc.columns:
-            if 'doc' in str(c).lower() and 'raw' not in str(c).lower():
-                doc_col = c
-                break
-        if doc_col is None:
-            doc_col = df_doc.columns[1]
-
-        doc_net = pd.to_numeric(df_doc[doc_col], errors="coerce").to_numpy()
-
-        # Netejar NaN
-        mask = np.isfinite(t_doc) & np.isfinite(doc_net)
-        t_doc, doc_net = t_doc[mask], doc_net[mask]
-
-        # Detectar TOTS els pics
-        all_peaks = detect_all_peaks(t_doc, doc_net, config["peak_min_prominence_pct"])
-
-        # Detectar pic principal
-        peak_info = detect_main_peak(t_doc, doc_net, config["peak_min_prominence_pct"])
-
-        if not peak_info['valid']:
-            return None
-
-        t_retention = peak_info.get('t_max', 0)
-
-        # Detectar si és BP
-        t_max_chromato = float(np.max(t_doc))
-        t_peak = peak_info.get('t_max', 10)
-
-        if method_from_file == "BP":
-            is_bp_chromato = True
-        elif method_from_file in ["COLUMN", "COL"]:
-            is_bp_chromato = False
-        else:
-            is_bp_by_name = "BP" in fname.upper() or "_BP" in fname.upper()
-            is_bp_by_chromato = t_max_chromato < 20 or t_peak < 10
-            is_bp_chromato = is_bp_by_name or is_bp_by_chromato
-
-        # Baseline stats
-        if is_bp_chromato:
-            bl_stats = baseline_stats_time(t_doc, doc_net, t_start=0, t_end=2.0)
-        else:
-            bl_stats = baseline_stats_time(t_doc, doc_net, t_start=0, t_end=10.0)
-
-        # Límits del pic
-        peak_idx = peak_info.get('peak_idx', int(np.argmax(doc_net)))
-        left_idx = peak_info.get('left_idx', 0)
-        right_idx = peak_info.get('right_idx', len(doc_net) - 1)
-
-        # Buscar límits en all_peaks
-        for pk in all_peaks:
-            if pk['idx'] == peak_idx or abs(pk['t'] - peak_info['t_max']) < 0.1:
-                left_idx = pk['left_idx']
-                right_idx = pk['right_idx']
-                break
-
-        # Expandir límits si cal
-        original_left_idx = left_idx
-        original_right_idx = right_idx
-
-        expansion = expand_integration_limits_to_baseline(
-            t_doc, doc_net, left_idx, right_idx, peak_idx,
-            baseline_threshold_pct=15,
-            min_width_minutes=1.0,
-            max_width_minutes=6.0 if is_bp_chromato else 10.0,
-            is_bp=is_bp_chromato
-        )
-
-        left_idx = expansion['left_idx']
-        right_idx = expansion['right_idx']
-        limits_expanded = not expansion['original_valid']
-
-        if limits_expanded:
-            new_area = float(trapezoid(doc_net[left_idx:right_idx+1], t_doc[left_idx:right_idx+1]))
-            old_area = peak_info.get('area', 0)
-
-            peak_info['area'] = new_area
-            peak_info['left_idx'] = left_idx
-            peak_info['right_idx'] = right_idx
-            peak_info['t_start'] = float(t_doc[left_idx])
-            peak_info['t_end'] = float(t_doc[right_idx])
-            peak_info['limits_expanded'] = True
-            peak_info['expansion_info'] = {
-                'original_left': original_left_idx,
-                'original_right': original_right_idx,
-                'old_area': old_area,
-                'new_area': new_area,
-                'area_increase_pct': ((new_area - old_area) / old_area * 100) if old_area > 0 else 0
-            }
-
-        # Simetria i SNR
-        symmetry = calculate_peak_symmetry(t_doc, doc_net, peak_idx, left_idx, right_idx)
-        snr = calculate_peak_snr(doc_net, peak_idx, bl_stats["mean"], bl_stats["std"])
-
-        # Anomalies - Usar funcions de hpsec_core
-        # Timeout (MILLOR MÈTODE: basat en intervals dt)
-        timeout_info = detect_timeout(t_doc)
-        has_timeout = timeout_info['n_timeouts'] > 0
-        timeout_severity = timeout_info.get('severity', 'OK')
-
-        # Batman/Anomalies de forma (usar segment del pic)
-        t_peak_seg = t_doc[left_idx:right_idx+1]
-        y_peak_seg = doc_net[left_idx:right_idx+1]
-        anomaly_info = detect_peak_anomaly(t_peak_seg, y_peak_seg)
-        has_batman = anomaly_info.get('is_batman', False)
-        has_irregular = anomaly_info.get('is_irregular', False)
-        smoothness = anomaly_info.get('smoothness', 100.0)
-
-        # DAD 254nm
-        shift_khp = 0.0
-        has_dad = "DAD" in xls.sheet_names
-        t_dad = None
-        dad_254 = None
-        t_dad_max = None
-        dad_peak_info = None
-        a254_area = 0.0
-        a254_doc_ratio = 0.0
-
-        if has_dad:
-            df_dad = pd.read_excel(xls, "DAD", engine="openpyxl")
-            if "254" in df_dad.columns:
-                t_dad = pd.to_numeric(df_dad["time (min)"], errors="coerce").to_numpy()
-                dad_254 = pd.to_numeric(df_dad["254"], errors="coerce").to_numpy()
-
-                dad_mask = np.isfinite(t_dad) & np.isfinite(dad_254)
-                t_dad, dad_254 = t_dad[dad_mask], dad_254[dad_mask]
-
-                t_doc_max = t_at_max(t_doc, doc_net)
-                t_dad_max = t_at_max(t_dad, dad_254)
-
-                if t_doc_max and t_dad_max:
-                    shift_khp = t_dad_max - t_doc_max
-
-                dad_peak_info = detect_main_peak(t_dad, dad_254, config["peak_min_prominence_pct"])
-
-                if dad_peak_info and dad_peak_info.get('valid') and len(t_dad) > 10:
-                    t_start_doc = peak_info.get('t_start', t_doc[left_idx])
-                    t_end_doc = peak_info.get('t_end', t_doc[right_idx])
-
-                    t_start_dad = t_start_doc + shift_khp
-                    t_end_dad = t_end_doc + shift_khp
-
-                    dad_left_idx = int(np.searchsorted(t_dad, t_start_dad))
-                    dad_right_idx = int(np.searchsorted(t_dad, t_end_dad))
-
-                    dad_left_idx = max(0, min(dad_left_idx, len(t_dad) - 1))
-                    dad_right_idx = max(0, min(dad_right_idx, len(t_dad) - 1))
-
-                    if dad_right_idx > dad_left_idx:
-                        a254_area = float(trapezoid(dad_254[dad_left_idx:dad_right_idx+1],
-                                                   t_dad[dad_left_idx:dad_right_idx+1]))
-
-                        if a254_area > 0:
-                            a254_doc_ratio = peak_info['area'] / a254_area
-
-                        dad_peak_info['a254_area'] = a254_area
-                        dad_peak_info['a254_left_idx'] = dad_left_idx
-                        dad_peak_info['a254_right_idx'] = dad_right_idx
-
-        # Calcular àrea total i concentration ratio
-        # (QC important: quina fracció del DOC total està al pic principal)
-        # IMPORTANT: Usar integració sobre baseline per AMBDUES àrees (consistència)
-        baseline_mean = bl_stats.get('mean', 0)
-        baseline_std = bl_stats.get('std', 0.1)
-
-        # Àrea pic principal = integració sobre baseline dins els límits del pic
-        # (NO usar peak_info['area'] que és sense correcció)
-        t_peak = t_doc[left_idx:right_idx+1]
-        y_peak = doc_net[left_idx:right_idx+1]
-        peak_integration = integrate_above_baseline(
-            t_peak, y_peak,
-            baseline_mean=baseline_mean,
-            baseline_std=baseline_std,
-            threshold_sigma=3.0
-        )
-        area_main_peak = peak_integration['area']
-
-        # Àrea total = integració sobre baseline de TOT el cromatograma
-        total_integration = integrate_above_baseline(
-            t_doc, doc_net,
-            baseline_mean=baseline_mean,
-            baseline_std=baseline_std,
-            threshold_sigma=3.0
-        )
-        area_total = total_integration['area']
-
-        # Concentration ratio: pic principal vs total (ambdós baseline-corregits)
-        concentration_ratio = area_main_peak / area_total if area_total > 0 else 1.0
-
-        # Calcular volum d'injecció (necessari per comparació històrica)
-        # Derivar seq_path del khp_file (puja 2 nivells: Resultats_Consolidats -> SEQ)
-        seq_path_derived = os.path.dirname(os.path.dirname(khp_file))
-        volume_uL = get_injection_volume(seq_path_derived, is_bp_chromato)
-
-        # Qualitat - Sistema millorat amb severitats
-        quality_score = 0
-        quality_issues = []
-
-        if symmetry > 1.5:
-            quality_score += 10
-            quality_issues.append(f"Simetria alta ({symmetry:.2f})")
-        if symmetry < 0.8:
-            quality_score += 10
-            quality_issues.append(f"Simetria baixa ({symmetry:.2f})")
-        if snr < 10:
-            quality_score += 20
-            quality_issues.append(f"SNR baix ({snr:.1f})")
-
-        # Batman/Irregular (de hpsec_core.detect_peak_anomaly)
-        if has_batman:
-            quality_score += 50
-            quality_issues.append("Doble pic (Batman)")
-        if has_irregular:
-            quality_score += 30
-            quality_issues.append(f"Pic irregular (smoothness={smoothness:.0f}%)")
-
-        # Timeout: només penalitza si afecta l'interval d'integració del pic
-        if has_timeout:
-            peak_timeout = timeout_affects_peak(timeout_info, t_doc, left_idx, right_idx)
-            if peak_timeout['affects_peak']:
-                overlap = peak_timeout['overlap_pct']
-                if overlap > 30:  # >30% del pic afectat
-                    quality_score += 150
-                    quality_issues.append(f"TIMEOUT CRÍTIC (afecta {overlap:.0f}% del pic)")
-                elif overlap > 10:  # 10-30% afectat
-                    quality_score += 100
-                    quality_issues.append(f"TimeOUT en pic ({overlap:.0f}% afectat)")
-                else:  # <10% afectat
-                    quality_score += 20
-                    quality_issues.append(f"TimeOUT marginal ({overlap:.0f}% afectat)")
-            else:
-                # Timeout fora del pic - no penalitza severament
-                quality_score += 5
-                quality_issues.append("TimeOUT fora del pic (no afecta integració)")
-
-        if len(all_peaks) > 3:
-            quality_score += 5 * (len(all_peaks) - 3)
-            quality_issues.append(f"Múltiples pics ({len(all_peaks)})")
-
-        if limits_expanded:
-            exp_info = peak_info.get('expansion_info', {})
-            area_inc = exp_info.get('area_increase_pct', 0)
-            quality_issues.append(f"Límits expandits (+{area_inc:.0f}% àrea)")
-
-        # =====================================================================
-        # NOVES MÈTRIQUES: FWHM, RF, RF_V, CR per tots els senyals
-        # =====================================================================
-
-        # FWHM per DOC
-        fwhm_doc = calculate_fwhm(t_doc, doc_net, peak_idx, left_idx, right_idx)
-
-        # FWHM per 254nm
-        fwhm_254 = np.nan
-        if has_dad and dad_peak_info and dad_peak_info.get('valid'):
-            dad_peak_idx = dad_peak_info.get('peak_idx', 0)
-            dad_left_idx = dad_peak_info.get('left_idx', 0)
-            dad_right_idx = dad_peak_info.get('right_idx', len(t_dad) - 1 if t_dad is not None else 0)
-            if t_dad is not None and dad_254 is not None:
-                fwhm_254 = calculate_fwhm(t_dad, dad_254, dad_peak_idx, dad_left_idx, dad_right_idx)
-
-        # RF = Area / Concentració (ppm)
-        rf_doc = peak_info['area'] / conc if conc > 0 else 0.0
-
-        # RF_V = Area / (Concentració × Volum) - normalitzat per condicions
-        rf_v_doc = peak_info['area'] / (conc * volume_uL) if conc > 0 and volume_uL > 0 else 0.0
-
-        # RF i RF_V per 254nm
-        rf_254 = a254_area / conc if conc > 0 and a254_area > 0 else 0.0
-        rf_v_254 = a254_area / (conc * volume_uL) if conc > 0 and volume_uL > 0 and a254_area > 0 else 0.0
-
-        # CR per 254nm (àrea pic principal / àrea total)
-        cr_254 = np.nan
-        a254_area_total = 0.0
-        if has_dad and t_dad is not None and dad_254 is not None and len(t_dad) > 10:
-            a254_area_total = float(trapezoid(dad_254, t_dad))
-            if a254_area_total > 0 and a254_area > 0:
-                cr_254 = a254_area / a254_area_total
-
-        return {
-            'filename': fname,
-            'filepath': khp_file,
-            'conc_ppm': conc,
-            'area': peak_info['area'],
-            'shift_min': shift_khp,
-            'shift_sec': shift_khp * 60,
-            'peak_info': peak_info,
-            'has_dad': has_dad,
-            't_doc_max': t_at_max(t_doc, doc_net),
-            't_dad_max': t_dad_max,
-            't_doc': t_doc,
-            'y_doc': doc_net,
-            't_dad': t_dad,
-            'y_dad_254': dad_254,
-            'symmetry': symmetry,
-            'snr': snr,
-            'baseline_stats': bl_stats,
-            'all_peaks_count': len(all_peaks),
-            'all_peaks': all_peaks,
-            'quality_score': quality_score,
-            'quality_issues': quality_issues,
-            'has_batman': has_batman,
-            'has_timeout': has_timeout,
-            'timeout_info': timeout_info,
-            'timeout_severity': timeout_severity,
-            'anomaly_info': anomaly_info,
-            'has_irregular': has_irregular,
-            'smoothness': smoothness,
-            'dad_peak_info': dad_peak_info,
-            'peak_left_idx': left_idx,
-            'peak_right_idx': right_idx,
-            'is_bp': is_bp_chromato,
-            'doc_mode': doc_mode,
-            'seq_date': seq_date,
-            't_retention': t_retention,
-            'baseline_valid': True,
-            'limits_expanded': limits_expanded,
-            'expansion_info': expansion,
-            'a254_area': a254_area,
-            'a254_doc_ratio': a254_doc_ratio,
-            'height': float(doc_net[peak_idx]),  # Afegit per validate_khp_quality
-            'area_total': area_total,
-            'area_main_peak': area_main_peak,
-            'concentration_ratio': concentration_ratio,
-            'volume_uL': volume_uL,
-            'uib_sensitivity': uib_sensitivity,  # 700 o 1000 ppb
-            # Noves mètriques per anàlisi de qualitat
-            'fwhm_doc': fwhm_doc,
-            'fwhm_254': fwhm_254,
-            'rf_doc': rf_doc,
-            'rf_v_doc': rf_v_doc,
-            'rf_254': rf_254,
-            'rf_v_254': rf_v_254,
-            'cr_254': cr_254,
-            'a254_area_total': a254_area_total,
-        }
-
-    except Exception as e:
-        print(f"Error analitzant KHP {fname}: {e}")
-        import traceback
-        traceback.print_exc()
-        return None
-
-
-def analizar_khp_lote(khp_files, config=None):
-    """
-    Analitza un lot de fitxers KHP i selecciona el millor.
-
-    Returns:
-        Dict amb dades detallades + selecció final
-    """
-    all_data = []
-    for f in khp_files:
-        d = analizar_khp_consolidado(f, config)
-        if d:
-            all_data.append(d)
-
-    if not all_data:
-        return None
-
-    # Agrupar per concentració
-    by_conc = {}
-    for d in all_data:
-        conc = d['conc_ppm']
-        if conc not in by_conc:
-            by_conc[conc] = []
-        by_conc[conc].append(d)
-
-    # Seleccionar concentració més alta
-    selected_conc = max(by_conc.keys())
-    replicas = by_conc[selected_conc]
-
-    # Estadístiques
-    areas = [r['area'] for r in replicas]
-    shifts = [r['shift_min'] for r in replicas]
-    symmetries = [r.get('symmetry', 1.0) for r in replicas]
-    snrs = [r.get('snr', 0) for r in replicas]
-    quality_scores = [r.get('quality_score', 0) for r in replicas]
-
-    mean_area = float(np.mean(areas))
-    std_area = float(np.std(areas))
-    mean_shift = float(np.mean(shifts))
-    std_shift = float(np.std(shifts))
-    rsd = float((std_area / mean_area) * 100.0) if mean_area > 0 else 100.0
-
-    stats = {
-        'n_replicas': len(replicas),
-        'mean_area': mean_area,
-        'std_area': std_area,
-        'rsd_area': rsd,
-        'mean_shift': mean_shift,
-        'std_shift': std_shift,
-        'mean_symmetry': float(np.mean(symmetries)),
-        'mean_snr': float(np.mean(snrs)),
-        'min_quality_score': min(quality_scores),
-        'concentrations': list(by_conc.keys()),
-    }
-
-    if len(replicas) == 1:
-        result = replicas[0].copy()
-        result['status'] = "Única rèplica"
-        result['n_replicas'] = 1
-        result['all_khp_data'] = all_data
-        result['stats'] = stats
-        result['selected_idx'] = 0
-        return result
-
-    if rsd < 10.0:
-        # RSD acceptable: usar promig
-        result = {
-            'filename': f"KHP{selected_conc}_PROMIG",
-            'filepath': replicas[0]['filepath'],
-            'conc_ppm': selected_conc,
-            'area': mean_area,
-            'shift_min': mean_shift,
-            'shift_sec': mean_shift * 60,
-            'status': f"Promig {len(replicas)} rèpliques (RSD {rsd:.1f}%)",
-            'has_dad': replicas[0]['has_dad'],
-            'n_replicas': len(replicas),
-            'rsd': rsd,
-            'all_khp_data': all_data,
-            'replicas': replicas,
-            'stats': stats,
-            'is_average': True,
-            'selected_idx': -1,
-            't_doc': replicas[0].get('t_doc'),
-            'y_doc': replicas[0].get('y_doc'),
-            't_dad': replicas[0].get('t_dad'),
-            'y_dad_254': replicas[0].get('y_dad_254'),
-            'peak_info': replicas[0].get('peak_info'),
-            'symmetry': stats['mean_symmetry'],
-            'snr': stats['mean_snr'],
-            'doc_mode': replicas[0].get('doc_mode', 'N/A'),
-            'seq_date': replicas[0].get('seq_date', ''),
-            't_retention': float(np.mean([r.get('t_retention', r.get('t_doc_max', 0)) for r in replicas])),
-            't_doc_max': replicas[0].get('t_doc_max', 0),
-            'is_bp': replicas[0].get('is_bp', False),
-            'peak_left_idx': replicas[0].get('peak_left_idx', 0),
-            'peak_right_idx': replicas[0].get('peak_right_idx', 0),
-            'limits_expanded': replicas[0].get('limits_expanded', False),
-            'quality_issues': replicas[0].get('quality_issues', []),
-            'quality_score': stats['min_quality_score'],
-            'baseline_valid': replicas[0].get('baseline_valid', True),
-            'baseline_stats': replicas[0].get('baseline_stats', {}),
-            'a254_area': float(np.mean([r.get('a254_area', 0) for r in replicas if r.get('a254_area', 0) > 0])) if any(r.get('a254_area', 0) > 0 for r in replicas) else 0,
-            'a254_doc_ratio': float(np.mean([r.get('a254_doc_ratio', 0) for r in replicas if r.get('a254_doc_ratio', 0) > 0])) if any(r.get('a254_doc_ratio', 0) > 0 for r in replicas) else 0,
-            'dad_peak_info': replicas[0].get('dad_peak_info'),
-        }
-        return result
-    else:
-        # RSD alt: seleccionar millor per qualitat
-        sorted_replicas = sorted(replicas, key=lambda x: (x.get('quality_score', 0), -x['area']))
-        best = sorted_replicas[0]
-        best_idx = replicas.index(best)
-
-        result = best.copy()
-        result['status'] = f"Millor qualitat (RSD {rsd:.1f}% > 10%)"
-        result['n_replicas'] = len(replicas)
-        result['rsd'] = rsd
-        result['all_khp_data'] = all_data
-        result['replicas'] = replicas
-        result['stats'] = stats
-        result['is_average'] = False
-        result['selected_idx'] = best_idx
-        return result
-
-
 # =============================================================================
 # REGISTRE DE CALIBRACIONS
 # =============================================================================
 
 def _extract_replicas_info(khp_data):
     """
-    Extreu informació resumida de cada replicat per guardar a CALDATA.
+    Extreu informació resumida de cada replicat per guardar a CHECK/data.
     """
     replicas = khp_data.get('replicas', khp_data.get('all_khp_data', []))
     if not replicas:
@@ -3125,7 +2373,7 @@ def register_calibration(seq_path, khp_data, khp_source, mode="COLUMN"):
     Registra una nova calibració a l'històric.
 
     Guarda a DOS llocs:
-    1. LOCAL (CALDATA/calibrations.json) - Historial complet de la SEQ
+    1. LOCAL (CHECK/data/calibrations.json) - Historial complet de la SEQ
     2. GLOBAL (KHP_History.json) - Una entrada per SEQ per comparacions
 
     VALIDACIÓ COMPLETA amb validate_khp_quality():
@@ -3144,7 +2392,9 @@ def register_calibration(seq_path, khp_data, khp_source, mode="COLUMN"):
         seq_date = datetime.now().isoformat()
 
     is_bp = khp_data.get('is_bp', False)
-    volume = get_injection_volume(seq_path, is_bp)
+    # Usar volum de khp_data si disponible (per múltiples condicions), sino default
+    volume = khp_data.get('volume_uL') or get_injection_volume(seq_path, is_bp)
+    khp_name = khp_data.get('name', f"KHP{conc}")  # Nom del KHP (ex: "KHP2", "KHP2_50")
     doc_mode = khp_data.get('doc_mode', 'N/A')
     uib_sensitivity = khp_data.get('uib_sensitivity')
 
@@ -3180,6 +2430,7 @@ def register_calibration(seq_path, khp_data, khp_source, mode="COLUMN"):
     rf_v_254 = khp_data.get('rf_v_254', rf_254 / volume * 100 if rf_254 > 0 and volume > 0 else 0)
     fwhm_254 = khp_data.get('fwhm_254', 0)
     ar_254 = khp_data.get('cr_254', khp_data.get('area_ratio_254', 0))
+    t_dad_max = khp_data.get('t_dad_max', 0)  # t_max del senyal 254nm (referència)
 
     peak_info = khp_data.get('peak_info', {})
     t_retention = khp_data.get('t_retention', khp_data.get('t_doc_max', 0))
@@ -3231,6 +2482,11 @@ def register_calibration(seq_path, khp_data, khp_source, mode="COLUMN"):
     # Obtenir info històrica per registre (no per validació, ja feta a validate_khp_quality)
     historical_comparison = validation_result.get('historical_comparison', {})
 
+    # rf_mass = Area / µg DOC (normalitzat per massa injectada)
+    rf_mass = khp_data.get('rf_mass', 0)
+    if rf_mass == 0 and area > 0 and conc > 0 and volume > 0:
+        rf_mass = area * 1000 / (conc * volume)
+
     entry = {
         "cal_id": generate_calibration_id(),
         "seq_name": seq_name,
@@ -3239,6 +2495,7 @@ def register_calibration(seq_path, khp_data, khp_source, mode="COLUMN"):
         "seq_date": seq_date,
         "date_processed": datetime.now().isoformat(),
         "mode": mode,
+        "khp_name": khp_name,  # Nom del KHP (ex: "KHP2", "KHP2_50")
         "khp_file": khp_data.get('filename', 'N/A'),
         "khp_source": khp_source,
         "doc_mode": doc_mode,
@@ -3246,6 +2503,7 @@ def register_calibration(seq_path, khp_data, khp_source, mode="COLUMN"):
         "volume_uL": volume,
         "uib_sensitivity": uib_sensitivity,
         "is_bp": is_bp,
+        "condition_key": get_condition_key(mode, volume, conc),  # Clau única per condició
 
         # =====================================================================
         # PARÀMETRES DIRECT (D) - Senyal principal
@@ -3253,6 +2511,7 @@ def register_calibration(seq_path, khp_data, khp_source, mode="COLUMN"):
         "area": area,                      # Àrea pic principal Direct
         "area_total": khp_data.get('area_total', 0),
         "rf": rf,                          # Response Factor Direct (àrea/conc)
+        "rf_mass": rf_mass,                # RF normalitzat per massa (àrea/µg DOC)
         "rf_v": rf_v_d,                    # RF normalitzat per volum
         "t_retention": t_max_d,            # Temps pic màxim
         "fwhm_doc": fwhm_d,                # FWHM Direct
@@ -3280,6 +2539,7 @@ def register_calibration(seq_path, khp_data, khp_source, mode="COLUMN"):
         "rf_v_254": rf_v_254,              # RF 254nm normalitzat per volum
         "fwhm_254": fwhm_254,              # FWHM 254nm
         "ar_254": ar_254,                  # Area Ratio 254nm
+        "t_dad_max": t_dad_max,            # t_max del 254nm (referència per shift)
         "d254_d": d254_d,                  # Ratio DOC/254 amb Direct
 
         # =====================================================================
@@ -3351,17 +2611,26 @@ def register_calibration(seq_path, khp_data, khp_source, mode="COLUMN"):
         "all_peaks_count": khp_data.get('all_peaks_count', 1),  # Deprecat, usar n_peaks
     }
 
-    # 1. GUARDAR A LOCAL (CALDATA)
+    # 1. GUARDAR A LOCAL (CHECK/data)
     local_cals = load_local_calibrations(seq_path)
+
+    # Clau única per aquesta calibració (permet múltiples condicions actives)
+    new_condition_key = get_condition_key(mode, volume, conc)
 
     if not valid_for_calibration:
         # Calibració invàlida per quantitatiu: NO desactivar l'anterior vàlida
         # S'afegeix al registre per traçabilitat però no s'activa
         pass
     else:
-        # Calibració vàlida: desactivar les anteriors
+        # Calibració vàlida: desactivar les anteriors amb MATEIXA CONDICIÓ
+        # (no desactivem calibracions d'altres condicions, ex: KHP2@100µL no afecta KHP2@50µL)
         for cal in local_cals:
-            if cal.get("mode") == mode:
+            cal_condition_key = get_condition_key(
+                cal.get("mode", ""),
+                cal.get("volume_uL", 0),
+                cal.get("conc_ppm", 0)
+            )
+            if cal_condition_key == new_condition_key:
                 cal["is_active"] = False
 
     local_cals.insert(0, entry)
@@ -3370,9 +2639,15 @@ def register_calibration(seq_path, khp_data, khp_source, mode="COLUMN"):
     # 2. GUARDAR A GLOBAL (KHP_History.json)
     global_cals = load_khp_history(seq_path)
 
+    # Actualitzar o afegir entrada al global (una per seq+condition_key)
     updated = False
     for i, cal in enumerate(global_cals):
-        if cal.get("seq_name") == seq_name and cal.get("mode") == mode:
+        cal_condition_key = get_condition_key(
+            cal.get("mode", ""),
+            cal.get("volume_uL", 0),
+            cal.get("conc_ppm", 0)
+        )
+        if cal.get("seq_name") == seq_name and cal_condition_key == new_condition_key:
             global_cals[i] = entry
             updated = True
             break
@@ -3432,17 +2707,28 @@ def set_calibration_override(seq_path, cal_id, override_value, reason="", user="
                     cal["status"] = "OK"
 
             entry_found = cal.copy()
-            mode = cal.get("mode")
             break
 
     if not entry_found:
         return {"success": False, "message": f"No s'ha trobat calibració amb ID {cal_id}", "entry": None}
 
-    # Si s'activa manualment, desactivar les altres del mateix mode
+    # Si s'activa manualment, desactivar les altres amb MATEIXA CONDICIÓ
+    # (no afectem altres condicions, ex: KHP2@100µL no afecta KHP2@50µL)
     if override_value is True:
+        target_condition_key = get_condition_key(
+            entry_found.get("mode", ""),
+            entry_found.get("volume_uL", 0),
+            entry_found.get("conc_ppm", 0)
+        )
         for cal in local_cals:
-            if cal.get("mode") == mode and cal.get("cal_id") != cal_id:
-                cal["is_active"] = False
+            if cal.get("cal_id") != cal_id:
+                cal_condition_key = get_condition_key(
+                    cal.get("mode", ""),
+                    cal.get("volume_uL", 0),
+                    cal.get("conc_ppm", 0)
+                )
+                if cal_condition_key == target_condition_key:
+                    cal["is_active"] = False
 
     save_local_calibrations(seq_path, local_cals)
 
@@ -3829,116 +3115,6 @@ def update_calibration_validation(seq_path=None, update_global=True):
 
 
 # =============================================================================
-# FUNCIÓ PRINCIPAL STANDALONE
-# =============================================================================
-
-def calibrate_sequence(seq_path, config=None, progress_callback=None, gui_callbacks=None):
-    """
-    Funció principal de calibració standalone.
-
-    Args:
-        seq_path: Path de la seqüència a calibrar
-        config: Configuració (DEFAULT_CONFIG si None)
-        progress_callback: Funció per reportar progrés (pct, msg)
-        gui_callbacks: Dict amb messagebox i filedialog per interacció GUI
-
-    Returns:
-        Dict amb:
-        - success: bool
-        - khp_data: dades del KHP analitzat
-        - khp_source: origen del KHP (LOCAL, SIBLING, MANUAL)
-        - calibration: entrada de calibració registrada
-        - errors: llista d'errors
-    """
-    # Merge config amb DEFAULT_CONFIG (default té prioritat per claus que falten)
-    merged_config = {**DEFAULT_CONFIG, **(config or {})}
-    config = merged_config
-
-    result = {
-        "success": False,
-        # Camps per hpsec_process.process_sequence()
-        "shift_uib": 0.0,
-        "shift_direct": 0.0,
-        "rf": 0.0,              # RF = Àrea / conc (Response Factor)
-        "rf_direct": 0.0,
-        "rf_uib": 0.0,
-        "khp_area": 0.0,
-        "khp_conc": 0.0,
-        # Dades completes per traçabilitat
-        "khp_data": None,
-        "khp_source": None,
-        "calibration": None,
-        "errors": [],
-    }
-
-    if progress_callback:
-        progress_callback(10, "Cercant KHP...")
-
-    # Cercar KHP
-    khp_files, khp_source = buscar_khp_consolidados(
-        seq_path,
-        allow_manual=(gui_callbacks is not None),
-        gui_callbacks=gui_callbacks
-    )
-
-    if not khp_files:
-        result["errors"].append("No s'ha trobat cap fitxer KHP")
-        return result
-
-    result["khp_source"] = khp_source
-
-    if progress_callback:
-        progress_callback(30, f"Analitzant {len(khp_files)} KHP...")
-
-    # Analitzar KHP
-    khp_data = analizar_khp_lote(khp_files, config)
-
-    if not khp_data:
-        result["errors"].append("No s'ha pogut analitzar cap KHP")
-        return result
-
-    result["khp_data"] = khp_data
-
-    # === Extreure camps per process_sequence() ===
-    khp_area = khp_data.get("area", 0.0)
-    khp_conc = khp_data.get("conc_ppm", 0.0)
-    khp_shift = khp_data.get("shift_min", 0.0)
-
-    result["khp_area"] = khp_area
-    result["khp_conc"] = khp_conc
-
-    # RF (Response Factor) = Àrea / concentració
-    if khp_conc > 0:
-        result["rf"] = khp_area / khp_conc
-        result["rf_direct"] = khp_area / khp_conc  # Assumim Direct per defecte
-    else:
-        result["rf"] = 0.0
-        result["errors"].append("WARN: KHP conc is zero, cannot calculate RF")
-
-    # Shifts per UIB i Direct
-    # Per ara, usem el shift del KHP per UIB (el més comú)
-    # Direct normalment no necessita shift (és la referència temporal)
-    result["shift_uib"] = khp_shift
-    result["shift_direct"] = 0.0  # Direct és referència, no es desplaça
-
-    if progress_callback:
-        progress_callback(70, "Registrant calibració...")
-
-    # Determinar mode
-    mode = "BP" if khp_data.get('is_bp', False) else "COLUMN"
-
-    # Registrar calibració
-    calibration = register_calibration(seq_path, khp_data, khp_source, mode)
-    result["calibration"] = calibration
-
-    if progress_callback:
-        progress_callback(100, "Calibració completada")
-
-    result["success"] = True
-    return result
-
-
-# =============================================================================
 # HELPERS PER FALLBACK SIBLING/HISTORY
 # =============================================================================
 
@@ -4074,7 +3250,7 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
         - mode: "DUAL", "DIRECT", "UIB" (quins senyals s'han calibrat)
         # Calibració DOC Direct:
         - rf_direct: Response Factor Direct (àrea/conc)
-        - shift_direct: Shift temporal Direct (min) - normalment 0
+        - shift_direct: Shift temporal Direct vs 254nm (min)
         - khp_area_direct: Àrea KHP amb DOC Direct
         - khp_data_direct: Dades KHP completes per Direct
         # Calibració DOC UIB:
@@ -4121,6 +3297,7 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
         "khp_source": "LOCAL",
         "calibration": None,
         "errors": [],
+        "warnings": [],
     }
 
     if not imported_data or not imported_data.get("success", False):
@@ -4193,10 +3370,15 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
             dad_data = rep_data.get("dad", {})
             df_dad = dad_data.get("df") if dad_data else None
 
+            # Obtenir volum d'injecció
+            injection_info = rep_data.get("injection_info", {})
+            inj_volume = injection_info.get("inj_volume", 100)  # Default 100µL
+
             # Preparar metadata base
             base_metadata = {
                 "name": khp_name,
                 "conc_ppm": extract_khp_conc(khp_name),
+                "volume_uL": inj_volume,
                 "replica": str(rep_num),
                 "method": method,
                 "seq_path": seq_path,
@@ -4340,7 +3522,11 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
 
     def select_best_khp(khp_list, manual_selection=None):
         """
-        Selecciona millor KHP d'una llista amb traçabilitat completa.
+        Processa KHPs agrupant per condicions (nom + volum).
+
+        Retorna LLISTA de calibracions, una per cada combinació de condicions.
+        Igual que tenim COLUMN/BP o KHP1/KHP2/KHP5, cada condició genera
+        una calibració independent amb estructura idèntica.
 
         Args:
             khp_list: Llista de resultats d'anàlisi KHP
@@ -4348,22 +3534,48 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
                 - method: "R1", "R2", "average", "best_quality"
 
         Returns:
-            dict amb dades KHP seleccionades i informació de traçabilitat
+            list of dict: Llista de calibracions, cada una amb:
+                - name, volume_uL, conc_ppm: Condicions
+                - area, rf, rf_mass: Paràmetres de calibració
+                - n_replicas, rsd, selection: Traçabilitat
         """
         if not khp_list:
-            return None
+            return []
 
-        # Agrupar per concentració
-        by_conc = {}
+        # Agrupar per condicions analítiques: (concentració, volum)
+        by_key = {}
         for d in khp_list:
-            conc = d['conc_ppm']
-            if conc not in by_conc:
-                by_conc[conc] = []
-            by_conc[conc].append(d)
+            conc = d.get('conc_ppm', 0)
+            volume = d.get('volume_uL', 100)
+            key = (conc, volume)
+            if key not in by_key:
+                by_key[key] = []
+            by_key[key].append(d)
 
-        # Seleccionar concentració més alta
-        selected_conc = max(by_conc.keys())
-        replicas = by_conc[selected_conc]
+        # Processar cada grup → una calibració per grup
+        calibrations = []
+
+        for key, group_replicas in by_key.items():
+            group_conc, group_volume = key
+            cal = _process_khp_group(group_replicas, group_conc, group_volume, manual_selection)
+            if cal:
+                # Calcular RF_mass = Area × 1000 / (conc × vol) = Area / µg DOC
+                conc = cal['conc_ppm']
+                vol = cal['volume_uL']
+                if conc > 0 and vol > 0:
+                    cal['rf'] = cal['area'] / conc  # RF tradicional
+                    cal['rf_mass'] = cal['area'] * 1000 / (conc * vol)  # RF normalitzat
+                calibrations.append(cal)
+
+        # Ordenar per concentració (desc) i volum (desc)
+        calibrations.sort(key=lambda c: (-c.get('conc_ppm', 0), -c.get('volume_uL', 0)))
+
+        return calibrations
+
+    def _process_khp_group(replicas, group_conc, group_volume, manual_selection=None):
+        """Processa un grup de rèpliques KHP amb les mateixes condicions (conc, vol)."""
+        if not replicas:
+            return None
 
         # Assignar número de rèplica si no existeix
         for i, rep in enumerate(replicas):
@@ -4372,6 +3584,9 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
 
         # Comparar rèpliques
         comparison = compare_replicas(replicas)
+
+        # Nom: sempre "KHP" (el patró), els números són atributs (conc, vol)
+        group_name = "KHP"
 
         # Estadístiques bàsiques
         areas = [r['area'] for r in replicas]
@@ -4388,6 +3603,21 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
         mean_a254_area = float(np.mean(a254_areas)) if a254_areas else 0.0
         shift_secs = [r.get('shift_sec', 0) for r in replicas if r.get('shift_sec', 0) != 0]
         mean_shift_sec = float(np.mean(shift_secs)) if shift_secs else 0.0
+
+        # Mètriques de qualitat (promig de rèpliques)
+        snrs = [r.get('snr', 0) for r in replicas if r.get('snr', 0) > 0]
+        mean_snr = float(np.mean(snrs)) if snrs else 0.0
+        t_retentions = [r.get('t_retention', 0) or r.get('t_doc_max', 0) for r in replicas]
+        t_retentions = [t for t in t_retentions if t > 0]
+        mean_t_retention = float(np.mean(t_retentions)) if t_retentions else 0.0
+        fwhms = [r.get('fwhm_doc', 0) for r in replicas if r.get('fwhm_doc', 0) > 0]
+        mean_fwhm = float(np.mean(fwhms)) if fwhms else 0.0
+        symmetries = [r.get('symmetry', 1.0) for r in replicas if r.get('symmetry', 0) > 0]
+        mean_symmetry = float(np.mean(symmetries)) if symmetries else 1.0
+        volumes = [r.get('volume_uL', 0) for r in replicas if r.get('volume_uL', 0) > 0]
+        volume_uL = int(volumes[0]) if volumes else 100
+        t_dad_maxs = [r.get('t_dad_max', 0) for r in replicas if r.get('t_dad_max', 0) > 0]
+        mean_t_dad_max = float(np.mean(t_dad_maxs)) if t_dad_maxs else 0.0
 
         # Determinar mètode de selecció
         if manual_selection:
@@ -4438,13 +3668,24 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
 
         return {
             # Valors seleccionats
-            'conc_ppm': selected_conc,
+            'name': group_name,  # Nom del KHP (ex: "KHP2", "KHP2_50")
+            'name_full': f"KHP{group_conc}@{group_volume}µL",  # Condicions: conc + volum
+            'conc_ppm': group_conc,
             'area': selected_area,
             'shift_min': selected_shift_min,
             'shift_sec': selected_shift_sec,
             'a254_doc_ratio': selected_a254_ratio,
             'a254_area': selected_a254_area,
             'is_bp': replicas[0].get('is_bp', False),
+
+            # Mètriques de qualitat (promig de rèpliques)
+            'snr': mean_snr,
+            't_retention': mean_t_retention,
+            't_doc_max': mean_t_retention,
+            't_dad_max': mean_t_dad_max,  # t_max del 254nm (referència)
+            'fwhm_doc': mean_fwhm,
+            'symmetry': mean_symmetry,
+            'volume_uL': group_volume,  # Volum d'aquest grup
 
             # Traçabilitat de selecció
             'selection': {
@@ -4453,6 +3694,7 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
                 'selected_replicas': selected_replicas,  # [1, 2] o [1] o [2]
                 'n_replicas_available': len(replicas),
                 'is_manual': manual_selection is not None,
+                'khp_name': group_name,  # Nom del KHP
             },
 
             # Comparació entre rèpliques
@@ -4471,43 +3713,62 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
             'status': status,
         }
 
-    report_progress(60, "Seleccionant millor KHP per cada senyal...")
+    report_progress(60, "Processant calibracions KHP...")
 
-    # Calibrar DOC DIRECT
+    # Calibrar DOC DIRECT - retorna llista de calibracions (una per condició)
+    calibrations_direct = []
     if has_direct:
-        khp_data_direct = select_best_khp(khp_data_direct_list)
-        if khp_data_direct:
-            result["khp_data_direct"] = khp_data_direct
-            result["khp_area_direct"] = khp_data_direct['area']
-            result["shift_direct"] = khp_data_direct['shift_min']  # Shift real vs 254nm
-            conc = khp_data_direct.get('conc_ppm', 0)
-            if conc > 0:
-                result["rf_direct"] = khp_data_direct['area'] / conc  # RF = Àrea / conc
+        calibrations_direct = select_best_khp(khp_data_direct_list)
+        if calibrations_direct:
+            result["calibrations_direct"] = calibrations_direct
+            # Valors principals (primera calibració = major conc/vol)
+            primary = calibrations_direct[0]
+            result["khp_data_direct"] = primary  # Compatibilitat
+            result["khp_area_direct"] = primary['area']
+            result["shift_direct"] = primary['shift_min']
+            result["rf_direct"] = primary.get('rf', 0)
+            result["rf_mass_direct"] = primary.get('rf_mass', 0)
+            # Info si hi ha múltiples condicions
+            if len(calibrations_direct) > 1:
+                all_conditions = [f"KHP{c['conc_ppm']}@{c['volume_uL']}µL" for c in calibrations_direct]
+                result["warnings"].append(
+                    f"ℹ️ MÚLTIPLES CONDICIONS KHP: {', '.join(all_conditions)}. "
+                    f"Cada mostra usarà la calibració amb les seves condicions (conc, vol)."
+                )
 
-    # Calibrar DOC UIB
+    # Calibrar DOC UIB - retorna llista de calibracions
+    calibrations_uib = []
     if has_uib:
-        khp_data_uib = select_best_khp(khp_data_uib_list)
-        if khp_data_uib:
-            result["khp_data_uib"] = khp_data_uib
-            result["khp_area_uib"] = khp_data_uib['area']
-            result["shift_uib"] = khp_data_uib['shift_min']  # Shift real vs 254nm
-            conc = khp_data_uib.get('conc_ppm', 0)
-            if conc > 0:
-                result["rf_uib"] = khp_data_uib['area'] / conc  # RF = Àrea / conc
+        calibrations_uib = select_best_khp(khp_data_uib_list)
+        if calibrations_uib:
+            result["calibrations_uib"] = calibrations_uib
+            # Valors principals
+            primary = calibrations_uib[0]
+            result["khp_data_uib"] = primary  # Compatibilitat
+            result["khp_area_uib"] = primary['area']
+            result["shift_uib"] = primary['shift_min']
+            result["rf_uib"] = primary.get('rf', 0)
+            result["rf_mass_uib"] = primary.get('rf_mass', 0)
 
     report_progress(80, "Calculant RF...")
 
     # Usar Direct com a principal, sino UIB
-    if has_direct and result.get("khp_data_direct"):
-        result["khp_data"] = result["khp_data_direct"]
-        result["khp_area"] = result["khp_area_direct"]
-        result["khp_conc"] = result["khp_data_direct"]['conc_ppm']
-        result["rf"] = result["rf_direct"]
-    elif has_uib and result.get("khp_data_uib"):
-        result["khp_data"] = result["khp_data_uib"]
-        result["khp_area"] = result["khp_area_uib"]
-        result["khp_conc"] = result["khp_data_uib"]['conc_ppm']
-        result["rf"] = result["rf_uib"]
+    if calibrations_direct:
+        primary = calibrations_direct[0]
+        result["calibrations"] = calibrations_direct  # Llista principal
+        result["khp_data"] = primary
+        result["khp_area"] = primary['area']
+        result["khp_conc"] = primary['conc_ppm']
+        result["rf"] = primary.get('rf', 0)
+        result["rf_mass"] = primary.get('rf_mass', 0)
+    elif calibrations_uib:
+        primary = calibrations_uib[0]
+        result["calibrations"] = calibrations_uib  # Llista principal
+        result["khp_data"] = primary
+        result["khp_area"] = primary['area']
+        result["khp_conc"] = primary['conc_ppm']
+        result["rf"] = primary.get('rf', 0)
+        result["rf_mass"] = primary.get('rf_mass', 0)
 
     if result["rf"] == 0:
         result["errors"].append("WARN: RF és zero (àrea o concentració invàlides)")
@@ -4573,10 +3834,22 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
     if result.get("khp_data_uib"):
         add_historical_comparison(result["khp_data_uib"], "UIB")
 
-    report_progress(90, "Registrant calibracio...")
+    report_progress(90, "Registrant calibracions...")
 
-    # Registrar calibracio (usa dades principals)
-    if result["khp_data"]:
+    # Registrar TOTES les calibracions (una per cada condició)
+    calibrations_list = result.get("calibrations", [])
+    if calibrations_list:
+        registered = []
+        for cal_data in calibrations_list:
+            mode = "BP" if cal_data.get('is_bp', False) else "COLUMN"
+            calibration = register_calibration(seq_path, cal_data, "LOCAL", mode)
+            registered.append(calibration)
+        result["registered_calibrations"] = registered
+        # Compatibilitat: la primera és la principal
+        if registered:
+            result["calibration"] = registered[0]
+    elif result.get("khp_data"):
+        # Fallback: format antic amb només khp_data
         mode = "BP" if result["khp_data"].get('is_bp', False) else "COLUMN"
         calibration = register_calibration(seq_path, result["khp_data"], "LOCAL", mode)
         result["calibration"] = calibration
