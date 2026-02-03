@@ -1665,7 +1665,7 @@ def baseline_stats_windowed(t, y, method="column", timeout_positions=None, confi
         from hpsec_config import get_config
         config = get_config()
 
-    baseline_cfg = config.get("baseline", {})
+    baseline_cfg = config.get("baseline", default={})
 
     # Paràmetres
     timeout_margin = baseline_cfg.get("timeout_margin_min", 1.5)
@@ -1761,7 +1761,7 @@ def get_baseline_value(t, y, mode="COLUMN", config=None):
         from hpsec_config import get_config
         config = get_config()
 
-    baseline_cfg = config.get("baseline", {})
+    baseline_cfg = config.get("baseline", default={})
 
     t = np.asarray(t, dtype=float)
     y = np.asarray(y, dtype=float)
@@ -1807,7 +1807,7 @@ def get_baseline_stats(t, y, mode="COLUMN", config=None):
         from hpsec_config import get_config
         config = get_config()
 
-    baseline_cfg = config.get("baseline", {})
+    baseline_cfg = config.get("baseline", default={})
 
     t = np.asarray(t, dtype=float)
     y = np.asarray(y, dtype=float)

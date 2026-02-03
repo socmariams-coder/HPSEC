@@ -1073,7 +1073,7 @@ def analyze_sample(sample_data, calibration_data=None, config=None):
                 )
                 result["fwhm_uib"] = fwhm_uib
 
-        # FWHM per DAD 254 (BP mode)
+        # FWHM i Symmetry per DAD 254 (BP mode)
         if is_bp and df_dad is not None and not df_dad.empty and '254' in df_dad.columns:
             try:
                 t_dad = pd.to_numeric(df_dad['time (min)'], errors='coerce').to_numpy()
@@ -1086,13 +1086,21 @@ def analyze_sample(sample_data, calibration_data=None, config=None):
                     # Detectar pic
                     peak_254 = detect_main_peak(t_dad, y_254_smooth, 5.0, is_bp=True)
                     if peak_254.get("valid"):
+                        peak_idx_254 = peak_254["peak_idx"]
+                        left_idx_254 = peak_254.get("left_idx", 0)
+                        right_idx_254 = peak_254.get("right_idx", len(t_dad) - 1)
+                        # FWHM
                         fwhm_254 = calculate_fwhm(
                             t_dad, y_254_smooth,
-                            peak_254["peak_idx"],
-                            peak_254.get("left_idx", 0),
-                            peak_254.get("right_idx", len(t_dad) - 1)
+                            peak_idx_254, left_idx_254, right_idx_254
                         )
                         result["fwhm_254"] = fwhm_254
+                        # Symmetry (50% altura, estàndard)
+                        sym_254 = calculate_symmetry(
+                            t_dad, y_254_smooth,
+                            peak_idx_254, left_idx_254, right_idx_254
+                        )
+                        result["symmetry_254"] = sym_254
             except Exception:
                 pass
 
