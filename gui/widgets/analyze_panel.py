@@ -343,9 +343,32 @@ class AnalyzePanel(QWidget):
         # Amagar frame d'estat, mostrar resultats
         self.status_frame.setVisible(False)
 
+        print(f"[DEBUG] samples_grouped keys: {list(self.samples_grouped.keys())}")
+        print(f"[DEBUG] n_samples_grouped: {len(self.samples_grouped)}")
+
+        # Debug primer sample
+        if self.samples_grouped:
+            first_name = list(self.samples_grouped.keys())[0]
+            first = self.samples_grouped[first_name]
+            print(f"[DEBUG] First sample keys: {list(first.keys())}")
+            if first.get("replicas"):
+                rep_keys = list(first["replicas"].keys())
+                print(f"[DEBUG] Replica keys: {rep_keys}")
+                if rep_keys:
+                    first_rep = first["replicas"][rep_keys[0]]
+                    print(f"[DEBUG] First replica keys: {list(first_rep.keys())}")
+                    print(f"[DEBUG] areas: {first_rep.get('areas')}")
+                    print(f"[DEBUG] snr_info: {first_rep.get('snr_info')}")
+                    print(f"[DEBUG] snr_info_dad: {first_rep.get('snr_info_dad')}")
+            print(f"[DEBUG] comparison: {first.get('comparison')}")
+            print(f"[DEBUG] quantification: {first.get('quantification')}")
+
         # Guardar resultat
         self.main_window.processed_data = result
         self.samples_grouped = result.get("samples_grouped", {})
+
+        print(f"[DEBUG] result keys: {list(result.keys())}")
+        print(f"[DEBUG] samples_grouped from result: {result.get('samples_grouped') is not None}")
 
         # Guardar a JSON
         save_analysis_result(result)
@@ -435,8 +458,10 @@ class AnalyzePanel(QWidget):
             snr_dad_text = self._format_snr_dad(rep_data)
             self.results_table.setItem(row, 4, QTableWidgetItem(snr_dad_text))
 
-            # Col 5: Àrea total
-            area = rep_data.get("area_total", 0)
+            # Col 5: Àrea total (DOC)
+            areas = rep_data.get("areas") or {}
+            doc_areas = areas.get("DOC") or {}
+            area = doc_areas.get("total", 0)
             area_text = f"{area:.0f}" if area else "-"
             self.results_table.setItem(row, 5, QTableWidgetItem(area_text))
 
@@ -586,7 +611,9 @@ class AnalyzePanel(QWidget):
         self.results_table.item(row, 4).setText(snr_dad_text)
 
         # Àrea
-        area = rep_data.get("area_total", 0)
+        areas = rep_data.get("areas") or {}
+        doc_areas = areas.get("DOC") or {}
+        area = doc_areas.get("total", 0)
         self.results_table.item(row, 5).setText(f"{area:.0f}" if area else "-")
 
         # Concentració
@@ -842,7 +869,9 @@ class SampleDetailDialog(QDialog):
         doc_sel = selected.get("doc", "1")
         rep_data = (self.sample_data.get("replicas") or {}).get(doc_sel, {})
 
-        fractions = rep_data.get("fractions", {})
+        # Fraccions estan a areas.DOC
+        areas = rep_data.get("areas") or {}
+        fractions = areas.get("DOC") or {}
 
         # Header
         layout.addWidget(QLabel("<b>Fracció</b>"), 0, 0)
