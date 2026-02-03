@@ -2,7 +2,12 @@
 HPSEC Suite - Export Panel
 ===========================
 
-Panel para la fase 5: Exportación de resultados.
+Panel per la fase 5: Exportació de resultats.
+
+Funcionalitats:
+- Generació d'Excels finals (un per mostra)
+- Excel resum amb totes les mostres
+- Opcions de format i contingut
 """
 
 from pathlib import Path
@@ -10,7 +15,7 @@ from pathlib import Path
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QPushButton, QHBoxLayout,
     QCheckBox, QLineEdit, QFileDialog, QGroupBox, QFrame,
-    QProgressBar, QMessageBox
+    QProgressBar, QMessageBox, QGridLayout
 )
 from PySide6.QtCore import Qt, Signal, QThread
 from PySide6.QtGui import QFont
@@ -18,38 +23,69 @@ from PySide6.QtGui import QFont
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from hpsec_process import write_consolidated_excel
+from hpsec_export import export_sequence, generate_summary_excel, DEFAULT_EXPORT_CONFIG
 
 
 class ExportWorker(QThread):
-    """Worker thread para exportación asíncrona."""
+    """Worker thread per exportació asíncrona."""
     progress = Signal(int, str)
-    finished = Signal(int, list)  # n_exported, errors
+    finished = Signal(dict)
     error = Signal(str)
 
-    def __init__(self, main_window, output_path, only_selected=True):
+    def __init__(self, samples_grouped, output_path, calibration_data, mode, options):
         super().__init__()
-        self.main_window = main_window
+        self.samples_grouped = samples_grouped
         self.output_path = output_path
-        self.only_selected = only_selected
+        self.calibration_data = calibration_data
+        self.mode = mode
+        self.options = options
 
     def run(self):
         try:
-            # TODO: Implementar exportación real
-            # Por ahora, simulamos
-            import time
-            for i in range(10):
-                self.progress.emit((i + 1) * 10, f"Exportant {i + 1}/10...")
-                time.sleep(0.2)
+            results = {"excel_files": None, "summary": None, "errors": []}
 
-            self.finished.emit(10, [])
+            # Callback per progrés
+            def progress_cb(pct, msg):
+                self.progress.emit(pct, msg)
+
+            # Exportar Excels individuals
+            if self.options.get("individual_excels", True):
+                self.progress.emit(0, "Exportant fitxers individuals...")
+                excel_result = export_sequence(
+                    self.samples_grouped,
+                    self.output_path,
+                    self.calibration_data,
+                    self.mode,
+                    DEFAULT_EXPORT_CONFIG,
+                    progress_cb,
+                )
+                results["excel_files"] = excel_result
+                results["errors"].extend(excel_result.get("errors", []))
+
+            # Generar Excel resum
+            if self.options.get("summary_excel", True):
+                self.progress.emit(90, "Generant resum...")
+                summary_path = str(Path(self.output_path) / "SUMMARY.xlsx")
+                summary_result = generate_summary_excel(
+                    self.samples_grouped,
+                    summary_path,
+                    self.calibration_data,
+                    self.mode,
+                    DEFAULT_EXPORT_CONFIG,
+                )
+                results["summary"] = summary_result
+
+            self.progress.emit(100, "Completat")
+            self.finished.emit(results)
 
         except Exception as e:
             self.error.emit(str(e))
 
 
 class ExportPanel(QWidget):
-    """Panel de exportación."""
+    """Panel d'exportació."""
+
+    export_completed = Signal(dict)
 
     def __init__(self, main_window):
         super().__init__()
@@ -59,36 +95,57 @@ class ExportPanel(QWidget):
         self._setup_ui()
 
     def _setup_ui(self):
-        """Configura la interfaz."""
+        """Configura la interfície."""
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 24, 24, 24)
         layout.setSpacing(16)
 
-        # Título
+        # Títol
         title = QLabel("Exportar Resultats")
         title.setFont(QFont("Segoe UI", 16, QFont.Bold))
         layout.addWidget(title)
 
-        # Opciones de exportación
+        # Info
+        info = QLabel(
+            "Genera els fitxers Excel finals amb les rèpliques seleccionades "
+            "i la quantificació aplicada."
+        )
+        info.setWordWrap(True)
+        info.setStyleSheet("color: #555; margin-bottom: 8px;")
+        layout.addWidget(info)
+
+        # Opcions d'exportació
         options_group = QGroupBox("Opcions d'Exportació")
         options_layout = QVBoxLayout(options_group)
 
-        self.excel_check = QCheckBox("Generar Excels consolidats")
-        self.excel_check.setChecked(True)
-        options_layout.addWidget(self.excel_check)
+        self.individual_check = QCheckBox("Generar Excel per cada mostra")
+        self.individual_check.setChecked(True)
+        self.individual_check.setToolTip(
+            "Crea un fitxer Excel per cada mostra amb fulls:\n"
+            "• ID: Traçabilitat (fitxers, shifts, quantificació)\n"
+            "• DOC: Cromatogrames DOC (final + raw)\n"
+            "• DAD: 6 longituds d'ona\n"
+            "• RESULTS: Integracions per fraccions"
+        )
+        options_layout.addWidget(self.individual_check)
+
+        self.summary_check = QCheckBox("Generar Excel resum")
+        self.summary_check.setChecked(True)
+        self.summary_check.setToolTip(
+            "Crea SUMMARY.xlsx amb una fila per mostra:\n"
+            "concentració, SNR, warnings"
+        )
+        options_layout.addWidget(self.summary_check)
 
         self.pdf_check = QCheckBox("Generar informe PDF")
         self.pdf_check.setChecked(False)
-        self.pdf_check.setEnabled(False)  # TODO
+        self.pdf_check.setEnabled(False)
+        self.pdf_check.setToolTip("Pendent d'implementar")
         options_layout.addWidget(self.pdf_check)
-
-        self.only_selected_check = QCheckBox("Només rèpliques seleccionades")
-        self.only_selected_check.setChecked(True)
-        options_layout.addWidget(self.only_selected_check)
 
         layout.addWidget(options_group)
 
-        # Carpeta de salida
+        # Carpeta de sortida
         output_group = QGroupBox("Carpeta de Sortida")
         output_layout = QHBoxLayout(output_group)
 
@@ -102,65 +159,89 @@ class ExportPanel(QWidget):
 
         layout.addWidget(output_group)
 
-        # Resumen
+        # Resum
         self.summary_frame = QFrame()
-        self.summary_frame.setProperty("card", True)
-        summary_layout = QVBoxLayout(self.summary_frame)
+        self.summary_frame.setFrameStyle(QFrame.StyledPanel)
+        self.summary_frame.setStyleSheet("background-color: #f5f5f5; padding: 12px;")
+        summary_layout = QGridLayout(self.summary_frame)
 
-        self.summary_label = QLabel("Selecciona una seqüència per veure el resum.")
-        summary_layout.addWidget(self.summary_label)
+        self.n_samples_label = QLabel("Mostres: -")
+        self.n_samples_label.setFont(QFont("Segoe UI", 10))
+        summary_layout.addWidget(self.n_samples_label, 0, 0)
+
+        self.method_label = QLabel("Mètode: -")
+        self.method_label.setFont(QFont("Segoe UI", 10))
+        summary_layout.addWidget(self.method_label, 0, 1)
+
+        self.calibration_label = QLabel("Calibració: -")
+        self.calibration_label.setFont(QFont("Segoe UI", 10))
+        summary_layout.addWidget(self.calibration_label, 1, 0, 1, 2)
 
         layout.addWidget(self.summary_frame)
 
+        # Barra de progrés
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setVisible(False)
+        layout.addWidget(self.progress_bar)
+
+        self.status_label = QLabel("")
+        self.status_label.setStyleSheet("color: #666;")
+        layout.addWidget(self.status_label)
+
         layout.addStretch()
 
-        # Botones
+        # Botons
         buttons_layout = QHBoxLayout()
         buttons_layout.addStretch()
 
         self.export_btn = QPushButton("Exportar")
+        self.export_btn.setStyleSheet("font-weight: bold; padding: 8px 24px;")
         self.export_btn.clicked.connect(self._run_export)
         buttons_layout.addWidget(self.export_btn)
 
         layout.addLayout(buttons_layout)
 
     def showEvent(self, event):
-        """Se llama cuando el panel se hace visible."""
+        """Es crida quan el panel es fa visible."""
         super().showEvent(event)
         self._update_summary()
 
     def _update_summary(self):
-        """Actualiza el resumen."""
+        """Actualitza el resum."""
         processed_data = self.main_window.processed_data
-        review_data = self.main_window.review_data
 
         if not processed_data:
+            self.n_samples_label.setText("Mostres: -")
+            self.method_label.setText("Mètode: -")
+            self.calibration_label.setText("Calibració: -")
             return
 
-        # Calcular estadísticas
-        all_samples = (
-            processed_data.get("samples", []) +
-            processed_data.get("khp_samples", []) +
-            processed_data.get("control_samples", [])
-        )
+        # Comptar mostres
+        samples_grouped = processed_data.get("samples_grouped", {})
+        n_samples = len(samples_grouped)
 
-        n_samples = len(set(s.get("name") for s in all_samples))
-        n_replicas = len(all_samples)
+        # Mètode
+        method = processed_data.get("method", "COLUMN")
+
+        # Calibració
+        cal_data = self.main_window.calibration_data
+        if cal_data:
+            cal_info = f"KHP{cal_data.get('khp_conc_ppm', '?')} @ {cal_data.get('date', '?')}"
+        else:
+            cal_info = "No disponible"
+
+        self.n_samples_label.setText(f"Mostres: {n_samples}")
+        self.method_label.setText(f"Mètode: {method}")
+        self.calibration_label.setText(f"Calibració: {cal_info}")
 
         # Default output path
         seq_path = self.main_window.seq_path
         if seq_path and not self.output_path_input.text():
-            default_output = str(Path(seq_path) / "Dades_Consolidades")
+            default_output = str(Path(seq_path) / "Export")
             self.output_path_input.setText(default_output)
 
-        self.summary_label.setText(
-            f"<b>Mostres a exportar:</b> {n_samples}<br>"
-            f"<b>Rèpliques totals:</b> {n_replicas}<br><br>"
-            f"Els fitxers es guardaran a la carpeta de sortida seleccionada."
-        )
-
     def _browse_output(self):
-        """Abre diálogo para seleccionar carpeta de salida."""
+        """Obre diàleg per seleccionar carpeta de sortida."""
         path = QFileDialog.getExistingDirectory(
             self,
             "Selecciona carpeta de sortida",
@@ -170,22 +251,47 @@ class ExportPanel(QWidget):
             self.output_path_input.setText(path)
 
     def _run_export(self):
-        """Ejecuta la exportación."""
+        """Executa l'exportació."""
         output_path = self.output_path_input.text()
         if not output_path:
             QMessageBox.warning(self, "Avís", "Selecciona una carpeta de sortida.")
             return
 
-        # Crear carpeta si no existe
+        processed_data = self.main_window.processed_data
+        if not processed_data:
+            QMessageBox.warning(self, "Avís", "No hi ha dades processades.")
+            return
+
+        samples_grouped = processed_data.get("samples_grouped", {})
+        if not samples_grouped:
+            QMessageBox.warning(self, "Avís", "No hi ha mostres per exportar.")
+            return
+
+        # Crear carpeta si no existeix
         Path(output_path).mkdir(parents=True, exist_ok=True)
 
-        self.export_btn.setEnabled(False)
-        self.main_window.show_progress(0)
+        # Opcions
+        options = {
+            "individual_excels": self.individual_check.isChecked(),
+            "summary_excel": self.summary_check.isChecked(),
+        }
 
+        # Deshabilitar botó i mostrar progrés
+        self.export_btn.setEnabled(False)
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setValue(0)
+
+        # Mode i calibració
+        method = processed_data.get("method", "COLUMN")
+        calibration_data = self.main_window.calibration_data
+
+        # Crear worker
         self.worker = ExportWorker(
-            self.main_window,
+            samples_grouped,
             output_path,
-            only_selected=self.only_selected_check.isChecked()
+            calibration_data,
+            method,
+            options,
         )
         self.worker.progress.connect(self._on_progress)
         self.worker.finished.connect(self._on_finished)
@@ -193,21 +299,48 @@ class ExportPanel(QWidget):
         self.worker.start()
 
     def _on_progress(self, pct, msg):
-        self.main_window.show_progress(pct)
-        self.main_window.set_status(msg)
+        """Gestiona el progrés."""
+        self.progress_bar.setValue(pct)
+        self.status_label.setText(msg)
 
-    def _on_finished(self, n_exported, errors):
-        self.main_window.show_progress(-1)
+    def _on_finished(self, results):
+        """Gestiona la finalització."""
+        self.progress_bar.setVisible(False)
         self.export_btn.setEnabled(True)
 
-        msg = f"Exportació completada!\n\nFitxers generats: {n_exported}"
+        # Resum
+        excel_result = results.get("excel_files", {})
+        summary_result = results.get("summary", {})
+        errors = results.get("errors", [])
+
+        n_exported = excel_result.get("n_exported", 0) if excel_result else 0
+
+        msg = f"Exportació completada!\n\n"
+        msg += f"Fitxers Excel generats: {n_exported}\n"
+
+        if summary_result:
+            msg += f"Excel resum: SUMMARY.xlsx ({summary_result.get('n_samples', 0)} mostres)\n"
+
         if errors:
-            msg += f"\n\nErrors ({len(errors)}):\n" + "\n".join(errors[:5])
+            msg += f"\nErrors ({len(errors)}):\n"
+            msg += "\n".join(errors[:5])
+            if len(errors) > 5:
+                msg += f"\n... i {len(errors) - 5} més"
 
         QMessageBox.information(self, "Exportació Completada", msg)
-        self.main_window.set_status("Exportació completada", 5000)
+
+        self.status_label.setText(f"Exportat: {n_exported} fitxers")
+        self.export_completed.emit(results)
+
+        # Obrir carpeta
+        output_path = self.output_path_input.text()
+        if output_path and n_exported > 0:
+            import os
+            os.startfile(output_path)
 
     def _on_error(self, error_msg):
-        self.main_window.show_progress(-1)
+        """Gestiona errors."""
+        self.progress_bar.setVisible(False)
         self.export_btn.setEnabled(True)
+        self.status_label.setText("Error")
         QMessageBox.critical(self, "Error", f"Error durant l'exportació:\n{error_msg}")
