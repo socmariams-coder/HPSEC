@@ -117,6 +117,22 @@ class AnalyzePanel(QWidget):
 
         layout.addLayout(header_layout)
 
+        # === STATUS INFO ===
+        self.status_frame = QFrame()
+        self.status_frame.setStyleSheet(
+            "background-color: #FFF3E0; border-radius: 4px; padding: 12px;"
+        )
+        status_layout = QVBoxLayout(self.status_frame)
+        status_layout.setContentsMargins(12, 8, 12, 8)
+        status_layout.setSpacing(4)
+
+        self.status_label = QLabel()
+        self.status_label.setFont(QFont("Segoe UI", 10))
+        self.status_label.setWordWrap(True)
+        status_layout.addWidget(self.status_label)
+
+        layout.addWidget(self.status_frame)
+
         # === PROGRESS ===
         self.progress_frame = QFrame()
         self.progress_frame.setVisible(False)
@@ -234,14 +250,63 @@ class AnalyzePanel(QWidget):
 
         layout.addLayout(nav_layout)
 
+    def showEvent(self, event):
+        """Es crida quan el panel es fa visible."""
+        super().showEvent(event)
+        self._update_status()
+
+    def _update_status(self):
+        """Actualitza l'indicador d'estat."""
+        imported_data = self.main_window.imported_data
+        calibration_data = self.main_window.calibration_data
+
+        if not imported_data:
+            self.status_frame.setStyleSheet(
+                "background-color: #FFEBEE; border-radius: 4px; padding: 12px;"
+            )
+            self.status_label.setText(
+                "⚠ <b>No hi ha dades importades.</b><br>"
+                "Vés a la pestanya <b>1. Importar</b> per carregar les dades de la seqüència."
+            )
+            self.analyze_btn.setEnabled(False)
+            return
+
+        # Comptar mostres
+        samples = imported_data.get("samples", {})
+        n_samples = len(samples)
+        n_replicas = sum(len(reps) for reps in samples.values())
+
+        cal_status = "✓ Calibració disponible" if calibration_data else "⚠ Sense calibració"
+
+        self.status_frame.setStyleSheet(
+            "background-color: #E8F5E9; border-radius: 4px; padding: 12px;"
+        )
+        self.status_label.setText(
+            f"✓ <b>Dades carregades:</b> {n_samples} mostres, {n_replicas} rèpliques<br>"
+            f"{cal_status}<br><br>"
+            f"Prem <b>Analitzar</b> per processar les mostres."
+        )
+        self.analyze_btn.setEnabled(True)
+
     def _run_analyze(self):
         """Executa l'anàlisi."""
         imported_data = self.main_window.imported_data
         calibration_data = self.main_window.calibration_data
 
+        print(f"[DEBUG] _run_analyze: imported_data={imported_data is not None}")
+        print(f"[DEBUG] _run_analyze: calibration_data={calibration_data is not None}")
+
         if not imported_data:
-            QMessageBox.warning(self, "Avís", "No hi ha dades importades.")
+            QMessageBox.warning(self, "Avís", "No hi ha dades importades.\n\nVés a la pestanya '1. Importar' primer.")
             return
+
+        # Verificar que hi ha mostres
+        samples = imported_data.get("samples", {})
+        if not samples:
+            QMessageBox.warning(self, "Avís", "No s'han trobat mostres a les dades importades.")
+            return
+
+        print(f"[DEBUG] Iniciant anàlisi amb {len(samples)} mostres")
 
         # Mostrar progrés
         self.analyze_btn.setEnabled(False)
@@ -263,13 +328,20 @@ class AnalyzePanel(QWidget):
 
     def _on_finished(self, result):
         """Gestiona la finalització de l'anàlisi."""
+        print(f"[DEBUG] _on_finished: result success={result.get('success') if result else None}")
+
         self.progress_frame.setVisible(False)
         self.analyze_btn.setEnabled(True)
 
         if not result or not result.get("success"):
             error_msg = result.get("error", "Error desconegut") if result else "Resultat buit"
+            print(f"[DEBUG] Error: {error_msg}")
             QMessageBox.critical(self, "Error", f"Error durant l'anàlisi:\n{error_msg}")
+            self._update_status()
             return
+
+        # Amagar frame d'estat, mostrar resultats
+        self.status_frame.setVisible(False)
 
         # Guardar resultat
         self.main_window.processed_data = result
