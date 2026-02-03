@@ -25,8 +25,13 @@ NO fa:
 Usat per HPSEC_Suite.py
 """
 
-__version__ = "1.4.0"
+__version__ = "1.5.0"
 __version_date__ = "2026-02-03"
+# v1.5.0: Comparació rèpliques, recomanació i quantificació
+#         - compare_replicas(): Pearson + diff àrees per fracció
+#         - recommend_replica(): Selecció automàtica DOC/DAD independent
+#         - quantify_sample(): Aplicar calibració (àrea → ppm)
+#         - analyze_sequence() ara genera samples_grouped amb tot
 # v1.4.0: Nova funció unificada analyze_signal() per qualsevol tipus de senyal
 #         Nova funció analyze_signal_comparison() per comparar dos senyals
 # v1.3.0: Afegides mètriques DUAL/COLUMN: batman_uib, pearson_direct_uib,
@@ -834,6 +839,307 @@ def analyze_signal_comparison(signal1_result, signal2_result, t1=None, y1=None, 
 
 
 # =============================================================================
+# COMPARACIÓ DE RÈPLIQUES
+# =============================================================================
+
+# Llindars per warnings
+REPLICA_PEARSON_THRESHOLD = 0.995      # Warning si Pearson < 0.995
+REPLICA_AREA_DIFF_THRESHOLD = 10.0     # Warning si diff àrea total > 10%
+REPLICA_FRAC_DIFF_THRESHOLD = 15.0     # Warning si diff fracció > 15%
+
+
+def compare_replicas(r1_result, r2_result, mode="COLUMN", config=None):
+    """
+    Compara dues rèpliques d'una mateixa mostra.
+
+    Args:
+        r1_result: Resultat de analyze_sample() per rèplica 1
+        r2_result: Resultat de analyze_sample() per rèplica 2
+        mode: "COLUMN" o "BP"
+        config: Configuració opcional
+
+    Returns:
+        dict amb:
+            - doc: comparació senyals DOC
+                - pearson: correlació R1-R2
+                - area_diff_pct: diferència àrea total (%)
+                - fraction_diff_pct: dict amb diff per fracció (COLUMN)
+                - warnings: llista de warnings
+            - dad: comparació senyals DAD
+                - pearson_254: correlació R1-R2 a 254nm
+                - area_diff_pct: diferència àrea total (%)
+                - warnings: llista de warnings
+    """
+    result = {
+        "doc": {
+            "pearson": np.nan,
+            "area_diff_pct": np.nan,
+            "fraction_diff_pct": {},
+            "warnings": []
+        },
+        "dad": {
+            "pearson_254": np.nan,
+            "area_diff_pct": np.nan,
+            "warnings": []
+        }
+    }
+
+    # Verificar que ambdues rèpliques són vàlides
+    if not r1_result.get("processed") or not r2_result.get("processed"):
+        result["doc"]["warnings"].append("REPLICA_NOT_PROCESSED")
+        return result
+
+    is_column = mode.upper() == "COLUMN"
+
+    # =========================================================================
+    # COMPARACIÓ DOC
+    # =========================================================================
+    t1 = r1_result.get("t_doc")
+    t2 = r2_result.get("t_doc")
+    y1 = r1_result.get("y_doc_net")
+    y2 = r2_result.get("y_doc_net")
+
+    if y1 is not None and y2 is not None and len(y1) > 10 and len(y2) > 10:
+        # Interpolar si longituds diferents
+        if len(y1) != len(y2):
+            t_common = t1 if len(t1) <= len(t2) else t2
+            y1_interp = np.interp(t_common, t1, y1)
+            y2_interp = np.interp(t_common, t2, y2)
+        else:
+            y1_interp, y2_interp = y1, y2
+
+        # Pearson
+        try:
+            pearson_val, _ = pearsonr(y1_interp, y2_interp)
+            result["doc"]["pearson"] = float(pearson_val)
+            if pearson_val < REPLICA_PEARSON_THRESHOLD:
+                result["doc"]["warnings"].append("LOW_CORRELATION")
+        except Exception:
+            pass
+
+        # Diferència àrea total
+        areas1 = r1_result.get("areas", {}).get("DOC", {})
+        areas2 = r2_result.get("areas", {}).get("DOC", {})
+        area1_total = areas1.get("total", 0)
+        area2_total = areas2.get("total", 0)
+
+        if max(area1_total, area2_total) > 0:
+            diff_pct = abs(area1_total - area2_total) / max(area1_total, area2_total) * 100
+            result["doc"]["area_diff_pct"] = diff_pct
+            if diff_pct > REPLICA_AREA_DIFF_THRESHOLD:
+                result["doc"]["warnings"].append("AREA_DIFF_HIGH")
+
+        # Diferència per fracció (només COLUMN)
+        if is_column:
+            for frac in ["BioP", "HS", "BB", "SB", "LMW"]:
+                a1 = areas1.get(frac, 0)
+                a2 = areas2.get(frac, 0)
+                if max(a1, a2) > 0:
+                    frac_diff = abs(a1 - a2) / max(a1, a2) * 100
+                    result["doc"]["fraction_diff_pct"][frac] = frac_diff
+                    if frac_diff > REPLICA_FRAC_DIFF_THRESHOLD:
+                        result["doc"]["warnings"].append(f"{frac}_DIFF_HIGH")
+                else:
+                    result["doc"]["fraction_diff_pct"][frac] = 0.0
+
+    # =========================================================================
+    # COMPARACIÓ DAD (254nm)
+    # =========================================================================
+    df_dad1 = r1_result.get("df_dad")
+    df_dad2 = r2_result.get("df_dad")
+
+    if df_dad1 is not None and df_dad2 is not None:
+        if not df_dad1.empty and not df_dad2.empty:
+            if '254' in df_dad1.columns and '254' in df_dad2.columns:
+                try:
+                    t_dad1 = df_dad1['time (min)'].to_numpy()
+                    t_dad2 = df_dad2['time (min)'].to_numpy()
+                    y_254_1 = df_dad1['254'].to_numpy()
+                    y_254_2 = df_dad2['254'].to_numpy()
+
+                    # Interpolar si cal
+                    if len(y_254_1) != len(y_254_2):
+                        t_common = t_dad1 if len(t_dad1) <= len(t_dad2) else t_dad2
+                        y_254_1 = np.interp(t_common, t_dad1, y_254_1)
+                        y_254_2 = np.interp(t_common, t_dad2, y_254_2)
+
+                    # Pearson 254nm
+                    pearson_254, _ = pearsonr(y_254_1, y_254_2)
+                    result["dad"]["pearson_254"] = float(pearson_254)
+                    if pearson_254 < REPLICA_PEARSON_THRESHOLD:
+                        result["dad"]["warnings"].append("LOW_CORRELATION_254")
+
+                    # Diferència àrea 254
+                    snr_dad1 = r1_result.get("snr_info_dad", {}).get("A254", {})
+                    snr_dad2 = r2_result.get("snr_info_dad", {}).get("A254", {})
+                    # Usar àrea de les fraccions si disponible
+                    areas1_254 = r1_result.get("areas", {}).get("A254", {})
+                    areas2_254 = r2_result.get("areas", {}).get("A254", {})
+                    a1_254 = areas1_254.get("total", 0)
+                    a2_254 = areas2_254.get("total", 0)
+
+                    if max(a1_254, a2_254) > 0:
+                        diff_254 = abs(a1_254 - a2_254) / max(a1_254, a2_254) * 100
+                        result["dad"]["area_diff_pct"] = diff_254
+                        if diff_254 > REPLICA_AREA_DIFF_THRESHOLD:
+                            result["dad"]["warnings"].append("AREA_DIFF_HIGH_254")
+
+                except Exception:
+                    pass
+
+    return result
+
+
+def recommend_replica(r1_result, r2_result, comparison, mode="COLUMN"):
+    """
+    Recomana la millor rèplica per DOC i DAD independentment.
+
+    Args:
+        r1_result: Resultat de analyze_sample() per rèplica 1
+        r2_result: Resultat de analyze_sample() per rèplica 2
+        comparison: Resultat de compare_replicas()
+        mode: "COLUMN" o "BP"
+
+    Returns:
+        dict amb:
+            - doc: { replica: "1"|"2", score: float, reason: str }
+            - dad: { replica: "1"|"2", score: float, reason: str }
+    """
+    result = {
+        "doc": {"replica": "1", "score": 0.5, "reason": "Default"},
+        "dad": {"replica": "1", "score": 0.5, "reason": "Default"}
+    }
+
+    is_bp = mode.upper() == "BP"
+
+    # =========================================================================
+    # RECOMANACIÓ DOC
+    # =========================================================================
+    # Criteri principal: sense anomalies
+    # Criteri secundari: SNR més alt
+
+    anom1 = r1_result.get("anomalies", [])
+    anom2 = r2_result.get("anomalies", [])
+    snr1 = r1_result.get("snr_info", {}).get("snr_direct", 0) or 0
+    snr2 = r2_result.get("snr_info", {}).get("snr_direct", 0) or 0
+
+    # Anomalies crítiques (exclouen la rèplica)
+    critical_anomalies = ["BATMAN_DIRECT", "BATMAN_UIB", "NO_PEAK", "TIMEOUT_IN_PEAK"]
+    has_critical1 = any(a in anom1 for a in critical_anomalies)
+    has_critical2 = any(a in anom2 for a in critical_anomalies)
+
+    if has_critical1 and not has_critical2:
+        result["doc"] = {"replica": "2", "score": 0.95, "reason": "R1 té anomalies crítiques"}
+    elif has_critical2 and not has_critical1:
+        result["doc"] = {"replica": "1", "score": 0.95, "reason": "R2 té anomalies crítiques"}
+    elif has_critical1 and has_critical2:
+        # Ambdues tenen anomalies, triar per SNR
+        if snr2 > snr1:
+            result["doc"] = {"replica": "2", "score": 0.3, "reason": "Ambdues amb anomalies, R2 millor SNR"}
+        else:
+            result["doc"] = {"replica": "1", "score": 0.3, "reason": "Ambdues amb anomalies, R1 millor SNR"}
+    else:
+        # Cap anomalia crítica, triar per SNR
+        if snr2 > snr1 * 1.1:  # R2 ha de ser >10% millor
+            result["doc"] = {"replica": "2", "score": 0.85, "reason": "SNR superior"}
+        elif snr1 > snr2 * 1.1:
+            result["doc"] = {"replica": "1", "score": 0.85, "reason": "SNR superior"}
+        else:
+            result["doc"] = {"replica": "1", "score": 0.75, "reason": "SNR similar, preferència R1"}
+
+    # =========================================================================
+    # RECOMANACIÓ DAD
+    # =========================================================================
+    # BP: SNR alt, FWHM consistent
+    # COLUMN: SNR alt, deriva baseline baixa
+
+    snr_dad1 = r1_result.get("snr_info_dad", {}).get("A254", {}).get("snr", 0) or 0
+    snr_dad2 = r2_result.get("snr_info_dad", {}).get("A254", {}).get("snr", 0) or 0
+
+    if is_bp:
+        # BP: prioritzar SNR i FWHM
+        fwhm1 = r1_result.get("fwhm_254", 0) or 0
+        fwhm2 = r2_result.get("fwhm_254", 0) or 0
+
+        if snr_dad2 > snr_dad1 * 1.1:
+            result["dad"] = {"replica": "2", "score": 0.85, "reason": "SNR 254nm superior"}
+        elif snr_dad1 > snr_dad2 * 1.1:
+            result["dad"] = {"replica": "1", "score": 0.85, "reason": "SNR 254nm superior"}
+        else:
+            result["dad"] = {"replica": "1", "score": 0.75, "reason": "SNR similar, preferència R1"}
+    else:
+        # COLUMN: prioritzar SNR i deriva baseline
+        # TODO: Implementar detecció deriva baseline DAD
+        if snr_dad2 > snr_dad1 * 1.1:
+            result["dad"] = {"replica": "2", "score": 0.85, "reason": "SNR 254nm superior"}
+        elif snr_dad1 > snr_dad2 * 1.1:
+            result["dad"] = {"replica": "1", "score": 0.85, "reason": "SNR 254nm superior"}
+        else:
+            result["dad"] = {"replica": "1", "score": 0.75, "reason": "SNR similar, preferència R1"}
+
+    return result
+
+
+def quantify_sample(sample_result, calibration_data, mode="COLUMN"):
+    """
+    Aplica calibració per convertir àrees a concentracions.
+
+    Args:
+        sample_result: Resultat de analyze_sample()
+        calibration_data: Dict amb dades de calibració:
+            - concentration_ratio (CR): factor de conversió (ppm/àrea)
+            - O alternativament: area_khp, conc_khp per calcular CR
+        mode: "COLUMN" o "BP"
+
+    Returns:
+        dict amb:
+            - concentration_ppm: concentració total (ppm)
+            - fractions: dict amb concentració per fracció (COLUMN)
+                - BioP, HS, BB, SB, LMW: ppm per cada fracció
+    """
+    result = {
+        "concentration_ppm": None,
+        "fractions": {}
+    }
+
+    if not sample_result.get("processed"):
+        return result
+
+    # Obtenir factor de conversió (CR)
+    cr = None
+    if calibration_data:
+        cr = calibration_data.get("concentration_ratio")
+        if cr is None:
+            # Calcular CR a partir de KHP
+            area_khp = calibration_data.get("area_khp", 0)
+            conc_khp = calibration_data.get("conc_khp", 0)
+            if area_khp > 0 and conc_khp > 0:
+                cr = conc_khp / area_khp
+
+    if cr is None or cr <= 0:
+        return result
+
+    # Obtenir àrees
+    areas = sample_result.get("areas", {}).get("DOC", {})
+    area_total = areas.get("total", 0)
+
+    # Concentració total
+    if area_total > 0:
+        result["concentration_ppm"] = float(area_total * cr)
+
+    # Concentracions per fracció (només COLUMN)
+    if mode.upper() == "COLUMN":
+        for frac in ["BioP", "HS", "BB", "SB", "LMW"]:
+            area_frac = areas.get(frac, 0)
+            if area_frac > 0:
+                result["fractions"][frac] = float(area_frac * cr)
+            else:
+                result["fractions"][frac] = 0.0
+
+    return result
+
+
+# =============================================================================
 # PROCESSAMENT D'UNA MOSTRA
 # =============================================================================
 def analyze_sample(sample_data, calibration_data=None, config=None):
@@ -1457,16 +1763,99 @@ def analyze_sequence(imported_data, calibration_data=None, config=None, progress
         except Exception as e:
             result["errors"].append(f"Control {ctrl.get('name')}: {str(e)}")
 
-    # Generar resum
+    # =========================================================================
+    # AGRUPAR RÈPLIQUES, COMPARAR, RECOMANAR I QUANTIFICAR
+    # =========================================================================
+    if progress_callback:
+        progress_callback("Comparing replicas...", 90)
+
+    # Detectar mode
+    method = imported_data.get("method", "COLUMN")
+    is_bp = method.upper() == "BP"
+    mode = "BP" if is_bp else "COLUMN"
+
+    # Agrupar mostres per nom
+    samples_by_name = {}
+    for sample in result["samples"]:
+        name = sample.get("name", "UNKNOWN")
+        replica = sample.get("replica", "1")
+        if name not in samples_by_name:
+            samples_by_name[name] = {}
+        samples_by_name[name][replica] = sample
+
+    # Per cada mostra amb múltiples rèpliques, comparar i recomanar
+    result["samples_grouped"] = {}
+
+    for sample_name, replicas in samples_by_name.items():
+        sample_group = {
+            "replicas": replicas,
+            "comparison": None,
+            "recommendation": None,
+            "selected": {"doc": "1", "dad": "1"},
+            "quantification": None
+        }
+
+        replica_keys = sorted(replicas.keys())
+
+        if len(replica_keys) >= 2:
+            # Comparar R1 vs R2
+            r1 = replicas.get(replica_keys[0])
+            r2 = replicas.get(replica_keys[1])
+
+            if r1 and r2:
+                # Comparació
+                comparison = compare_replicas(r1, r2, mode=mode, config=config)
+                sample_group["comparison"] = comparison
+
+                # Recomanació
+                recommendation = recommend_replica(r1, r2, comparison, mode=mode)
+                sample_group["recommendation"] = recommendation
+
+                # Selecció inicial = recomanació
+                sample_group["selected"] = {
+                    "doc": recommendation["doc"]["replica"],
+                    "dad": recommendation["dad"]["replica"]
+                }
+
+                # Quantificació (usar rèplica seleccionada per DOC)
+                selected_replica = sample_group["selected"]["doc"]
+                selected_sample = replicas.get(selected_replica, r1)
+                quantification = quantify_sample(selected_sample, calibration_data, mode=mode)
+                sample_group["quantification"] = quantification
+
+        elif len(replica_keys) == 1:
+            # Només una rèplica
+            r1 = replicas.get(replica_keys[0])
+            sample_group["selected"] = {"doc": replica_keys[0], "dad": replica_keys[0]}
+
+            # Quantificació
+            if r1:
+                quantification = quantify_sample(r1, calibration_data, mode=mode)
+                sample_group["quantification"] = quantification
+
+        result["samples_grouped"][sample_name] = sample_group
+
+    # =========================================================================
+    # GENERAR RESUM
+    # =========================================================================
     n_valid = sum(1 for s in result["samples"] if s.get("processed") and s.get("peak_info", {}).get("valid"))
     n_with_anomalies = sum(1 for s in result["samples"] if s.get("anomalies"))
     n_timeouts = sum(1 for s in result["samples"] if s.get("timeout_info", {}).get("n_timeouts", 0) > 0)
+    n_with_warnings = sum(
+        1 for sg in result["samples_grouped"].values()
+        if sg.get("comparison") and (
+            sg["comparison"].get("doc", {}).get("warnings") or
+            sg["comparison"].get("dad", {}).get("warnings")
+        )
+    )
 
     result["summary"] = {
-        "total_samples": len(result["samples"]),
+        "total_samples": len(result["samples_grouped"]),
+        "total_replicas": len(result["samples"]),
         "valid_peaks": n_valid,
         "with_anomalies": n_with_anomalies,
         "with_timeouts": n_timeouts,
+        "with_replica_warnings": n_with_warnings,
         "n_khp": len(result["khp_samples"]),
         "n_controls": len(result["control_samples"]),
     }
@@ -1887,6 +2276,7 @@ __all__ = [
     "analyze_sample_areas",
     # SNR
     "calculate_snr_info",
+    "calculate_dad_snr_info",
     # Escriptura
     "write_consolidated_excel",
     # Funcions principals
@@ -1895,4 +2285,12 @@ __all__ = [
     # Funcions unificades (v1.4.0)
     "analyze_signal",
     "analyze_signal_comparison",
+    # Comparació rèpliques (v1.5.0)
+    "compare_replicas",
+    "recommend_replica",
+    "quantify_sample",
+    # Constants
+    "REPLICA_PEARSON_THRESHOLD",
+    "REPLICA_AREA_DIFF_THRESHOLD",
+    "REPLICA_FRAC_DIFF_THRESHOLD",
 ]
