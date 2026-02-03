@@ -14,7 +14,9 @@ Funcions principals:
 - Detecció pics: detect_main_peak, detect_all_peaks
 - Integració: integrate_chromatogram (mode='full'|'main_peak')
 - Utilitats: calc_snr, calc_peak_area, calc_pearson
+- Mètriques pics: calculate_fwhm, calculate_symmetry
 
+v1.2 - 2026-02-02: Afegides calculate_fwhm i calculate_symmetry (migrades de calibrate)
 v1.1 - 2026-01-26: Afegides funcions timeout i detecció pics (migrades)
 v1.0 - 2026-01-22: Versió inicial
 """
@@ -1404,3 +1406,688 @@ def integrate_chromatogram(t, y, left_idx=None, right_idx=None,
 
     else:
         raise ValueError(f"Mode desconegut: {mode}. Usar 'full' o 'main_peak'.")
+
+
+# =============================================================================
+# PEAK METRICS (FWHM, Symmetry)
+# =============================================================================
+
+def calculate_fwhm(t, y, peak_idx, left_idx=None, right_idx=None):
+    """
+    Calcula Full Width at Half Maximum (FWHM) d'un pic.
+
+    FWHM és l'amplada del pic a mitja alçada, indicador de:
+    - Resolució cromatogràfica
+    - Degradació de columna (FWHM augmenta)
+    - Qualitat del pic
+
+    Args:
+        t: Array de temps (minuts)
+        y: Array de senyal
+        peak_idx: Índex del màxim del pic
+        left_idx: Límit esquerre opcional (si None, busca en tot l'array)
+        right_idx: Límit dret opcional (si None, busca en tot l'array)
+
+    Returns:
+        FWHM en minuts, o np.nan si no es pot calcular
+    """
+    try:
+        t = np.asarray(t, dtype=float)
+        y = np.asarray(y, dtype=float)
+
+        if len(t) < 3 or peak_idx < 0 or peak_idx >= len(y):
+            return np.nan
+
+        # Límits de cerca
+        if left_idx is None:
+            left_idx = 0
+        if right_idx is None:
+            right_idx = len(y) - 1
+
+        left_idx = max(0, left_idx)
+        right_idx = min(len(y) - 1, right_idx)
+
+        if peak_idx <= left_idx or peak_idx >= right_idx:
+            return np.nan
+
+        # Altura del pic i mitja altura
+        h_peak = y[peak_idx]
+        h_half = h_peak / 2
+
+        # Buscar punt esquerre on creua h_half
+        t_left = None
+        for i in range(peak_idx, left_idx - 1, -1):
+            if y[i] <= h_half:
+                # Interpolació lineal per més precisió
+                if i < peak_idx:
+                    frac = (h_half - y[i]) / (y[i + 1] - y[i]) if y[i + 1] != y[i] else 0
+                    t_left = t[i] + frac * (t[i + 1] - t[i])
+                else:
+                    t_left = t[i]
+                break
+
+        # Buscar punt dret on creua h_half
+        t_right = None
+        for i in range(peak_idx, right_idx + 1):
+            if y[i] <= h_half:
+                # Interpolació lineal
+                if i > peak_idx:
+                    frac = (h_half - y[i - 1]) / (y[i] - y[i - 1]) if y[i] != y[i - 1] else 0
+                    t_right = t[i - 1] + frac * (t[i] - t[i - 1])
+                else:
+                    t_right = t[i]
+                break
+
+        if t_left is None or t_right is None:
+            return np.nan
+
+        fwhm = t_right - t_left
+        return float(fwhm) if fwhm > 0 else np.nan
+
+    except Exception:
+        return np.nan
+
+
+def calculate_symmetry(t, y, peak_idx, left_idx=None, right_idx=None):
+    """
+    Calcula la simetria d'un pic (ratio amplades esquerra/dreta a mitja altura).
+
+    Args:
+        t: Array de temps (minuts)
+        y: Array de senyal
+        peak_idx: Índex del màxim del pic
+        left_idx, right_idx: Límits opcionals
+
+    Returns:
+        Symmetry ratio (ideal ≈ 1.0), o np.nan si no es pot calcular
+    """
+    try:
+        t = np.asarray(t, dtype=float)
+        y = np.asarray(y, dtype=float)
+
+        if len(t) < 3 or peak_idx < 0 or peak_idx >= len(y):
+            return np.nan
+
+        if left_idx is None:
+            left_idx = 0
+        if right_idx is None:
+            right_idx = len(y) - 1
+
+        left_idx = max(0, left_idx)
+        right_idx = min(len(y) - 1, right_idx)
+
+        if peak_idx <= left_idx or peak_idx >= right_idx:
+            return np.nan
+
+        h_peak = y[peak_idx]
+        h_half = h_peak / 2
+        t_peak = t[peak_idx]
+
+        # Buscar punt esquerre
+        t_left = None
+        for i in range(peak_idx, left_idx - 1, -1):
+            if y[i] <= h_half:
+                if i < peak_idx:
+                    frac = (h_half - y[i]) / (y[i + 1] - y[i]) if y[i + 1] != y[i] else 0
+                    t_left = t[i] + frac * (t[i + 1] - t[i])
+                else:
+                    t_left = t[i]
+                break
+
+        # Buscar punt dret
+        t_right = None
+        for i in range(peak_idx, right_idx + 1):
+            if y[i] <= h_half:
+                if i > peak_idx:
+                    frac = (h_half - y[i - 1]) / (y[i] - y[i - 1]) if y[i] != y[i - 1] else 0
+                    t_right = t[i - 1] + frac * (t[i] - t[i - 1])
+                else:
+                    t_right = t[i]
+                break
+
+        if t_left is None or t_right is None:
+            return np.nan
+
+        width_left = t_peak - t_left
+        width_right = t_right - t_peak
+
+        if width_right <= 0:
+            return np.nan
+
+        return float(width_left / width_right)
+
+    except Exception:
+        return np.nan
+
+
+# =============================================================================
+# BASELINE FUNCTIONS (migrades de hpsec_utils.py 2026-02-03)
+# =============================================================================
+
+def mode_robust(data, bins=50):
+    """
+    Calcula la moda robusta de un array usando histograma.
+
+    Args:
+        data: Array de valores
+        bins: Número de bins para el histograma
+
+    Returns:
+        float con el valor de la moda robusta
+    """
+    if data is None or len(data) == 0:
+        return 0.0
+    data = np.asarray(data)
+    data = data[np.isfinite(data)]
+    if len(data) == 0:
+        return 0.0
+    counts, edges = np.histogram(data, bins=bins)
+    i = int(np.argmax(counts))
+    return 0.5 * (edges[i] + edges[i + 1])
+
+
+def baseline_stats(y, pct_low=10, pct_high=30, min_noise=0.01):
+    """
+    Calcula estadístiques de la baseline usant percentils.
+
+    Selecciona els punts entre els percentils indicats (per defecte 10-30)
+    per estimar la baseline sense pics ni soroll extrem.
+
+    Args:
+        y: Array de valors del senyal
+        pct_low: Percentil inferior (default: 10)
+        pct_high: Percentil superior (default: 30)
+        min_noise: Soroll mínim (mAU) basat en precisió instrumental (default: 0.01)
+
+    Returns:
+        dict amb:
+            - mean: mitjana de la baseline
+            - std: desviació estàndard de la baseline (mínim min_noise)
+            - threshold_3sigma: mean + 3*std (llindar per pics significatius)
+    """
+    y = np.asarray(y, dtype=float)
+    y = y[np.isfinite(y)]
+
+    if len(y) < 10:
+        return {"mean": 0.0, "std": min_noise, "threshold_3sigma": 3.0 * min_noise}
+
+    p_low = np.percentile(y, pct_low)
+    p_high = np.percentile(y, pct_high)
+
+    # Seleccionar punts dins del rang de baseline
+    mask = (y >= p_low) & (y <= p_high)
+    baseline_points = y[mask]
+
+    if len(baseline_points) < 5:
+        # Fallback: usar percentil 10 com a baseline
+        baseline_points = y[y <= p_high]
+
+    if len(baseline_points) < 2:
+        return {"mean": float(p_low), "std": min_noise, "threshold_3sigma": float(p_low) + 3.0 * min_noise}
+
+    mean_val = float(np.mean(baseline_points))
+    std_val = float(np.std(baseline_points))
+
+    # Aplicar soroll mínim instrumental per evitar SNR artificials
+    # DAD típic: precisió ~0.01 mAU
+    std_val = max(std_val, min_noise)
+
+    return {
+        "mean": mean_val,
+        "std": std_val,
+        "threshold_3sigma": mean_val + 3.0 * std_val
+    }
+
+
+def baseline_stats_windowed(t, y, method="column", timeout_positions=None, config=None):
+    """
+    Calcula estadístiques de baseline usant finestres temporals específiques.
+
+    Evita regions amb timeouts per obtenir estimacions de soroll consistents
+    entre rèpliques.
+
+    Args:
+        t: Array de temps (minuts)
+        y: Array de senyal (mAU)
+        method: "column" o "bp" - determina quines finestres usar
+        timeout_positions: Llista de posicions temporals (minuts) on hi ha timeouts
+        config: ConfigManager instance (opcional, usa global si None)
+
+    Returns:
+        dict amb:
+            - mean: mitjana de la baseline
+            - std: desviació estàndard (mínim min_noise)
+            - threshold_3sigma: mean + 3*std
+            - window_used: nom de la finestra utilitzada (o "percentile_fallback")
+    """
+    # Carregar configuració
+    if config is None:
+        from hpsec_config import get_config
+        config = get_config()
+
+    baseline_cfg = config.get("baseline", {})
+
+    # Paràmetres
+    timeout_margin = baseline_cfg.get("timeout_margin_min", 1.5)
+    min_noise = baseline_cfg.get("min_noise_mau", 0.01)
+
+    # Seleccionar finestres segons mètode
+    # NOTA (2026-02-03): COLUMN usa 0-10 min (pre-peak), evitant zones amb peaks
+    if method.lower() == "bp":
+        windows = baseline_cfg.get("windows_bp", [{"start": 5.0, "end": 10.0, "name": "post-peak"}])
+    else:
+        windows = baseline_cfg.get("windows_column", [
+            {"start": 0.0, "end": 10.0, "name": "pre-peak"}
+        ])
+
+    # Convertir a numpy
+    t = np.asarray(t, dtype=float)
+    y = np.asarray(y, dtype=float)
+
+    # Preparar llista de timeouts
+    if timeout_positions is None:
+        timeout_positions = []
+
+    def window_has_timeout(w_start, w_end):
+        """Comprova si una finestra conté algun timeout (amb marge)."""
+        for t_pos in timeout_positions:
+            if (t_pos - timeout_margin) < w_end and (t_pos + timeout_margin) > w_start:
+                return True
+        return False
+
+    def get_window_data(w_start, w_end):
+        """Extreu dades dins una finestra temporal."""
+        mask = (t >= w_start) & (t <= w_end)
+        return y[mask]
+
+    # Intentar cada finestra en ordre
+    for window in windows:
+        w_start = window.get("start", 0)
+        w_end = window.get("end", 10)
+        w_name = window.get("name", f"{w_start}-{w_end}")
+
+        if window_has_timeout(w_start, w_end):
+            continue
+
+        window_data = get_window_data(w_start, w_end)
+        if len(window_data) < 10:
+            continue
+
+        window_data = window_data[np.isfinite(window_data)]
+        if len(window_data) < 5:
+            continue
+
+        mean_val = float(np.mean(window_data))
+        std_val = float(np.std(window_data))
+        std_val = max(std_val, min_noise)
+
+        return {
+            "mean": mean_val,
+            "std": std_val,
+            "threshold_3sigma": mean_val + 3.0 * std_val,
+            "window_used": w_name
+        }
+
+    # Fallback: mètode percentil original
+    pct_low = baseline_cfg.get("fallback_percentile_low", 10)
+    pct_high = baseline_cfg.get("fallback_percentile_high", 30)
+
+    result = baseline_stats(y, pct_low=pct_low, pct_high=pct_high, min_noise=min_noise)
+    result["window_used"] = "percentile_fallback"
+
+    return result
+
+
+def get_baseline_value(t, y, mode="COLUMN", config=None):
+    """
+    Calcula el valor de baseline per restar del senyal.
+
+    FUNCIÓ UNIFICADA per a tot el pipeline (import, calibrate, process).
+
+    Lògica:
+    - BP: usar FINAL del cromatograma (després del pic) - últim X%
+    - COLUMN: usar INICI del cromatograma (abans dels pics) - primer X%
+
+    Args:
+        t: Array de temps (minuts)
+        y: Array de senyal (mAU)
+        mode: "BP" o "COLUMN"
+        config: ConfigManager instance (opcional, usa global si None)
+
+    Returns:
+        float: valor de baseline a restar
+    """
+    if config is None:
+        from hpsec_config import get_config
+        config = get_config()
+
+    baseline_cfg = config.get("baseline", {})
+
+    t = np.asarray(t, dtype=float)
+    y = np.asarray(y, dtype=float)
+
+    if len(y) < 10:
+        return float(np.nanmin(y)) if len(y) > 0 else 0.0
+
+    n = len(y)
+
+    if mode.upper() == "BP":
+        end_pct = baseline_cfg.get("bp_end_pct", 20)
+        n_points = max(10, int(n * end_pct / 100))
+        baseline_data = y[-n_points:]
+    else:
+        start_pct = baseline_cfg.get("column_start_pct", 15)
+        n_points = max(10, int(n * start_pct / 100))
+        baseline_data = y[:n_points]
+
+    method = baseline_cfg.get("method", "mode")
+
+    if method == "median":
+        return float(np.median(baseline_data))
+    else:
+        return mode_robust(baseline_data)
+
+
+def get_baseline_stats(t, y, mode="COLUMN", config=None):
+    """
+    Calcula estadístiques de baseline (mean, std) per SNR.
+
+    Usa la mateixa zona que get_baseline_value() per coherència.
+
+    Args:
+        t: Array de temps (minuts)
+        y: Array de senyal (mAU)
+        mode: "BP" o "COLUMN"
+        config: ConfigManager instance (opcional)
+
+    Returns:
+        dict amb: mean, std, min, max
+    """
+    if config is None:
+        from hpsec_config import get_config
+        config = get_config()
+
+    baseline_cfg = config.get("baseline", {})
+
+    t = np.asarray(t, dtype=float)
+    y = np.asarray(y, dtype=float)
+
+    min_noise = baseline_cfg.get("min_noise_mau", 0.01)
+
+    if len(y) < 10:
+        return {"mean": 0.0, "std": min_noise, "min": 0.0, "max": 0.0}
+
+    n = len(y)
+
+    if mode.upper() == "BP":
+        end_pct = baseline_cfg.get("bp_end_pct", 20)
+        n_points = max(10, int(n * end_pct / 100))
+        baseline_data = y[-n_points:]
+    else:
+        start_pct = baseline_cfg.get("column_start_pct", 15)
+        n_points = max(10, int(n * start_pct / 100))
+        baseline_data = y[:n_points]
+
+    baseline_data = baseline_data[np.isfinite(baseline_data)]
+
+    if len(baseline_data) < 5:
+        return {"mean": 0.0, "std": min_noise, "min": 0.0, "max": 0.0}
+
+    pct_low = baseline_cfg.get("stats_percentile_low", 5)
+    pct_high = baseline_cfg.get("stats_percentile_high", 40)
+
+    p_low = np.percentile(baseline_data, pct_low)
+    p_high = np.percentile(baseline_data, pct_high)
+    filtered = baseline_data[(baseline_data >= p_low) & (baseline_data <= p_high)]
+
+    if len(filtered) < 5:
+        filtered = baseline_data
+
+    mean_val = float(np.mean(filtered))
+    std_val = max(float(np.std(filtered)), min_noise)
+
+    return {
+        "mean": mean_val,
+        "std": std_val,
+        "min": float(np.min(baseline_data)),
+        "max": float(np.max(baseline_data)),
+    }
+
+
+# =============================================================================
+# ALIGNMENT FUNCTIONS (migrades de hpsec_analyze.py 2026-02-03)
+# =============================================================================
+
+def align_signals_by_max(t_ref, y_ref, t_other, y_other):
+    """
+    Alinea dos senyals pel màxim i interpola el segon a l'escala de temps del primer.
+
+    Args:
+        t_ref: temps de referència
+        y_ref: senyal de referència
+        t_other: temps del senyal a alinear
+        y_other: senyal a alinear
+
+    Returns:
+        y_aligned: senyal alineat i interpolat a t_ref
+        shift: desplaçament aplicat (minuts)
+    """
+    t_ref = np.asarray(t_ref)
+    y_ref = np.asarray(y_ref)
+    t_other = np.asarray(t_other)
+    y_other = np.asarray(y_other)
+
+    idx_max_ref = np.argmax(y_ref)
+    idx_max_other = np.argmax(y_other)
+
+    t_max_ref = t_ref[idx_max_ref]
+    t_max_other = t_other[idx_max_other]
+
+    shift = t_max_ref - t_max_other
+
+    t_other_shifted = t_other + shift
+
+    y_aligned = np.interp(t_ref, t_other_shifted, y_other, left=0, right=0)
+
+    return y_aligned, shift
+
+
+def apply_shift(t_ref, t_signal, y_signal, shift):
+    """
+    Aplica un shift temporal i interpola a l'escala de referència.
+
+    Args:
+        t_ref: escala de temps de referència
+        t_signal: escala de temps del senyal
+        y_signal: senyal a desplaçar
+        shift: desplaçament en minuts (positiu = avançar, negatiu = retardar)
+
+    Returns:
+        y_shifted: senyal desplaçat i interpolat a t_ref
+    """
+    t_ref = np.asarray(t_ref)
+    t_signal = np.asarray(t_signal)
+    y_signal = np.asarray(y_signal)
+
+    t_shifted = t_signal + shift
+    y_shifted = np.interp(t_ref, t_shifted, y_signal, left=0, right=0)
+    return y_shifted
+
+
+# =============================================================================
+# SNR COMPLETE (consolidació de calc_snr, calculate_peak_snr, calculate_snr_info)
+# =============================================================================
+
+def calc_snr_complete(t, y, peak_height=None, peak_idx=None, method="column",
+                      timeout_positions=None, config=None):
+    """
+    Calcula SNR, LOD, LOQ i estadístiques de baseline.
+
+    FUNCIÓ CONSOLIDADA que unifica:
+    - calc_snr() (versió bàsica)
+    - calculate_peak_snr() de calibrate
+    - calculate_snr_info() de analyze
+
+    Args:
+        t: Array de temps (minuts)
+        y: Array de senyal (mAU)
+        peak_height: Altura del pic (si None, usa màxim - baseline)
+        peak_idx: Índex del pic (opcional, per calcular altura)
+        method: "column" o "bp" - determina finestres de baseline
+        timeout_positions: Llista de posicions temporals amb timeouts
+        config: ConfigManager instance (opcional)
+
+    Returns:
+        dict amb:
+            - snr: Signal-to-Noise Ratio
+            - baseline_noise: Desviació estàndard del baseline (mAU)
+            - baseline_mean: Mitjana del baseline (mAU)
+            - lod: Limit of Detection = 3 × noise (mAU)
+            - loq: Limit of Quantification = 10 × noise (mAU)
+            - window_used: Finestra usada per calcular baseline
+    """
+    t = np.asarray(t, dtype=float)
+    y = np.asarray(y, dtype=float)
+
+    if len(y) < 10:
+        return {
+            "snr": 0.0,
+            "baseline_noise": 0.0,
+            "baseline_mean": 0.0,
+            "lod": 0.0,
+            "loq": 0.0,
+            "window_used": "insufficient_data"
+        }
+
+    use_windowed = (t is not None and len(t) > 10)
+
+    if use_windowed:
+        bl_stats = baseline_stats_windowed(
+            t, y,
+            method=method,
+            timeout_positions=timeout_positions,
+            config=config
+        )
+    else:
+        bl_stats = baseline_stats(y)
+        bl_stats["window_used"] = "percentile"
+
+    baseline_mean = bl_stats.get("mean", 0.0)
+    baseline_noise = bl_stats.get("std", 0.01)
+    window_used = bl_stats.get("window_used", "unknown")
+
+    if peak_height is None:
+        if peak_idx is not None and 0 <= peak_idx < len(y):
+            peak_height = y[peak_idx] - baseline_mean
+        else:
+            peak_height = float(np.max(y)) - baseline_mean
+
+    peak_height = max(0.0, peak_height)
+
+    if baseline_noise > 0:
+        snr = peak_height / baseline_noise
+    else:
+        snr = 0.0
+
+    lod = 3.0 * baseline_noise
+    loq = 10.0 * baseline_noise
+
+    return {
+        "snr": float(snr),
+        "baseline_noise": float(baseline_noise),
+        "baseline_mean": float(baseline_mean),
+        "lod": float(lod),
+        "loq": float(loq),
+        "window_used": window_used
+    }
+
+
+# =============================================================================
+# SIGNAL COMPARISON (nova funció)
+# =============================================================================
+
+def compare_signals(t1, y1, t2, y2, normalize=False):
+    """
+    Compara dos senyals calculant Pearson i diferència d'àrea.
+
+    Útil per:
+    - Comparar Direct vs UIB (dins mateixa mostra)
+    - Comparar rèpliques (rep1 vs rep2)
+    - Verificar qualitat d'alineació
+
+    Args:
+        t1, y1: Temps i senyal del primer senyal
+        t2, y2: Temps i senyal del segon senyal
+        normalize: Si True, normalitza senyals abans de comparar
+
+    Returns:
+        dict amb:
+            - pearson: Coeficient de correlació Pearson (-1 a 1)
+            - area_diff_pct: Diferència percentual d'àrees (%)
+            - area_1: Àrea del primer senyal
+            - area_2: Àrea del segon senyal
+            - n_points: Punts usats per la comparació
+            - valid: True si la comparació és vàlida
+    """
+    result = {
+        "pearson": np.nan,
+        "area_diff_pct": np.nan,
+        "area_1": 0.0,
+        "area_2": 0.0,
+        "n_points": 0,
+        "valid": False
+    }
+
+    if t1 is None or t2 is None or y1 is None or y2 is None:
+        return result
+
+    t1 = np.asarray(t1, dtype=float)
+    t2 = np.asarray(t2, dtype=float)
+    y1 = np.asarray(y1, dtype=float)
+    y2 = np.asarray(y2, dtype=float)
+
+    if len(t1) < 10 or len(t2) < 10:
+        return result
+
+    t_min = max(float(np.min(t1)), float(np.min(t2)))
+    t_max = min(float(np.max(t1)), float(np.max(t2)))
+
+    if t_max <= t_min:
+        return result
+
+    n_points = min(len(t1), len(t2), 1000)
+    t_common = np.linspace(t_min, t_max, n_points)
+
+    y1_interp = np.interp(t_common, t1, y1)
+    y2_interp = np.interp(t_common, t2, y2)
+
+    if normalize:
+        y1_max = np.max(np.abs(y1_interp))
+        y2_max = np.max(np.abs(y2_interp))
+        if y1_max > 0:
+            y1_interp = y1_interp / y1_max
+        if y2_max > 0:
+            y2_interp = y2_interp / y2_max
+
+    try:
+        pearson_val, _ = pearsonr(y1_interp, y2_interp)
+        result["pearson"] = float(pearson_val)
+    except Exception:
+        result["pearson"] = np.nan
+
+    area_1 = float(trapezoid(np.maximum(y1_interp, 0), t_common))
+    area_2 = float(trapezoid(np.maximum(y2_interp, 0), t_common))
+
+    result["area_1"] = area_1
+    result["area_2"] = area_2
+
+    max_area = max(area_1, area_2)
+    if max_area > 0:
+        result["area_diff_pct"] = abs(area_1 - area_2) / max_area * 100
+    else:
+        result["area_diff_pct"] = 0.0
+
+    result["n_points"] = n_points
+    result["valid"] = True
+
+    return result
