@@ -399,6 +399,10 @@ class DashboardPanel(QWidget):
         self.table.setAlternatingRowColors(False)  # Treure ombrejat alternatiu
         self.table.cellDoubleClicked.connect(self._on_double_click)
 
+        # Menú contextual (clic dret)
+        self.table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._show_context_menu)
+
         layout.addWidget(self.table)
 
     def refresh_sequences(self):
@@ -671,6 +675,78 @@ class DashboardPanel(QWidget):
             stats_text += f" | Errors: {errors}"
 
         self.lbl_stats.setText(stats_text)
+
+    def _show_context_menu(self, pos):
+        """Mostra menú contextual amb opcions per la seqüència."""
+        from PySide6.QtWidgets import QMenu
+
+        row = self.table.rowAt(pos.y())
+        if row < 0:
+            return
+
+        item_name = self.table.item(row, 1)
+        if not item_name:
+            return
+
+        seq_path = item_name.data(Qt.UserRole)
+        seq = None
+        for s in self.filtered_sequences:
+            if s.seq_path == seq_path:
+                seq = s
+                break
+
+        if not seq:
+            return
+
+        menu = QMenu(self)
+
+        # Opció: Processar (totes les etapes pendents)
+        action_process = menu.addAction(f"▶ Processar {seq.seq_name}")
+        action_process.triggered.connect(lambda: self._process_single(seq))
+
+        menu.addSeparator()
+
+        # Opcions individuals per etapa
+        if not seq.import_status.completed:
+            action_import = menu.addAction("  → Importar")
+            action_import.triggered.connect(lambda: self._run_single_phase(seq, "import"))
+
+        if seq.import_status.completed and not seq.calibrate_status.completed:
+            action_cal = menu.addAction("  → Calibrar")
+            action_cal.triggered.connect(lambda: self._run_single_phase(seq, "calibrate"))
+
+        if seq.import_status.completed and not seq.analyze_status.completed:
+            action_analyze = menu.addAction("  → Analitzar")
+            action_analyze.triggered.connect(lambda: self._run_single_phase(seq, "analyze"))
+
+        menu.addSeparator()
+
+        # Obrir al wizard
+        action_wizard = menu.addAction("Obrir al Wizard...")
+        action_wizard.triggered.connect(lambda: self._open_in_wizard(seq))
+
+        menu.exec(self.table.mapToGlobal(pos))
+
+    def _run_single_phase(self, seq, phase_name):
+        """Executa una sola fase per una seqüència."""
+        self._set_controls_enabled(False)
+        self.main_window.set_status(f"{seq.seq_name}: {phase_name}...")
+
+        if phase_name == "import":
+            ok, msg, _ = run_import(seq.seq_path)
+        elif phase_name == "calibrate":
+            ok, msg, _ = run_calibrate(seq.seq_path)
+        elif phase_name == "analyze":
+            ok, msg, _ = run_analyze(seq.seq_path)
+        else:
+            ok, msg = False, "Fase desconeguda"
+
+        self._set_controls_enabled(True)
+        self.main_window.set_status(
+            f"{seq.seq_name}: {msg}" if ok else f"{seq.seq_name}: ERROR - {msg}",
+            5000
+        )
+        self.refresh_sequences()
 
     def _on_double_click(self, row, col):
         """Doble-clic obre directament al wizard o edita notes."""
