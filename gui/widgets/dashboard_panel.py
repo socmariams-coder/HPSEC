@@ -28,8 +28,7 @@ from hpsec_config import get_config
 from hpsec_import import import_sequence, save_import_manifest
 from hpsec_calibrate import calibrate_from_import
 from hpsec_analyze import analyze_sequence, save_analysis_result
-# OBSOLETE: plots es generen des dels panels individuals, no des del batch
-# from hpsec_reports import generate_import_plots, generate_calibration_plots, generate_analysis_plots
+from hpsec_reports import generate_import_plots, generate_calibration_plots, generate_analysis_plots
 
 # Contrasenya per operacions batch i reset
 BATCH_PASSWORD = "LEQUIA"
@@ -83,6 +82,11 @@ def run_import(seq_path):
         debug_log(f"  success={result.get('success') if result else None}")
         if result and result.get('success'):
             save_import_manifest(result)
+            # Generar gràfics
+            try:
+                generate_import_plots(seq_path, result)
+            except Exception as e:
+                debug_log(f"  plots error: {e}")
             return True, "OK", result
         errors = result.get('errors', ['?']) if result else ['?']
         warnings = result.get('warnings', []) if result else []
@@ -109,6 +113,11 @@ def run_calibrate(seq_path):
 
         result = calibrate_from_import(imported)
         if result and result.get('success'):
+            # Generar gràfics
+            try:
+                generate_calibration_plots(seq_path, result, imported)
+            except Exception as e:
+                debug_log(f"  calibrate plots error: {e}")
             return True, "OK", result
         return False, "Sense KHP", None
     except Exception as e:
@@ -139,6 +148,11 @@ def run_analyze(seq_path):
         result = analyze_sequence(imported, calibrated)
         if result and result.get('success'):
             save_analysis_result(result)
+            # Generar gràfics
+            try:
+                generate_analysis_plots(seq_path, result)
+            except Exception as e:
+                debug_log(f"  analyze plots error: {e}")
             return True, "OK", result
         errors = result.get('errors', ['?']) if result else ['?']
         return False, f"Error: {errors[0]}", None
