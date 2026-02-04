@@ -36,7 +36,7 @@ import numpy as np
 import pandas as pd
 
 from hpsec_config import get_config
-from hpsec_utils import mode_robust
+from hpsec_utils import get_baseline_value
 from hpsec_core import detect_timeout
 from hpsec_migrate_master import migrate_single
 
@@ -71,57 +71,8 @@ def get_data_folder(seq_path, create=True):
 
     return data_folder
 
-# Configuració baseline per defecte
-DEFAULT_BASELINE_CONFIG = {
-    "bp_baseline_win": 1.0,          # Finestra baseline per BP (min)
-    "col_baseline_start": 10.0,      # Inici finestra baseline per COLUMN (min)
-}
-
-
-# =============================================================================
-# CORRECCIÓ BASELINE
-# =============================================================================
-def get_baseline_correction(t, y, mode_type="COL", config=None, use_end=False):
-    """
-    Correcció de baseline segons mode BP o COLUMN.
-
-    Args:
-        t: array de temps (min)
-        y: array de senyal
-        mode_type: "BP" o "COL"
-        config: configuració amb bp_baseline_win i col_baseline_start
-        use_end: si True, usa el final del cromatograma per baseline (recomanat per BP)
-
-    Returns:
-        float: valor de baseline (constant)
-    """
-    config = config or DEFAULT_BASELINE_CONFIG
-    t = np.asarray(t)
-    y = np.asarray(y)
-
-    if len(y) < 10:
-        return float(np.nanmin(y)) if len(y) > 0 else 0.0
-
-    if mode_type == "BP":
-        if use_end:
-            # Per BP: usar els últims punts (després del pic)
-            n = len(y)
-            n_edge = max(20, n // 5)  # Últim 20%
-            return float(np.median(y[-n_edge:]))
-        else:
-            # Per BP: usar finestra inicial
-            bp_win = config.get("bp_baseline_win") or 1.0
-            mask = t < bp_win
-            if np.sum(mask) > 10:
-                return float(mode_robust(y[mask]))
-            return float(np.nanmin(y))
-
-    # COLUMN: usar primers punts
-    col_start = config.get("col_baseline_start") or 10.0
-    mask = t < col_start
-    if np.sum(mask) > 10:
-        return float(mode_robust(y[mask]))
-    return float(np.nanmin(y))
+# NOTA: Funcions de baseline centralitzades a hpsec_utils.py
+# Usar get_baseline_value() i get_baseline_stats() directament
 
 
 # =============================================================================
@@ -129,8 +80,47 @@ def get_baseline_correction(t, y, mode_type="COL", config=None, use_end=False):
 # =============================================================================
 
 def normalize_key(s):
-    """Normalitza string per matching (elimina caràcters especials, majúscules)."""
-    return re.sub(r"[^A-Za-z0-9]+", "", str(s or "")).upper()
+    """
+    Normalitza string per matching.
+
+    - Elimina guions (-) i espais
+    - MANTÉ underscores (_) perquè són significatius en noms de fitxers
+    - Converteix a majúscules
+
+    Exemples:
+        "MQ-1" -> "MQ1"
+        "MQ_1" -> "MQ_1"  (underscore mantingut)
+        "NaOH 0.1mM" -> "NAOH0.1MM"
+    """
+    result = re.sub(r"[\-\s]+", "", str(s or ""))  # Només elimina guions i espais
+    return result.upper()
+
+
+def generate_agilent_control_name(base_name, occurrence_num):
+    """
+    Genera nom segons lògica Agilent per controls repetits.
+
+    Agilent/ChemStation assigna noms així quan una mostra es repeteix:
+    - 1a aparició: nom base (ex: "MQ")
+    - 2a aparició: nom base + "1" (ex: "MQ1")
+    - 3a aparició: nom base + "2" (ex: "MQ2")
+
+    Args:
+        base_name: Nom base del control (ex: "MQ", "NaOH")
+        occurrence_num: Número d'aparició (1, 2, 3, ...)
+
+    Returns:
+        str: Nom segons convenció Agilent
+
+    Exemples:
+        generate_agilent_control_name("MQ", 1) -> "MQ"
+        generate_agilent_control_name("MQ", 2) -> "MQ1"
+        generate_agilent_control_name("MQ", 3) -> "MQ2"
+    """
+    if occurrence_num <= 1:
+        return base_name
+    else:
+        return f"{base_name}{occurrence_num - 1}"
 
 
 def normalize_rep(rep):
@@ -204,6 +194,41 @@ def is_control_injection(sample_name, config=None):
     for pattern in control_patterns:
         if pattern.upper() in sample_upper:
             return True
+    return False
+
+
+def is_reference_standard(sample_name, config=None):
+    """
+    Verifica si una mostra és un Patró de Referència (PR).
+
+    Patrons: Br, NO3, CaCO3, SUWANNEE, SRNOM, o que acaben en HA/FA.
+
+    Args:
+        sample_name: Nom de la mostra
+        config: Configuració (si None, es llegeix de get_config())
+
+    Returns:
+        True si és un patró de referència
+    """
+    if config is None:
+        config = get_config()
+
+    pr_config = config.get("sample_types", "PATRÓ_REF", default={})
+    patterns = pr_config.get("patterns", [])
+    suffixes = pr_config.get("suffixes", [])
+
+    sample_upper = sample_name.upper().strip()
+
+    # Comprovar patrons (conté el patró)
+    for pattern in patterns:
+        if pattern.upper() in sample_upper:
+            return True
+
+    # Comprovar sufixos (acaba amb el sufix)
+    for suffix in suffixes:
+        if sample_upper.endswith(suffix.upper()):
+            return True
+
     return False
 
 
@@ -1563,17 +1588,67 @@ def parse_injections_from_masterfile(master_data, config=None):
     if df_seq is None:
         df_seq = master_data.get("seq")
     if df_seq is None or (hasattr(df_seq, 'empty') and df_seq.empty):
-        return [], ["No s'ha trobat fulla 1-HPLC-SEQ al MasterFile"], 0
+        return [], ["ERROR: No s'ha trobat fulla 1-HPLC-SEQ al MasterFile"], 0
+
+    # ==========================================================================
+    # VALIDACIÓ MASTERFILE: Columnes A-F (0-5) + N (13) han de tenir dades
+    # ==========================================================================
+    errors = []
+    col_list = list(df_seq.columns)
+    required_indices = [0, 1, 2, 3, 4, 5]  # A-F
+    if len(col_list) > 13:
+        required_indices.append(13)  # N (volum)
+
+    # Noms de columnes per missatges
+    col_letters = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N']
+
+    # Trobar files amb dades (Line# no buit)
+    line_col_idx = 0  # Columna A = Line#
+    if len(col_list) > line_col_idx:
+        line_col_name = col_list[line_col_idx]
+        # Files amb Line# vàlid
+        valid_rows = df_seq[line_col_name].notna() & (df_seq[line_col_name].astype(str).str.strip() != '')
+        n_data_rows = valid_rows.sum()
+
+        if n_data_rows == 0:
+            return [], ["ERROR: Fulla 1-HPLC-SEQ buida - no hi ha cap injecció"], 0
+
+        # Verificar cel·les buides en les files amb dades
+        empty_cells = []
+        for idx in df_seq[valid_rows].index:
+            row_num = idx + 2  # +2 perquè Excel comença a 1 i té header
+            line_val = df_seq.loc[idx, line_col_name]
+            try:
+                line_num = int(line_val)
+            except (ValueError, TypeError):
+                line_num = row_num
+
+            for col_idx in required_indices:
+                if col_idx < len(col_list):
+                    col_name = col_list[col_idx]
+                    val = df_seq.loc[idx, col_name]
+                    if pd.isna(val) or str(val).strip() in ['', 'nan', 'NaN']:
+                        col_letter = col_letters[col_idx] if col_idx < len(col_letters) else f'Col{col_idx}'
+                        empty_cells.append(f"Line {line_num}: {col_letter}")
+
+        if empty_cells:
+            # Agrupar per mostrar màxim 5 exemples
+            examples = empty_cells[:5]
+            more = f" (+{len(empty_cells)-5} més)" if len(empty_cells) > 5 else ""
+            errors.append(f"ERROR: Cel·les buides al MasterFile 1-HPLC-SEQ: {', '.join(examples)}{more}")
 
     # Identificar columnes
     sample_col = None
     inj_col = None
     line_col = None
     volume_col = None
+    sample_rep_col = None  # Columna Sample_Rep del migrate (si existeix)
 
     for col in df_seq.columns:
         col_lower = str(col).lower().strip()
-        if "sample" in col_lower and "name" in col_lower:
+        if col_lower == "sample_rep":
+            sample_rep_col = col
+        elif "sample" in col_lower and "name" in col_lower:
             sample_col = col
         elif col_lower == "inj#" or col_lower == "inj":
             inj_col = col
@@ -1623,9 +1698,41 @@ def parse_injections_from_masterfile(master_data, config=None):
         if str(row.get(sample_col, "")).strip() not in ["", "nan"]
     ]
 
+    # Identificar columnes crítiques per validació
+    rt_col = None
+    area_col = None
+    for col in df_seq.columns:
+        col_lower = str(col).lower().strip()
+        if col_lower == "rt" or "retention" in col_lower:
+            rt_col = col
+        elif col_lower == "area":
+            area_col = col
+
+    # Columnes crítiques que NO haurien d'estar buides: A-F + N
+    # A=Line#, B=Inj#, C=Location, D=Sample Name, E=Method, F=Date, N=Volume
+    col_list = list(df_seq.columns)
+
+    # Identificar columnes per índex (A=0, B=1, ..., F=5, N=13)
+    location_col = col_list[2] if len(col_list) > 2 else None  # C
+    method_col = col_list[4] if len(col_list) > 4 else None    # E
+    date_col = col_list[5] if len(col_list) > 5 else None      # F
+
+    critical_cols = {
+        'Line#': line_col,           # A
+        'Inj#': inj_col,             # B
+        'Location': location_col,     # C
+        'Sample Name': sample_col,    # D
+        'Method': method_col,         # E
+        'Date': date_col,             # F
+        'Volume': volume_col,         # N
+    }
+    # Filtrar None
+    critical_cols = {k: v for k, v in critical_cols.items() if v is not None}
+
     # Comptar total de files amb dades (per validació posterior)
     total_rows_with_line = 0
     skipped_rows = []
+    incomplete_rows = []  # Files amb cel·les crítiques buides
 
     # Processar cada fila
     prev_line = 0
@@ -1635,6 +1742,20 @@ def parse_injections_from_masterfile(master_data, config=None):
         has_line_num = line_val is not None and str(line_val).strip() not in ["", "nan"]
         if has_line_num:
             total_rows_with_line += 1
+
+            # Validar cel·les crítiques buides
+            missing_cols = []
+            for col_name, col_ref in critical_cols.items():
+                if col_ref is not None:
+                    val = row.get(col_ref)
+                    if val is None or str(val).strip() in ["", "nan", "NaN"]:
+                        missing_cols.append(col_name)
+            if missing_cols:
+                try:
+                    line_num_val = int(line_val)
+                    incomplete_rows.append((line_num_val, missing_cols))
+                except (ValueError, TypeError):
+                    pass
 
         sample_name = str(row.get(sample_col, "")).strip()
         if not sample_name or sample_name.lower() in ["nan", ""]:
@@ -1667,62 +1788,99 @@ def parse_injections_from_masterfile(master_data, config=None):
             warnings.append(f"Injeccions no correlatives: {prev_line} -> {line_num}")
         prev_line = line_num
 
-        # Detectar si és control repetit
         sample_lower = sample_name.lower()
-        is_repeated_control = any(p in sample_lower for p in control_patterns)
 
-        # Assignar nom únic per controls repetits
-        if is_repeated_control:
-            # Normalitzar nom base (sense _1, _2 si ja existeix)
-            base_name = re.sub(r'[_\-]?\d+$', '', sample_name).strip()
-            if not base_name:
-                base_name = sample_name
+        # Inicialitzar variables que s'usen després del if/else
+        is_repeated_control = False
+        original_name_count = 1
 
-            # Detectar si és un nou "set" de control (quan Inj# torna a 1 o és menor que l'anterior)
-            if base_name not in control_sets:
-                control_sets[base_name] = 1
-                control_last_inj[base_name] = 0
+        # =====================================================================
+        # ASSIGNAR NOM ÚNIC: Prioritzar Sample_Rep del MasterFile (migrate)
+        # =====================================================================
+        if sample_rep_col is not None:
+            sample_rep_val = row.get(sample_rep_col)
+            if sample_rep_val and str(sample_rep_val).strip() not in ["", "nan"]:
+                # Sample_Rep format: "NOM_R1" o "NOM1_R2" → extreure NOM sense _R{num}
+                sample_rep = str(sample_rep_val).strip()
+                # Extreure part del nom (sense _R{num} al final)
+                match = re.match(r'^(.+)_R(\d+)$', sample_rep)
+                if match:
+                    unique_name = match.group(1)
+                    effective_inj_num = int(match.group(2))
+                else:
+                    unique_name = sample_rep
+                    effective_inj_num = inj_num
 
-            # Si Inj# <= últim Inj# vist per aquest control, és un nou set
-            if inj_num <= control_last_inj.get(base_name, 0):
-                control_sets[base_name] += 1
-
-            control_last_inj[base_name] = inj_num
-            current_set = control_sets[base_name]
-
-            # Incrementar comptador total
-            if base_name not in control_counts:
-                control_counts[base_name] = 0
-            control_counts[base_name] += 1
-
-            # IMPORTANT: Només renombrar si el nom original apareix més d'una vegada
-            # Si els noms ja són diferents (ex: NaOH 0.1mM_1 vs NaOH 0.1mM), no cal renombrar
-            original_name_count = all_sample_names.count(sample_name)
-            if original_name_count > 1:
-                # Hi ha duplicats exactes - cal generar nom únic
-                unique_name = f"{base_name}_{control_counts[base_name]}"
+                # Determinar tipus
+                if is_khp(sample_name):
+                    sample_type = "KHP"
+                elif is_reference_standard(sample_name, config):
+                    sample_type = "PR"
+                elif is_control_injection(sample_name, config):
+                    sample_type = "CONTROL"
+                elif "test" in sample_lower:
+                    sample_type = "TEST"
+                else:
+                    sample_type = "SAMPLE"
             else:
-                # Nom ja és únic - mantenir original
+                # Sample_Rep buit - fallback a nom original
                 unique_name = sample_name
-            sample_type = "CONTROL"
-
-            # Guardar info de set i rèplica per matching amb fitxers
-            # El fitxer es dirà MQ1_R1, MQ1_R2, MQ2_R1, etc.
-            # On el número després de MQ és el set, i R és la rèplica (inj_num original)
-            effective_inj_num = control_counts[base_name]
-
+                effective_inj_num = inj_num
+                if is_khp(sample_name):
+                    sample_type = "KHP"
+                elif is_reference_standard(sample_name, config):
+                    sample_type = "PR"
+                elif is_control_injection(sample_name, config):
+                    sample_type = "CONTROL"
+                elif "test" in sample_lower:
+                    sample_type = "TEST"
+                else:
+                    sample_type = "SAMPLE"
         else:
-            unique_name = sample_name
-            effective_inj_num = inj_num
-            # Determinar tipus
-            if is_khp(sample_name):
-                sample_type = "KHP"
-            elif is_control_injection(sample_name, config):
+            # =====================================================================
+            # FALLBACK: MasterFile antic sense Sample_Rep - generar nom al vol
+            # =====================================================================
+            is_repeated_control = any(p in sample_lower for p in control_patterns)
+
+            if is_repeated_control:
+                base_name = re.sub(r'[_\-]\d+$', '', sample_name).strip()
+                if not base_name:
+                    base_name = sample_name
+
+                if base_name not in control_sets:
+                    control_sets[base_name] = 1
+                    control_last_inj[base_name] = 0
+
+                if inj_num <= control_last_inj.get(base_name, 0):
+                    control_sets[base_name] += 1
+
+                control_last_inj[base_name] = inj_num
+                current_set = control_sets[base_name]
+
+                if base_name not in control_counts:
+                    control_counts[base_name] = 0
+                control_counts[base_name] += 1
+
+                original_name_count = all_sample_names.count(sample_name)
+                if original_name_count > 1:
+                    unique_name = generate_agilent_control_name(base_name, current_set)
+                else:
+                    unique_name = sample_name
                 sample_type = "CONTROL"
-            elif "test" in sample_lower:
-                sample_type = "TEST"
+                effective_inj_num = inj_num
             else:
-                sample_type = "SAMPLE"
+                unique_name = sample_name
+                effective_inj_num = inj_num
+                if is_khp(sample_name):
+                    sample_type = "KHP"
+                elif is_reference_standard(sample_name, config):
+                    sample_type = "PR"
+                elif is_control_injection(sample_name, config):
+                    sample_type = "CONTROL"
+                elif "test" in sample_lower:
+                    sample_type = "TEST"
+                else:
+                    sample_type = "SAMPLE"
 
         # Obtenir volum d'injecció (si disponible)
         inj_volume = None
@@ -1762,13 +1920,36 @@ def parse_injections_from_masterfile(master_data, config=None):
         missing = total_rows_with_line - len(injections)
         warnings.insert(0, f"⚠️ ATENCIÓ: {missing} injecció(ns) no processada(es) - revisar MasterFile (files: {skipped_rows})")
 
+    # Validar: files amb cel·les crítiques buides
+    if incomplete_rows:
+        # Agrupar per columnes que falten
+        by_missing = {}
+        for line_num, cols in incomplete_rows:
+            key = tuple(sorted(cols))
+            if key not in by_missing:
+                by_missing[key] = []
+            by_missing[key].append(line_num)
+
+        for cols, lines in by_missing.items():
+            lines_str = ", ".join(str(l) for l in lines[:5])
+            if len(lines) > 5:
+                lines_str += f"... (+{len(lines)-5})"
+            warnings.append(
+                f"⚠️ FILES INCOMPLETES: Línies {lines_str} - falta: {', '.join(cols)}"
+            )
+
+    # Afegir errors de validació MasterFile al principi dels warnings
+    if errors:
+        warnings = errors + warnings
+
     # Retornar també el total de línies del MasterFile per validació posterior
     return injections, warnings, total_rows_with_line
 
 
 def find_data_for_injection(injection, seq_path, uib_files, dad_files, dad_csv_files,
                             master_khp_data, used_files, config=None,
-                            toc_df=None, toc_calc_df=None):
+                            toc_df=None, toc_calc_df=None,
+                            valid_sample_names=None):
     """
     Busca dades per una injecció des de múltiples fonts.
 
@@ -1776,6 +1957,10 @@ def find_data_for_injection(injection, seq_path, uib_files, dad_files, dad_csv_f
     - DOC Direct: MasterFile 2-TOC via 4-TOC_CALC (SEMPRE)
     - DOC UIB: CSV UIB (si disponible)
     - DAD 254 (KHP): Export3d > CSV DAD > MasterFile 3-DAD_KHP
+
+    Args:
+        valid_sample_names: Set de noms de mostra normalitzats vàlids (per evitar
+                           fallback matching quan el nom del fitxer és una mostra vàlida)
 
     Returns:
         dict amb dades trobades
@@ -1900,30 +2085,37 @@ def find_data_for_injection(injection, seq_path, uib_files, dad_files, dad_csv_f
                       file_sample_norm == unique_norm or
                       file_sample_norm == original_base_norm)
 
-        # Match per controls: MQ1 → MQ_1, MQ2 → MQ_2, etc.
-        # El número al nom del fitxer (MQ1) correspon al comptador del control (MQ_1)
+        # Match per controls amb lògica Agilent:
+        # - Set 1: unique_name="MQ", fitxers MQ_1.CSV, MQ_2.CSV
+        # - Set 2: unique_name="MQ1", fitxers MQ1_1.CSV, MQ1_2.CSV
+        # Fallback: Si no hi ha match directe, extreure base+número del fitxer
+        # IMPORTANT: No usar fallback si el nom del fitxer és una mostra vàlida
+        # (ex: no fer match MQ1 file amb MQ injection si MQ1 existeix com a mostra)
         file_control_num = None
         if not name_match:
-            # Extreure base i número del nom del fitxer
-            match = re.match(r'^(.+?)(\d+)$', file_sample_norm)
-            if match:
-                file_sample_base = match.group(1)
-                file_control_num = int(match.group(2))
-                # Comparar base amb original
-                if file_sample_base == original_norm:
-                    name_match = True
+            # Verificar si el nom del fitxer és una mostra vàlida (no usar fallback)
+            file_is_valid_sample = (valid_sample_names and file_sample_norm in valid_sample_names)
+
+            if not file_is_valid_sample:
+                # Extreure base i número del nom del fitxer (fallback per dades antigues)
+                match = re.match(r'^(.+?)(\d+)$', file_sample_norm)
+                if match:
+                    file_sample_base = match.group(1)
+                    file_control_num = int(match.group(2))
+                    # Comparar base amb original
+                    if file_sample_base == original_norm:
+                        name_match = True
 
         if name_match:
-            # Verificar replica o número de control
+            # Verificar rèplica
             try:
                 file_rep_int = int(file_rep) if file_rep else 1
             except ValueError:
                 file_rep_int = 1
 
-            # Per controls amb set (MQ1_R1 → control_set=1, control_rep=1):
-            # - file_control_num (MQ1 → 1) ha de coincidir amb control_set
-            # - file_rep_int (R1 → 1) ha de coincidir amb control_rep
-            # Per mostres normals: la rèplica del fitxer ha de coincidir amb inj_num
+            # Lògica de matching rèplica:
+            # - Si tenim control_set i file_control_num (fallback): comparar ambdós
+            # - Altrament: comparar rèplica del fitxer amb inj_num
             if control_set is not None and file_control_num is not None:
                 # Control: fitxer MQ1_R2 → set 1, rep 2
                 rep_match = (file_control_num == control_set and file_rep_int == control_rep)
@@ -1972,18 +2164,23 @@ def find_data_for_injection(injection, seq_path, uib_files, dad_files, dad_csv_f
                       file_sample_norm == unique_norm or
                       file_sample_norm == original_base_norm)
 
-        # Match per controls: MQ1 → MQ_1, MQ2 → MQ_2, etc.
+        # Match per controls amb lògica Agilent (fallback per dades antigues)
+        # IMPORTANT: No usar fallback si el nom del fitxer és una mostra vàlida
         file_control_num = None
         file_sample_base = None
         if not name_match:
-            # Extreure base i número del nom del fitxer (MQ1 → base=MQ, num=1)
-            match = re.match(r'^(.+?)(\d+)$', file_sample_norm)
-            if match:
-                file_sample_base = match.group(1)
-                file_control_num = int(match.group(2))
-                # Comparar base amb original
-                if file_sample_base == original_norm or file_sample_base == original_base_norm:
-                    name_match = True
+            # Verificar si el nom del fitxer és una mostra vàlida (no usar fallback)
+            file_is_valid_sample = (valid_sample_names and file_sample_norm in valid_sample_names)
+
+            if not file_is_valid_sample:
+                # Extreure base i número del nom del fitxer (MQ1 → base=MQ, num=1)
+                match = re.match(r'^(.+?)(\d+)$', file_sample_norm)
+                if match:
+                    file_sample_base = match.group(1)
+                    file_control_num = int(match.group(2))
+                    # Comparar base amb original
+                    if file_sample_base == original_norm or file_sample_base == original_base_norm:
+                        name_match = True
 
         if name_match:
             try:
@@ -1991,10 +2188,9 @@ def find_data_for_injection(injection, seq_path, uib_files, dad_files, dad_csv_f
             except ValueError:
                 file_rep_int = 1
 
-            # Per controls amb set (MQ1_R1 → control_set=1, control_rep=1):
-            # - file_control_num (MQ1 → 1) ha de coincidir amb control_set
-            # - file_rep_int (R1 → 1) ha de coincidir amb control_rep
-            # Per mostres normals: la rèplica del fitxer ha de coincidir amb inj_num
+            # Lògica de matching rèplica:
+            # - Si tenim control_set i file_control_num (fallback): comparar ambdós
+            # - Altrament: comparar rèplica del fitxer amb inj_num
             if control_set is not None and file_control_num is not None:
                 # Control: fitxer MQ1_R2 → set 1, rep 2
                 rep_match = (file_control_num == control_set and file_rep_int == control_rep)
@@ -2217,6 +2413,10 @@ def import_sequence(seq_path, config=None, progress_callback=None):
         used_files = {"uib": set(), "dad": set()}
         total_inj = len(injections)
 
+        # Crear set de noms de mostra normalitzats per evitar fallback matching incorrecte
+        # Això evita que fitxer "MQ1" faci match amb injecció "MQ" quan "MQ1" és mostra vàlida
+        valid_sample_names = {normalize_key(inj["sample_name"]) for inj in injections}
+
         for i, inj in enumerate(injections):
             pct = 40 + int(45 * (i + 1) / max(total_inj, 1))
             report_progress(pct, f"Processant {inj['sample_name']}...")
@@ -2229,7 +2429,8 @@ def import_sequence(seq_path, config=None, progress_callback=None):
             data = find_data_for_injection(
                 inj, seq_path, uib_files, dad_files, dad_csv_files,
                 master_khp_data, used_files, config,
-                toc_df=toc_df, toc_calc_df=toc_calc_df
+                toc_df=toc_df, toc_calc_df=toc_calc_df,
+                valid_sample_names=valid_sample_names
             )
 
             # Classificar mostra
@@ -2257,9 +2458,8 @@ def import_sequence(seq_path, config=None, progress_callback=None):
                 baseline_direct = None
 
                 if len(t_direct) > 10:
-                    mode_type = "BP" if result["method"] == "BP" else "COL"
-                    use_end = (mode_type == "BP")
-                    baseline_direct = get_baseline_correction(t_direct, y_direct, mode_type, use_end=use_end)
+                    mode = "BP" if result["method"] == "BP" else "COLUMN"
+                    baseline_direct = get_baseline_value(t_direct, y_direct, mode=mode)
                     y_direct_net = y_direct - baseline_direct
 
                 direct_data["y_net"] = y_direct_net
@@ -2274,9 +2474,8 @@ def import_sequence(seq_path, config=None, progress_callback=None):
                 baseline_uib = None
 
                 if len(t_uib) > 10:
-                    mode_type = "BP" if result["method"] == "BP" else "COL"
-                    use_end = (mode_type == "BP")
-                    baseline_uib = get_baseline_correction(t_uib, y_uib, mode_type, use_end=use_end)
+                    mode = "BP" if result["method"] == "BP" else "COLUMN"
+                    baseline_uib = get_baseline_value(t_uib, y_uib, mode=mode)
                     y_uib_net = y_uib - baseline_uib
 
                 uib_data["y_net"] = y_uib_net
@@ -2418,6 +2617,149 @@ def import_sequence(seq_path, config=None, progress_callback=None):
             )
             result["khp_without_doc"] = khp_without_doc
 
+        # Detectar si les PRIMERES mostres no tenen dades (DOC sobreescrit)
+        # Ordenar per line_num per veure l'ordre d'injecció
+        injection_order = []
+        for sample_name, sample in result["samples"].items():
+            for rep_key, rep_data in sample.get("replicas", {}).items():
+                inj = rep_data.get("injection", {})
+                line_num = inj.get("line_num", 999)
+                has_data = rep_data.get("has_data", False)
+                injection_order.append((line_num, sample_name, rep_key, has_data))
+
+        injection_order.sort(key=lambda x: x[0])
+
+        # Comptar primeres injeccions sense dades consecutives
+        first_without_data = []
+        found_with_data = False
+        for line_num, sample_name, rep_key, has_data in injection_order:
+            if has_data:
+                found_with_data = True
+                break
+            else:
+                first_without_data.append(f"{sample_name}_R{rep_key}")
+
+        # Si hi ha primeres sense dades PERÒ després n'hi ha amb dades = sobreescrit
+        if first_without_data and found_with_data:
+            n_lost = len(first_without_data)
+            samples_lost = list(dict.fromkeys([x.rsplit('_R', 1)[0] for x in first_without_data]))
+            result["warnings"].append(
+                f"⚠️ DOC SOBREESCRIT: Les primeres {n_lost} injeccions ({', '.join(samples_lost[:5])}"
+                f"{'...' if len(samples_lost) > 5 else ''}) no tenen dades. "
+                f"Tip: Esborra registre TOC abans de llençar SEQ o revisa durada."
+            )
+            result["doc_overwritten"] = {
+                "n_lost": n_lost,
+                "samples_lost": samples_lost,
+                "first_with_data": injection_order[n_lost][1] if n_lost < len(injection_order) else None
+            }
+
+        # Detectar i TALLAR mostres amb dades ANÒMALES
+        # 1. Calcular durada mitjana de les injeccions normals
+        is_bp = result.get("method", "").upper() == "BP"
+        min_points = 50 if is_bp else 200
+        min_duration = 5.0 if is_bp else 30.0
+        max_expected = 15.0 if is_bp else 85.0  # Límit inicial
+
+        all_durations = []
+        for sample_name, sample in result["samples"].items():
+            for rep_key, rep_data in sample.get("replicas", {}).items():
+                direct = rep_data.get("direct", {})
+                if not direct:
+                    continue
+                t_array = direct.get("t")
+                if t_array is not None and len(t_array) > min_points:
+                    t_max = float(t_array[-1])
+                    # Només incloure duracions "normals" per calcular mitjana
+                    if min_duration < t_max < max_expected * 2:
+                        all_durations.append(t_max)
+
+        # Calcular durada referència (mediana de les normals)
+        if all_durations:
+            all_durations.sort()
+            median_duration = all_durations[len(all_durations) // 2]
+            # Permetre 5% extra per variabilitat
+            trim_threshold = median_duration * 1.05
+        else:
+            trim_threshold = max_expected
+
+        truncated_samples = []
+        postrun_samples = []
+        trimmed_samples = []
+
+        for sample_name, sample in result["samples"].items():
+            for rep_key, rep_data in sample.get("replicas", {}).items():
+                direct = rep_data.get("direct", {})
+                if not direct:
+                    continue
+
+                t_array = direct.get("t")
+                y_array = direct.get("y")
+                y_net = direct.get("y_net")
+
+                if t_array is None or len(t_array) == 0:
+                    continue
+
+                import numpy as np
+                t_array = np.asarray(t_array)
+                n_points = len(t_array)
+                t_max = float(t_array[-1])
+                sample_id = f"{sample_name}_R{rep_key}"
+
+                # Detectar dades truncades (massa poques)
+                if n_points > 0 and (n_points < min_points or t_max < min_duration):
+                    truncated_samples.append(f"{sample_id} ({n_points}pts, {t_max:.1f}min)")
+
+                # Detectar i TALLAR postrun
+                if t_max > trim_threshold * 1.5:  # >50% més llarg que normal
+                    original_duration = t_max
+                    original_points = n_points
+
+                    # Trobar índex on tallar
+                    trim_idx = np.searchsorted(t_array, trim_threshold)
+                    if trim_idx < len(t_array) - 10:  # Deixar mínim 10 punts marge
+                        # Tallar arrays
+                        direct["t"] = t_array[:trim_idx].tolist()
+                        if y_array is not None:
+                            direct["y"] = np.asarray(y_array)[:trim_idx].tolist()
+                        if y_net is not None:
+                            direct["y_net"] = np.asarray(y_net)[:trim_idx].tolist()
+
+                        # Actualitzar metadata
+                        direct["t_max_original"] = original_duration
+                        direct["n_points_original"] = original_points
+                        direct["trimmed_at"] = trim_threshold
+                        direct["postrun_removed"] = True
+
+                        trimmed_samples.append(
+                            f"{sample_id} ({original_duration:.0f}→{trim_threshold:.0f}min)"
+                        )
+                    else:
+                        # No es pot tallar prou, només warning
+                        postrun_samples.append(
+                            f"{sample_id} ({t_max:.0f}min = {t_max/60:.1f}h)"
+                        )
+
+        if truncated_samples:
+            result["warnings"].append(
+                f"⚠️ DADES TRUNCADES: {', '.join(truncated_samples[:3])}"
+                f"{'...' if len(truncated_samples) > 3 else ''} - poques dades, run interromput?"
+            )
+            result["truncated_samples"] = truncated_samples
+
+        if trimmed_samples:
+            # No warning - el tall és automàtic i transparent
+            # Només guardem metadata per traçabilitat
+            result["trimmed_samples"] = trimmed_samples
+            result["trim_threshold"] = trim_threshold
+
+        if postrun_samples:
+            result["warnings"].append(
+                f"⚠️ POSTRUN NO TALLAT: {', '.join(postrun_samples[:3])}"
+                f"{'...' if len(postrun_samples) > 3 else ''} - revisar manualment"
+            )
+            result["postrun_samples"] = postrun_samples
+
         result["success"] = True
         report_progress(100, "Importació completada")
 
@@ -2461,6 +2803,7 @@ def generate_import_manifest(imported_data, include_injection_details=True):
             "date": str(imported_data.get("date", "")),
             "method": imported_data.get("method", ""),  # COLUMN o BP
             "data_mode": imported_data.get("data_mode", ""),  # DUAL, DIRECT, UIB
+            "uib_sensitivity": imported_data.get("uib_sensitivity"),  # Sensibilitat UIB (700, 1000, etc.)
         },
 
         # MasterFile
@@ -2606,7 +2949,7 @@ def generate_import_manifest(imported_data, include_injection_details=True):
     manifest["summary"] = {
         "total_samples": len([s for s in samples_detail if s["type"] == "SAMPLE"]),
         "total_khp": len([s for s in samples_detail if s["type"] == "KHP"]),
-        "total_controls": len([s for s in samples_detail if s["type"] == "CONTROL"]),
+        "total_pr": len([s for s in samples_detail if s["type"] == "PR"]),
         "total_replicas": sum(len(s["replicas"]) for s in samples_detail),
         "replicas_with_direct": sum(
             1 for s in samples_detail
@@ -2743,6 +3086,7 @@ def import_from_manifest(seq_path, manifest=None, config=None, progress_callback
         "seq_name": seq_info.get("name", os.path.basename(seq_path)),
         "method": seq_info.get("method", "COLUMN"),
         "data_mode": seq_info.get("data_mode", "DUAL"),
+        "uib_sensitivity": seq_info.get("uib_sensitivity"),  # Restaurar sensibilitat UIB
         "date": seq_info.get("date", ""),
         "master_file": mf_info.get("path", ""),
         "master_format": mf_info.get("format", "NEW"),
@@ -2857,10 +3201,8 @@ def import_from_manifest(seq_path, manifest=None, config=None, progress_callback
                             y_direct = df_doc["DOC"].values
 
                             # Calcular baseline
-                            mode_type = "BP" if result["method"] == "BP" else "COL"
-                            baseline = get_baseline_correction(
-                                t_direct, y_direct, mode_type, config
-                            )
+                            mode = "BP" if result["method"] == "BP" else "COLUMN"
+                            baseline = get_baseline_value(t_direct, y_direct, mode=mode)
                             y_net = np.array(y_direct) - baseline
 
                             rep_data["direct"] = {
@@ -2915,8 +3257,8 @@ def import_from_manifest(seq_path, manifest=None, config=None, progress_callback
                                 y_uib = df_uib["DOC"].values
 
                                 # Baseline
-                                mode_type = "BP" if result["method"] == "BP" else "COL"
-                                baseline = get_baseline_correction(t_uib, y_uib, mode_type, config)
+                                mode = "BP" if result["method"] == "BP" else "COLUMN"
+                                baseline = get_baseline_value(t_uib, y_uib, mode=mode)
                                 y_net = np.array(y_uib) - baseline
 
                                 rep_data["uib"] = {
@@ -3096,9 +3438,7 @@ __all__ = [
     # Detecció mode
     "is_bp_seq",
     "detect_mode_from_folder",
-    # Baseline
-    "get_baseline_correction",
-    "DEFAULT_BASELINE_CONFIG",
+    # Baseline (usar get_baseline_value de hpsec_utils directament)
     # Lectura/creació master
     "migrate_single",
     "detect_master_format",

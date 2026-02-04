@@ -34,6 +34,17 @@ from hpsec_analyze import analyze_sequence, save_analysis_result
 # Contrasenya per operacions batch i reset
 BATCH_PASSWORD = "LEQUIA"
 
+# DEBUG: Log a fitxer per veure errors
+import logging
+logging.basicConfig(
+    filename=Path(__file__).parent.parent.parent / "debug_batch.log",
+    level=logging.DEBUG,
+    format='%(asctime)s %(message)s'
+)
+def debug_log(msg):
+    print(msg)
+    logging.debug(msg)
+
 
 class SortableTableItem(QTableWidgetItem):
     """Item que ordena per UserRole si existeix, sinó per text."""
@@ -67,13 +78,21 @@ COLOR_CURRENT = "#2E86AB"  # Blau (fase actual)
 def run_import(seq_path):
     """Executa IMPORT per una seqüència. Retorna (success, message, data)."""
     try:
+        debug_log(f"run_import: {seq_path}")
         result = import_sequence(seq_path)
+        debug_log(f"  success={result.get('success') if result else None}")
         if result and result.get('success'):
             save_import_manifest(result)
             return True, "OK", result
         errors = result.get('errors', ['?']) if result else ['?']
+        warnings = result.get('warnings', []) if result else []
+        debug_log(f"  errors={errors}")
+        debug_log(f"  warnings={warnings[:3]}")
         return False, f"Error: {errors[0]}", None
     except Exception as e:
+        import traceback
+        debug_log(f"  EXCEPTION: {e}")
+        traceback.print_exc()
         return False, str(e), None
 
 
@@ -196,6 +215,8 @@ class BatchWorker(QThread):
         total_ok, total_fail = 0, 0
         n_seqs = len(self.sequences)
 
+        debug_log(f"BatchWorker START: {n_seqs} seqs, phases={self.phases}")
+
         # Mapeig fase -> funció
         phase_runners = {
             Phase.IMPORT: ("Importar", run_import),
@@ -210,16 +231,21 @@ class BatchWorker(QThread):
 
             phase_name, runner = phase_runners.get(phase, (None, None))
             if not runner:
+                debug_log(f"No runner for phase {phase}")
                 continue
+
+            debug_log(f"=== PHASE: {phase_name} ===")
 
             # Processar TOTES les seqüències per aquesta fase
             for i, seq in enumerate(self.sequences):
                 if self._stop_requested:
                     break
 
+                debug_log(f"[{i+1}/{n_seqs}] {seq.seq_name}")
                 self.progress.emit(i + 1, n_seqs, f"{phase_name}: {seq.seq_name}")
 
                 ok, msg, _ = runner(seq.seq_path)
+                debug_log(f"  -> {ok}, {msg}")
                 self.seq_completed.emit(seq.seq_name, ok, msg)
 
                 if ok:
@@ -227,6 +253,7 @@ class BatchWorker(QThread):
                 else:
                     total_fail += 1
 
+        debug_log(f"BatchWorker END: {total_ok} OK, {total_fail} FAIL")
         self.finished.emit(total_ok, total_fail)
 
 
