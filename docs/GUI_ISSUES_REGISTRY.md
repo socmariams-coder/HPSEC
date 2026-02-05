@@ -116,7 +116,7 @@
 |----|------------|-----------|-------|
 | A07 | Columna "Mostra" ocupa massa espai, amaga altres columnes | ALTA | ARREGLAT |
 | A08 | No hi ha dades de UIB a la taula DOC | ALTA | INVESTIGAR (is_dual requereix Direct+UIB) |
-| A09 | Nomenclatura "_b1" estranya per identificar rèpliques | MITJANA | DADES (ve de Sample_Rep MasterFile) |
+| A09 | Nomenclatura "_b1" estranya per identificar rèpliques | MITJANA | ARREGLAT (simplificat a _R1/_R2) |
 | A10 | Botó "Detall" hauria de ser columna o doble-click, no botó inferior | MITJANA | ARREGLAT |
 
 ### Funcionalitats
@@ -191,6 +191,7 @@
 | 2026-02-05 | C02 | Arreglat: selector de condicions ara sempre s'actualitza al mostrar el panel |
 | 2026-02-05 | C04 | Arreglat: via I13 - ara les dades 254nm es carreguen correctament |
 | 2026-02-05 | A13, A14 | Arreglat: múltiples calibracions per inj_volume - cada mostra usa la calibració que coincideix amb el seu volum d'injecció (50µL→BP_50_2, 100µL→BP_100_2) |
+| 2026-02-05 | A09 | Arreglat: Sample_Rep simplificat a NOM_R1/R2 (sense _B1/_B2), el sufix _50 ja distingeix volums |
 
 ---
 
