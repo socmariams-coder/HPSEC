@@ -2,336 +2,29 @@
 HPSEC Suite - Calibrate Panel
 ==============================
 
-Panel para la fase 2: Calibración KHP.
-Muestra gráficos de réplicas, métricas detalladas y comparación histórica.
+Panel per a la fase 2: Calibració KHP.
+Mostra gràfics de rèpliques, mètriques detallades i comparació històrica.
 """
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QPushButton, QGroupBox,
     QGridLayout, QFrame, QHBoxLayout, QTableWidget, QTableWidgetItem,
-    QHeaderView, QSplitter, QScrollArea, QSizePolicy
+    QHeaderView, QSplitter, QScrollArea, QSizePolicy, QComboBox
 )
-from PySide6.QtCore import Qt, Signal, QThread
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont, QColor
 
 from pathlib import Path
 import sys
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 
-from hpsec_calibrate import calibrate_from_import, load_khp_history
+from hpsec_calibrate import calibrate_from_import, load_khp_history, load_local_calibrations, get_all_active_calibrations
 
-# Matplotlib imports
-import matplotlib
-matplotlib.use('QtAgg')
-from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
-from matplotlib.figure import Figure
 import numpy as np
 
-
-class CalibrateWorker(QThread):
-    """Worker thread para calibración asíncrona."""
-    progress = Signal(int, str)
-    finished = Signal(dict)
-    error = Signal(str)
-
-    def __init__(self, imported_data, config=None):
-        super().__init__()
-        self.imported_data = imported_data
-        self.config = config
-
-    def run(self):
-        try:
-            def progress_cb(pct, msg):
-                self.progress.emit(int(pct), msg)
-
-            result = calibrate_from_import(
-                self.imported_data,
-                config=self.config,
-                progress_callback=progress_cb
-            )
-            self.finished.emit(result)
-
-        except Exception as e:
-            import traceback
-            self.error.emit(f"{str(e)}\n{traceback.format_exc()}")
-
-
-class KHPReplicaGraphWidget(QWidget):
-    """Widget que mostra gràfics de KHP per rèplica amb DOC i DAD 254nm."""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.figure = Figure(figsize=(10, 6), dpi=100)
-        self.canvas = FigureCanvas(self.figure)
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(self.canvas)
-
-        self.setMinimumHeight(350)
-
-    def plot_replicas(self, replicas_direct, replicas_uib=None):
-        """
-        Grafica rèpliques amb DOC i DAD 254nm.
-
-        Args:
-            replicas_direct: Lista de dicts amb dades Direct per cada rèplica
-            replicas_uib: Lista de dicts amb dades UIB per cada rèplica (opcional)
-        """
-        self.figure.clear()
-
-        if not replicas_direct:
-            ax = self.figure.add_subplot(111)
-            ax.text(0.5, 0.5, "No hi ha dades KHP disponibles",
-                   ha='center', va='center', fontsize=12, color='gray')
-            ax.set_xlim(0, 1)
-            ax.set_ylim(0, 1)
-            ax.axis('off')
-            self.canvas.draw()
-            return
-
-        n_replicas = len(replicas_direct)
-        has_uib = replicas_uib and len(replicas_uib) > 0
-
-        # Configurar subplots: una fila per Direct, una per UIB si existeix
-        n_rows = 2 if has_uib else 1
-        n_cols = n_replicas
-
-        colors_doc = ['#2E86AB', '#1A5276']  # Blaus per DOC
-        colors_dad = ['#E67E22', '#D35400']  # Taronges per DAD
-
-        # Plotar Direct (fila superior)
-        for i, rep in enumerate(replicas_direct):
-            ax = self.figure.add_subplot(n_rows, n_cols, i + 1)
-            self._plot_single_replica(ax, rep, f"R{i+1} Direct", colors_doc[i % 2], colors_dad[i % 2])
-
-        # Plotar UIB (fila inferior) si existeix
-        if has_uib:
-            for i, rep in enumerate(replicas_uib):
-                ax = self.figure.add_subplot(n_rows, n_cols, n_cols + i + 1)
-                self._plot_single_replica(ax, rep, f"R{i+1} UIB", colors_doc[i % 2], colors_dad[i % 2])
-
-        self.figure.tight_layout()
-        self.canvas.draw()
-
-    def _plot_single_replica(self, ax, rep, title, color_doc, color_dad):
-        """Plotar una rèplica amb DOC i DAD 254nm."""
-        t_doc = rep.get('t_doc')
-        y_doc = rep.get('y_doc')
-        area = rep.get('area', 0)
-        snr = rep.get('snr', 0)
-
-        if t_doc is None or y_doc is None:
-            ax.text(0.5, 0.5, "Sense dades", ha='center', va='center', fontsize=10, color='gray')
-            ax.set_title(title, fontsize=9)
-            return
-
-        t_doc = np.asarray(t_doc)
-        y_doc = np.asarray(y_doc)
-
-        # Plotar DOC
-        ax.plot(t_doc, y_doc, color=color_doc, linewidth=1.2, label=f'DOC (A={area:.1f})')
-
-        # Marcar pic principal
-        peak_info = rep.get('peak_info', {})
-        if peak_info:
-            t_max = peak_info.get('t_max', 0)
-            y_max = peak_info.get('y_max', 0)
-            if t_max > 0 and y_max > 0:
-                ax.plot(t_max, y_max, 'o', color=color_doc, markersize=5)
-
-        ax.set_xlabel('Temps (min)', fontsize=8)
-        ax.set_ylabel('DOC (mAU)', fontsize=8, color=color_doc)
-        ax.tick_params(axis='y', labelcolor=color_doc, labelsize=7)
-        ax.tick_params(axis='x', labelsize=7)
-
-        # Plotar DAD 254nm si disponible (eix secundari)
-        t_dad = rep.get('t_dad')
-        y_dad = rep.get('y_dad_254')
-        a254_area = rep.get('a254_area', 0)
-
-        if t_dad is not None and y_dad is not None:
-            t_dad = np.asarray(t_dad)
-            y_dad = np.asarray(y_dad)
-            if len(t_dad) > 0 and len(y_dad) > 0:
-                ax2 = ax.twinx()
-                ax2.plot(t_dad, y_dad, color=color_dad, linewidth=1.0, linestyle='--',
-                        label=f'254nm (A={a254_area:.1f})', alpha=0.8)
-                ax2.set_ylabel('254nm (mAU)', fontsize=8, color=color_dad)
-                ax2.tick_params(axis='y', labelcolor=color_dad, labelsize=7)
-
-        # Títol amb info
-        title_text = f"{title}: A={area:.0f}"
-        if snr > 0:
-            title_text += f", SNR={snr:.0f}"
-        ax.set_title(title_text, fontsize=9, fontweight='bold')
-        ax.grid(True, alpha=0.3)
-
-        # Indicar anomalies
-        if rep.get('has_batman'):
-            ax.annotate('⚠ Batman', xy=(0.02, 0.98), xycoords='axes fraction',
-                       fontsize=7, color='red', va='top')
-
-        # Marcar timeout amb zona afectada
-        # NOTA: Per KHP el que importa és si afecta el pic principal
-        if rep.get('has_timeout'):
-            timeout_info = rep.get('timeout_info', {})
-            timeouts_list = timeout_info.get('timeouts', [])
-            peak_info = rep.get('peak_info', {})
-            t_peak = peak_info.get('t_max', 0)
-
-            affects_main_peak = False
-
-            for to in timeouts_list:
-                t_start = to.get('t_start_min', 0)
-                t_end = to.get('t_end_min', 0)
-                affected_start = to.get('affected_start_min', t_start - 0.5)
-                affected_end = to.get('affected_end_min', t_end + 1.0)
-
-                # Comprovar si afecta el pic principal
-                hits_peak = t_peak > 0 and affected_start <= t_peak <= affected_end
-
-                if hits_peak:
-                    affects_main_peak = True
-                    color = '#E74C3C'  # Vermell - AFECTA PIC
-                    alpha = 0.35
-                else:
-                    color = '#F39C12'  # Taronja - no afecta pic
-                    alpha = 0.2
-
-                # Zona afectada (fons)
-                ax.axvspan(affected_start, affected_end, alpha=alpha, color=color, zorder=0)
-                # Línia vertical al punt exacte del timeout
-                ax.axvline(t_start, color=color, linestyle='--', linewidth=1.5, alpha=0.8)
-
-            # Anotació amb temps i warning si afecta pic
-            if timeouts_list:
-                first_to = timeouts_list[0]
-                t_label = first_to.get('t_start_min', 0)
-                if affects_main_peak:
-                    ax.annotate(f'⚠ TO@{t_label:.1f} PIC!', xy=(0.02, 0.88), xycoords='axes fraction',
-                               fontsize=7, color='#C0392B', va='top', fontweight='bold')
-                else:
-                    ax.annotate(f'TO@{t_label:.1f}', xy=(0.02, 0.88), xycoords='axes fraction',
-                               fontsize=7, color='#E67E22', va='top')
-
-    def clear(self):
-        self.figure.clear()
-        self.canvas.draw()
-
-
-class HistoryBarWidget(QWidget):
-    """Widget compacte per gràfic de barres històric de KHP."""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.figure = Figure(figsize=(5, 2.2), dpi=100)
-        self.canvas = FigureCanvas(self.figure)
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(self.canvas)
-
-        self.setMinimumHeight(160)
-        self.setMaximumHeight(200)
-        self.history_data = []
-
-    def plot_history(self, history_list, current_seq_name, valid_indices=None):
-        """
-        Gràfic de barres compacte amb últimes calibracions.
-
-        Args:
-            history_list: Llista de calibracions (ja filtrades i ordenades)
-            current_seq_name: Nom de la SEQ actual per marcar-la
-            valid_indices: Set d'índexs de calibracions vàlides (no outliers)
-        """
-        import re
-
-        self.figure.clear()
-        ax = self.figure.add_subplot(111)
-        self.history_data = history_list
-
-        if not history_list:
-            ax.text(0.5, 0.5, "No hi ha històric",
-                   ha='center', va='center', fontsize=10, color='gray')
-            ax.axis('off')
-            self.canvas.draw()
-            return
-
-        if valid_indices is None:
-            valid_indices = set(range(len(history_list)))
-
-        # Últimes 10
-        display_cals = history_list[-10:] if len(history_list) > 10 else history_list
-        offset = len(history_list) - len(display_cals)
-
-        current_short = current_seq_name.replace('_SEQ', '').replace('_BP', '') if current_seq_name else ""
-
-        seq_names = []
-        areas = []
-        colors = []
-        edge_colors = []
-        hatches = []
-
-        for i, cal in enumerate(display_cals):
-            real_idx = offset + i
-            name = cal.get('seq_name', 'N/A').replace('_SEQ', '').replace('_BP', '')
-            seq_names.append(name)
-            area = cal.get('area', 0)
-            areas.append(area)
-
-            is_valid = real_idx in valid_indices
-            is_current = current_short and current_short == name
-
-            # Colors i estils
-            if is_current:
-                colors.append('#27AE60')  # Verd per actual
-                edge_colors.append('#1E8449')
-                hatches.append('')
-            elif not is_valid:
-                colors.append('#E74C3C')  # Vermell per outliers
-                edge_colors.append('#B03A2E')
-                hatches.append('///')
-            else:
-                colors.append('#5DADE2')  # Blau per vàlids
-                edge_colors.append('#2E86AB')
-                hatches.append('')
-
-        # Barres
-        x = range(len(seq_names))
-        bars = ax.bar(x, areas, color=colors, edgecolor=edge_colors, linewidth=0.8)
-
-        # Aplicar patrons
-        for bar, hatch in zip(bars, hatches):
-            if hatch:
-                bar.set_hatch(hatch)
-                bar.set_alpha(0.7)
-
-        # Mitjana de vàlids (només dels que es mostren)
-        valid_areas = [a for i, a in enumerate(areas) if (offset + i) in valid_indices and a > 0]
-        if valid_areas:
-            mean_area = np.mean(valid_areas)
-            std_area = np.std(valid_areas) if len(valid_areas) > 1 else 0
-            ax.axhline(mean_area, color='#27AE60', linestyle='-', linewidth=2, zorder=5)
-            if std_area > 0:
-                ax.axhspan(mean_area - std_area, mean_area + std_area,
-                          alpha=0.2, color='#27AE60', zorder=1)
-            ax.text(len(x) - 0.3, mean_area, f'{mean_area:.0f}',
-                   fontsize=8, color='#1E8449', va='center', fontweight='bold')
-
-        ax.set_xticks(x)
-        ax.set_xticklabels(seq_names, rotation=45, ha='right', fontsize=7)
-        ax.set_ylabel("Àrea", fontsize=8)
-        ax.tick_params(axis='y', labelsize=7)
-        ax.grid(True, alpha=0.3, axis='y')
-        ax.set_xlim(-0.5, len(x) - 0.5)
-
-        self.figure.tight_layout()
-        self.canvas.draw()
-
-    def clear(self):
-        self.figure.clear()
-        self.canvas.draw()
+# Importar components del paquet
+from .worker import CalibrateWorker
+from .graph_widgets import KHPReplicaGraphWidget, HistoryBarWidget
 
 
 class CalibratePanel(QWidget):
@@ -345,6 +38,8 @@ class CalibratePanel(QWidget):
         self.calibration_data = None
         self.worker = None
         self._existing_calibration = None  # Calibració existent carregada
+        self._all_calibrations = []  # Totes les calibracions disponibles (múltiples condicions)
+        self._current_condition_key = None  # Condició seleccionada
 
         self._setup_ui()
 
@@ -354,63 +49,105 @@ class CalibratePanel(QWidget):
         self._check_existing_calibration()
 
     def _check_existing_calibration(self):
-        """Comprova si existeix calibració prèvia i ofereix usar-la."""
-        from PySide6.QtWidgets import QMessageBox
+        """Comprova si existeix calibració prèvia i la carrega automàticament."""
         import os
 
         seq_path = self.main_window.seq_path
         if not seq_path:
+            self.condition_selector_frame.setVisible(False)
             return
 
-        # Si ja tenim calibració carregada, no tornar a preguntar
+        # Si ja tenim calibració carregada, no tornar a carregar
         if self.calibration_data and self.calibration_data.get("success"):
             return
 
         try:
-            # Buscar calibració a l'històric per aquesta SEQ
-            history = load_khp_history(seq_path)
-            if not history:
+            # Carregar totes les calibracions locals
+            all_cals = load_local_calibrations(seq_path)
+            if not all_cals:
+                self.condition_selector_frame.setVisible(False)
                 return
 
+            # Filtrar per la SEQ actual i agrupar per condition_key
             seq_name = os.path.basename(seq_path)
-            current_cal = None
-            for cal in history:
-                if cal.get('seq_name') == seq_name:
-                    current_cal = cal
-                    break
+            calibrations_by_condition = {}
 
-            if not current_cal:
+            for cal in all_cals:
+                if cal.get('seq_name') != seq_name:
+                    continue
+                condition_key = cal.get('condition_key', 'default')
+                # Guardar la més recent (primera trobada) per cada condició
+                if condition_key not in calibrations_by_condition:
+                    calibrations_by_condition[condition_key] = cal
+
+            if not calibrations_by_condition:
+                self.condition_selector_frame.setVisible(False)
                 return
 
-            # Mostrar info de calibració existent
-            area = current_cal.get('area', 0)
-            # RF = area/conc (nou format), amb fallback a factor (antic format)
-            rf = current_cal.get('rf', 0)
-            if rf == 0:
-                old_factor = current_cal.get('factor', 0)
-                if old_factor > 0:
-                    rf = 1.0 / old_factor  # factor=conc/area -> RF=area/conc=1/factor
-            date = current_cal.get('date_processed', '')[:16].replace('T', ' ')
-            status = current_cal.get('status', 'OK')
+            # Guardar calibracions disponibles
+            self._all_calibrations = list(calibrations_by_condition.values())
 
-            reply = QMessageBox.question(
-                self,
-                "Calibració Existent",
-                f"Aquesta seqüència ja té una calibració:\n\n"
-                f"Data: {date}\n"
-                f"Àrea: {area:.0f}\n"
-                f"RF: {rf:.2f}\n"
-                f"Estat: {status}\n\n"
-                f"Vols usar la calibració existent?",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.Yes
-            )
+            # Configurar selector de condicions
+            self._populate_condition_combo()
 
-            if reply == QMessageBox.Yes:
-                self._load_existing_calibration(current_cal)
+            # Carregar la primera calibració activa (o la primera disponible)
+            active_cal = None
+            for cal in self._all_calibrations:
+                if cal.get('is_active', False):
+                    active_cal = cal
+                    break
+            if not active_cal:
+                active_cal = self._all_calibrations[0]
+
+            self._current_condition_key = active_cal.get('condition_key')
+            self._load_existing_calibration(active_cal)
 
         except Exception as e:
             print(f"[WARNING] Error comprovant calibració existent: {e}")
+            self.condition_selector_frame.setVisible(False)
+
+    def _populate_condition_combo(self):
+        """Omple el ComboBox amb les condicions de calibració disponibles."""
+        self.condition_combo.blockSignals(True)
+        self.condition_combo.clear()
+
+        for cal in self._all_calibrations:
+            condition_key = cal.get('condition_key', 'default')
+            volume = cal.get('volume_uL', 0)
+            conc = cal.get('conc_ppm', 0)
+            mode = cal.get('mode', '')
+
+            # Format llegible: "KHP 2ppm @ 50µL" o "BP_50_2"
+            if volume > 0 and conc > 0:
+                label = f"KHP {conc:.0f}ppm @ {volume:.0f}µL"
+                if mode:
+                    label = f"{mode}: {label}"
+            else:
+                label = condition_key
+
+            self.condition_combo.addItem(label, condition_key)
+
+        self.condition_combo.blockSignals(False)
+
+        # Mostrar selector només si hi ha múltiples condicions
+        self.condition_selector_frame.setVisible(len(self._all_calibrations) > 1)
+
+    def _on_condition_changed(self, index):
+        """Handler quan l'usuari canvia la condició de calibració."""
+        if index < 0 or index >= len(self._all_calibrations):
+            return
+
+        condition_key = self.condition_combo.itemData(index)
+        if condition_key == self._current_condition_key:
+            return
+
+        # Buscar calibració per aquesta condició
+        for cal in self._all_calibrations:
+            if cal.get('condition_key') == condition_key:
+                self._current_condition_key = condition_key
+                self._load_existing_calibration(cal)
+                self.main_window.set_status(f"Mostrant calibració: {self.condition_combo.currentText()}", 3000)
+                break
 
     def _load_existing_calibration(self, cal):
         """Carrega una calibració existent de l'històric."""
@@ -447,14 +184,31 @@ class CalibratePanel(QWidget):
 
         self.calibration_data = result
         self.main_window.calibration_data = result
+        self._current_condition_key = cal.get('condition_key')
 
-        # Mostrar resultats
+        # Actualitzar selecció del combo
+        if hasattr(self, 'condition_combo') and self._current_condition_key:
+            for i in range(self.condition_combo.count()):
+                if self.condition_combo.itemData(i) == self._current_condition_key:
+                    self.condition_combo.blockSignals(True)
+                    self.condition_combo.setCurrentIndex(i)
+                    self.condition_combo.blockSignals(False)
+                    break
+
+        # Mostrar resultats (TOTS els mètodes, igual que _on_finished)
         self._update_summary(result)
+        self._update_graphs(result)
+        self._update_metrics_table(result)
+        self._update_replica_selection(result)
+        self._update_validation(result)
         self._update_history(result)
 
         self.next_btn.setEnabled(True)
         self.main_window.enable_tab(2)
         self.main_window.set_status("Calibració carregada des d'històric", 3000)
+
+        # Emetre senyal per notificar al wizard
+        self.calibration_completed.emit(result)
 
     def _setup_ui(self):
         """Configura la interfaz."""
@@ -473,6 +227,50 @@ class CalibratePanel(QWidget):
         )
         info.setWordWrap(True)
         layout.addWidget(info)
+
+        # === BARRA D'AVISOS (consistent per tots els panels) ===
+        self.warnings_bar = QFrame()
+        self.warnings_bar.setVisible(False)
+        self.warnings_bar.setStyleSheet("""
+            QFrame {
+                background-color: #fff3cd;
+                border: 1px solid #ffc107;
+                border-radius: 6px;
+                margin: 4px 0;
+            }
+        """)
+        warnings_bar_layout = QHBoxLayout(self.warnings_bar)
+        warnings_bar_layout.setContentsMargins(12, 8, 12, 8)
+
+        warnings_icon = QLabel("⚠")
+        warnings_icon.setStyleSheet("font-size: 16px; border: none;")
+        warnings_bar_layout.addWidget(warnings_icon)
+
+        self.warnings_text = QLabel()
+        self.warnings_text.setStyleSheet("color: #856404; border: none;")
+        self.warnings_text.setWordWrap(True)
+        warnings_bar_layout.addWidget(self.warnings_text, 1)
+
+        layout.addWidget(self.warnings_bar)
+
+        # Selector de condicions de calibració (visible quan hi ha múltiples condicions)
+        self.condition_selector_frame = QFrame()
+        self.condition_selector_frame.setVisible(False)
+        condition_layout = QHBoxLayout(self.condition_selector_frame)
+        condition_layout.setContentsMargins(0, 8, 0, 8)
+
+        condition_label = QLabel("Condició:")
+        condition_label.setStyleSheet("font-weight: bold;")
+        condition_layout.addWidget(condition_label)
+
+        self.condition_combo = QComboBox()
+        self.condition_combo.setMinimumWidth(200)
+        self.condition_combo.setToolTip("Seleccionar condició de calibració (volum/concentració)")
+        self.condition_combo.currentIndexChanged.connect(self._on_condition_changed)
+        condition_layout.addWidget(self.condition_combo)
+
+        condition_layout.addStretch()
+        layout.addWidget(self.condition_selector_frame)
 
         # Contenedor principal con scroll
         scroll = QScrollArea()
@@ -654,9 +452,9 @@ class CalibratePanel(QWidget):
 
         # Taula comparació rèpliques
         self.replica_comparison_table = QTableWidget()
-        self.replica_comparison_table.setColumnCount(9)
+        self.replica_comparison_table.setColumnCount(10)
         self.replica_comparison_table.setHorizontalHeaderLabels([
-            "Rèplica", "Àrea", "t_max", "SNR", "Sym", "DOC/254", "Shift", "Q", "Seleccionada"
+            "Rèplica", "Àrea", "t_max", "SNR", "Sym", "DOC/254", "Shift", "Q", "Seleccionada", "Outlier"
         ])
         self.replica_comparison_table.horizontalHeaderItem(1).setToolTip("Àrea DOC integrada")
         self.replica_comparison_table.horizontalHeaderItem(2).setToolTip("Temps del pic màxim (min)")
@@ -666,17 +464,39 @@ class CalibratePanel(QWidget):
         self.replica_comparison_table.horizontalHeaderItem(6).setToolTip("Shift vs 254nm (segons)")
         self.replica_comparison_table.horizontalHeaderItem(7).setToolTip("Quality Score")
         self.replica_comparison_table.horizontalHeaderItem(8).setToolTip("Usada en calibració actual")
+        self.replica_comparison_table.horizontalHeaderItem(9).setToolTip("Marcada manualment com a outlier")
         self.replica_comparison_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         self.replica_comparison_table.setAlternatingRowColors(True)
         self.replica_comparison_table.setMaximumHeight(120)
         self.replica_comparison_table.verticalHeader().setVisible(False)
+        self.replica_comparison_table.setSelectionBehavior(QTableWidget.SelectRows)
         replica_sel_layout.addWidget(self.replica_comparison_table)
+
+        # Fila inferior: botó per marcar outlier i estadístiques
+        replica_footer = QHBoxLayout()
+
+        # Botó per marcar rèplica com a outlier
+        self.mark_replica_outlier_btn = QPushButton("Marcar com a Outlier")
+        self.mark_replica_outlier_btn.setToolTip("Marca la rèplica seleccionada com a outlier (no es farà servir per calibrar)")
+        self.mark_replica_outlier_btn.clicked.connect(self._on_mark_replica_outlier)
+        self.mark_replica_outlier_btn.setStyleSheet("""
+            QPushButton {
+                background: #E74C3C; color: white; border: none;
+                border-radius: 4px; padding: 5px 10px; font-size: 11px;
+            }
+            QPushButton:hover { background: #C0392B; }
+        """)
+        replica_footer.addWidget(self.mark_replica_outlier_btn)
+
+        replica_footer.addStretch()
 
         # Estadístiques diferències
         self.replica_diff_label = QLabel()
         self.replica_diff_label.setWordWrap(True)
         self.replica_diff_label.setStyleSheet("color: #555; font-size: 11px; padding: 4px;")
-        replica_sel_layout.addWidget(self.replica_diff_label)
+        replica_footer.addWidget(self.replica_diff_label)
+
+        replica_sel_layout.addLayout(replica_footer)
 
         content_layout.addWidget(self.replica_selection_group)
 
@@ -704,35 +524,34 @@ class CalibratePanel(QWidget):
         self.history_filters_label.setStyleSheet("color: #555; font-size: 11px;")
         history_header.addWidget(self.history_filters_label)
 
-        # Toggle per mostrar tot l'històric
+        # Toggle per incloure outliers
         from PySide6.QtWidgets import QCheckBox
-        self.show_all_history_cb = QCheckBox("Mostrar tot")
-        self.show_all_history_cb.setToolTip("Mostrar totes les calibracions (sense filtrar per mètode/conc/volum)")
-        self.show_all_history_cb.stateChanged.connect(self._on_show_all_history_changed)
-        history_header.addWidget(self.show_all_history_cb)
+        self.show_outliers_cb = QCheckBox("Incloure outliers")
+        self.show_outliers_cb.setToolTip("Mostrar també les calibracions marcades com a outliers")
+        self.show_outliers_cb.stateChanged.connect(self._on_show_outliers_changed)
+        history_header.addWidget(self.show_outliers_cb)
 
         history_header.addStretch()
 
-        # Botó info
-        self.history_info_btn = QPushButton("ℹ")
-        self.history_info_btn.setFixedSize(24, 24)
+        # Botó info petit i elegant
+        self.history_info_btn = QPushButton("?")
+        self.history_info_btn.setFixedSize(18, 18)
+        self.history_info_btn.setCursor(Qt.WhatsThisCursor)
         self.history_info_btn.setStyleSheet("""
             QPushButton {
-                background: #EBF5FB; border: 1px solid #AED6F1;
-                border-radius: 12px; font-size: 12px; color: #2E86AB;
+                background: transparent; border: 1px solid #BDC3C7;
+                border-radius: 9px; font-size: 10px; font-weight: bold;
+                color: #7F8C8D;
             }
-            QPushButton:hover { background: #D4E6F1; }
+            QPushButton:hover { background: #ECF0F1; color: #2E86AB; border-color: #2E86AB; }
         """)
         self.history_info_btn.setToolTip(
-            "<b>Llegenda Històric</b><br><br>"
-            "<span style='color:#E74C3C'>■</span> Actual (aquesta SEQ)<br>"
-            "<span style='color:#5DADE2'>■</span> Vàlid per calibrar<br>"
-            "<span style='color:#D5D8DC'>▨</span> Outlier (exclòs de mitjana)<br>"
-            "<span style='color:#27AE60'>━</span> Mitjana ± 1σ<br><br>"
-            "<b>Filtres aplicats:</b><br>"
-            "• Mateix mètode (COLUMN/BP)<br>"
-            "• Mateixa concentració KHP<br>"
-            "• Mateix volum injecció"
+            "<b>Llegenda</b><br>"
+            "<span style='color:#27AE60'>■</span> Actual<br>"
+            "<span style='color:#5DADE2'>■</span> Vàlid<br>"
+            "<span style='color:#E74C3C'>■</span> Outlier<br>"
+            "<span style='color:#27AE60'>━</span> Mitjana ± σ<br><br>"
+            "<b>Filtres:</b> mode · conc · volum"
         )
         history_header.addWidget(self.history_info_btn)
         history_layout.addLayout(history_header)
@@ -868,9 +687,88 @@ class CalibratePanel(QWidget):
         self._update_validation(result)
         self._update_history(result)
 
+        # Recarregar el selector de condicions (potser s'han creat noves calibracions)
+        self._reload_condition_selector()
+
+        # Mostrar avisos si n'hi ha
+        self._show_warnings(result)
+
         self.next_btn.setEnabled(True)
         self.main_window.enable_tab(2)
         self.main_window.set_status("Calibració completada", 5000)
+
+        # Emetre senyal per notificar al wizard
+        self.calibration_completed.emit(result)
+
+    def _show_warnings(self, result):
+        """Mostra avisos a la barra superior si n'hi ha."""
+        warnings = []
+
+        # Recollir warnings de calibració
+        cal_warnings = result.get("calibration_warnings", [])
+        warnings.extend(cal_warnings)
+
+        # Warnings de qualitat
+        khp_data = result.get("khp_data_direct") or result.get("khp_data_uib") or {}
+        quality_issues = khp_data.get("quality_issues", [])
+        warnings.extend(quality_issues[:2])
+
+        # Warnings de validació
+        validation = khp_data.get("validation_details", {})
+        val_warnings = validation.get("warnings", [])
+        warnings.extend(val_warnings[:2])
+
+        if warnings:
+            self.warnings_bar.setVisible(True)
+            n_warnings = len(warnings)
+            display_warnings = warnings[:3]  # Màxim 3
+            self.warnings_text.setText(
+                f"<b>{n_warnings} avisos:</b> " + " · ".join(display_warnings)
+            )
+        else:
+            self.warnings_bar.setVisible(False)
+
+    def _reload_condition_selector(self):
+        """Recarrega el selector de condicions després d'una nova calibració."""
+        import os
+        seq_path = self.main_window.seq_path
+        if not seq_path:
+            return
+
+        try:
+            all_cals = load_local_calibrations(seq_path)
+            if not all_cals:
+                self.condition_selector_frame.setVisible(False)
+                return
+
+            seq_name = os.path.basename(seq_path)
+            calibrations_by_condition = {}
+
+            for cal in all_cals:
+                if cal.get('seq_name') != seq_name:
+                    continue
+                condition_key = cal.get('condition_key', 'default')
+                if condition_key not in calibrations_by_condition:
+                    calibrations_by_condition[condition_key] = cal
+
+            if not calibrations_by_condition:
+                self.condition_selector_frame.setVisible(False)
+                return
+
+            self._all_calibrations = list(calibrations_by_condition.values())
+            self._populate_condition_combo()
+
+            # Seleccionar la condició actual al combo
+            if self._current_condition_key:
+                for i in range(self.condition_combo.count()):
+                    if self.condition_combo.itemData(i) == self._current_condition_key:
+                        self.condition_combo.blockSignals(True)
+                        self.condition_combo.setCurrentIndex(i)
+                        self.condition_combo.blockSignals(False)
+                        break
+
+        except Exception as e:
+            print(f"[WARNING] Error recarregant selector de condicions: {e}")
 
     def _on_error(self, error_msg):
         self.main_window.show_progress(-1)
@@ -1581,6 +1479,15 @@ class CalibratePanel(QWidget):
                 item.setBackground(QColor('#D5F5E3'))
             self.replica_comparison_table.setItem(row, 8, item)
 
+            # Col 9: Outlier (checkbox visual)
+            is_outlier = rep.get('is_outlier', False)
+            item = QTableWidgetItem("✗" if is_outlier else "")
+            item.setTextAlignment(Qt.AlignCenter)
+            if is_outlier:
+                item.setBackground(QColor('#FADBD8'))
+                item.setForeground(QColor('#C0392B'))
+            self.replica_comparison_table.setItem(row, 9, item)
+
         # === Actualitzar etiqueta diferències ===
         if comparison.get('comparable') and len(replica_details) >= 2:
             rsd = comparison.get('rsd_area', 0)
@@ -1661,6 +1568,91 @@ class CalibratePanel(QWidget):
             self.apply_selection_btn.setEnabled(False)
         else:
             QMessageBox.warning(self, "Error", result.get('message', 'Error desconegut'))
+
+    def _on_mark_replica_outlier(self):
+        """Marca/desmarca la rèplica seleccionada com a outlier."""
+        # Obtenir fila seleccionada
+        selected_rows = self.replica_comparison_table.selectedItems()
+        if not selected_rows:
+            QMessageBox.information(self, "Selecciona rèplica",
+                "Selecciona una fila de la taula per marcar-la com a outlier.")
+            return
+
+        row = selected_rows[0].row()
+        replica_item = self.replica_comparison_table.item(row, 0)
+        if not replica_item:
+            return
+
+        replica_name = replica_item.text()
+
+        # Obtenir estat actual d'outlier
+        outlier_item = self.replica_comparison_table.item(row, 9)
+        is_currently_outlier = outlier_item and outlier_item.text() == "✗"
+
+        # Confirmar acció
+        action = "desmarcar" if is_currently_outlier else "marcar"
+        reply = QMessageBox.question(
+            self, f"Confirmar {action} outlier",
+            f"Vols {action} la rèplica '{replica_name}' com a outlier?\n\n"
+            f"{'Tornarà a ser vàlida per calibrar.' if is_currently_outlier else 'No es farà servir per calibrar.'}",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+
+        if reply != QMessageBox.Yes:
+            return
+
+        # Aplicar canvi
+        try:
+            from hpsec_calibrate import load_local_calibrations, save_local_calibrations
+            import os
+
+            seq_path = self.main_window.seq_path
+            if not seq_path:
+                return
+
+            calibrations = load_local_calibrations(seq_path)
+            seq_name = os.path.basename(seq_path)
+
+            # Buscar la calibració actual i actualitzar la rèplica
+            updated = False
+            for cal in calibrations:
+                if cal.get('seq_name') != seq_name:
+                    continue
+
+                # Actualitzar replicas_info
+                replicas_info = cal.get('replicas_info', [])
+                for rep in replicas_info:
+                    if rep.get('filename', '') == replica_name or f"R{replicas_info.index(rep)+1}" == replica_name:
+                        rep['is_outlier'] = not is_currently_outlier
+                        updated = True
+                        break
+
+                # Actualitzar replica_comparison si existeix
+                replica_comp = cal.get('replica_comparison', {})
+                replica_details = replica_comp.get('replica_details', [])
+                for rep in replica_details:
+                    rep_num = rep.get('replica_num', 0)
+                    if f"R{rep_num}" == replica_name:
+                        rep['is_outlier'] = not is_currently_outlier
+                        updated = True
+                        break
+
+            if updated:
+                save_local_calibrations(seq_path, calibrations)
+
+                # Refrescar vista
+                self._update_replica_selection(self.calibration_data)
+
+                QMessageBox.information(
+                    self, "Actualitzat",
+                    f"Rèplica '{replica_name}' {'desmarcada' if is_currently_outlier else 'marcada'} com a outlier."
+                )
+            else:
+                QMessageBox.warning(self, "Error", "No s'ha pogut trobar la rèplica.")
+
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Error actualitzant: {str(e)}")
 
     def _update_validation(self, result):
         """Actualiza la sección de validación amb warnings separats per senyal i rèplica."""
@@ -1805,8 +1797,8 @@ class CalibratePanel(QWidget):
                 self.history_group.setVisible(False)
                 return
 
-            # Decidir si filtrar o mostrar tot
-            show_all = self.show_all_history_cb.isChecked()
+            # Decidir si incloure outliers
+            include_outliers = self.show_outliers_cb.isChecked()
 
             filtered_history = []
             for cal in history:
@@ -1814,19 +1806,22 @@ class CalibratePanel(QWidget):
                 if cal.get('area', 0) <= 0:
                     continue
 
-                if not show_all:
-                    # Aplicar filtres
-                    cal_mode = cal.get('mode', 'COLUMN')
-                    cal_conc = cal.get('conc_ppm', 0)
-                    cal_vol = cal.get('volume_uL', current_volume)
+                # Excloure outliers si no està marcat el checkbox
+                if not include_outliers and cal.get('is_outlier', False):
+                    continue
 
-                    # Filtres: mode exacte, conc ±1, volum exacte (o si no hi ha volum registrat)
-                    if cal_mode != method:
-                        continue
-                    if abs(cal_conc - khp_conc) >= 1:
-                        continue
-                    if cal_vol and current_volume and cal_vol != current_volume:
-                        continue
+                # Aplicar filtres per condicions iguals (mode/conc/volum)
+                cal_mode = cal.get('mode', 'COLUMN')
+                cal_conc = cal.get('conc_ppm', 0)
+                cal_vol = cal.get('volume_uL', current_volume)
+
+                # Filtres: mode exacte, conc ±1, volum exacte (o si no hi ha volum registrat)
+                if cal_mode != method:
+                    continue
+                if abs(cal_conc - khp_conc) >= 1:
+                    continue
+                if cal_vol and current_volume and cal_vol != current_volume:
+                    continue
 
                 filtered_history.append(cal)
 
@@ -1836,15 +1831,11 @@ class CalibratePanel(QWidget):
                 self.history_filters_label.setText("")
                 return
 
-            # Mostrar filtres aplicats o indicar que es mostra tot
-            if show_all:
-                self.history_filters_label.setText(
-                    f"<b>Mostrant TOT l'històric</b> ({len(filtered_history)} calibracions)"
-                )
-            else:
-                self.history_filters_label.setText(
-                    f"<b>Filtres:</b> {method} · KHP{khp_conc:.0f} · {int(current_volume)}µL"
-                )
+            # Mostrar filtres aplicats
+            outlier_text = " (amb outliers)" if include_outliers else ""
+            self.history_filters_label.setText(
+                f"<b>Filtres:</b> {method} · KHP{khp_conc:.0f}ppm · {int(current_volume)}µL{outlier_text} ({len(filtered_history)})"
+            )
 
             self._history_data = filtered_history
             self.history_group.setVisible(True)
@@ -1865,16 +1856,8 @@ class CalibratePanel(QWidget):
 
                 # Dades
                 cal_seq_raw = cal.get('seq_name', 'N/A').replace('_SEQ', '').replace('_BP', '')
-                cal_mode = cal.get('mode', 'COLUMN')
-                cal_conc = cal.get('conc_ppm', 0)
-                cal_vol = cal.get('volume_uL', 0)
-
-                # Si mostrem tot, afegir indicadors de mode/conc/vol
-                if show_all:
-                    mode_prefix = "C" if cal_mode == "COLUMN" else "B"
-                    cal_seq = f"{mode_prefix}:{cal_seq_raw}"
-                else:
-                    cal_seq = cal_seq_raw
+                # Mostrar nom SEQ simplificat (ja filtrat per condicions iguals)
+                cal_seq = cal_seq_raw
 
                 area = cal.get('area', 0)
                 conc = cal.get('conc_ppm', 0)
@@ -1975,8 +1958,6 @@ class CalibratePanel(QWidget):
                     elif not is_valid:
                         item.setBackground(QColor("#FADBD8"))  # Vermell clar = exclòs
                         item.setForeground(QColor("#888888"))
-                    elif show_all and cal_mode != method:
-                        item.setBackground(QColor("#F8F9F9"))  # Gris molt clar
 
                     # Quality score amb colors (col 9)
                     if col == 9:
@@ -2060,8 +2041,8 @@ class CalibratePanel(QWidget):
         else:
             self.toggle_outlier_btn.setText("Marcar Outlier")
 
-    def _on_show_all_history_changed(self, state):
-        """Handler quan canvia el checkbox de mostrar tot."""
+    def _on_show_outliers_changed(self, state):
+        """Handler quan canvia el checkbox d'incloure outliers."""
         if self.calibration_data:
             self._update_history(self.calibration_data)
 
