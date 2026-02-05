@@ -25,24 +25,13 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from gui.models.sequence_state import SequenceState, Phase, get_all_sequences
 from hpsec_config import get_config
-from hpsec_import import import_sequence, save_import_manifest
+from hpsec_import import import_sequence, save_import_manifest, import_from_manifest, load_manifest
 from hpsec_calibrate import calibrate_from_import
 from hpsec_analyze import analyze_sequence, save_analysis_result
 from hpsec_reports import generate_import_plots, generate_calibration_plots, generate_analysis_plots
 
 # Contrasenya per operacions batch i reset
 BATCH_PASSWORD = "LEQUIA"
-
-# DEBUG: Log a fitxer per veure errors
-import logging
-logging.basicConfig(
-    filename=Path(__file__).parent.parent.parent / "debug_batch.log",
-    level=logging.DEBUG,
-    format='%(asctime)s %(message)s'
-)
-def debug_log(msg):
-    print(msg)
-    logging.debug(msg)
 
 
 class SortableTableItem(QTableWidgetItem):
@@ -74,50 +63,64 @@ COLOR_CURRENT = "#2E86AB"  # Blau (fase actual)
 # Cada funció executa UNA sola fase - cridem les funcions de hpsec_*.py
 # =============================================================================
 
-def run_import(seq_path):
+def run_import(seq_path, default_uib_sensitivity=None):
     """Executa IMPORT per una seqüència. Retorna (success, message, data)."""
     try:
-        debug_log(f"run_import: {seq_path}")
         result = import_sequence(seq_path)
-        debug_log(f"  success={result.get('success') if result else None}")
         if result and result.get('success'):
+            # Aplicar sensibilitat UIB per defecte si cal
+            data_mode = result.get("data_mode", "")
+            current_uib_sens = result.get("uib_sensitivity")
+            if data_mode in ["DUAL", "UIB"] and not current_uib_sens and default_uib_sensitivity:
+                result["uib_sensitivity"] = default_uib_sensitivity
+                # Actualitzar MasterFile si existeix
+                try:
+                    master_file = result.get("master_file")
+                    if master_file and os.path.exists(master_file):
+                        import openpyxl
+                        wb = openpyxl.load_workbook(master_file)
+                        if "0-INFO" in wb.sheetnames:
+                            ws = wb["0-INFO"]
+                            ws["B5"] = default_uib_sensitivity
+                            wb.save(master_file)
+                except Exception:
+                    pass  # Continuar sense actualitzar MasterFile
+
             save_import_manifest(result)
             # Generar gràfics
             try:
                 generate_import_plots(seq_path, result)
-            except Exception as e:
-                debug_log(f"  plots error: {e}")
+            except Exception:
+                pass  # Continuar sense gràfics
             return True, "OK", result
         errors = result.get('errors', ['?']) if result else ['?']
-        warnings = result.get('warnings', []) if result else []
-        debug_log(f"  errors={errors}")
-        debug_log(f"  warnings={warnings[:3]}")
         return False, f"Error: {errors[0]}", None
     except Exception as e:
-        import traceback
-        debug_log(f"  EXCEPTION: {e}")
-        traceback.print_exc()
         return False, str(e), None
 
 
 def run_calibrate(seq_path):
     """Executa CALIBRATE per una seqüència. Retorna (success, message, data)."""
     try:
-        # Llegir manifest (ja importat)
-        import json
+        # IMPORTANT: El manifest JSON només conté metadades, no les dades reals.
+        # Cal usar import_from_manifest per carregar les dades des dels fitxers.
         manifest_path = Path(seq_path) / "CHECK" / "data" / "import_manifest.json"
         if not manifest_path.exists():
             return False, "No importat", None
-        with open(manifest_path, "r", encoding="utf-8") as f:
-            imported = json.load(f)
+
+        # Reimportar dades usant el manifest
+        imported = import_from_manifest(seq_path)
+        if not imported or not imported.get("success"):
+            errors = imported.get("errors", ["Error desconegut"]) if imported else ["Error importació"]
+            return False, f"Error importació: {errors[0]}", None
 
         result = calibrate_from_import(imported)
         if result and result.get('success'):
             # Generar gràfics
             try:
                 generate_calibration_plots(seq_path, result, imported)
-            except Exception as e:
-                debug_log(f"  calibrate plots error: {e}")
+            except Exception:
+                pass  # Continuar sense gràfics
             return True, "OK", result
         return False, "Sense KHP", None
     except Exception as e:
@@ -130,15 +133,21 @@ def run_analyze(seq_path):
         import json
         data_path = Path(seq_path) / "CHECK" / "data"
 
-        # Llegir manifest
+        # Llegir manifest i reimportar les dades completes
+        # IMPORTANT: El manifest JSON només conté metadades, no les dades reals.
+        # Cal usar import_from_manifest per carregar les dades des dels fitxers.
         manifest_path = data_path / "import_manifest.json"
         if not manifest_path.exists():
             return False, "No importat", None
-        with open(manifest_path, "r", encoding="utf-8") as f:
-            imported = json.load(f)
+
+        # Reimportar dades usant el manifest
+        imported = import_from_manifest(seq_path)
+        if not imported or not imported.get("success"):
+            errors = imported.get("errors", ["Error desconegut"]) if imported else ["Error importació"]
+            return False, f"Error importació: {errors[0]}", None
 
         # Llegir calibració (opcional)
-        cal_path = data_path / "calibration.json"
+        cal_path = data_path / "calibration_result.json"
         if cal_path.exists():
             with open(cal_path, "r", encoding="utf-8") as f:
                 calibrated = json.load(f)
@@ -151,8 +160,8 @@ def run_analyze(seq_path):
             # Generar gràfics
             try:
                 generate_analysis_plots(seq_path, result)
-            except Exception as e:
-                debug_log(f"  analyze plots error: {e}")
+            except Exception:
+                pass  # Continuar sense gràfics
             return True, "OK", result
         errors = result.get('errors', ['?']) if result else ['?']
         return False, f"Error: {errors[0]}", None
@@ -215,10 +224,11 @@ class BatchWorker(QThread):
     seq_completed = Signal(str, bool, str)  # seq_name, success, message
     finished = Signal(int, int)  # success_count, fail_count
 
-    def __init__(self, sequences, phases):
+    def __init__(self, sequences, phases, default_uib_sensitivity=None):
         super().__init__()
         self.sequences = sequences
         self.phases = phases
+        self.default_uib_sensitivity = default_uib_sensitivity
         self._stop_requested = False
 
     def stop(self):
@@ -229,37 +239,31 @@ class BatchWorker(QThread):
         total_ok, total_fail = 0, 0
         n_seqs = len(self.sequences)
 
-        debug_log(f"BatchWorker START: {n_seqs} seqs, phases={self.phases}")
-
-        # Mapeig fase -> funció
-        phase_runners = {
-            Phase.IMPORT: ("Importar", run_import),
-            Phase.CALIBRATE: ("Calibrar", run_calibrate),
-            Phase.ANALYZE: ("Analitzar", run_analyze),
-        }
-
         # VERTICAL: per cada fase
         for phase in self.phases:
             if self._stop_requested:
                 break
 
-            phase_name, runner = phase_runners.get(phase, (None, None))
-            if not runner:
-                debug_log(f"No runner for phase {phase}")
+            if phase == Phase.IMPORT:
+                phase_name = "Importar"
+                runner = lambda p: run_import(p, self.default_uib_sensitivity)
+            elif phase == Phase.CALIBRATE:
+                phase_name = "Calibrar"
+                runner = run_calibrate
+            elif phase == Phase.ANALYZE:
+                phase_name = "Analitzar"
+                runner = run_analyze
+            else:
                 continue
-
-            debug_log(f"=== PHASE: {phase_name} ===")
 
             # Processar TOTES les seqüències per aquesta fase
             for i, seq in enumerate(self.sequences):
                 if self._stop_requested:
                     break
 
-                debug_log(f"[{i+1}/{n_seqs}] {seq.seq_name}")
                 self.progress.emit(i + 1, n_seqs, f"{phase_name}: {seq.seq_name}")
 
                 ok, msg, _ = runner(seq.seq_path)
-                debug_log(f"  -> {ok}, {msg}")
                 self.seq_completed.emit(seq.seq_name, ok, msg)
 
                 if ok:
@@ -267,7 +271,6 @@ class BatchWorker(QThread):
                 else:
                     total_fail += 1
 
-        debug_log(f"BatchWorker END: {total_ok} OK, {total_fail} FAIL")
         self.finished.emit(total_ok, total_fail)
 
 
@@ -858,9 +861,9 @@ class DashboardPanel(QWidget):
 
     def _open_in_wizard(self, seq: SequenceState):
         """Obre la seqüència al wizard per processar/revisar."""
+        # El senyal sequence_selected és captat per main_window._on_sequence_selected
+        # que ja fa load_sequence i navega al tab. No cal fer-ho aquí directament.
         self.sequence_selected.emit(seq.seq_path, seq.current_phase.value)
-        self.main_window.load_sequence(seq.seq_path)
-        self.main_window.go_to_tab(1)
 
     def _process_single(self, seq: SequenceState):
         reply = QMessageBox.question(
@@ -973,9 +976,27 @@ class DashboardPanel(QWidget):
         if reply != QMessageBox.Yes:
             return
 
+        # Verificar si alguna seqüència necessita sensibilitat UIB
+        default_uib_sensitivity = None
+        if Phase.IMPORT in phases:
+            seqs_need_uib = self._get_seqs_needing_uib_sensitivity(target_seqs)
+            if seqs_need_uib:
+                from PySide6.QtWidgets import QInputDialog
+                sens, ok = QInputDialog.getText(
+                    self,
+                    "Sensibilitat UIB",
+                    f"{len(seqs_need_uib)} seqüències DUAL/UIB sense sensibilitat UIB definida.\n"
+                    "Indica la sensibilitat UIB per defecte (ex: 700, 1000):\n\n"
+                    "Seqüències: " + ", ".join([s.seq_name for s in seqs_need_uib[:5]]) +
+                    ("..." if len(seqs_need_uib) > 5 else ""),
+                    text="1000"
+                )
+                if ok and sens.strip():
+                    default_uib_sensitivity = sens.strip()
+
         self._set_controls_enabled(False)
 
-        self.batch_worker = BatchWorker(target_seqs, phases)
+        self.batch_worker = BatchWorker(target_seqs, phases, default_uib_sensitivity)
         self.batch_worker.progress.connect(self._on_batch_progress)
         self.batch_worker.seq_completed.connect(self._on_seq_completed)
         self.batch_worker.finished.connect(self._on_batch_finished)
@@ -1187,6 +1208,47 @@ class DashboardPanel(QWidget):
             self, "Completat",
             f"Correctes: {success}\nErrors: {fail}"
         )
+
+    def _get_seqs_needing_uib_sensitivity(self, sequences):
+        """
+        Retorna les seqüències DUAL/UIB que no tenen sensibilitat UIB definida.
+        Només verifica seqüències que encara no han estat importades.
+        """
+        need_uib = []
+        for seq in sequences:
+            # Només seqüències pendents d'importar
+            if seq.import_status.completed:
+                continue
+
+            # Detectar mode pel nom del directori o estimació
+            # Les seqüències entre 269-274 són DUAL (100µL)
+            # Les seqüències >= 275 poden ser DUAL (400µL)
+            try:
+                seq_num = int(seq.seq_name.rstrip("ABCDEF_SEQ").rstrip("_BP"))
+            except ValueError:
+                continue
+
+            # Heurística: seqüències modernes (>=269) poden ser DUAL
+            if seq_num >= 269:
+                # Verificar si té MasterFile amb sensibilitat UIB
+                seq_path = Path(seq.seq_path)
+                master_files = list(seq_path.glob("*MasterFile*.xlsx"))
+                if master_files:
+                    try:
+                        import openpyxl
+                        wb = openpyxl.load_workbook(master_files[0], read_only=True, data_only=True)
+                        if "0-INFO" in wb.sheetnames:
+                            ws = wb["0-INFO"]
+                            uib_sens = ws["B5"].value
+                            if uib_sens:
+                                continue  # Ja té sensibilitat definida
+                    except Exception:
+                        pass
+
+                # Si arribem aquí, potencialment necessita sensibilitat UIB
+                need_uib.append(seq)
+
+        return need_uib
 
     def _set_controls_enabled(self, enabled):
         self.refresh_btn.setEnabled(enabled)

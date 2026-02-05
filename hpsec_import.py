@@ -1843,7 +1843,8 @@ def parse_injections_from_masterfile(master_data, config=None):
             is_repeated_control = any(p in sample_lower for p in control_patterns)
 
             if is_repeated_control:
-                base_name = re.sub(r'[_\-]\d+$', '', sample_name).strip()
+                # Només eliminar espais i guions alts, mantenir xifres i underscores
+                base_name = re.sub(r'[\s\-]+', '', sample_name).strip()
                 if not base_name:
                     base_name = sample_name
 
@@ -2828,6 +2829,9 @@ def generate_import_manifest(imported_data, include_injection_details=True):
 
         # Suggeriments de matching (orfes → mostres)
         "orphan_suggestions": imported_data.get("orphan_suggestions", {"dad": {}, "uib": {}}),
+
+        # Estat de revisió d'avisos
+        "orphan_warning_dismissed": imported_data.get("orphan_warning_dismissed", False),
     }
 
     # Detall per mostra
@@ -2835,6 +2839,7 @@ def generate_import_manifest(imported_data, include_injection_details=True):
     for sample_name, sample_info in imported_data.get("samples", {}).items():
         sample_entry = {
             "name": sample_name,
+            "original_name": sample_info.get("original_name", sample_name),  # Nom original del MasterFile
             "type": sample_info.get("type", "SAMPLE"),
             "replicas": [],
         }
@@ -3101,6 +3106,7 @@ def import_from_manifest(seq_path, manifest=None, config=None, progress_callback
         "warnings": ["Importat des de manifest existent"],
         "from_manifest": True,
         "manifest_date": manifest.get("generated_at", ""),
+        "orphan_warning_dismissed": manifest.get("orphan_warning_dismissed", False),
     }
 
     # Verificar que MasterFile existeix
@@ -3143,6 +3149,7 @@ def import_from_manifest(seq_path, manifest=None, config=None, progress_callback
         if sample_name not in result["samples"]:
             result["samples"][sample_name] = {
                 "type": sample_type,
+                "original_name": sample_info.get("original_name", sample_name),  # Nom original del MasterFile
                 "replicas": {},
             }
 

@@ -15,7 +15,7 @@ from pathlib import Path
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QLineEdit, QFileDialog, QFrame, QTableWidget, QTableWidgetItem,
+    QLineEdit, QFrame, QTableWidget, QTableWidgetItem,
     QHeaderView, QMessageBox, QRadioButton, QButtonGroup, QComboBox,
     QDialog, QDialogButtonBox, QTextEdit, QStyledItemDelegate
 )
@@ -28,8 +28,10 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from hpsec_import import (
     import_sequence, load_manifest, import_from_manifest,
     generate_import_manifest, save_import_manifest,
-    llegir_doc_uib, llegir_dad_export3d, llegir_dad_1a
+    llegir_doc_uib, llegir_dad_export3d, llegir_dad_1a,
+    get_baseline_value
 )
+import numpy as np
 
 CONFIG_PATH = Path(__file__).parent.parent.parent / "hpsec_config.json"
 
@@ -374,85 +376,61 @@ class ImportPanel(QWidget):
         self._data_mode = "DUAL"  # DUAL, DIRECT, UIB
         self._import_warnings = []  # Warnings d'importació
         self._loaded_from_manifest = False  # Si s'ha carregat des de manifest existent
+        self._orphan_warning_dismissed = False  # Si l'usuari ha marcat l'avís d'orfes com revisat
 
         self._setup_ui()
 
     def _setup_ui(self):
         """Configura la interfície del panel."""
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setContentsMargins(12, 8, 12, 12)
         layout.setSpacing(8)
 
-        # === FILA SUPERIOR: Selecció + Botons ===
-        top_row = QHBoxLayout()
-        top_row.setSpacing(8)
-
-        folder_label = QLabel("Seqüència:")
-        folder_label.setFixedWidth(65)
-        top_row.addWidget(folder_label)
-
+        # Camp ocult per compatibilitat (usat internament)
         self.path_input = QLineEdit()
-        self.path_input.setPlaceholderText("Selecciona una carpeta SEQ...")
-        self.path_input.setReadOnly(True)
-        self.path_input.setMinimumWidth(200)
-        top_row.addWidget(self.path_input, 1)
+        self.path_input.setVisible(False)
+        layout.addWidget(self.path_input)
 
-        self.browse_btn = QPushButton("Examinar...")
-        self.browse_btn.setFixedWidth(85)
-        self.browse_btn.clicked.connect(self._browse_folder)
-        top_row.addWidget(self.browse_btn)
+        # Botons ocults per compatibilitat (accions ara al header del wizard)
+        self.import_btn = QPushButton()
+        self.import_btn.setVisible(False)
+        self.save_btn = QPushButton()
+        self.save_btn.setVisible(False)
+        self.next_btn = QPushButton()
+        self.next_btn.setVisible(False)
 
-        top_row.addSpacing(15)
-
-        self.import_btn = QPushButton("Importar")
-        self.import_btn.setFixedWidth(80)
-        self.import_btn.setEnabled(False)
-        self.import_btn.clicked.connect(self._run_import)
-        top_row.addWidget(self.import_btn)
-
-        self.save_btn = QPushButton("Guardar")
-        self.save_btn.setFixedWidth(70)
-        self.save_btn.setEnabled(False)
-        self.save_btn.setToolTip("Guarda les assignacions actuals al manifest")
-        self.save_btn.clicked.connect(self._save_manifest)
-        top_row.addWidget(self.save_btn)
-
-        self.next_btn = QPushButton("Següent →")
-        self.next_btn.setFixedWidth(85)
-        self.next_btn.setEnabled(False)
-        self.next_btn.clicked.connect(self._go_next)
-        top_row.addWidget(self.next_btn)
-
-        layout.addLayout(top_row)
-
-        # === MANIFEST INFO ===
+        # === MANIFEST INFO (eliminat - redundant amb header del wizard) ===
+        # El nom SEQ ja apareix al header i el botó "Executar" gestiona reimportació
         self.manifest_frame = QFrame()
-        self.manifest_frame.setProperty("card", True)
-        self.manifest_frame.setVisible(False)
-        self.manifest_frame.setFixedHeight(70)
-
-        manifest_layout = QHBoxLayout(self.manifest_frame)
-        manifest_layout.setContentsMargins(12, 8, 12, 8)
-
+        self.manifest_frame.setVisible(False)  # Mai visible - mantingut per compatibilitat
         self.manifest_info = QLabel()
-        self.manifest_info.setWordWrap(True)
-        manifest_layout.addWidget(self.manifest_info, 1)
-
-        radio_layout = QHBoxLayout()
-        radio_layout.setSpacing(12)
+        self.use_manifest_radio = QRadioButton()
+        self.full_import_radio = QRadioButton()
         self.import_mode_group = QButtonGroup(self)
 
-        self.use_manifest_radio = QRadioButton("Usar anterior")
-        self.use_manifest_radio.setChecked(True)
-        self.import_mode_group.addButton(self.use_manifest_radio)
-        radio_layout.addWidget(self.use_manifest_radio)
+        # === BARRA D'AVISOS (consistent per tots els panels) ===
+        self.warnings_bar = QFrame()
+        self.warnings_bar.setVisible(False)
+        self.warnings_bar.setStyleSheet("""
+            QFrame {
+                background-color: #fff3cd;
+                border: 1px solid #ffc107;
+                border-radius: 6px;
+            }
+        """)
+        warnings_bar_layout = QHBoxLayout(self.warnings_bar)
+        warnings_bar_layout.setContentsMargins(12, 8, 12, 8)
 
-        self.full_import_radio = QRadioButton("Reimportar tot")
-        self.import_mode_group.addButton(self.full_import_radio)
-        radio_layout.addWidget(self.full_import_radio)
+        warnings_icon = QLabel("⚠")
+        warnings_icon.setStyleSheet("font-size: 16px;")
+        warnings_bar_layout.addWidget(warnings_icon)
 
-        manifest_layout.addLayout(radio_layout)
-        layout.addWidget(self.manifest_frame)
+        self.warnings_bar_text = QLabel()
+        self.warnings_bar_text.setStyleSheet("color: #856404;")
+        self.warnings_bar_text.setWordWrap(True)
+        warnings_bar_layout.addWidget(self.warnings_bar_text, 1)
+
+        layout.addWidget(self.warnings_bar)
 
         # === INFO BARRA (resum injeccions) ===
         self.info_frame = QFrame()
@@ -531,6 +509,12 @@ class ImportPanel(QWidget):
         self.refresh_btn.setVisible(False)
         warnings_layout.addWidget(self.refresh_btn)
 
+        self.dismiss_btn = QPushButton("Marcar revisat")
+        self.dismiss_btn.setToolTip("Marca l'avís com a revisat (els fitxers orfes no s'assignaran)")
+        self.dismiss_btn.clicked.connect(self._dismiss_orphan_warning)
+        self.dismiss_btn.setVisible(False)
+        warnings_layout.addWidget(self.dismiss_btn)
+
         layout.addWidget(self.warnings_frame)
 
         # === PLACEHOLDER ===
@@ -576,13 +560,19 @@ class ImportPanel(QWidget):
         self.path_input.setText(path)
         self._check_manifest()
 
-    def _browse_folder(self):
-        start_path = self.path_input.text() or os.path.expanduser("~/Desktop")
-        path = QFileDialog.getExistingDirectory(
-            self, "Selecciona carpeta SEQ", start_path, QFileDialog.ShowDirsOnly
-        )
-        if path:
-            self.set_sequence_path(path)
+    def load_from_dashboard(self, seq_path):
+        """Carrega una seqüència des del Dashboard - auto-carrega si hi ha manifest."""
+        self.set_sequence_path(seq_path)
+
+        # Si hi ha manifest existent, carregar automàticament
+        if self.existing_manifest:
+            # Amagar placeholder immediatament - es mostrarà la taula quan acabi
+            self.placeholder.setVisible(False)
+            self._auto_load_from_manifest()
+
+    def _go_to_dashboard(self):
+        """Torna al Dashboard per seleccionar una seqüència."""
+        self.main_window.tab_widget.setCurrentIndex(0)
 
     def _check_manifest(self):
         self.existing_manifest = load_manifest(self.seq_path)
@@ -602,30 +592,36 @@ class ImportPanel(QWidget):
         self.save_btn.setEnabled(False)
 
     def _show_manifest_info(self):
-        manifest = self.existing_manifest
-        seq = manifest.get("sequence", {})
-        summary = manifest.get("summary", {})
-        generated = manifest.get("generated_at", "")[:16].replace("T", " ")
+        """Registra info del manifest (frame eliminat - info ja al header wizard)."""
+        # Mantingut per compatibilitat però ja no mostra res
+        # La info del SEQ es mostra al header del ProcessWizardPanel
+        pass
 
-        info_text = (
-            f"<b>{seq.get('name', 'N/A')}</b> · {seq.get('method', '')} / {seq.get('data_mode', '')}<br>"
-            f"<small>Importat: {generated} · "
-            f"{summary.get('total_replicas', 0)} rèpliques</small>"
+    def _auto_load_from_manifest(self):
+        """Carrega automàticament des del manifest existent."""
+        self._loaded_from_manifest = True
+        self.main_window.show_progress(0)
+
+        self.worker = ImportWorker(
+            self.seq_path,
+            use_manifest=True,
+            manifest=self.existing_manifest
         )
-        self.manifest_info.setText(info_text)
-        self.manifest_frame.setVisible(True)
-        self.use_manifest_radio.setChecked(True)
+        self.worker.progress.connect(self._on_progress)
+        self.worker.finished.connect(self._on_import_finished)
+        self.worker.error.connect(self._on_import_error)
+        self.worker.start()
 
-    def _run_import(self):
+    def _run_import(self, force_reimport=False):
+        """Executa importació. Si force_reimport=True, reimporta tot."""
         if not self.seq_path:
             return
 
-        self.import_btn.setEnabled(False)
-        self.browse_btn.setEnabled(False)
         self.main_window.show_progress(0)
 
-        use_manifest = self.existing_manifest and self.use_manifest_radio.isChecked()
-        self._loaded_from_manifest = use_manifest  # Marcar si s'usa manifest anterior
+        # Si ja hi ha manifest i no forcem reimportació, usar-lo
+        use_manifest = self.existing_manifest and not force_reimport
+        self._loaded_from_manifest = use_manifest
 
         self.worker = ImportWorker(
             self.seq_path,
@@ -644,7 +640,6 @@ class ImportPanel(QWidget):
     def _on_import_finished(self, result):
         self.main_window.show_progress(-1)
         self.import_btn.setEnabled(True)
-        self.browse_btn.setEnabled(True)
 
         if not result.get("success"):
             errors = result.get("errors", ["Error desconegut"])
@@ -656,7 +651,12 @@ class ImportPanel(QWidget):
 
         self.imported_data = result
         self.main_window.imported_data = result
+        # Restaurar estat "revisat" d'orfes si es va marcar anteriorment
+        self._orphan_warning_dismissed = result.get("orphan_warning_dismissed", False)
         self._show_results(result)
+
+        # Mostrar avisos si n'hi ha
+        self._show_warnings_bar(result)
 
         try:
             save_import_manifest(result)
@@ -668,6 +668,33 @@ class ImportPanel(QWidget):
         self.save_btn.setEnabled(True)
         self.main_window.enable_tab(1)
         self.main_window.set_status("Importació completada", 5000)
+
+    def _show_warnings_bar(self, result):
+        """Mostra avisos a la barra superior si n'hi ha."""
+        warnings = result.get("warnings", [])
+        orphans_uib = len(result.get("orphan_files", {}).get("uib", []))
+        orphans_dad = len(result.get("orphan_files", {}).get("dad", []))
+
+        warning_parts = []
+        if orphans_uib > 0:
+            warning_parts.append(f"{orphans_uib} UIB orfes")
+        if orphans_dad > 0:
+            warning_parts.append(f"{orphans_dad} DAD orfes")
+
+        # Afegir warnings generals
+        for w in warnings:
+            if "⚠" in w or "FUZZY" in w:
+                warning_parts.append(w.replace("⚠️", "").strip()[:40])
+
+        if warning_parts:
+            self.warnings_bar.setVisible(True)
+            n = len(warning_parts)
+            display = warning_parts[:3]
+            self.warnings_bar_text.setText(
+                f"<b>{n} avisos:</b> " + " · ".join(display)
+            )
+        else:
+            self.warnings_bar.setVisible(False)
 
     def _check_uib_sensitivity(self, result):
         """Verifica si cal preguntar la sensibilitat UIB i actualitza el MasterFile."""
@@ -713,7 +740,6 @@ class ImportPanel(QWidget):
     def _on_import_error(self, error_msg):
         self.main_window.show_progress(-1)
         self.import_btn.setEnabled(True)
-        self.browse_btn.setEnabled(True)
         QMessageBox.critical(self, "Error", f"Error durant la importació:\n{error_msg}")
 
     def _show_results(self, result):
@@ -721,6 +747,9 @@ class ImportPanel(QWidget):
         self._match_types = {}
         self._unverified_fuzzy = set()
         self._manual_assignments = {}
+        # Restaurar estat d'avís d'orfes (si carregat des de manifest)
+        if not self._loaded_from_manifest:
+            self._orphan_warning_dismissed = False
 
         # Guardar warnings d'importació per mostrar-los
         self._import_warnings = [w for w in result.get("warnings", []) if "⚠️" in w]
@@ -743,6 +772,22 @@ class ImportPanel(QWidget):
             "dad": result.get("all_orphan_files", result.get("orphan_files", {})).get("dad", []),
         }
 
+        # Si carregat des de manifest, filtrar orfes que ja estan assignats a mostres
+        if self._loaded_from_manifest:
+            assigned_uib = set()
+            assigned_dad = set()
+            for sample in samples:
+                for rep in sample.get("replicas", []):
+                    uib_info = rep.get("uib", {})
+                    dad_info = rep.get("dad", {})
+                    if uib_info and uib_info.get("file"):
+                        assigned_uib.add(Path(uib_info["file"]).name)
+                    if dad_info and dad_info.get("file") and not dad_info.get("file", "").startswith("["):
+                        assigned_dad.add(Path(dad_info["file"]).name)
+            # Treure fitxers assignats de la llista d'orfes
+            self._orphan_files["uib"] = [f for f in self._orphan_files["uib"] if Path(f).name not in assigned_uib]
+            self._orphan_files["dad"] = [f for f in self._orphan_files["dad"] if Path(f).name not in assigned_dad]
+
 
         # Configurar columnes segons mode
         self._setup_table_columns()
@@ -754,6 +799,9 @@ class ImportPanel(QWidget):
             sample_type = detect_sample_type(
                 sample["name"], original_type, self.sample_types_config
             )
+            # Obtenir nom original (pot diferir del nom únic per controls repetits)
+            original_name = sample.get("original_name", sample["name"])
+
             for rep in sample.get("replicas", []):
                 # Usar line_num (ordre real d'injecció al MasterFile)
                 # Nota: import_sequence usa "injection_info", manifest usa "injection"
@@ -768,6 +816,7 @@ class ImportPanel(QWidget):
 
                 all_injections.append({
                     "sample_name": sample["name"],
+                    "original_name": original_name,  # Nom original del MasterFile
                     "sample_type": sample_type,
                     "rep": rep,
                     "line_num": line_num,
@@ -866,6 +915,7 @@ class ImportPanel(QWidget):
             self.samples_table.insertRow(row)
 
             sample_name = inj["sample_name"]
+            original_name = inj.get("original_name", sample_name)
             sample_type = inj["sample_type"]
             rep = inj["rep"]
 
@@ -876,9 +926,19 @@ class ImportPanel(QWidget):
             inj_item.setFlags(inj_item.flags() & ~Qt.ItemIsEditable)
             self.samples_table.setItem(row, self.COL_INJ, inj_item)
 
-            # Mostra (no editable)
-            name_item = QTableWidgetItem(sample_name)
+            # Mostra (no editable) - mostrar nom original si diferent
+            if original_name != sample_name:
+                # Nom transformat (controls repetits): mostrar original
+                display_name = original_name
+                name_item = QTableWidgetItem(display_name)
+                name_item.setToolTip(f"Nom únic: {sample_name}\nNom MasterFile: {original_name}")
+                # Color diferent per indicar transformació
+                name_item.setForeground(QBrush(QColor("#2E86AB")))
+            else:
+                name_item = QTableWidgetItem(sample_name)
             name_item.setFlags(name_item.flags() & ~Qt.ItemIsEditable)
+            # Guardar nom únic al UserRole per ús intern
+            name_item.setData(Qt.UserRole, sample_name)
             self.samples_table.setItem(row, self.COL_MOSTRA, name_item)
 
             # Tipus (editable)
@@ -960,8 +1020,18 @@ class ImportPanel(QWidget):
                     if n_points > 0:
                         self.samples_table.item(row, self.COL_UIB_PTS_ACTUAL).setText(str(n_points))
                         uib_pts = n_points
-                elif not uib_pts and self._orphan_files.get("uib") and requires_assignment:
-                    # Hi ha orfes UIB disponibles i és mostra/patró (requereix assignació)
+                elif uib_file and self._loaded_from_manifest:
+                    # FITXER JA ASSIGNAT (carregat des de manifest) - mostrar com a OK
+                    replica_num = rep.get("replica", 1)
+                    display_name = f"{sample_name}_R{replica_num}"
+                    self._add_simple_cell(row, self.COL_UIB_FILE_ACTUAL, display_name)
+                    # Intentar comptar punts si no tenim
+                    if not uib_pts:
+                        n_points = self._count_file_points(uib_file, "uib")
+                        if n_points > 0:
+                            self.samples_table.item(row, self.COL_UIB_PTS_ACTUAL).setText(str(n_points))
+                elif not uib_pts and not uib_file and self._orphan_files.get("uib") and requires_assignment:
+                    # NO hi ha fitxer assignat i hi ha orfes UIB disponibles
                     self._add_file_cell(row, self.COL_UIB_FILE_ACTUAL, "-", editable=True)
                     missing_signals.append("UIB")
                     needs_review = True
@@ -1016,8 +1086,18 @@ class ImportPanel(QWidget):
                 if n_points > 0:
                     self.samples_table.item(row, self.COL_DAD_PTS_ACTUAL).setText(str(n_points))
                     dad_pts = n_points
-            elif not dad_pts and self._orphan_files.get("dad") and requires_assignment:
-                # Hi ha orfes DAD disponibles i és mostra/patró (requereix assignació)
+            elif dad_file and self._loaded_from_manifest and not dad_file.startswith("["):
+                # FITXER JA ASSIGNAT (carregat des de manifest) - mostrar com a OK
+                replica_num = rep.get("replica", 1)
+                display_name = f"{sample_name}_R{replica_num}"
+                self._add_simple_cell(row, self.COL_DAD_FILE_ACTUAL, display_name)
+                # Intentar comptar punts si no tenim
+                if not dad_pts:
+                    n_points = self._count_file_points(dad_file, "dad")
+                    if n_points > 0:
+                        self.samples_table.item(row, self.COL_DAD_PTS_ACTUAL).setText(str(n_points))
+            elif not dad_pts and not dad_file and self._orphan_files.get("dad") and requires_assignment:
+                # NO hi ha fitxer assignat i hi ha orfes DAD disponibles
                 self._add_file_cell(row, self.COL_DAD_FILE_ACTUAL, "-", editable=True)
                 missing_signals.append("DAD")
                 needs_review = True
@@ -1199,7 +1279,7 @@ class ImportPanel(QWidget):
                 # Obtenir nom i rèplica de la taula (funciona amb taula ordenada)
                 name_item = self.samples_table.item(row, self.COL_MOSTRA)
                 rep_item = self.samples_table.item(row, self.COL_REP)
-                sample_name = name_item.text() if name_item else ""
+                sample_name = name_item.data(Qt.UserRole) if name_item else ""
                 try:
                     replica = int(rep_item.text()) if rep_item else 1
                 except:
@@ -1251,7 +1331,7 @@ class ImportPanel(QWidget):
                             name_item = self.samples_table.item(row, self.COL_MOSTRA)
                             rep_item = self.samples_table.item(row, self.COL_REP)
                             if name_item and rep_item:
-                                s_name = name_item.text()
+                                s_name = name_item.data(Qt.UserRole)
                                 s_rep = rep_item.text()
                                 for data in self._sample_data:
                                     if (data.get("name") == s_name and
@@ -1350,15 +1430,19 @@ class ImportPanel(QWidget):
         if not filename or filename in ["-", "(cap)"]:
             return
 
+        print(f"[DEBUG _load_and_store] Intentant carregar {filename} per {sample_name} R{replica}")
+
         # Obtenir referència a les dades de la rèplica primer
         samples = self.imported_data.get("samples", {})
         if sample_name not in samples:
-            print(f"Warning: Mostra '{sample_name}' no trobada a imported_data")
+            print(f"[DEBUG _load_and_store] ERROR: Mostra '{sample_name}' no trobada a imported_data")
+            print(f"[DEBUG _load_and_store] Samples disponibles: {list(samples.keys())[:5]}...")
             return
 
         rep_data = samples[sample_name].get("replicas", {}).get(str(replica))
         if rep_data is None:
-            print(f"Warning: Rèplica {replica} no trobada per '{sample_name}'")
+            print(f"[DEBUG _load_and_store] ERROR: Rèplica {replica} no trobada per '{sample_name}'")
+            print(f"[DEBUG _load_and_store] Rèpliques disponibles: {list(samples[sample_name].get('replicas', {}).keys())}")
             return
 
         # Buscar el path complet del fitxer
@@ -1420,15 +1504,37 @@ class ImportPanel(QWidget):
                 if not df.empty and "OK" in status:
                     t = df["time (min)"].values
                     y = df["DOC"].values
+
+                    # Calcular baseline i y_net (CRÍTIC per areas_uib)
+                    baseline = None
+                    y_net = None
+                    if len(t) > 10:
+                        # Determinar mode (BP o COLUMN)
+                        method = self.imported_data.get("method", "COLUMN")
+                        mode = "BP" if method == "BP" else "COLUMN"
+                        baseline = get_baseline_value(t, y, mode=mode)
+                        y_net = np.array(y) - baseline
+
                     rep_data["uib"] = {
                         "t": t,
                         "y": y,
                         "y_raw": y,
+                        "y_net": y_net,
+                        "baseline": baseline,
                         "file": filename,
                         "n_points": len(df),
                         "manual_assignment": True,
                     }
-                    print(f"Carregat UIB: {filename} ({len(df)} punts)")
+                    bl_val = baseline if baseline is not None else 0
+                    print(f"[DEBUG _load_and_store] Carregat UIB: {filename} per {sample_name} R{replica}")
+                    print(f"[DEBUG _load_and_store] rep_data['uib'] keys: {list(rep_data['uib'].keys())}")
+                    print(f"[DEBUG _load_and_store] t is not None: {t is not None}, len(t)={len(t) if t is not None else 0}")
+                    # Treure de la llista d'orfes
+                    if "orphan_files" in self.imported_data:
+                        uib_orphans = self.imported_data["orphan_files"].get("uib", [])
+                        self.imported_data["orphan_files"]["uib"] = [
+                            f for f in uib_orphans if Path(f).name != filename
+                        ]
 
             elif file_type == "dad":
                 # Provar primer Export3D, després DAD1A
@@ -1448,6 +1554,12 @@ class ImportPanel(QWidget):
                         "source": "manual",
                     }
                     print(f"Carregat DAD: {filename} ({len(df)} punts, columnes: {list(df.columns)[:5]})")
+                    # Treure de la llista d'orfes
+                    if "orphan_files" in self.imported_data:
+                        dad_orphans = self.imported_data["orphan_files"].get("dad", [])
+                        self.imported_data["orphan_files"]["dad"] = [
+                            f for f in dad_orphans if Path(f).name != filename
+                        ]
                 else:
                     print(f"Warning: No s'han pogut llegir dades DAD de {filename}: {status}")
 
@@ -1461,7 +1573,7 @@ class ImportPanel(QWidget):
         name_item = self.samples_table.item(row, self.COL_MOSTRA)
         rep_item = self.samples_table.item(row, self.COL_REP)
         if name_item and rep_item:
-            s_name = name_item.text()
+            s_name = name_item.data(Qt.UserRole)
             s_rep = rep_item.text()
             for data in self._sample_data:
                 if (data.get("name") == s_name and
@@ -1535,7 +1647,7 @@ class ImportPanel(QWidget):
         rep_item = self.samples_table.item(row, self.COL_REP)
 
         if name_item and rep_item:
-            sample_name = name_item.text()
+            sample_name = name_item.data(Qt.UserRole)
             rep_text = rep_item.text()
 
             # Buscar les dades corresponents a _sample_data
@@ -1570,6 +1682,16 @@ class ImportPanel(QWidget):
             self.confirm_btn.setVisible(False)
             self.orphans_btn.setVisible(False)
             self.refresh_btn.setVisible(False)
+            self.dismiss_btn.setVisible(False)
+            return
+
+        # Si l'avís d'orfes ha estat marcat com revisat, no mostrar
+        if self._orphan_warning_dismissed:
+            self.warnings_frame.setVisible(False)
+            self.confirm_btn.setVisible(False)
+            self.orphans_btn.setVisible(False)
+            self.refresh_btn.setVisible(False)
+            self.dismiss_btn.setVisible(False)
             return
 
         # Comptar orfes que encara no estan assignats
@@ -1610,12 +1732,15 @@ class ImportPanel(QWidget):
             self.confirm_btn.setVisible(has_suggestions)
             self.orphans_btn.setVisible(has_orphans)
             self.refresh_btn.setVisible(has_orphans)
+            # Mostrar botó "Marcar revisat" si hi ha orfes (permet continuar sense assignar)
+            self.dismiss_btn.setVisible(has_orphans and not has_suggestions)
             self.warnings_frame.setVisible(True)
         else:
             self.warnings_frame.setVisible(False)
             self.confirm_btn.setVisible(False)
             self.orphans_btn.setVisible(False)
             self.refresh_btn.setVisible(False)
+            self.dismiss_btn.setVisible(False)
 
     def _count_unassigned_orphans(self):
         """Compta quants orfes encara no estan assignats."""
@@ -1659,7 +1784,7 @@ class ImportPanel(QWidget):
             rep_item = self.samples_table.item(row, self.COL_REP)
             if not name_item or not rep_item:
                 continue
-            sample_name = name_item.text()
+            sample_name = name_item.data(Qt.UserRole)
             try:
                 replica = int(rep_item.text())
             except:
@@ -1677,6 +1802,9 @@ class ImportPanel(QWidget):
                         filename = item.data(Qt.UserRole)
                         if filename:
                             self._load_and_store_file_data(filename, "uib", sample_name, replica)
+                            # Guardar a _manual_assignments per persistència
+                            key = (sample_name, replica)
+                            self._manual_assignments.setdefault(key, {})[self.COL_UIB_FILE_ACTUAL] = filename
 
             # Comprovar DAD
             if self._match_types.get((row, self.COL_DAD_FILE_ACTUAL)) == "SUGGESTED":
@@ -1689,8 +1817,15 @@ class ImportPanel(QWidget):
                     filename = item.data(Qt.UserRole)
                     if filename:
                         self._load_and_store_file_data(filename, "dad", sample_name, replica)
+                        # Guardar a _manual_assignments per persistència
+                        key = (sample_name, replica)
+                        self._manual_assignments.setdefault(key, {})[self.COL_DAD_FILE_ACTUAL] = filename
 
         self.samples_table.blockSignals(False)
+
+        # Marcar canvis sense guardar perquè es persisteixin
+        if confirmed > 0:
+            self.main_window.mark_unsaved_changes()
 
         # Recalcular estats
         self._recalculate_row_states()
@@ -1698,7 +1833,19 @@ class ImportPanel(QWidget):
         self._update_next_button_state()
 
         if confirmed > 0:
-            QMessageBox.information(self, "Confirmat", f"S'han confirmat {confirmed} suggeriments.")
+            # Guardar manifest immediatament
+            try:
+                print(f"[DEBUG confirm] Guardant manifest amb {confirmed} confirmacions...")
+                self._apply_manual_assignments()
+                manifest_path = save_import_manifest(self.imported_data)
+                print(f"[DEBUG confirm] Manifest guardat a: {manifest_path}")
+                self.main_window.mark_manifest_saved()
+                QMessageBox.information(self, "Confirmat", f"S'han confirmat {confirmed} suggeriments i s'han guardat.")
+            except Exception as e:
+                import traceback
+                print(f"[DEBUG confirm] ERROR: {e}")
+                traceback.print_exc()
+                QMessageBox.warning(self, "Avís", f"S'han confirmat {confirmed} suggeriments però no s'han pogut guardar: {e}")
 
 
     def _recalculate_row_states(self):
@@ -1712,7 +1859,7 @@ class ImportPanel(QWidget):
             name_item = self.samples_table.item(row, self.COL_MOSTRA)
             rep_item = self.samples_table.item(row, self.COL_REP)
             if name_item and rep_item:
-                s_name = name_item.text()
+                s_name = name_item.data(Qt.UserRole)
                 s_rep = rep_item.text()
                 for data in self._sample_data:
                     if (data.get("name") == s_name and
@@ -1798,6 +1945,19 @@ class ImportPanel(QWidget):
 
         # Actualitzar warnings
         self._update_warnings()
+
+    def _dismiss_orphan_warning(self):
+        """Marca l'avís d'orfes com a revisat i amaga la barra d'avisos."""
+        self._orphan_warning_dismissed = True
+        self.warnings_frame.setVisible(False)
+        # Guardar al manifest que l'avís ha estat revisat
+        if self.imported_data:
+            self.imported_data["orphan_warning_dismissed"] = True
+            try:
+                save_import_manifest(self.imported_data)
+                self.main_window.set_status("Avís marcat com a revisat", 3000)
+            except Exception as e:
+                print(f"Warning: No s'ha pogut guardar estat revisat: {e}")
 
     def _show_orphans(self):
         dialog = OrphanFilesDialog(self, self._orphan_files)
