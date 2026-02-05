@@ -46,6 +46,7 @@ from hpsec_core import (
     integrate_above_baseline,
     calculate_fwhm,
     calculate_symmetry,
+    fit_bigaussian,
     TIMEOUT_CONFIG
 )
 
@@ -82,7 +83,6 @@ class NumpyEncoder(json.JSONEncoder):
 # Fitxers d'historial GLOBAL (a REGISTRY/)
 REGISTRY_FOLDER = "REGISTRY"
 KHP_HISTORY_FILENAME = "KHP_History.json"
-KHP_HISTORY_EXCEL_FILENAME = "KHP_History.xlsx"
 SAMPLES_HISTORY_FILENAME = "Samples_History.json"
 
 # Fitxers locals per SEQ (a CHECK/data/)
@@ -788,7 +788,7 @@ def get_historical_khp_stats(seq_path, mode="COLUMN", conc_ppm=None, volume_uL=N
 
 def compare_khp_historical(current_area, current_concentration_ratio, seq_path, mode="COLUMN",
                           conc_ppm=None, volume_uL=None, doc_mode=None, uib_sensitivity=None,
-                          exclude_outliers=False):
+                          exclude_outliers=True):  # C12/C17: SEMPRE excloure outliers
     """
     Compara el KHP actual amb l'històric.
 
@@ -848,15 +848,15 @@ def compare_khp_historical(current_area, current_concentration_ratio, seq_path, 
         result['area_deviation_pct'] = area_deviation_pct
 
         if is_bp:
-            # BP: thresholds més permissius (senyal molt variable)
-            # Només FAIL si àrea desvia >100%, WARNING >50%
-            if area_deviation_pct > 100:
+            # C12/C17: Thresholds MOLT estrictes per calibració (iguals que Column)
+            # FAIL si àrea desvia >20%, WARNING >10%
+            if area_deviation_pct > 20:
                 result['status'] = 'INVALID'
-                result['issues'].append(f"BP: Desviació àrea {area_deviation_pct:.1f}% (>100%)")
-            elif area_deviation_pct > 50:
+                result['issues'].append(f"BP: Desviació àrea {area_deviation_pct:.1f}% (>20%)")
+            elif area_deviation_pct > 10:
                 if result['status'] == 'OK':
                     result['status'] = 'WARNING'
-                result['warnings'].append(f"BP: Desviació àrea {area_deviation_pct:.1f}% (>50%)")
+                result['warnings'].append(f"BP: Desviació àrea {area_deviation_pct:.1f}% (>10%)")
         else:
             # Column: thresholds estrictes
             if area_deviation_pct > 20:
@@ -946,6 +946,7 @@ def validate_khp_quality(khp_data, all_peaks, timeout_info, anomaly_info=None, s
             quality_score += 30 * (len(significant_peaks) - 2)
 
     # 2. Timeout
+    # NOTA: Timeout INFO (zona segura) NO és warning - només CRITICAL i WARNING compten
     if timeout_info:
         severity = timeout_info.get('severity', 'OK')
         if severity == 'CRITICAL':
@@ -956,9 +957,7 @@ def validate_khp_quality(khp_data, all_peaks, timeout_info, anomaly_info=None, s
             affected = [z for z in zones.keys() if zones[z] > 0]
             warnings.append(f"TIMEOUT_WARNING: timeout en {', '.join(affected)}")
             quality_score += 50
-        elif severity == 'INFO':
-            warnings.append(f"TIMEOUT_INFO: timeout en zona segura")
-            quality_score += 10
+        # INFO: No afegir warning ni penalitzar - timeout en zona segura és acceptable
 
     # 3. Anomalia de forma (batman/irregular)
     if anomaly_info:
@@ -970,14 +969,19 @@ def validate_khp_quality(khp_data, all_peaks, timeout_info, anomaly_info=None, s
             warnings.append(f"IRREGULAR: smoothness baixa ({smoothness:.0f}%)")
             quality_score += 30
 
-    # 4. Simetria
+    # 4. Simetria (C11: irrellevant per BP)
+    # NOTA: Per KHP, el rang acceptable és més ampli (0.5-2.0 és normal)
+    # Només alerta severa si és molt asimètric (<0.4 o >2.5)
     symmetry = khp_data.get('symmetry', 1.0)
-    if symmetry < 0.5 or symmetry > 2.0:
-        issues.append(f"ASYMMETRY: simetria fora de rang ({symmetry:.2f})")
-        quality_score += 20
-    elif symmetry < 0.7 or symmetry > 1.5:
-        warnings.append(f"ASYMMETRY_WARN: simetria límit ({symmetry:.2f})")
-        quality_score += 5
+    is_bp_mode = khp_data.get('is_bp', False)
+    if not is_bp_mode:  # Simetria no es valida per BP
+        if symmetry < 0.4 or symmetry > 2.5:
+            issues.append(f"ASYMMETRY: simetria fora de rang ({symmetry:.2f})")
+            quality_score += 20
+        elif symmetry < 0.5 or symmetry > 2.0:
+            # Warning lleu - no crític per KHP
+            warnings.append(f"ASYMMETRY_WARN: simetria límit ({symmetry:.2f})")
+            quality_score += 3
 
     # 5. SNR - Thresholds depenen del mode
     # BP: SNR ~1.5 és normal (senyal baix), no ha de ser issue
@@ -1073,6 +1077,7 @@ def validate_khp_quality(khp_data, all_peaks, timeout_info, anomaly_info=None, s
         doc_mode = khp_data.get('doc_mode', None)
         uib_sensitivity = khp_data.get('uib_sensitivity', None)
 
+        # C12/C17: Outliers exclosos per defecte (exclude_outliers=True)
         historical_comparison = compare_khp_historical(
             current_area=current_area,
             current_concentration_ratio=concentration_ratio,
@@ -1399,191 +1404,6 @@ def validate_khp_for_alignment(t_doc, y_doc, t_dad, y_a254, t_uib=None, y_uib=No
             result["warnings"].append(f"HISTORICAL: Error en comparació: {e}")
 
     return result
-
-
-def find_khp_for_alignment(seq_folder):
-    """
-    Cerca KHP per alineació: LOCAL → SIBLINGS.
-
-    Args:
-        seq_folder: Carpeta de la SEQ
-
-    Returns:
-        (khp_path, source) o (None, None) si no es troba
-    """
-    # FASE 1: LOCAL
-    res_cons = os.path.join(seq_folder, "Resultats_Consolidats")
-    khp_files = find_khp_in_folder(res_cons)
-    if khp_files:
-        return khp_files[0], "LOCAL"
-
-    # FASE 2: SIBLINGS
-    folder_name = os.path.basename(seq_folder)
-    parent_dir = os.path.dirname(seq_folder)
-
-    match = re.match(r'^(\d+)', folder_name)
-    if match:
-        seq_id = match.group(1)
-        try:
-            all_folders = [d for d in os.listdir(parent_dir)
-                          if os.path.isdir(os.path.join(parent_dir, d))]
-            siblings = [d for d in all_folders
-                       if d.startswith(seq_id) and d != folder_name]
-
-            for sib in siblings:
-                sib_res_cons = os.path.join(parent_dir, sib, "Resultats_Consolidats")
-                khp_files = find_khp_in_folder(sib_res_cons)
-                if khp_files:
-                    return khp_files[0], f"SIBLING:{sib}"
-        except Exception:
-            pass
-
-    return None, None
-
-
-def calculate_column_alignment_shifts(khp_path, config=None, tolerance_sec=2.0):
-    """
-    Calcula els shifts d'alineació per COLUMN usant KHP com a referència.
-
-    Protocol:
-    1. A254 (DAD) és la referència absoluta
-    2. Calcular shift_uib = t_max(A254) - t_max(DOC_UIB)
-    3. Calcular shift_direct = t_max(A254) - t_max(DOC_Direct)
-
-    Args:
-        khp_path: Path al fitxer KHP consolidat
-        config: Configuració
-        tolerance_sec: Tolerància en segons per considerar alineat (default 2s)
-
-    Returns:
-        dict amb:
-            - shift_uib: shift per DOC_UIB (minuts)
-            - shift_direct: shift per DOC_Direct (minuts)
-            - aligned: True si ja estaven alineats (shifts < tolerance)
-            - details: dict amb detalls dels càlculs
-    """
-    result = {
-        "shift_uib": 0.0,
-        "shift_direct": 0.0,
-        "aligned": True,
-        "details": {}
-    }
-
-    tolerance_min = tolerance_sec / 60.0
-
-    try:
-        xls = pd.ExcelFile(khp_path, engine="openpyxl")
-
-        # Llegir DOC
-        if "DOC" not in xls.sheet_names:
-            return result
-
-        df_doc = pd.read_excel(xls, "DOC", engine="openpyxl")
-        t = df_doc["time (min)"].values
-
-        # Verificar columnes
-        has_direct = "DOC (mAU)" in df_doc.columns or "DOC_Direct (mAU)" in df_doc.columns
-        has_uib = "DOC_UIB (mAU)" in df_doc.columns
-
-        if not has_direct and not has_uib:
-            return result
-
-        direct_col = "DOC_Direct (mAU)" if "DOC_Direct (mAU)" in df_doc.columns else "DOC (mAU)"
-
-        # Llegir DAD per A254
-        if "DAD" not in xls.sheet_names:
-            return result
-
-        df_dad = pd.read_excel(xls, "DAD", engine="openpyxl")
-
-        if "254" not in df_dad.columns and "254.0" not in df_dad.columns:
-            return result
-
-        t_dad = df_dad["time (min)"].values
-        a254_col = "254" if "254" in df_dad.columns else "254.0"
-        y_a254 = df_dad[a254_col].values
-
-        # Trobar màxim A254 (referència)
-        idx_max_a254 = np.argmax(y_a254)
-        t_max_a254 = t_dad[idx_max_a254]
-        result["details"]["t_max_a254"] = float(t_max_a254)
-
-        # Calcular shift per DOC_UIB
-        if has_uib:
-            y_uib = df_doc["DOC_UIB (mAU)"].values
-            idx_max_uib = np.argmax(y_uib)
-            t_max_uib = t[idx_max_uib]
-
-            shift_uib = t_max_a254 - t_max_uib
-            result["details"]["t_max_uib"] = float(t_max_uib)
-            result["details"]["shift_uib_raw"] = float(shift_uib)
-
-            if abs(shift_uib) > tolerance_min:
-                result["shift_uib"] = float(shift_uib)
-                result["aligned"] = False
-
-        # Calcular shift per DOC_Direct
-        if has_direct:
-            y_direct = df_doc[direct_col].values
-            idx_max_direct = np.argmax(y_direct)
-            t_max_direct = t[idx_max_direct]
-
-            shift_direct = t_max_a254 - t_max_direct
-            result["details"]["t_max_direct"] = float(t_max_direct)
-            result["details"]["shift_direct_raw"] = float(shift_direct)
-
-            if abs(shift_direct) > tolerance_min:
-                result["shift_direct"] = float(shift_direct)
-                result["aligned"] = False
-
-    except Exception as e:
-        result["details"]["error"] = str(e)
-
-    return result
-
-
-def get_a254_for_alignment(df_dad_khp=None, path_export3d=None, path_dad1a=None):
-    """
-    Obté senyal A254 per alineament, amb prioritat:
-    1. MasterFile 3-DAD_KHP (si df_dad_khp proporcionat)
-    2. Export3D
-    3. DAD1A
-
-    Args:
-        df_dad_khp: DataFrame de la fulla 3-DAD_KHP del MasterFile (pot ser None)
-        path_export3d: Camí al fitxer Export3D (pot ser None)
-        path_dad1a: Camí al fitxer DAD1A (pot ser None)
-
-    Returns:
-        (t, y, source): Arrays de temps i senyal A254, i string indicant la font
-    """
-    # Prioritat 1: MasterFile 3-DAD_KHP
-    if df_dad_khp is not None and not df_dad_khp.empty:
-        try:
-            cols = df_dad_khp.columns.tolist()
-            t_col = None
-            y_col = None
-
-            for c in cols:
-                c_lower = str(c).lower()
-                if 'time' in c_lower and t_col is None:
-                    t_col = c
-                elif ('value' in c_lower or 'mau' in c_lower) and y_col is None:
-                    y_col = c
-
-            if t_col and y_col:
-                t = pd.to_numeric(df_dad_khp[t_col], errors="coerce").to_numpy()
-                y = pd.to_numeric(df_dad_khp[y_col], errors="coerce").to_numpy()
-                valid = np.isfinite(t) & np.isfinite(y)
-                if np.sum(valid) > 10:
-                    return t[valid], y[valid], "MasterFile_3-DAD_KHP"
-        except Exception:
-            pass
-
-    # Prioritat 2 i 3: Export3D o DAD1A
-    # Import local per evitar dependència circular
-    from hpsec_import import llegir_dad_amb_fallback
-    return llegir_dad_amb_fallback(path_export3d, path_dad1a, wavelength="254")
 
 
 # =============================================================================
@@ -2161,19 +1981,22 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
     quality_score = 0
     quality_issues = []
 
-    # Simetria alta (>1.5) NO es penalitza per KHP - és normal per un patró
-    if symmetry < 0.8:
-        quality_score += 10
-        quality_issues.append(f"Simetria baixa ({symmetry:.2f})")
+    # C11: Simetria i smoothness irrellevants per BP (senyal molt variable)
+    if not is_bp_chromato:
+        # Simetria alta (>1.5) NO es penalitza per KHP - és normal per un patró
+        if symmetry < 0.8:
+            quality_score += 10
+            quality_issues.append(f"Simetria baixa ({symmetry:.2f})")
+        if has_irregular:
+            quality_score += 30
+            quality_issues.append(f"Pic irregular (smoothness={smoothness:.0f}%)")
+
     if snr < 10:
         quality_score += 20
         quality_issues.append(f"SNR baix ({snr:.1f})")
     if has_batman:
         quality_score += 50
         quality_issues.append("Doble pic (Batman)")
-    if has_irregular:
-        quality_score += 30
-        quality_issues.append(f"Pic irregular (smoothness={smoothness:.0f}%)")
     # Timeout: només penalitza si afecta l'interval d'integració del pic
     if has_timeout:
         peak_timeout = timeout_affects_peak(timeout_info, t_doc, left_idx, right_idx)
@@ -2210,6 +2033,48 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
         dad_right_idx = dad_peak_info.get('right_idx', len(t_dad) - 1 if t_dad is not None else 0)
         if t_dad is not None and dad_254 is not None:
             fwhm_254 = calculate_fwhm(t_dad, dad_254, dad_peak_idx, dad_left_idx, dad_right_idx)
+
+    # =========================================================================
+    # BIGAUSSIAN FIT (C05) - Necessari per BP mode
+    # =========================================================================
+    bigaussian_doc = None
+    bigaussian_254 = None
+
+    # Bigaussian per DOC
+    try:
+        if len(t_doc) > 20 and peak_idx > 5 and peak_idx < len(t_doc) - 5:
+            bigauss_result = fit_bigaussian(t_doc, y_doc_net, peak_idx, left_idx, right_idx)
+            if bigauss_result.get("status") in ["VALID", "CHECK"]:
+                bigaussian_doc = {
+                    "r2": bigauss_result.get("r2", 0),
+                    "amplitude": bigauss_result.get("amplitude", 0),
+                    "mu": bigauss_result.get("mu", 0),
+                    "sigma_left": bigauss_result.get("sigma_left", 0),
+                    "sigma_right": bigauss_result.get("sigma_right", 0),
+                    "asymmetry": bigauss_result.get("asymmetry", 1),
+                    "status": bigauss_result.get("status", "INVALID"),
+                }
+    except Exception as e:
+        pass  # Bigaussian fit optional
+
+    # Bigaussian per 254nm
+    try:
+        if has_dad and dad_peak_info and dad_peak_info.get('valid'):
+            dad_peak_idx = dad_peak_info.get('peak_idx', 0)
+            dad_left_idx = dad_peak_info.get('left_idx', 0)
+            dad_right_idx = dad_peak_info.get('right_idx', len(t_dad) - 1 if t_dad is not None else 0)
+            if t_dad is not None and dad_254 is not None and len(t_dad) > 20:
+                bigauss_254 = fit_bigaussian(t_dad, dad_254, dad_peak_idx, dad_left_idx, dad_right_idx)
+                if bigauss_254.get("status") in ["VALID", "CHECK"]:
+                    bigaussian_254 = {
+                        "r2": bigauss_254.get("r2", 0),
+                        "asymmetry": bigauss_254.get("asymmetry", 1),
+                        "status": bigauss_254.get("status", "INVALID"),
+                    }
+                else:
+                    bigaussian_254 = None
+    except Exception as e:
+        pass  # Bigaussian fit optional
 
     # RF = Area / Concentració (ppm)
     rf_doc = peak_info['area'] / conc if conc > 0 else 0.0
@@ -2288,6 +2153,9 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
         'rf_v_254': rf_v_254,
         'cr_254': cr_254,
         'a254_area_total': a254_area_total,
+        # Bigaussian fit (C05 - per BP mode)
+        'bigaussian_doc': bigaussian_doc,
+        'bigaussian_254': bigaussian_254,
     }
 
 
@@ -2393,7 +2261,16 @@ def register_calibration(seq_path, khp_data, khp_source, mode="COLUMN"):
 
     is_bp = khp_data.get('is_bp', False)
     # Usar volum de khp_data si disponible (per múltiples condicions), sino default
-    volume = khp_data.get('volume_uL') or get_injection_volume(seq_path, is_bp)
+    volume_from_khp = khp_data.get('volume_uL')
+    volume_from_func = get_injection_volume(seq_path, is_bp)
+    volume = volume_from_khp or volume_from_func
+
+    # Fallback si volume és None
+    if volume is None:
+        print(f"  - khp_data.get('volume_uL') = {volume_from_khp}")
+        print(f"  - get_injection_volume({seq_path}, {is_bp}) = {volume_from_func}")
+        print(f"  - khp_data keys: {list(khp_data.keys())[:10]}...")
+        volume = 100  # Fallback temporal per evitar crash
     khp_name = khp_data.get('name', f"KHP{conc}")  # Nom del KHP (ex: "KHP2", "KHP2_50")
     doc_mode = khp_data.get('doc_mode', 'N/A')
     uib_sensitivity = khp_data.get('uib_sensitivity')
@@ -2814,9 +2691,9 @@ def set_replica_selection(seq_path, cal_id, selection_method, user="manual"):
 
     if selection_method == 'average':
         # Mitjana de totes
-        areas = [r.get('area', 0) for r in replicas]
-        shifts = [r.get('shift_sec', 0) for r in replicas]
-        a254_ratios = [r.get('a254_doc_ratio', 0) for r in replicas if r.get('a254_doc_ratio', 0) > 0]
+        areas = [(r.get('area') or 0) for r in replicas]
+        shifts = [(r.get('shift_sec') or 0) for r in replicas]
+        a254_ratios = [(r.get('a254_doc_ratio') or 0) for r in replicas if (r.get('a254_doc_ratio') or 0) > 0]
 
         new_area = float(np.mean(areas)) if areas else entry_found.get('area', 0)
         new_shift_sec = float(np.mean(shifts)) if shifts else entry_found.get('shift_sec', 0)
@@ -3597,26 +3474,26 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
         rsd = float((std_area / mean_area) * 100.0) if mean_area > 0 else 100.0
 
         # Mètriques addicionals (promig)
-        a254_ratios = [r.get('a254_doc_ratio', 0) for r in replicas if r.get('a254_doc_ratio', 0) > 0]
+        a254_ratios = [(r.get('a254_doc_ratio') or 0) for r in replicas if (r.get('a254_doc_ratio') or 0) > 0]
         mean_a254_ratio = float(np.mean(a254_ratios)) if a254_ratios else 0.0
-        a254_areas = [r.get('a254_area', 0) for r in replicas if r.get('a254_area', 0) > 0]
+        a254_areas = [(r.get('a254_area') or 0) for r in replicas if (r.get('a254_area') or 0) > 0]
         mean_a254_area = float(np.mean(a254_areas)) if a254_areas else 0.0
-        shift_secs = [r.get('shift_sec', 0) for r in replicas if r.get('shift_sec', 0) != 0]
+        shift_secs = [(r.get('shift_sec') or 0) for r in replicas if (r.get('shift_sec') or 0) != 0]
         mean_shift_sec = float(np.mean(shift_secs)) if shift_secs else 0.0
 
         # Mètriques de qualitat (promig de rèpliques)
-        snrs = [r.get('snr', 0) for r in replicas if r.get('snr', 0) > 0]
+        snrs = [(r.get('snr') or 0) for r in replicas if (r.get('snr') or 0) > 0]
         mean_snr = float(np.mean(snrs)) if snrs else 0.0
-        t_retentions = [r.get('t_retention', 0) or r.get('t_doc_max', 0) for r in replicas]
-        t_retentions = [t for t in t_retentions if t > 0]
+        t_retentions = [(r.get('t_retention') or r.get('t_doc_max') or 0) for r in replicas]
+        t_retentions = [t for t in t_retentions if t and t > 0]
         mean_t_retention = float(np.mean(t_retentions)) if t_retentions else 0.0
-        fwhms = [r.get('fwhm_doc', 0) for r in replicas if r.get('fwhm_doc', 0) > 0]
+        fwhms = [(r.get('fwhm_doc') or 0) for r in replicas if (r.get('fwhm_doc') or 0) > 0]
         mean_fwhm = float(np.mean(fwhms)) if fwhms else 0.0
-        symmetries = [r.get('symmetry', 1.0) for r in replicas if r.get('symmetry', 0) > 0]
+        symmetries = [(r.get('symmetry') or 1.0) for r in replicas if (r.get('symmetry') or 0) > 0]
         mean_symmetry = float(np.mean(symmetries)) if symmetries else 1.0
-        volumes = [r.get('volume_uL', 0) for r in replicas if r.get('volume_uL', 0) > 0]
+        volumes = [(r.get('volume_uL') or 0) for r in replicas if (r.get('volume_uL') or 0) > 0]
         volume_uL = int(volumes[0]) if volumes else 100
-        t_dad_maxs = [r.get('t_dad_max', 0) for r in replicas if r.get('t_dad_max', 0) > 0]
+        t_dad_maxs = [(r.get('t_dad_max') or 0) for r in replicas if (r.get('t_dad_max') or 0) > 0]
         mean_t_dad_max = float(np.mean(t_dad_maxs)) if t_dad_maxs else 0.0
 
         # Determinar mètode de selecció

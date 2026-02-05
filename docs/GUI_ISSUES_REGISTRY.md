@@ -85,14 +85,14 @@
 | ID | Descripció | Prioritat | Estat |
 |----|------------|-----------|-------|
 | C16 | Botó "?" a històric no feia res - ara mostra llegenda en diàleg | BAIXA | ARREGLAT |
-| C17 | Investigar: per què seqüència 284 no es marca com outlier | MITJANA | PENDENT |
+| C17 | Investigar: per què seqüència 284 no es marca com outlier | MITJANA | ARREGLAT |
 
 ### Validació i Avisos
 | ID | Descripció | Prioritat | Estat |
 |----|------------|-----------|-------|
 | C10 | "Problemes de qualitat" → moure a avisos superiors | ALTA | VERIFICAR (ja inclòs a warnings bar) |
 | C11 | Avisos simetria/smoothness irrellevants per BP | MITJANA | ARREGLAT |
-| C12 | Molts avisos de desviació a taula històric - origen desconegut | MITJANA | INVESTIGAR-AMB-USUARI |
+| C12 | Molts avisos de desviació a taula històric - origen desconegut | MITJANA | ARREGLAT |
 
 ### Errors Tècnics
 | ID | Descripció | Prioritat | Estat |
@@ -193,6 +193,7 @@
 | 2026-02-05 | A13, A14 | Arreglat: múltiples calibracions per inj_volume - cada mostra usa la calibració que coincideix amb el seu volum d'injecció (50µL→BP_50_2, 100µL→BP_100_2) |
 | 2026-02-05 | A09 | Arreglat: Sample_Rep simplificat a NOM_R1/R2 (sense _B1/_B2), el sufix _50 ja distingeix volums |
 | 2026-02-05 | A08 | Arreglat: areas_uib ara es calcula sempre (DUAL o només UIB) amb flag is_uib_only |
+| 2026-02-05 | C12, C17 | Arreglat: thresholds estrictes (>20% INVALID) i exclude_outliers=True per comparació històrica |
 
 ---
 
