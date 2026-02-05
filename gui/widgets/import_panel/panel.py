@@ -99,6 +99,7 @@ class ImportPanel(QWidget):
     """Panel d'importació de seqüències."""
 
     import_completed = Signal(dict)
+    warnings_dismissed = Signal()  # Senyal quan s'han descartat els avisos
 
     # Columnes base (s'ajusten segons mode a _setup_table_columns)
     COL_INJ = 0
@@ -165,6 +166,25 @@ class ImportPanel(QWidget):
         self.info_frame.setVisible(False)
         self.table_help.setVisible(False)
         self.samples_table.setRowCount(0)
+        self.samples_table.setVisible(False)
+
+        # Reset warnings frame (orfes)
+        if hasattr(self, 'warnings_frame'):
+            self.warnings_frame.setVisible(False)
+        if hasattr(self, 'warnings_label'):
+            self.warnings_label.setText("")
+        if hasattr(self, 'orphans_btn'):
+            self.orphans_btn.setVisible(False)
+        if hasattr(self, 'confirm_btn'):
+            self.confirm_btn.setVisible(False)
+        if hasattr(self, 'refresh_btn'):
+            self.refresh_btn.setVisible(False)
+        if hasattr(self, 'dismiss_btn'):
+            self.dismiss_btn.setVisible(False)
+
+        # Mostrar placeholder
+        if hasattr(self, 'placeholder'):
+            self.placeholder.setVisible(True)
 
     def _setup_ui(self):
         """Configura la interfície del panel."""
@@ -297,7 +317,7 @@ class ImportPanel(QWidget):
         layout.addWidget(self.warnings_frame)
 
         # === PLACEHOLDER ===
-        self.placeholder = QLabel("Selecciona una carpeta SEQ i prem 'Importar'")
+        self.placeholder = QLabel("Prem 'Executar' per importar la seqüència")
         self.placeholder.setAlignment(Qt.AlignCenter)
         self.placeholder.setStyleSheet("color: #888; font-size: 14px;")
         layout.addWidget(self.placeholder, 1)
@@ -1764,11 +1784,15 @@ class ImportPanel(QWidget):
         # Guardar al manifest que l'avís ha estat revisat
         if self.imported_data:
             self.imported_data["orphan_warning_dismissed"] = True
+            self.imported_data["warnings_confirmed"] = True  # Marcar warnings com confirmats
             try:
                 save_import_manifest(self.imported_data)
                 self.main_window.set_status("Avís marcat com a revisat", 3000)
             except Exception as e:
                 print(f"Warning: No s'ha pogut guardar estat revisat: {e}")
+
+        # Notificar al wizard que els warnings s'han descartat
+        self.warnings_dismissed.emit()
 
     def _show_orphans(self):
         dialog = OrphanFilesDialog(self, self._orphan_files)

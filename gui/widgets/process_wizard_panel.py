@@ -801,6 +801,7 @@ class ProcessWizardPanel(QWidget):
     def _connect_panel_signals(self):
         """Connecta senyals dels panels."""
         self.import_panel.import_completed.connect(self._on_import_completed)
+        self.import_panel.warnings_dismissed.connect(self._on_import_warnings_dismissed)
         self.calibrate_panel.calibration_completed.connect(self._on_calibrate_completed)
         self.analyze_panel.analyze_completed.connect(self._on_analyze_completed)
         self.consolidate_panel.review_completed.connect(self._on_review_completed)
@@ -855,38 +856,18 @@ class ProcessWizardPanel(QWidget):
         self.main_window.review_data = None
         self.main_window.review_completed = False
 
-        # Reset Calibrate panel
-        self.calibrate_panel.calibration_data = None
-        self.calibrate_panel._all_calibrations = []
-        self.calibrate_panel._current_condition_key = None
-        if hasattr(self.calibrate_panel, 'summary_group'):
-            self.calibrate_panel.summary_group.setVisible(False)
-        if hasattr(self.calibrate_panel, 'graphs_group'):
-            self.calibrate_panel.graphs_group.setVisible(False)
-        if hasattr(self.calibrate_panel, 'metrics_group'):
-            self.calibrate_panel.metrics_group.setVisible(False)
-        if hasattr(self.calibrate_panel, 'history_group'):
-            self.calibrate_panel.history_group.setVisible(False)
-        if hasattr(self.calibrate_panel, 'validation_group'):
-            self.calibrate_panel.validation_group.setVisible(False)
-        if hasattr(self.calibrate_panel, 'condition_selector_frame'):
-            self.calibrate_panel.condition_selector_frame.setVisible(False)
-        if hasattr(self.calibrate_panel, 'next_btn'):
-            self.calibrate_panel.next_btn.setEnabled(False)
+        # Usar els mètodes reset() de cada panel
+        if hasattr(self.import_panel, 'reset'):
+            self.import_panel.reset()
 
-        # Reset Analyze panel
-        if hasattr(self.analyze_panel, 'analysis_data'):
-            self.analyze_panel.analysis_data = None
-        if hasattr(self.analyze_panel, 'results_group'):
-            self.analyze_panel.results_group.setVisible(False)
-        if hasattr(self.analyze_panel, 'next_btn'):
-            self.analyze_panel.next_btn.setEnabled(False)
+        if hasattr(self.calibrate_panel, 'reset'):
+            self.calibrate_panel.reset()
 
-        # Reset Consolidate panel
-        if hasattr(self.consolidate_panel, 'consolidate_data'):
-            self.consolidate_panel.consolidate_data = None
-        if hasattr(self.consolidate_panel, 'results_frame'):
-            self.consolidate_panel.results_frame.setVisible(False)
+        if hasattr(self.analyze_panel, 'reset'):
+            self.analyze_panel.reset()
+
+        if hasattr(self.consolidate_panel, 'reset'):
+            self.consolidate_panel.reset()
 
     def _detect_completed_stages(self, seq_path: str) -> list:
         """Detecta quines etapes estan completades basant-se en fitxers existents."""
@@ -1018,13 +999,30 @@ class ProcessWizardPanel(QWidget):
     def _on_import_completed(self, data):
         """Callback quan import completa."""
         if data and data.get('success'):
+            # Comprovar si hi ha warnings NO confirmats
             warnings = data.get('warnings', [])
-            self._set_tab_state(0, "warning" if warnings else "ok")
+            orphans_uib = len(data.get('orphan_files', {}).get('uib', []))
+            orphans_dad = len(data.get('orphan_files', {}).get('dad', []))
+            warnings_confirmed = data.get('warnings_confirmed', False)
+            orphan_dismissed = data.get('orphan_warning_dismissed', False)
+
+            has_unconfirmed_warnings = (
+                (warnings and not warnings_confirmed) or
+                ((orphans_uib > 0 or orphans_dad > 0) and not orphan_dismissed)
+            )
+
+            self._set_tab_state(0, "warning" if has_unconfirmed_warnings else "ok")
             self._set_tab_state(1, "current")
             # Auto-avançar a calibrar
             self.tab_widget.setCurrentIndex(1)
         else:
             self._set_tab_state(0, "error")
+
+    def _on_import_warnings_dismissed(self):
+        """Callback quan els warnings d'importació es descarten des del panel."""
+        if self.tab_states[0] == "warning":
+            self._set_tab_state(0, "ok")
+            self.main_window.set_status("Avisos d'importació marcats com a revisats", 2000)
 
     def _on_calibrate_completed(self, data):
         """Callback quan calibració completa."""
