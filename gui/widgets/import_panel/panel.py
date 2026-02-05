@@ -16,14 +16,13 @@ from pathlib import Path
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QLineEdit, QFrame, QTableWidget, QTableWidgetItem,
-    QHeaderView, QMessageBox, QRadioButton, QButtonGroup, QComboBox,
-    QDialog, QDialogButtonBox, QTextEdit, QStyledItemDelegate
+    QHeaderView, QMessageBox, QRadioButton, QButtonGroup, QComboBox
 )
-from PySide6.QtCore import Qt, Signal, QThread
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont, QColor, QBrush
 
 import sys
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 
 from hpsec_import import (
     import_sequence, load_manifest, import_from_manifest,
@@ -33,7 +32,12 @@ from hpsec_import import (
 )
 import numpy as np
 
-CONFIG_PATH = Path(__file__).parent.parent.parent / "hpsec_config.json"
+# Importar components del paquet
+from .delegates import ComboBoxDelegate, FileAssignmentDelegate
+from .worker import ImportWorker
+from .dialogs import OrphanFilesDialog, ChromatogramPreviewDialog
+
+CONFIG_PATH = Path(__file__).parent.parent.parent.parent / "hpsec_config.json"
 
 # Colors per tipus de match
 MATCH_COLORS = {
@@ -83,261 +87,6 @@ def detect_sample_type(sample_name, original_type, config):
     return translations.get(original_type.upper(), "MOSTRA")
 
 
-class ComboBoxDelegate(QStyledItemDelegate):
-    """Delegate per editar amb ComboBox al fer doble-clic."""
-
-    def __init__(self, items, parent=None):
-        super().__init__(parent)
-        self.items = items
-
-    def createEditor(self, parent, option, index):
-        combo = QComboBox(parent)
-        combo.addItems(self.items)
-        return combo
-
-    def setEditorData(self, editor, index):
-        value = index.model().data(index, Qt.DisplayRole)
-        idx = editor.findText(value)
-        if idx >= 0:
-            editor.setCurrentIndex(idx)
-
-    def setModelData(self, editor, model, index):
-        model.setData(index, editor.currentText(), Qt.EditRole)
-
-    def updateEditorGeometry(self, editor, option, index):
-        editor.setGeometry(option.rect)
-
-
-class FileAssignmentDelegate(QStyledItemDelegate):
-    """Delegate per assignar fitxers amb ComboBox."""
-
-    def __init__(self, get_options_func, parent=None):
-        super().__init__(parent)
-        self.get_options_func = get_options_func
-
-    def createEditor(self, parent, option, index):
-        combo = QComboBox(parent)
-        options = self.get_options_func(index.row(), index.column())
-        combo.addItems(options)
-        return combo
-
-    def setEditorData(self, editor, index):
-        value = index.model().data(index, Qt.DisplayRole)
-        idx = editor.findText(value)
-        if idx >= 0:
-            editor.setCurrentIndex(idx)
-        else:
-            editor.setCurrentIndex(0)
-
-    def setModelData(self, editor, model, index):
-        new_value = editor.currentText()
-        old_value = model.data(index, Qt.DisplayRole)
-        # Guardar el fitxer seleccionat (nom real)
-        # UserRole ja pot contenir el nom del fitxer original, preservar-lo si no canvia
-        current_file = model.data(index, Qt.UserRole)
-
-        # Si l'usuari selecciona un nou fitxer del dropdown, actualitzar UserRole
-        if new_value and new_value not in ["-", "(cap)"]:
-            # Si és un fitxer diferent al que hi havia, guardar-lo
-            if new_value != current_file:
-                model.setData(index, new_value, Qt.UserRole)
-
-        # Actualitzar el text mostrat
-        model.setData(index, new_value, Qt.EditRole)
-
-    def updateEditorGeometry(self, editor, option, index):
-        editor.setGeometry(option.rect)
-
-
-class ImportWorker(QThread):
-    """Worker thread per importació asíncrona."""
-    progress = Signal(int, str)
-    finished = Signal(dict)
-    error = Signal(str)
-
-    def __init__(self, seq_path, use_manifest=False, manifest=None):
-        super().__init__()
-        self.seq_path = seq_path
-        self.use_manifest = use_manifest
-        self.manifest = manifest
-
-    def run(self):
-        try:
-            def progress_cb(pct, msg):
-                self.progress.emit(int(pct), msg)
-
-            if self.use_manifest and self.manifest:
-                result = import_from_manifest(
-                    self.seq_path,
-                    manifest=self.manifest,
-                    progress_callback=progress_cb
-                )
-            else:
-                result = import_sequence(
-                    self.seq_path,
-                    progress_callback=progress_cb
-                )
-            self.finished.emit(result)
-        except Exception as e:
-            import traceback
-            self.error.emit(f"{str(e)}\n\n{traceback.format_exc()}")
-
-
-class OrphanFilesDialog(QDialog):
-    """Diàleg per mostrar fitxers orfes."""
-
-    def __init__(self, parent, orphan_files):
-        super().__init__(parent)
-        self.setWindowTitle("Fitxers Orfes - Revisar Noms")
-        self.setMinimumSize(500, 350)
-
-        layout = QVBoxLayout(self)
-
-        info = QLabel(
-            "<b>Fitxers no assignats automàticament:</b><br>"
-            "Els noms no coincideixen amb el MasterFile. Opcions:<br>"
-            "• <b>Revisar noms i reimportar</b>: Verificar que la seqüència del cromatògraf coincideixi amb el MasterFile, després tornar a importar<br>"
-            "• <b>Assignar manualment</b>: Doble-clic a la cel·la '-' de la mostra corresponent i seleccionar el fitxer"
-        )
-        info.setWordWrap(True)
-        layout.addWidget(info)
-
-        text = QTextEdit()
-        text.setReadOnly(True)
-
-        content = ""
-        uib_files = orphan_files.get("uib", [])
-        dad_files = orphan_files.get("dad", [])
-
-        if uib_files:
-            content += "=== UIB (DOC) ===\n"
-            for f in uib_files:
-                content += f"  • {Path(f).name}\n"
-            content += "\n"
-
-        if dad_files:
-            content += "=== DAD (254nm) ===\n"
-            for f in dad_files:
-                content += f"  • {Path(f).name}\n"
-
-        text.setText(content or "Cap fitxer orfe.")
-        layout.addWidget(text)
-
-        buttons = QDialogButtonBox(QDialogButtonBox.Close)
-        buttons.rejected.connect(self.close)
-        layout.addWidget(buttons)
-
-
-class ChromatogramPreviewDialog(QDialog):
-    """Diàleg per mostrar preview del cromatograma."""
-
-    def __init__(self, parent, sample_name, replica, sample_data, imported_data):
-        super().__init__(parent)
-        self.setWindowTitle(f"Preview: {sample_name} (Rep {replica})")
-        self.setMinimumSize(900, 600)
-
-        layout = QVBoxLayout(self)
-
-        try:
-            from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
-            from matplotlib.figure import Figure
-
-            fig = Figure(figsize=(10, 6), dpi=100)
-            canvas = FigureCanvasQTAgg(fig)
-
-            ax1 = fig.add_subplot(111)
-            ax2 = ax1.twinx()
-
-            self._plot_data(ax1, ax2, sample_name, replica, imported_data)
-
-            ax1.set_xlabel("Temps (min)")
-            ax1.set_ylabel("DOC (mAU)", color="#2E86AB")
-            ax2.set_ylabel("DAD 254nm (mAU)", color="#E67E22")
-            ax1.set_title(f"{sample_name} - Rèplica {replica}")
-            # Només mostrar llegenda si hi ha dades
-            if ax1.get_legend_handles_labels()[0]:
-                ax1.legend(loc="upper left")
-            if ax2.get_legend_handles_labels()[0]:
-                ax2.legend(loc="upper right")
-            ax1.grid(True, alpha=0.3)
-
-            fig.tight_layout()
-            layout.addWidget(canvas)
-
-        except ImportError:
-            info = QLabel(f"""
-            <h3>{sample_name} - Rèplica {replica}</h3>
-            <p><i>Instal·la matplotlib per veure el gràfic:</i></p>
-            <code>pip install matplotlib</code>
-            """)
-            info.setWordWrap(True)
-            layout.addWidget(info)
-
-        buttons = QDialogButtonBox(QDialogButtonBox.Close)
-        buttons.rejected.connect(self.close)
-        layout.addWidget(buttons)
-
-    def _plot_data(self, ax1, ax2, sample_name, replica, imported_data):
-        samples = imported_data.get("samples", {})
-        sample_info = samples.get(sample_name)
-        if not sample_info:
-            ax1.text(0.5, 0.5, "Dades no disponibles", ha='center', va='center')
-            return
-
-        rep_data = sample_info.get("replicas", {}).get(str(replica))
-        if not rep_data:
-            ax1.text(0.5, 0.5, f"Rèplica {replica} no trobada", ha='center', va='center')
-            return
-
-        direct = rep_data.get("direct", {})
-        if direct and direct.get("t") is not None:
-            t = direct["t"]
-            y = direct.get("y") if direct.get("y") is not None else direct.get("y_raw")
-            if y is not None:
-                ax1.plot(t, y, color="#2E86AB", label="DOC Direct", linewidth=1)
-
-        uib = rep_data.get("uib", {})
-        if uib and uib.get("t") is not None:
-            t = uib["t"]
-            y = uib.get("y") if uib.get("y") is not None else uib.get("y_raw")
-            if y is not None and len(t) > 0 and len(y) > 0:
-                ax1.plot(t, y, color="#27AE60", label="DOC UIB", linewidth=1, alpha=0.8)
-
-        dad = rep_data.get("dad", {})
-        if dad:
-            # Intentar obtenir dades del DAD (pot ser df o arrays separats)
-            t_dad = None
-            y254 = None
-
-            # Format 1: DataFrame amb columnes "time (min)" i "254"
-            df_dad = dad.get("df")
-            try:
-                import pandas as pd
-                if df_dad is not None and isinstance(df_dad, pd.DataFrame) and len(df_dad) > 0:
-                    if "time (min)" in df_dad.columns:
-                        t_dad = df_dad["time (min)"].values
-                    # Buscar columna 254nm (pot ser "254", "254nm", 254, o similar)
-                    for col in df_dad.columns:
-                        col_str = str(col)
-                        if "254" in col_str or col_str == "254":
-                            y254 = df_dad[col].values
-                            break
-            except Exception as e:
-                print(f"Warning: Error llegint DataFrame DAD: {e}")
-
-            # Format 2: Arrays separats (t, wavelengths dict)
-            if t_dad is None and dad.get("t") is not None:
-                t_dad = dad["t"]
-                wavelengths = dad.get("wavelengths", {})
-                if 254 in wavelengths or "254" in wavelengths:
-                    y254 = wavelengths.get(254) or wavelengths.get("254")
-
-            # Plotar si tenim dades
-            if t_dad is not None and y254 is not None:
-                ax2.plot(t_dad, y254, color="#E67E22", label="DAD 254nm",
-                            linewidth=1, linestyle="--", alpha=0.7)
-
-
 class ImportPanel(QWidget):
     """Panel d'importació de seqüències."""
 
@@ -359,6 +108,11 @@ class ImportPanel(QWidget):
     COL_DAD_PTS_ACTUAL = 9
     COL_DAD_FILE_ACTUAL = 10
     COL_ESTAT = 11
+
+    # Tipus de mostra que requereixen assignació obligatòria de fitxers
+    TYPES_REQUIRE_ASSIGNMENT = {"MOSTRA", "PATRÓ_CAL", "PATRÓ_REF"}
+    # Tipus de mostra que permeten assignació opcional
+    TYPES_OPTIONAL_ASSIGNMENT = {"CONTROL", "BLANC"}
 
     def __init__(self, main_window):
         super().__init__()
@@ -742,25 +496,21 @@ class ImportPanel(QWidget):
         self.import_btn.setEnabled(True)
         QMessageBox.critical(self, "Error", f"Error durant la importació:\n{error_msg}")
 
-    def _show_results(self, result):
+    # =========================================================================
+    # MÈTODES AUXILIARS PER _show_results (descomposició)
+    # =========================================================================
+
+    def _init_results_state(self):
+        """Inicialitza l'estat per mostrar resultats."""
         self.placeholder.setVisible(False)
         self._match_types = {}
         self._unverified_fuzzy = set()
         self._manual_assignments = {}
-        # Restaurar estat d'avís d'orfes (si carregat des de manifest)
         if not self._loaded_from_manifest:
             self._orphan_warning_dismissed = False
 
-        # Guardar warnings d'importació per mostrar-los
-        self._import_warnings = [w for w in result.get("warnings", []) if "⚠️" in w]
-
-        manifest = generate_import_manifest(result)
-        samples = manifest.get("samples", [])
-        seq_info = manifest.get("sequence", {})
-
-        # Detectar mode de dades
-        self._data_mode = seq_info.get("data_mode", "DUAL")
-
+    def _process_orphan_files(self, manifest, samples, result):
+        """Processa i filtra fitxers orfes."""
         # Orfes del manifest (noms) per mostrar - només els no suggerits
         self._orphan_files = {
             "uib": manifest.get("orphan_files", {}).get("uib", []),
@@ -788,27 +538,20 @@ class ImportPanel(QWidget):
             self._orphan_files["uib"] = [f for f in self._orphan_files["uib"] if Path(f).name not in assigned_uib]
             self._orphan_files["dad"] = [f for f in self._orphan_files["dad"] if Path(f).name not in assigned_dad]
 
-
-        # Configurar columnes segons mode
-        self._setup_table_columns()
-
-        # Crear llista plana de totes les injeccions i ordenar per line_num
+    def _build_injection_list(self, samples):
+        """Construeix llista plana d'injeccions ordenada per line_num."""
         all_injections = []
         for sample in samples:
             original_type = sample.get("type", "SAMPLE")
             sample_type = detect_sample_type(
                 sample["name"], original_type, self.sample_types_config
             )
-            # Obtenir nom original (pot diferir del nom únic per controls repetits)
             original_name = sample.get("original_name", sample["name"])
 
             for rep in sample.get("replicas", []):
-                # Usar line_num (ordre real d'injecció al MasterFile)
-                # Nota: import_sequence usa "injection_info", manifest usa "injection"
                 inj_info = rep.get("injection_info") or rep.get("injection") or {}
                 line_num = inj_info.get("line_num")
                 if line_num is None:
-                    # Fallback a row_start si line_num no disponible
                     d = rep.get("direct", {})
                     line_num = d.get("row_start") if d else 999999
                 if line_num is None:
@@ -816,18 +559,18 @@ class ImportPanel(QWidget):
 
                 all_injections.append({
                     "sample_name": sample["name"],
-                    "original_name": original_name,  # Nom original del MasterFile
+                    "original_name": original_name,
                     "sample_type": sample_type,
                     "rep": rep,
                     "line_num": line_num,
                 })
 
-        # Ordenar per line_num (ordre real d'injecció al MasterFile)
         all_injections.sort(key=lambda x: (x["line_num"], x["sample_name"]))
+        return all_injections
 
+    def _update_info_bar(self, result, all_injections):
+        """Actualitza la barra d'informació amb resum de la seqüència."""
         total_injections = len(all_injections)
-
-        # Comparar amb el nombre de línies del MasterFile (Line#)
         stats = result.get("stats", {})
         master_line_count = stats.get("master_line_count", result.get("master_line_count", total_injections))
 
@@ -835,14 +578,13 @@ class ImportPanel(QWidget):
         volumes = []
         for inj in all_injections:
             rep = inj.get("rep", {})
-            # Nota: import_sequence usa "injection_info", manifest usa "injection"
             inj_info = rep.get("injection_info") or rep.get("injection") or {}
             vol = inj_info.get("inj_volume")
             if vol is not None:
                 volumes.append(vol)
 
-        # Construir resum de la seqüència
-        method = result.get("method", "COLUMN")  # COLUMN o BP
+        # Construir resum
+        method = result.get("method", "COLUMN")
         info_parts = []
 
         # Injeccions (amb warning si no coincideixen)
@@ -853,58 +595,285 @@ class ImportPanel(QWidget):
             info_parts.append(f"{total_injections} inj")
             has_warning = False
 
-        # Mètode
         info_parts.append(method)
-
-        # Mode dades
         info_parts.append(self._data_mode)
 
         # Volum d'injecció
         if volumes:
-            vol_min = min(volumes)
-            vol_max = max(volumes)
+            vol_min, vol_max = min(volumes), max(volumes)
             if vol_min == vol_max:
                 info_parts.append(f"{int(vol_min)}µL")
             else:
                 info_parts.append(f"{int(vol_min)}-{int(vol_max)}µL")
 
-        # Sensibilitat UIB (si disponible i mode DUAL o UIB)
+        # Sensibilitat UIB
         if self._data_mode in ["DUAL", "UIB"]:
             uib_sens = result.get("uib_sensitivity")
             if uib_sens is not None:
-                # Mostrar com "700ppb" o "1000ppb"
                 try:
                     sens_val = int(float(uib_sens))
                     info_parts.append(f"UIB:{sens_val}ppb")
                 except (ValueError, TypeError):
-                    # Si no és numèric, mostrar tal qual
                     info_parts.append(f"UIB:{uib_sens}")
 
         self.total_label.setText(" · ".join(info_parts))
-        if has_warning:
-            self.total_label.setStyleSheet("font-weight: bold; color: #E74C3C;")  # Vermell
-        else:
-            self.total_label.setStyleSheet("font-weight: bold; color: #2E86AB;")  # Blau normal
+        self.total_label.setStyleSheet(
+            "font-weight: bold; color: #E74C3C;" if has_warning else "font-weight: bold; color: #2E86AB;"
+        )
 
-        # Comptar fitxers UIB i DAD
-        stats = result.get("stats", {})
+        # Comptar fitxers
         uib_used = stats.get("uib_files_used", 0)
         uib_orphan = stats.get("orphan_uib", 0)
         dad_used = stats.get("dad_files_used", 0)
         dad_orphan = stats.get("orphan_dad", 0)
 
-        uib_total = uib_used + uib_orphan
-        dad_total = dad_used + dad_orphan
-
         files_parts = []
         if self._data_mode in ["DUAL", "UIB"]:
-            files_parts.append(f"UIB: {uib_total}")
-        files_parts.append(f"DAD: {dad_total}")
+            files_parts.append(f"UIB: {uib_used + uib_orphan}")
+        files_parts.append(f"DAD: {dad_used + dad_orphan}")
         self.files_label.setText(" · ".join(files_parts))
-
         self.info_frame.setVisible(True)
 
-        # Bloquejar signals i sorting durant l'ompliment
+    def _populate_row_basic(self, row, injection_num, inj):
+        """Omple les columnes bàsiques d'una fila (Inj, Mostra, Tipus, Rep, Vol, Direct)."""
+        sample_name = inj["sample_name"]
+        original_name = inj.get("original_name", sample_name)
+        sample_type = inj["sample_type"]
+        rep = inj["rep"]
+
+        # Inj
+        inj_item = QTableWidgetItem()
+        inj_item.setData(Qt.DisplayRole, injection_num)
+        inj_item.setTextAlignment(Qt.AlignCenter)
+        inj_item.setFlags(inj_item.flags() & ~Qt.ItemIsEditable)
+        self.samples_table.setItem(row, self.COL_INJ, inj_item)
+
+        # Mostra
+        if original_name != sample_name:
+            name_item = QTableWidgetItem(original_name)
+            name_item.setToolTip(f"Nom únic: {sample_name}\nNom MasterFile: {original_name}")
+            name_item.setForeground(QBrush(QColor("#2E86AB")))
+        else:
+            name_item = QTableWidgetItem(sample_name)
+        name_item.setFlags(name_item.flags() & ~Qt.ItemIsEditable)
+        name_item.setData(Qt.UserRole, sample_name)
+        self.samples_table.setItem(row, self.COL_MOSTRA, name_item)
+
+        # Tipus
+        type_item = QTableWidgetItem(sample_type)
+        type_item.setTextAlignment(Qt.AlignCenter)
+        self.samples_table.setItem(row, self.COL_TIPUS, type_item)
+
+        # Rep
+        rep_item = QTableWidgetItem(str(rep.get("replica", "?")))
+        rep_item.setTextAlignment(Qt.AlignCenter)
+        rep_item.setFlags(rep_item.flags() & ~Qt.ItemIsEditable)
+        self.samples_table.setItem(row, self.COL_REP, rep_item)
+
+        # Volum
+        inj_info = rep.get("injection_info") or rep.get("injection") or {}
+        inj_vol = inj_info.get("inj_volume")
+        vol_text = f"{int(inj_vol)}" if inj_vol else "-"
+        vol_item = QTableWidgetItem(vol_text)
+        vol_item.setTextAlignment(Qt.AlignCenter)
+        vol_item.setFlags(vol_item.flags() & ~Qt.ItemIsEditable)
+        self.samples_table.setItem(row, self.COL_INJ_VOL, vol_item)
+
+        # Direct
+        d = rep.get("direct", {})
+        direct_pts = d.get("n_points", 0) if d else 0
+        row_start = d.get("row_start", "") if d else ""
+        row_end = d.get("row_end", "") if d else ""
+        direct_file = f"{row_start}-{row_end}" if row_start and row_end else "-"
+
+        self._add_simple_cell(row, self.COL_DIRECT_PTS, str(direct_pts) if direct_pts else "-")
+        self._add_simple_cell(row, self.COL_DIRECT_FILE, direct_file)
+
+        return direct_pts
+
+    def _populate_row_uib(self, row, rep, sample_name, sample_type, requires_assignment, optional_can_assign):
+        """Omple les columnes UIB d'una fila. Retorna (review_signals, missing_signals, needs_review)."""
+        review_signals = []
+        missing_signals = []
+        needs_review = False
+
+        u = rep.get("uib", {})
+        uib_pts = u.get("n_points", 0) if u else 0
+        uib_file = u.get("file", "") if u else ""
+        uib_suggestion = rep.get("uib_suggestion")
+
+        if uib_file:
+            uib_file = Path(uib_file).name
+
+        self._add_simple_cell(row, self.COL_UIB_PTS_ACTUAL, str(uib_pts) if uib_pts else "-")
+
+        if uib_suggestion and (requires_assignment or optional_can_assign):
+            suggested_file = uib_suggestion.get("file", "")
+            confidence = uib_suggestion.get("confidence", 0)
+            replica_num = rep.get("replica", 1)
+            display_name = f"{sample_name}_R{replica_num}"
+
+            if self._loaded_from_manifest:
+                self._add_simple_cell(row, self.COL_UIB_FILE_ACTUAL, display_name)
+            else:
+                self._add_suggestion_cell(row, self.COL_UIB_FILE_ACTUAL, suggested_file, confidence, display_name)
+                if requires_assignment:
+                    review_signals.append(f"UIB {int(confidence)}%")
+                needs_review = True
+
+            n_points = self._count_file_points(suggested_file, "uib")
+            if n_points > 0:
+                self.samples_table.item(row, self.COL_UIB_PTS_ACTUAL).setText(str(n_points))
+
+        elif uib_file and self._loaded_from_manifest:
+            replica_num = rep.get("replica", 1)
+            display_name = f"{sample_name}_R{replica_num}"
+            self._add_simple_cell(row, self.COL_UIB_FILE_ACTUAL, display_name)
+            if not uib_pts:
+                n_points = self._count_file_points(uib_file, "uib")
+                if n_points > 0:
+                    self.samples_table.item(row, self.COL_UIB_PTS_ACTUAL).setText(str(n_points))
+
+        elif not uib_pts and not uib_file and self._orphan_files.get("uib") and requires_assignment:
+            self._add_file_cell(row, self.COL_UIB_FILE_ACTUAL, "-", editable=True)
+            missing_signals.append("UIB")
+            needs_review = True
+
+        elif optional_can_assign and self._orphan_files.get("uib"):
+            display_val = uib_file if uib_file else "-"
+            self._add_file_cell(row, self.COL_UIB_FILE_ACTUAL, display_val, editable=True)
+
+        else:
+            self._add_simple_cell(row, self.COL_UIB_FILE_ACTUAL, uib_file if uib_file else "-")
+
+        return review_signals, missing_signals, needs_review, uib_pts
+
+    def _populate_row_dad(self, row, rep, sample_name, sample_type, requires_assignment, optional_can_assign):
+        """Omple les columnes DAD d'una fila. Retorna (review_signals, missing_signals, needs_review)."""
+        review_signals = []
+        missing_signals = []
+        needs_review = False
+
+        dad = rep.get("dad", {})
+        dad_pts = dad.get("n_points", 0) if dad else 0
+        dad_suggestion = rep.get("dad_suggestion")
+
+        # Obtenir el fitxer DAD
+        dad_file = ""
+        if dad:
+            dad_file = dad.get("file", "")
+            if not dad_file and dad_pts > 0:
+                source = dad.get("source", "")
+                if source == "masterfile":
+                    dad_file = "[MasterFile]"
+                elif source in ["export3d", "csv"]:
+                    dad_file = f"[{source}]"
+            elif dad_file:
+                dad_file = Path(dad_file).name if "/" in dad_file or "\\" in dad_file else dad_file
+
+        self._add_simple_cell(row, self.COL_DAD_PTS_ACTUAL, str(dad_pts) if dad_pts else "-")
+
+        if dad_suggestion and (requires_assignment or optional_can_assign):
+            suggested_file = dad_suggestion.get("file", "")
+            confidence = dad_suggestion.get("confidence", 0)
+            replica_num = rep.get("replica", 1)
+            display_name = f"{sample_name}_R{replica_num}"
+
+            if self._loaded_from_manifest:
+                self._add_simple_cell(row, self.COL_DAD_FILE_ACTUAL, display_name)
+            else:
+                self._add_suggestion_cell(row, self.COL_DAD_FILE_ACTUAL, suggested_file, confidence, display_name)
+                if requires_assignment:
+                    review_signals.append(f"DAD {int(confidence)}%")
+                needs_review = True
+
+            n_points = self._count_file_points(suggested_file, "dad")
+            if n_points > 0:
+                self.samples_table.item(row, self.COL_DAD_PTS_ACTUAL).setText(str(n_points))
+                dad_pts = n_points
+
+        elif dad_file and self._loaded_from_manifest and not dad_file.startswith("["):
+            replica_num = rep.get("replica", 1)
+            display_name = f"{sample_name}_R{replica_num}"
+            self._add_simple_cell(row, self.COL_DAD_FILE_ACTUAL, display_name)
+            if not dad_pts:
+                n_points = self._count_file_points(dad_file, "dad")
+                if n_points > 0:
+                    self.samples_table.item(row, self.COL_DAD_PTS_ACTUAL).setText(str(n_points))
+
+        elif not dad_pts and not dad_file and self._orphan_files.get("dad") and requires_assignment:
+            self._add_file_cell(row, self.COL_DAD_FILE_ACTUAL, "-", editable=True)
+            missing_signals.append("DAD")
+            needs_review = True
+
+        elif optional_can_assign and self._orphan_files.get("dad"):
+            display_val = dad_file if dad_file else "-"
+            self._add_file_cell(row, self.COL_DAD_FILE_ACTUAL, display_val, editable=True)
+
+        else:
+            self._add_simple_cell(row, self.COL_DAD_FILE_ACTUAL, dad_file if dad_file else "-")
+
+        return review_signals, missing_signals, needs_review, dad_pts
+
+    def _populate_row_estat(self, row, review_signals, missing_signals, needs_review):
+        """Omple la columna d'estat d'una fila."""
+        if review_signals:
+            estat = "Revisar " + ", ".join(review_signals)
+            color = QColor("#FCF3CF")  # Groc
+        elif missing_signals:
+            estat = "Assignar " + "+".join(missing_signals)
+            color = QColor("#FADBD8")  # Rosa
+        else:
+            estat = "OK"
+            color = QColor("#D5F5E3")  # Verd
+
+        estat_item = QTableWidgetItem(estat)
+        estat_item.setTextAlignment(Qt.AlignCenter)
+        estat_item.setFlags(estat_item.flags() & ~Qt.ItemIsEditable)
+        estat_item.setBackground(QBrush(color))
+        self.samples_table.setItem(row, self.COL_ESTAT, estat_item)
+
+        if needs_review:
+            self._unverified_fuzzy.add(row)
+
+    # =========================================================================
+    # _show_results PRINCIPAL (refactoritzat)
+    # =========================================================================
+
+    def _show_results(self, result):
+        """Mostra els resultats d'importació a la taula."""
+        # Inicialitzar estat
+        self._init_results_state()
+
+        # Guardar warnings d'importació per mostrar-los
+        self._import_warnings = [w for w in result.get("warnings", []) if "⚠️" in w]
+
+        # Processar manifest
+        manifest = generate_import_manifest(result)
+        samples = manifest.get("samples", [])
+        seq_info = manifest.get("sequence", {})
+        self._data_mode = seq_info.get("data_mode", "DUAL")
+
+        # Processar fitxers orfes
+        self._process_orphan_files(manifest, samples, result)
+
+        # Configurar columnes segons mode
+        self._setup_table_columns()
+
+        # Construir llista d'injeccions ordenada
+        all_injections = self._build_injection_list(samples)
+
+        # Actualitzar barra d'informació
+        self._update_info_bar(result, all_injections)
+
+        # Omplir taula
+        self._populate_table(all_injections)
+
+        # Warnings
+        self._update_warnings()
+
+    def _populate_table(self, all_injections):
+        """Omple la taula amb les injeccions."""
         self.samples_table.setSortingEnabled(False)
         self.samples_table.blockSignals(True)
         self.samples_table.setRowCount(0)
@@ -915,226 +884,51 @@ class ImportPanel(QWidget):
             self.samples_table.insertRow(row)
 
             sample_name = inj["sample_name"]
-            original_name = inj.get("original_name", sample_name)
             sample_type = inj["sample_type"]
             rep = inj["rep"]
 
-            # Inj (no editable)
-            inj_item = QTableWidgetItem()
-            inj_item.setData(Qt.DisplayRole, injection_num)
-            inj_item.setTextAlignment(Qt.AlignCenter)
-            inj_item.setFlags(inj_item.flags() & ~Qt.ItemIsEditable)
-            self.samples_table.setItem(row, self.COL_INJ, inj_item)
+            # Columnes bàsiques (Inj, Mostra, Tipus, Rep, Vol, Direct)
+            direct_pts = self._populate_row_basic(row, injection_num, inj)
 
-            # Mostra (no editable) - mostrar nom original si diferent
-            if original_name != sample_name:
-                # Nom transformat (controls repetits): mostrar original
-                display_name = original_name
-                name_item = QTableWidgetItem(display_name)
-                name_item.setToolTip(f"Nom únic: {sample_name}\nNom MasterFile: {original_name}")
-                # Color diferent per indicar transformació
-                name_item.setForeground(QBrush(QColor("#2E86AB")))
-            else:
-                name_item = QTableWidgetItem(sample_name)
-            name_item.setFlags(name_item.flags() & ~Qt.ItemIsEditable)
-            # Guardar nom únic al UserRole per ús intern
-            name_item.setData(Qt.UserRole, sample_name)
-            self.samples_table.setItem(row, self.COL_MOSTRA, name_item)
+            # Determinar si requereix assignació
+            requires_assignment = sample_type in self.TYPES_REQUIRE_ASSIGNMENT
+            optional_can_assign = sample_type in self.TYPES_OPTIONAL_ASSIGNMENT
 
-            # Tipus (editable)
-            type_item = QTableWidgetItem(sample_type)
-            type_item.setTextAlignment(Qt.AlignCenter)
-            self.samples_table.setItem(row, self.COL_TIPUS, type_item)
-
-            # Rep (no editable)
-            rep_item = QTableWidgetItem(str(rep.get("replica", "?")))
-            rep_item.setTextAlignment(Qt.AlignCenter)
-            rep_item.setFlags(rep_item.flags() & ~Qt.ItemIsEditable)
-            self.samples_table.setItem(row, self.COL_REP, rep_item)
-
-            # Volum d'injecció (no editable)
-            # Nota: import_sequence usa "injection_info", manifest usa "injection"
-            inj_info = rep.get("injection_info") or rep.get("injection") or {}
-            inj_vol = inj_info.get("inj_volume") if inj_info else None
-            vol_text = f"{int(inj_vol)}" if inj_vol else "-"
-            vol_item = QTableWidgetItem(vol_text)
-            vol_item.setTextAlignment(Qt.AlignCenter)
-            vol_item.setFlags(vol_item.flags() & ~Qt.ItemIsEditable)
-            self.samples_table.setItem(row, self.COL_INJ_VOL, vol_item)
-
-            # Dades per cada senyal
-            d = rep.get("direct", {})
-            u = rep.get("uib", {})
-            dad = rep.get("dad", {})
-
-            # Direct
-            direct_pts = d.get("n_points", 0) if d else 0
-            row_start = d.get("row_start", "") if d else ""
-            row_end = d.get("row_end", "") if d else ""
-            direct_file = f"{row_start}-{row_end}" if row_start and row_end else "-"
-
-            self._add_simple_cell(row, self.COL_DIRECT_PTS, str(direct_pts) if direct_pts else "-")
-            self._add_simple_cell(row, self.COL_DIRECT_FILE, direct_file)
-
-            # MOSTRA i PATRÓ sempre requereixen assignació (obligatori)
-            # CONTROL i BLANC poden assignar manualment si hi ha orfes (opcional)
-            requires_assignment = sample_type in ["MOSTRA", "PATRÓ_CAL", "PATRÓ_REF"]
-            optional_can_assign = sample_type in ["CONTROL", "BLANC"]  # Permeten assignació manual opcional
-
-            # Controlar què falta per assignar
-            missing_signals = []
-            review_signals = []  # Senyals amb suggeriment per revisar
+            # Acumuladors per estat
+            all_review_signals = []
+            all_missing_signals = []
             needs_review = False
+            uib_pts = 0
+            dad_pts = 0
 
             # UIB (només si mode DUAL o UIB)
             if self._data_mode in ["DUAL", "UIB"]:
-                uib_pts = u.get("n_points", 0) if u else 0
-                uib_file = u.get("file", "") if u else ""
-                uib_suggestion = rep.get("uib_suggestion")
-
-                if uib_file:
-                    uib_file = Path(uib_file).name
-
-                self._add_simple_cell(row, self.COL_UIB_PTS_ACTUAL, str(uib_pts) if uib_pts else "-")
-
-                if uib_suggestion and (requires_assignment or optional_can_assign):
-                    # Hi ha un suggeriment de matching (mostra/patró/control)
-                    suggested_file = uib_suggestion.get("file", "")
-                    confidence = uib_suggestion.get("confidence", 0)
-                    # Nom segons llistat d'injeccions
-                    replica_num = rep.get("replica", 1)
-                    display_name = f"{sample_name}_R{replica_num}"
-
-                    # Si carregat des de manifest, el suggeriment ja estava confirmat
-                    if self._loaded_from_manifest:
-                        self._add_simple_cell(row, self.COL_UIB_FILE_ACTUAL, display_name)
-                        # No cal revisar - ja estava confirmat
-                    else:
-                        self._add_suggestion_cell(row, self.COL_UIB_FILE_ACTUAL, suggested_file, confidence, display_name)
-                        if requires_assignment:
-                            review_signals.append(f"UIB {int(confidence)}%")
-                        needs_review = True
-
-                    # Comptar punts del fitxer suggerit
-                    n_points = self._count_file_points(suggested_file, "uib")
-                    if n_points > 0:
-                        self.samples_table.item(row, self.COL_UIB_PTS_ACTUAL).setText(str(n_points))
-                        uib_pts = n_points
-                elif uib_file and self._loaded_from_manifest:
-                    # FITXER JA ASSIGNAT (carregat des de manifest) - mostrar com a OK
-                    replica_num = rep.get("replica", 1)
-                    display_name = f"{sample_name}_R{replica_num}"
-                    self._add_simple_cell(row, self.COL_UIB_FILE_ACTUAL, display_name)
-                    # Intentar comptar punts si no tenim
-                    if not uib_pts:
-                        n_points = self._count_file_points(uib_file, "uib")
-                        if n_points > 0:
-                            self.samples_table.item(row, self.COL_UIB_PTS_ACTUAL).setText(str(n_points))
-                elif not uib_pts and not uib_file and self._orphan_files.get("uib") and requires_assignment:
-                    # NO hi ha fitxer assignat i hi ha orfes UIB disponibles
-                    self._add_file_cell(row, self.COL_UIB_FILE_ACTUAL, "-", editable=True)
-                    missing_signals.append("UIB")
-                    needs_review = True
-                elif optional_can_assign and self._orphan_files.get("uib"):
-                    # CONTROL: sempre permetre editar si hi ha orfes (per corregir assignacions)
-                    display_val = uib_file if uib_file else "-"
-                    self._add_file_cell(row, self.COL_UIB_FILE_ACTUAL, display_val, editable=True)
-                else:
-                    self._add_simple_cell(row, self.COL_UIB_FILE_ACTUAL, uib_file if uib_file else "-")
+                review_uib, missing_uib, review_uib_flag, uib_pts = self._populate_row_uib(
+                    row, rep, sample_name, sample_type, requires_assignment, optional_can_assign
+                )
+                all_review_signals.extend(review_uib)
+                all_missing_signals.extend(missing_uib)
+                needs_review = needs_review or review_uib_flag
 
             # DAD
-            dad_pts = dad.get("n_points", 0) if dad else 0
-            dad_suggestion = rep.get("dad_suggestion")
+            review_dad, missing_dad, review_dad_flag, dad_pts = self._populate_row_dad(
+                row, rep, sample_name, sample_type, requires_assignment, optional_can_assign
+            )
+            all_review_signals.extend(review_dad)
+            all_missing_signals.extend(missing_dad)
+            needs_review = needs_review or review_dad_flag
 
-            # Obtenir el fitxer DAD
-            dad_file = ""
-            if dad:
-                dad_file = dad.get("file", "")
-                # Si no hi ha fitxer però hi ha dades, indicar la font
-                if not dad_file and dad_pts > 0:
-                    source = dad.get("source", "")
-                    if source == "masterfile":
-                        dad_file = "[MasterFile]"
-                    elif source in ["export3d", "csv"]:
-                        dad_file = f"[{source}]"
-                elif dad_file:
-                    # Assegurar que només mostrem el nom del fitxer
-                    dad_file = Path(dad_file).name if "/" in dad_file or "\\" in dad_file else dad_file
-
-            self._add_simple_cell(row, self.COL_DAD_PTS_ACTUAL, str(dad_pts) if dad_pts else "-")
-
-            if dad_suggestion and (requires_assignment or optional_can_assign):
-                # Hi ha un suggeriment de matching (mostra/patró/control)
-                suggested_file = dad_suggestion.get("file", "")
-                confidence = dad_suggestion.get("confidence", 0)
-                # Nom segons llistat d'injeccions
-                replica_num = rep.get("replica", 1)
-                display_name = f"{sample_name}_R{replica_num}"
-
-                # Si carregat des de manifest, el suggeriment ja estava confirmat
-                if self._loaded_from_manifest:
-                    self._add_simple_cell(row, self.COL_DAD_FILE_ACTUAL, display_name)
-                    # No cal revisar - ja estava confirmat
-                else:
-                    self._add_suggestion_cell(row, self.COL_DAD_FILE_ACTUAL, suggested_file, confidence, display_name)
-                    if requires_assignment:
-                        review_signals.append(f"DAD {int(confidence)}%")
-                    needs_review = True
-
-                # Comptar punts del fitxer suggerit
-                n_points = self._count_file_points(suggested_file, "dad")
-                if n_points > 0:
-                    self.samples_table.item(row, self.COL_DAD_PTS_ACTUAL).setText(str(n_points))
-                    dad_pts = n_points
-            elif dad_file and self._loaded_from_manifest and not dad_file.startswith("["):
-                # FITXER JA ASSIGNAT (carregat des de manifest) - mostrar com a OK
-                replica_num = rep.get("replica", 1)
-                display_name = f"{sample_name}_R{replica_num}"
-                self._add_simple_cell(row, self.COL_DAD_FILE_ACTUAL, display_name)
-                # Intentar comptar punts si no tenim
-                if not dad_pts:
-                    n_points = self._count_file_points(dad_file, "dad")
-                    if n_points > 0:
-                        self.samples_table.item(row, self.COL_DAD_PTS_ACTUAL).setText(str(n_points))
-            elif not dad_pts and not dad_file and self._orphan_files.get("dad") and requires_assignment:
-                # NO hi ha fitxer assignat i hi ha orfes DAD disponibles
-                self._add_file_cell(row, self.COL_DAD_FILE_ACTUAL, "-", editable=True)
-                missing_signals.append("DAD")
-                needs_review = True
-            elif optional_can_assign and self._orphan_files.get("dad"):
-                # CONTROL: sempre permetre editar si hi ha orfes (per corregir assignacions)
-                display_val = dad_file if dad_file else "-"
-                self._add_file_cell(row, self.COL_DAD_FILE_ACTUAL, display_val, editable=True)
-            else:
-                self._add_simple_cell(row, self.COL_DAD_FILE_ACTUAL, dad_file if dad_file else "-")
-
-            # Columna Estat - específic segons què falta o cal revisar
-            if review_signals:
-                estat = "Revisar " + ", ".join(review_signals)
-                color = QColor("#FCF3CF")  # Groc
-            elif missing_signals:
-                estat = "Assignar " + "+".join(missing_signals)
-                color = QColor("#FADBD8")  # Rosa
-            else:
-                estat = "OK"
-                color = QColor("#D5F5E3")  # Verd
-
-            estat_item = QTableWidgetItem(estat)
-            estat_item.setTextAlignment(Qt.AlignCenter)
-            estat_item.setFlags(estat_item.flags() & ~Qt.ItemIsEditable)
-            estat_item.setBackground(QBrush(color))
-            self.samples_table.setItem(row, self.COL_ESTAT, estat_item)
-
-            if needs_review:
-                self._unverified_fuzzy.add(row)
+            # Estat
+            self._populate_row_estat(row, all_review_signals, all_missing_signals, needs_review)
 
             # Guardar per preview i lògica
+            u = rep.get("uib", {})
             self._sample_data.append({
                 "name": sample_name,
-                "type": sample_type,  # Guardar tipus per lògica d'assignació
+                "type": sample_type,
                 "replica": rep.get("replica"),
                 "direct_pts": direct_pts,
-                "uib_pts": u.get("n_points", 0) if u else 0,
+                "uib_pts": u.get("n_points", 0) if u else uib_pts,
                 "dad_pts": dad_pts,
             })
 
@@ -1142,9 +936,6 @@ class ImportPanel(QWidget):
         self.samples_table.setSortingEnabled(True)
         self.samples_table.setVisible(True)
         self.table_help.setVisible(True)
-
-        # Warnings
-        self._update_warnings()
 
     def _add_simple_cell(self, row, col, text):
         """Afegeix una cel·la simple no editable."""
@@ -1583,7 +1374,7 @@ class ImportPanel(QWidget):
 
         # BLANC i CONTROL no requereixen assignació de DAD/UIB
         # Només MOSTRA, PATRÓ_CAL, PATRÓ_REF necessiten verificació
-        requires_assignment = sample_type in ["MOSTRA", "PATRÓ_CAL", "PATRÓ_REF"]
+        requires_assignment = sample_type in self.TYPES_REQUIRE_ASSIGNMENT
 
         missing = []
         pending_review = []
@@ -1742,29 +1533,42 @@ class ImportPanel(QWidget):
             self.refresh_btn.setVisible(False)
             self.dismiss_btn.setVisible(False)
 
-    def _count_unassigned_orphans(self):
-        """Compta quants orfes encara no estan assignats."""
+    def _get_assigned_files_from_table(self, include_path_variants=False):
+        """Obté els fitxers assignats des de la taula.
+
+        Args:
+            include_path_variants: Si True, afegeix també Path(val).name per matching més flexible.
+
+        Returns:
+            tuple: (assigned_uib: set, assigned_dad: set)
+        """
         assigned_uib = set()
         assigned_dad = set()
 
-        # Recórrer la taula per veure què s'ha assignat manualment
         for row in range(self.samples_table.rowCount()):
             if self._data_mode in ["DUAL", "UIB"]:
                 uib_item = self.samples_table.item(row, self.COL_UIB_FILE_ACTUAL)
                 if uib_item:
-                    # Usar el nom real del fitxer (UserRole) si disponible
                     val = uib_item.data(Qt.UserRole) or uib_item.text()
                     if val and val not in ["-", "(cap)"]:
                         assigned_uib.add(val)
+                        if include_path_variants:
+                            assigned_uib.add(Path(val).name)
 
             dad_item = self.samples_table.item(row, self.COL_DAD_FILE_ACTUAL)
             if dad_item:
-                # Usar el nom real del fitxer (UserRole) si disponible
                 val = dad_item.data(Qt.UserRole) or dad_item.text()
                 if val and val not in ["-", "(cap)", "[MasterFile]", "[export3d]", "[csv]"]:
                     assigned_dad.add(val)
+                    if include_path_variants:
+                        assigned_dad.add(Path(val).name)
 
-        # Comptar orfes no assignats
+        return assigned_uib, assigned_dad
+
+    def _count_unassigned_orphans(self):
+        """Compta quants orfes encara no estan assignats."""
+        assigned_uib, assigned_dad = self._get_assigned_files_from_table()
+
         orphan_uib = self._orphan_files.get("uib", [])
         orphan_dad = self._orphan_files.get("dad", [])
 
@@ -1868,7 +1672,7 @@ class ImportPanel(QWidget):
                         break
 
             # BLANC i CONTROL no requereixen assignació
-            requires_assignment = sample_type in ["MOSTRA", "PATRÓ_CAL", "PATRÓ_REF"]
+            requires_assignment = sample_type in self.TYPES_REQUIRE_ASSIGNMENT
 
             missing = []
 
@@ -1916,25 +1720,7 @@ class ImportPanel(QWidget):
 
     def _refresh_orphan_count(self):
         """Actualitza el comptador d'orfes i la llista després d'assignacions manuals."""
-        # Obtenir fitxers assignats
-        assigned_uib = set()
-        assigned_dad = set()
-
-        for row in range(self.samples_table.rowCount()):
-            if self._data_mode in ["DUAL", "UIB"]:
-                uib_item = self.samples_table.item(row, self.COL_UIB_FILE_ACTUAL)
-                if uib_item:
-                    val = uib_item.data(Qt.UserRole) or uib_item.text()
-                    if val and val not in ["-", "(cap)"]:
-                        assigned_uib.add(val)
-                        assigned_uib.add(Path(val).name)  # També el nom sense path
-
-            dad_item = self.samples_table.item(row, self.COL_DAD_FILE_ACTUAL)
-            if dad_item:
-                val = dad_item.data(Qt.UserRole) or dad_item.text()
-                if val and val not in ["-", "(cap)", "[MasterFile]", "[export3d]", "[csv]"]:
-                    assigned_dad.add(val)
-                    assigned_dad.add(Path(val).name)
+        assigned_uib, assigned_dad = self._get_assigned_files_from_table(include_path_variants=True)
 
         # Actualitzar llista d'orfes (treure els assignats)
         orig_uib = self._orphan_files.get("uib", [])
