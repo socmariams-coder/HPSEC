@@ -30,6 +30,11 @@ from hpsec_consolidate import (
     load_bp_data_for_sample,
     detect_seq_type,
 )
+from gui.widgets.styles import (
+    PANEL_MARGINS, PANEL_SPACING, STYLE_WARNING_BAR, STYLE_WARNING_TEXT,
+    COLOR_SUCCESS, COLOR_WARNING, create_title_font, apply_panel_layout,
+    create_empty_state_widget
+)
 
 
 class ConsolidateWorker(QThread):
@@ -98,14 +103,13 @@ class ConsolidatePanel(QWidget):
     def _setup_ui(self):
         """Configura la interfície."""
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(12)
+        apply_panel_layout(layout)
 
         # === HEADER ===
         header_layout = QHBoxLayout()
 
         title = QLabel("Consolidació COLUMN + BP")
-        title.setFont(QFont("Segoe UI", 14, QFont.Bold))
+        title.setFont(create_title_font())
         header_layout.addWidget(title)
 
         header_layout.addStretch()
@@ -126,6 +130,24 @@ class ConsolidatePanel(QWidget):
 
         layout.addLayout(header_layout)
 
+        # === BARRA D'AVISOS (consistent per tots els panels) ===
+        self.warnings_bar = QFrame()
+        self.warnings_bar.setVisible(False)
+        self.warnings_bar.setStyleSheet(STYLE_WARNING_BAR)
+        warnings_bar_layout = QHBoxLayout(self.warnings_bar)
+        warnings_bar_layout.setContentsMargins(12, 8, 12, 8)
+
+        warnings_icon = QLabel("⚠")
+        warnings_icon.setStyleSheet("font-size: 16px;")
+        warnings_bar_layout.addWidget(warnings_icon)
+
+        self.warnings_text = QLabel()
+        self.warnings_text.setStyleSheet(STYLE_WARNING_TEXT)
+        self.warnings_text.setWordWrap(True)
+        warnings_bar_layout.addWidget(self.warnings_text, 1)
+
+        layout.addWidget(self.warnings_bar)
+
         # === INFO SEQ ACTUAL ===
         self.current_seq_frame = QFrame()
         self.current_seq_frame.setStyleSheet(
@@ -145,6 +167,15 @@ class ConsolidatePanel(QWidget):
         current_layout.addWidget(self.current_type_label)
 
         layout.addWidget(self.current_seq_frame)
+
+        # Empty state (quan no hi ha dades)
+        self.empty_state = create_empty_state_widget(
+            "🔗",
+            "No hi ha dades analitzades",
+            "Completa primer l'anàlisi per poder consolidar dades COLUMN + BP."
+        )
+        self.empty_state.setVisible(True)
+        layout.addWidget(self.empty_state)
 
         # === PROGRESS ===
         self.progress_frame = QFrame()
@@ -242,13 +273,41 @@ class ConsolidatePanel(QWidget):
         super().showEvent(event)
         self._update_current_seq_info()
 
+    def reset(self):
+        """Reinicia el panel al seu estat inicial."""
+        self.bp_data = {}
+        self.worker = None
+        self.warnings_bar.setVisible(False)
+        self.warnings_text.setText("")
+        self.current_seq_label.setText("Seqüència actual: -")
+        self.current_type_label.setText("")
+        self.empty_state.setVisible(True)
+        self.progress_frame.setVisible(False)
+        self.progress_bar.setValue(0)
+        self.progress_label.setText("")
+        self.bp_result_frame.setVisible(False)
+        self.bp_found_label.setText("")
+        self.link_table.setRowCount(0)
+        self.bp_stats_label.setText("")
+        self.search_btn.setEnabled(True)
+        self.next_btn.setEnabled(False)
+
     def _update_current_seq_info(self):
         """Actualitza la info de la seqüència actual."""
         seq_path = self.main_window.seq_path
+        processed_data = self.main_window.processed_data
+
         if not seq_path:
             self.current_seq_label.setText("Seqüència actual: -")
             self.current_type_label.setText("")
+            self.empty_state.setVisible(True)
             return
+
+        # Mostrar empty state si no hi ha dades processades
+        if not processed_data or not processed_data.get("samples_grouped"):
+            self.empty_state.setVisible(True)
+        else:
+            self.empty_state.setVisible(False)
 
         seq_name = Path(seq_path).name
         seq_type = detect_seq_type(seq_name)
@@ -302,6 +361,7 @@ class ConsolidatePanel(QWidget):
         """Gestiona la finalització de la cerca."""
         self.progress_frame.setVisible(False)
         self.search_btn.setEnabled(True)
+        self.empty_state.setVisible(False)
         self.bp_result_frame.setVisible(True)
 
         bp_path = result.get("bp_seq_found")

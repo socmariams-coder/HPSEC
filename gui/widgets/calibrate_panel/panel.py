@@ -26,6 +26,14 @@ import numpy as np
 from .worker import CalibrateWorker
 from .graph_widgets import KHPReplicaGraphWidget, HistoryBarWidget
 
+# Importar estils compartits
+from gui.widgets.styles import (
+    PANEL_MARGINS, PANEL_SPACING, STYLE_WARNING_BAR, STYLE_WARNING_TEXT,
+    STYLE_SUCCESS_BAR, STYLE_SUCCESS_TEXT, STYLE_GROUPBOX,
+    COLOR_SUCCESS, COLOR_WARNING, COLOR_ERROR, COLOR_TEXT_SECONDARY,
+    create_title_font, create_subtitle_font, apply_panel_layout
+)
+
 
 class CalibratePanel(QWidget):
     """Panel de calibración con gráficos y métricas detalladas."""
@@ -42,6 +50,28 @@ class CalibratePanel(QWidget):
         self._current_condition_key = None  # Condició seleccionada
 
         self._setup_ui()
+
+    def reset(self):
+        """Reinicia el panel al seu estat inicial."""
+        self.calibration_data = None
+        self.worker = None
+        self._existing_calibration = None
+        self._all_calibrations = []
+        self._current_condition_key = None
+
+        # Reset UI elements
+        self.warnings_bar.setVisible(False)
+        self.warnings_text.setText("")
+        self.condition_selector_frame.setVisible(False)
+        self.condition_combo.clear()
+        if hasattr(self, 'summary_group'):
+            self.summary_group.setVisible(False)
+        if hasattr(self, 'next_btn'):
+            self.next_btn.setEnabled(False)
+        if hasattr(self, 'khp_graph'):
+            self.khp_graph.clear()
+        if hasattr(self, 'history_graph'):
+            self.history_graph.clear()
 
     def showEvent(self, event):
         """Quan el panel es mostra, comprovar si hi ha calibració existent."""
@@ -213,12 +243,11 @@ class CalibratePanel(QWidget):
     def _setup_ui(self):
         """Configura la interfaz."""
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 24, 24, 24)
-        layout.setSpacing(12)
+        apply_panel_layout(layout)
 
         # Título
         title = QLabel("Calibració KHP")
-        title.setFont(QFont("Segoe UI", 16, QFont.Bold))
+        title.setFont(create_title_font())
         layout.addWidget(title)
 
         # Info
@@ -231,14 +260,7 @@ class CalibratePanel(QWidget):
         # === BARRA D'AVISOS (consistent per tots els panels) ===
         self.warnings_bar = QFrame()
         self.warnings_bar.setVisible(False)
-        self.warnings_bar.setStyleSheet("""
-            QFrame {
-                background-color: #fff3cd;
-                border: 1px solid #ffc107;
-                border-radius: 6px;
-                margin: 4px 0;
-            }
-        """)
+        self.warnings_bar.setStyleSheet(STYLE_WARNING_BAR)
         warnings_bar_layout = QHBoxLayout(self.warnings_bar)
         warnings_bar_layout.setContentsMargins(12, 8, 12, 8)
 
@@ -247,7 +269,7 @@ class CalibratePanel(QWidget):
         warnings_bar_layout.addWidget(warnings_icon)
 
         self.warnings_text = QLabel()
-        self.warnings_text.setStyleSheet("color: #856404; border: none;")
+        self.warnings_text.setStyleSheet(STYLE_WARNING_TEXT + " border: none;")
         self.warnings_text.setWordWrap(True)
         warnings_bar_layout.addWidget(self.warnings_text, 1)
 
@@ -288,7 +310,7 @@ class CalibratePanel(QWidget):
 
         # --- Secció: Informació General ---
         general_group = QGroupBox("Informació General")
-        general_group.setStyleSheet("QGroupBox { font-weight: bold; }")
+        general_group.setStyleSheet(STYLE_GROUPBOX)
         general_layout = QGridLayout(general_group)
         general_layout.setSpacing(8)
 

@@ -24,6 +24,10 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from hpsec_export import export_sequence, generate_summary_excel, DEFAULT_EXPORT_CONFIG
+from gui.widgets.styles import (
+    PANEL_MARGINS, PANEL_SPACING, STYLE_PLACEHOLDER, STYLE_LABEL_SECONDARY,
+    create_title_font, apply_panel_layout, create_empty_state_widget
+)
 
 
 class ExportWorker(QThread):
@@ -97,12 +101,11 @@ class ExportPanel(QWidget):
     def _setup_ui(self):
         """Configura la interfície."""
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 24, 24, 24)
-        layout.setSpacing(16)
+        apply_panel_layout(layout)
 
         # Títol
         title = QLabel("Exportar Resultats")
-        title.setFont(QFont("Segoe UI", 16, QFont.Bold))
+        title.setFont(create_title_font())
         layout.addWidget(title)
 
         # Info
@@ -111,7 +114,7 @@ class ExportPanel(QWidget):
             "i la quantificació aplicada."
         )
         info.setWordWrap(True)
-        info.setStyleSheet("color: #555; margin-bottom: 8px;")
+        info.setStyleSheet(STYLE_LABEL_SECONDARY)
         layout.addWidget(info)
 
         # Opcions d'exportació
@@ -179,6 +182,15 @@ class ExportPanel(QWidget):
 
         layout.addWidget(self.summary_frame)
 
+        # Empty state (quan no hi ha dades)
+        self.empty_state = create_empty_state_widget(
+            "📤",
+            "No hi ha dades per exportar",
+            "Completa primer l'anàlisi per poder generar els fitxers d'exportació."
+        )
+        self.empty_state.setVisible(True)
+        layout.addWidget(self.empty_state)
+
         # Barra de progrés
         self.progress_bar = QProgressBar()
         self.progress_bar.setVisible(False)
@@ -206,15 +218,38 @@ class ExportPanel(QWidget):
         super().showEvent(event)
         self._update_summary()
 
+    def reset(self):
+        """Reinicia el panel al seu estat inicial."""
+        self.worker = None
+        self.output_path_input.clear()
+        self.individual_check.setChecked(True)
+        self.summary_check.setChecked(True)
+        self.pdf_check.setChecked(False)
+        self.n_samples_label.setText("Mostres: -")
+        self.method_label.setText("Mètode: -")
+        self.calibration_label.setText("Calibració: -")
+        self.empty_state.setVisible(True)
+        self.summary_frame.setVisible(False)
+        self.progress_bar.setVisible(False)
+        self.progress_bar.setValue(0)
+        self.status_label.setText("")
+        self.export_btn.setEnabled(True)
+
     def _update_summary(self):
         """Actualitza el resum."""
         processed_data = self.main_window.processed_data
 
-        if not processed_data:
+        if not processed_data or not processed_data.get("samples_grouped"):
             self.n_samples_label.setText("Mostres: -")
             self.method_label.setText("Mètode: -")
             self.calibration_label.setText("Calibració: -")
+            self.empty_state.setVisible(True)
+            self.summary_frame.setVisible(False)
             return
+
+        # Hi ha dades - amagar empty state
+        self.empty_state.setVisible(False)
+        self.summary_frame.setVisible(True)
 
         # Comptar mostres
         samples_grouped = processed_data.get("samples_grouped", {})

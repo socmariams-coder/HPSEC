@@ -37,6 +37,14 @@ from .delegates import ComboBoxDelegate, FileAssignmentDelegate
 from .worker import ImportWorker
 from .dialogs import OrphanFilesDialog, ChromatogramPreviewDialog
 
+# Importar estils compartits
+from gui.widgets.styles import (
+    PANEL_MARGINS, PANEL_SPACING, STYLE_WARNING_BAR, STYLE_WARNING_TEXT,
+    STYLE_ERROR_BAR, STYLE_ERROR_TEXT, STYLE_SUCCESS_BAR, STYLE_SUCCESS_TEXT,
+    COLOR_SUCCESS, COLOR_WARNING, COLOR_ERROR,
+    create_title_font, apply_panel_layout
+)
+
 CONFIG_PATH = Path(__file__).parent.parent.parent.parent / "hpsec_config.json"
 
 # Colors per tipus de match
@@ -134,11 +142,34 @@ class ImportPanel(QWidget):
 
         self._setup_ui()
 
+    def reset(self):
+        """Reinicia el panel al seu estat inicial."""
+        self.seq_path = None
+        self.existing_manifest = None
+        self.imported_data = None
+        self.worker = None
+        self._sample_data = []
+        self._orphan_files = {"uib": [], "dad": []}
+        self._match_types = {}
+        self._unverified_fuzzy = set()
+        self._manual_assignments = {}
+        self._data_mode = "DUAL"
+        self._import_warnings = []
+        self._loaded_from_manifest = False
+        self._orphan_warning_dismissed = False
+
+        # Reset UI elements
+        self.path_input.clear()
+        self.warnings_bar.setVisible(False)
+        self.warnings_bar_text.setText("")
+        self.info_frame.setVisible(False)
+        self.table_help.setVisible(False)
+        self.samples_table.setRowCount(0)
+
     def _setup_ui(self):
         """Configura la interfície del panel."""
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 8, 12, 12)
-        layout.setSpacing(8)
+        apply_panel_layout(layout)
 
         # Camp ocult per compatibilitat (usat internament)
         self.path_input = QLineEdit()
@@ -165,13 +196,7 @@ class ImportPanel(QWidget):
         # === BARRA D'AVISOS (consistent per tots els panels) ===
         self.warnings_bar = QFrame()
         self.warnings_bar.setVisible(False)
-        self.warnings_bar.setStyleSheet("""
-            QFrame {
-                background-color: #fff3cd;
-                border: 1px solid #ffc107;
-                border-radius: 6px;
-            }
-        """)
+        self.warnings_bar.setStyleSheet(STYLE_WARNING_BAR)
         warnings_bar_layout = QHBoxLayout(self.warnings_bar)
         warnings_bar_layout.setContentsMargins(12, 8, 12, 8)
 
@@ -180,7 +205,7 @@ class ImportPanel(QWidget):
         warnings_bar_layout.addWidget(warnings_icon)
 
         self.warnings_bar_text = QLabel()
-        self.warnings_bar_text.setStyleSheet("color: #856404;")
+        self.warnings_bar_text.setStyleSheet(STYLE_WARNING_TEXT)
         self.warnings_bar_text.setWordWrap(True)
         warnings_bar_layout.addWidget(self.warnings_bar_text, 1)
 
