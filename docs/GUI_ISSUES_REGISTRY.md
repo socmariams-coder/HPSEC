@@ -131,8 +131,8 @@
 |----|------------|-----------|-------|
 | A11 | RF i shift no es mostraven explícitament | ALTA | ARREGLAT |
 | A12 | shift_direct no s'actualitzava quan canviava calibració | CRÍTICA | ARREGLAT |
-| A13 | Factor 100 a seq 286 no canvia amb calibració - investigar | ALTA | PENDENT |
-| A14 | Quan canvia calibració, anàlisi no es re-executa automàticament | MITJANA | DISSENY (afegir signal+avís) |
+| A13 | Factor 100 a seq 286 no canvia amb calibració - investigar | ALTA | ARREGLAT |
+| A14 | Múltiples calibracions (per inj_volume) no es propagaven correctament | ALTA | ARREGLAT |
 
 ---
 
@@ -190,6 +190,7 @@
 | 2026-02-05 | I13 | Arreglat: format clau 3-DAD_KHP corregit a {SAMPLE}_{INJ}_R{REP} (e.g., KHP5_1_R1) |
 | 2026-02-05 | C02 | Arreglat: selector de condicions ara sempre s'actualitza al mostrar el panel |
 | 2026-02-05 | C04 | Arreglat: via I13 - ara les dades 254nm es carreguen correctament |
+| 2026-02-05 | A13, A14 | Arreglat: múltiples calibracions per inj_volume - cada mostra usa la calibració que coincideix amb el seu volum d'injecció (50µL→BP_50_2, 100µL→BP_100_2) |
 
 ---
 

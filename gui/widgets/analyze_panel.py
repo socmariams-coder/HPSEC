@@ -88,6 +88,8 @@ class AnalyzePanel(QWidget):
         self.main_window = main_window
         self.samples_grouped = {}
         self.worker = None
+        self._warnings_confirmed = False
+        self._warnings_confirmed_by = ""
 
         self._setup_ui()
 
@@ -137,6 +139,32 @@ class AnalyzePanel(QWidget):
         self.warnings_text.setStyleSheet(STYLE_WARNING_TEXT + " border: none;")
         self.warnings_text.setWordWrap(True)
         warnings_bar_layout.addWidget(self.warnings_text, 1)
+
+        # Botó revisar avisos (A02)
+        self.warnings_review_btn = QPushButton("Revisar")
+        self.warnings_review_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #F39C12; color: white;
+                border: none; border-radius: 4px;
+                padding: 4px 12px; font-weight: bold;
+            }
+            QPushButton:hover { background-color: #E67E22; }
+        """)
+        self.warnings_review_btn.clicked.connect(self._show_warnings_detail)
+        warnings_bar_layout.addWidget(self.warnings_review_btn)
+
+        # Botó OK avisos amb identificació (G05)
+        self.warnings_ok_btn = QPushButton("OK ✓")
+        self.warnings_ok_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #27AE60; color: white;
+                border: none; border-radius: 4px;
+                padding: 4px 12px; font-weight: bold;
+            }
+            QPushButton:hover { background-color: #219A52; }
+        """)
+        self.warnings_ok_btn.clicked.connect(self._confirm_warnings)
+        warnings_bar_layout.addWidget(self.warnings_ok_btn)
 
         layout.addWidget(self.warnings_bar)
 
@@ -298,9 +326,12 @@ class AnalyzePanel(QWidget):
         self.results_table = self.doc_table
 
 
-        # Connectar doble clic per veure detall
+        # Connectar doble clic per veure detall (A10: doble-clic en lloc de botó)
         self.doc_table.doubleClicked.connect(self._on_table_double_click)
         self.dad_table.doubleClicked.connect(self._on_table_double_click)
+        # Tooltip per indicar funcionalitat
+        self.doc_table.setToolTip("Doble-clic a una fila per veure el detall")
+        self.dad_table.setToolTip("Doble-clic a una fila per veure el detall")
 
         # Resum estadístic amb botó detall
         self.stats_frame = QFrame()
@@ -314,19 +345,9 @@ class AnalyzePanel(QWidget):
 
         stats_layout.addStretch()
 
-        # Botó detall
+        # Botó detall (A10: amagat - ara s'usa doble-clic a la taula)
         self.detail_btn = QPushButton("📊 Detall")
-        self.detail_btn.setEnabled(False)
-        self.detail_btn.setToolTip("Mostra gràfics i estadístiques detallades de la mostra seleccionada")
-        self.detail_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #3498DB; color: white;
-                border: none; border-radius: 4px;
-                padding: 6px 14px; font-weight: bold;
-            }
-            QPushButton:hover { background-color: #2980B9; }
-            QPushButton:disabled { background-color: #BDC3C7; }
-        """)
+        self.detail_btn.setVisible(False)  # Amagat - doble-clic a taula
         self.detail_btn.clicked.connect(self._on_detail_clicked)
         stats_layout.addWidget(self.detail_btn)
 
@@ -334,8 +355,22 @@ class AnalyzePanel(QWidget):
 
         layout.addWidget(self.results_frame, 1)  # Stretch
 
-        # === BOTONS NAVEGACIÓ ===
+        # === BOTONS NAVEGACIÓ (G04: Afegir notes sempre visible) ===
         nav_layout = QHBoxLayout()
+
+        # Botó Afegir notes (G04)
+        self.notes_btn = QPushButton("📝 Afegir notes")
+        self.notes_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #6c757d; color: white;
+                border: none; border-radius: 4px;
+                padding: 8px 16px;
+            }
+            QPushButton:hover { background-color: #5a6268; }
+        """)
+        self.notes_btn.clicked.connect(self._add_notes)
+        nav_layout.addWidget(self.notes_btn)
+
         nav_layout.addStretch()
 
         self.next_btn = QPushButton("Següent: Consolidar →")
@@ -377,26 +412,18 @@ class AnalyzePanel(QWidget):
         """)
 
     def _configure_doc_columns(self):
-        """Configura columnes de la taula DOC."""
+        """Configura columnes de la taula DOC (A07: totes ResizeToContents)."""
         header = self.doc_table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.Stretch)  # Mostra
-        for i in range(1, 10):
-            header.setSectionResizeMode(i, QHeaderView.Fixed)
-        # Mides compactes: Rep, A_Dir, ppm_D, A_UIB, ppm_U, R², SNR_D, SNR_U, Estat
-        widths = [45, 65, 55, 65, 55, 55, 55, 55, 40]
-        for i, w in enumerate(widths):
-            self.doc_table.setColumnWidth(i + 1, w)
+        # Totes les columnes s'ajusten al contingut (com Import i Calibrar)
+        for i in range(self.doc_table.columnCount()):
+            header.setSectionResizeMode(i, QHeaderView.ResizeToContents)
 
     def _configure_dad_columns(self):
-        """Configura columnes de la taula DAD."""
+        """Configura columnes de la taula DAD (A07: totes ResizeToContents)."""
         header = self.dad_table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.Stretch)  # Mostra
-        for i in range(1, 11):
-            header.setSectionResizeMode(i, QHeaderView.Fixed)
-        # Mides compactes: Rep, A_254, SNR_220..362 (6), R²_min, Estat
-        widths = [45, 55, 45, 45, 45, 45, 45, 45, 55, 40]
-        for i, w in enumerate(widths):
-            self.dad_table.setColumnWidth(i + 1, w)
+        # Totes les columnes s'ajusten al contingut (com Import i Calibrar)
+        for i in range(self.dad_table.columnCount()):
+            header.setSectionResizeMode(i, QHeaderView.ResizeToContents)
 
     def _switch_view(self, view):
         """Canvia entre vista DOC i DAD."""
@@ -421,10 +448,15 @@ class AnalyzePanel(QWidget):
         """Reinicia el panel al seu estat inicial."""
         self.samples_grouped = {}
         self.worker = None
+        self._warnings_confirmed = False
+        self._warnings_confirmed_by = ""
         self.doc_table.setRowCount(0)
         self.dad_table.setRowCount(0)
         self.warnings_bar.setVisible(False)
         self.warnings_text.setText("")
+        self.warnings_ok_btn.setText("OK ✓")
+        self.warnings_ok_btn.setEnabled(True)
+        self.warnings_review_btn.setEnabled(True)
         self.empty_state.setVisible(True)
         self.info_frame.setVisible(False)
         self.status_frame.setVisible(False)
@@ -502,14 +534,30 @@ class AnalyzePanel(QWidget):
             f"<span style='color: #6c757d; font-size: 10px;'>{method} / {data_mode}</span>"
         )
 
-        # Info calibració
+        # Info calibració (mostrar RF i shift explícitament)
         if calibration_data and calibration_data.get("success"):
             khp_conc = calibration_data.get("khp_conc", 0)
             rf = calibration_data.get("rf_direct", 0) or calibration_data.get("rf", 0)
+            shift = calibration_data.get("shift_direct", 0) or calibration_data.get("shift", 0)
+            shift_sec = shift * 60 if shift else 0
+            khp_source = calibration_data.get("khp_source", "LOCAL")
+
+            # Detectar si és calibració alternativa
+            is_alt = "ALTERNATIU" in str(khp_source) or "SIBLING" in str(khp_source)
+            color = "#E67E22" if is_alt else "#27AE60"
+            icon = "⚠" if is_alt else "✓"
+
             self.cal_info.setText(
                 f"<span style='color: #6c757d; font-size: 10px;'>CALIBRACIÓ</span><br>"
-                f"<span style='color: #27AE60;'>✓</span> <b style='font-size: 13px;'>KHP {khp_conc:.0f}ppm</b><br>"
-                f"<span style='color: #6c757d; font-size: 10px;'>RF: {rf:.0f}</span>"
+                f"<span style='color: {color};'>{icon}</span> <b style='font-size: 13px;'>KHP {khp_conc:.0f}ppm</b><br>"
+                f"<span style='color: #6c757d; font-size: 10px;'>"
+                f"RF: <b>{rf:.0f}</b> · Shift: <b>{shift_sec:.1f}s</b></span>"
+            )
+            # Tooltip amb més detalls
+            self.cal_info.setToolTip(
+                f"Font: {khp_source}\n"
+                f"Response Factor (RF): {rf:.2f} (àrea/ppm)\n"
+                f"Shift: {shift_sec:.2f} segons ({shift:.4f} min)"
             )
         else:
             self.cal_info.setText(
@@ -517,6 +565,7 @@ class AnalyzePanel(QWidget):
                 f"<span style='color: #E67E22;'>⚠</span> <span style='color: #856404;'>No disponible</span><br>"
                 f"<span style='color: #6c757d; font-size: 10px;'>S'usaran valors per defecte</span>"
             )
+            self.cal_info.setToolTip("No hi ha calibració disponible - s'usaran valors per defecte")
 
         # Indicador d'estat
         self.status_indicator.setText(
@@ -659,6 +708,89 @@ class AnalyzePanel(QWidget):
         self.analyze_btn.setEnabled(True)
         QMessageBox.critical(self, "Error", f"Error durant l'anàlisi:\n{error_msg}")
 
+    def _show_warnings_detail(self):
+        """Mostra detall dels avisos en un diàleg."""
+        if not self.main_window.processed_data:
+            return
+
+        warnings = self.main_window.processed_data.get("warnings", [])
+        anomalies = self.main_window.processed_data.get("anomalies_summary", {})
+
+        # Construir llista detallada
+        details = []
+
+        if anomalies.get("timeouts", 0) > 0:
+            details.append(f"⏱ Timeouts: {anomalies['timeouts']} mostres amb càlculs que han excedit el temps límit")
+        if anomalies.get("batman", 0) > 0:
+            details.append(f"🦇 Batman: {anomalies['batman']} mostres amb pics dobles (possible contaminació)")
+        if anomalies.get("low_snr", 0) > 0:
+            details.append(f"↓ SNR baix: {anomalies['low_snr']} mostres amb relació senyal/soroll baixa")
+
+        for w in warnings:
+            details.append(f"⚠ {w}")
+
+        if not details:
+            details.append("No hi ha avisos pendents.")
+
+        QMessageBox.information(
+            self,
+            "Detall d'Avisos",
+            "\n\n".join(details)
+        )
+
+    def _confirm_warnings(self):
+        """Confirma els avisos i registra qui els ha revisat."""
+        # Demanar identificació
+        from PySide6.QtWidgets import QInputDialog
+        name, ok = QInputDialog.getText(
+            self,
+            "Confirmar Avisos",
+            "Introdueix les teves inicials per confirmar la revisió:",
+            text=""
+        )
+
+        if ok and name.strip():
+            # Marcar avisos com a confirmats
+            self._warnings_confirmed = True
+            self._warnings_confirmed_by = name.strip().upper()
+
+            # Actualitzar botó i amagar barra
+            self.warnings_ok_btn.setText(f"OK ✓ {self._warnings_confirmed_by}")
+            self.warnings_ok_btn.setEnabled(False)
+            self.warnings_review_btn.setEnabled(False)
+
+            # Guardar a processed_data
+            if self.main_window.processed_data:
+                self.main_window.processed_data["warnings_confirmed"] = True
+                self.main_window.processed_data["warnings_confirmed_by"] = self._warnings_confirmed_by
+
+            self.main_window.set_status(f"Avisos confirmats per {self._warnings_confirmed_by}", 3000)
+
+    def _add_notes(self):
+        """Obre diàleg per afegir notes a l'anàlisi."""
+        from PySide6.QtWidgets import QInputDialog
+
+        current_notes = ""
+        if self.main_window.processed_data:
+            current_notes = self.main_window.processed_data.get("notes", "")
+
+        text, ok = QInputDialog.getMultiLineText(
+            self,
+            "Notes d'Anàlisi",
+            "Afegeix notes o observacions:",
+            current_notes
+        )
+
+        if ok:
+            if self.main_window.processed_data:
+                self.main_window.processed_data["notes"] = text
+                # Guardar canvis
+                try:
+                    save_analysis_result(self.main_window.processed_data)
+                    self.main_window.set_status("Notes guardades", 2000)
+                except Exception as e:
+                    print(f"Warning: No s'han pogut guardar les notes: {e}")
+
     def _populate_table(self):
         """Omple les dues taules (DOC i DAD) amb els resultats."""
         stats = self._populate_doc_table()
@@ -678,6 +810,10 @@ class AnalyzePanel(QWidget):
         """Omple la taula DOC (Direct/UIB)."""
         self.doc_table.setRowCount(0)
         n_ok, n_warning, n_error = 0, 0, 0
+
+        # A13/A14: Les concentracions ppm ja estan calculades correctament
+        # a analyze_sequence amb la calibració apropiada segons inj_volume.
+        # No cal recalcular aquí - usem quantification directament.
 
         for sample_name in sorted(self.samples_grouped.keys()):
             sample_data = self.samples_grouped[sample_name]
@@ -717,7 +853,7 @@ class AnalyzePanel(QWidget):
             area_direct = doc_areas.get("total", 0)
             self.doc_table.setItem(row, 2, QTableWidgetItem(f"{area_direct:.0f}" if area_direct else "-"))
 
-            # Col 3: ppm Direct
+            # Col 3: ppm Direct (A13/A14: usar quantificació pre-calculada amb calibració correcta)
             ppm_direct = quantification.get("concentration_ppm_direct") or quantification.get("concentration_ppm")
             self.doc_table.setItem(row, 3, QTableWidgetItem(f"{ppm_direct:.2f}" if ppm_direct else "-"))
 
@@ -726,7 +862,7 @@ class AnalyzePanel(QWidget):
             area_uib = areas_uib.get("total", 0)
             self.doc_table.setItem(row, 4, QTableWidgetItem(f"{area_uib:.0f}" if area_uib else "-"))
 
-            # Col 5: ppm UIB
+            # Col 5: ppm UIB (A13/A14: usar quantificació pre-calculada amb calibració correcta)
             ppm_uib = quantification.get("concentration_ppm_uib")
             self.doc_table.setItem(row, 5, QTableWidgetItem(f"{ppm_uib:.2f}" if ppm_uib else "-"))
 
@@ -903,13 +1039,16 @@ class AnalyzePanel(QWidget):
         rep_data = replicas.get(doc_sel, {})
         quantification = sample_data.get("quantification", {})
 
+        # A13/A14: Les concentracions ppm ja estan calculades correctament
+        # a _update_quantification amb la calibració apropiada segons inj_volume.
+
         # Àrea Direct
         areas = rep_data.get("areas") or {}
         doc_areas = areas.get("DOC") or {}
         area_direct = doc_areas.get("total", 0)
         self.doc_table.item(row, 2).setText(f"{area_direct:.0f}" if area_direct else "-")
 
-        # ppm Direct
+        # ppm Direct (usar quantificació recalculada)
         ppm_direct = quantification.get("concentration_ppm_direct") or quantification.get("concentration_ppm")
         self.doc_table.item(row, 3).setText(f"{ppm_direct:.2f}" if ppm_direct else "-")
 
@@ -918,7 +1057,7 @@ class AnalyzePanel(QWidget):
         area_uib = areas_uib.get("total", 0)
         self.doc_table.item(row, 4).setText(f"{area_uib:.0f}" if area_uib else "-")
 
-        # ppm UIB
+        # ppm UIB (usar quantificació recalculada)
         ppm_uib = quantification.get("concentration_ppm_uib")
         self.doc_table.item(row, 5).setText(f"{ppm_uib:.2f}" if ppm_uib else "-")
 
@@ -977,18 +1116,49 @@ class AnalyzePanel(QWidget):
             return "-"
 
     def _update_quantification(self, sample_name):
-        """Recalcula la quantificació per una mostra."""
+        """Recalcula la quantificació per una mostra.
+
+        IMPORTANT: Per seqüències amb múltiples calibracions (ex: KHP2@100µL i KHP2@50µL),
+        selecciona la calibració correcta segons el volum d'injecció de la mostra.
+        """
         try:
             from hpsec_analyze import quantify_sample
+            from hpsec_calibrate import get_all_active_calibrations
 
             sample_data = self.samples_grouped[sample_name]
             selected_doc = sample_data["selected"]["doc"]
             selected_replica = sample_data["replicas"].get(selected_doc)
 
             if selected_replica:
-                calibration_data = self.main_window.calibration_data
                 method = self.main_window.processed_data.get("method", "COLUMN")
                 mode = "BP" if method == "BP" else "COLUMN"
+
+                # A13/A14: Seleccionar calibració segons inj_volume de la mostra
+                calibration_data = None
+                inj_volume = selected_replica.get("inj_volume")
+                seq_path = self.main_window.processed_data.get("seq_path", "")
+
+                if seq_path and inj_volume:
+                    try:
+                        # Carregar totes les calibracions actives
+                        active_cals = get_all_active_calibrations(seq_path, mode)
+
+                        # Buscar calibració amb volum coincident
+                        for cal in active_cals:
+                            cal_vol = cal.get("volume_uL", 0)
+                            if cal_vol > 0 and abs(cal_vol - inj_volume) < 0.1:
+                                calibration_data = cal
+                                break
+
+                        # Fallback: usar la primera disponible
+                        if not calibration_data and active_cals:
+                            calibration_data = active_cals[0]
+                    except Exception as e:
+                        print(f"[WARN] Error carregant calibracions: {e}")
+
+                # Fallback: usar calibració global
+                if not calibration_data:
+                    calibration_data = self.main_window.calibration_data
 
                 quantification = quantify_sample(selected_replica, calibration_data, mode=mode)
                 sample_data["quantification"] = quantification
@@ -1164,16 +1334,24 @@ class SampleDetailDialog(QDialog):
         layout.addWidget(QLabel(self.method), row, 1)
         row += 1
 
-        # Concentració
-        conc = quantification.get("concentration_ppm")
+        # Concentració (recalcular amb RF actual - A13)
+        # Obtenir RF del pare (AnalyzePanel -> main_window)
+        conc = None
+        area = quantification.get("area_total", 0)
+        if self.parent() and hasattr(self.parent(), 'main_window'):
+            cal_data = self.parent().main_window.calibration_data or {}
+            rf = cal_data.get("rf_direct", 0) or cal_data.get("rf", 0)
+            if rf > 0 and area and area > 0:
+                conc = area / rf
+        if conc is None:
+            conc = quantification.get("concentration_ppm")
         layout.addWidget(QLabel("<b>Concentració:</b>"), row, 0)
         conc_label = QLabel(f"{conc:.3f} ppm" if conc else "-")
         conc_label.setStyleSheet("font-weight: bold; color: #2E86AB;")
         layout.addWidget(conc_label, row, 1)
         row += 1
 
-        # Àrea total
-        area = quantification.get("area_total")
+        # Àrea total (ja obtinguda abans)
         layout.addWidget(QLabel("<b>Àrea total:</b>"), row, 0)
         layout.addWidget(QLabel(f"{area:.1f}" if area else "-"), row, 1)
 
