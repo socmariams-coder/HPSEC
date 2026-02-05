@@ -115,7 +115,7 @@
 | ID | Descripció | Prioritat | Estat |
 |----|------------|-----------|-------|
 | A07 | Columna "Mostra" ocupa massa espai, amaga altres columnes | ALTA | ARREGLAT |
-| A08 | No hi ha dades de UIB a la taula DOC | ALTA | INVESTIGAR (is_dual requereix Direct+UIB) |
+| A08 | No hi ha dades de UIB a la taula DOC | ALTA | ARREGLAT |
 | A09 | Nomenclatura "_b1" estranya per identificar rèpliques | MITJANA | ARREGLAT (simplificat a _R1/_R2) |
 | A10 | Botó "Detall" hauria de ser columna o doble-click, no botó inferior | MITJANA | ARREGLAT |
 
@@ -192,6 +192,7 @@
 | 2026-02-05 | C04 | Arreglat: via I13 - ara les dades 254nm es carreguen correctament |
 | 2026-02-05 | A13, A14 | Arreglat: múltiples calibracions per inj_volume - cada mostra usa la calibració que coincideix amb el seu volum d'injecció (50µL→BP_50_2, 100µL→BP_100_2) |
 | 2026-02-05 | A09 | Arreglat: Sample_Rep simplificat a NOM_R1/R2 (sense _B1/_B2), el sufix _50 ja distingeix volums |
+| 2026-02-05 | A08 | Arreglat: areas_uib ara es calcula sempre (DUAL o només UIB) amb flag is_uib_only |
 
 ---
 

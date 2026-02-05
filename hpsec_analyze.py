@@ -25,8 +25,13 @@ NO fa:
 Usat per HPSEC_Suite.py
 """
 
-__version__ = "1.5.0"
-__version_date__ = "2026-02-03"
+__version__ = "1.6.0"
+__version_date__ = "2026-02-05"
+# v1.6.0: Millores quantificació DUAL i comparació DAD
+#         - areas_uib ara es calcula per DUAL (tant COLUMN com BP)
+#         - quantify_sample(): retorna ppm_direct i ppm_uib separats
+#         - compare_replicas(): R² DAD per les 6 λ (pearson_per_wavelength)
+#         - Afegit pearson_min i wavelength_min per DAD
 # v1.5.0: Comparació rèpliques, recomanació i quantificació
 #         - compare_replicas(): Pearson + diff àrees per fracció
 #         - recommend_replica(): Selecció automàtica DOC/DAD independent
@@ -57,6 +62,10 @@ from hpsec_core import (
     find_peak_boundaries,
     calculate_fwhm,
     calculate_symmetry,
+    # Bi-Gaussian fitting
+    fit_bigaussian,
+    THRESH_R2_VALID,
+    THRESH_R2_CHECK,
     # Funcions baseline (migrades de utils 2026-02-03)
     baseline_stats,
     baseline_stats_windowed,
@@ -70,6 +79,9 @@ from hpsec_core import (
     THRESH_SNR,
 )
 from hpsec_config import get_config
+
+# Import funcions calibració per seleccionar calibració segons volum d'injecció
+from hpsec_calibrate import get_calibration_for_conditions, get_all_active_calibrations
 
 
 # =============================================================================
@@ -879,6 +891,9 @@ def compare_replicas(r1_result, r2_result, mode="COLUMN", config=None):
         },
         "dad": {
             "pearson_254": np.nan,
+            "pearson_per_wavelength": {},  # R² per cada λ
+            "pearson_min": np.nan,         # R² mínim
+            "wavelength_min": None,        # λ amb R² mínim
             "area_diff_pct": np.nan,
             "warnings": []
         }
@@ -899,7 +914,21 @@ def compare_replicas(r1_result, r2_result, mode="COLUMN", config=None):
     y1 = r1_result.get("y_doc_net")
     y2 = r2_result.get("y_doc_net")
 
-    if y1 is not None and y2 is not None and len(y1) > 10 and len(y2) > 10:
+    # Convertir a arrays i validar longituds
+    if t1 is not None:
+        t1 = np.asarray(t1).flatten()
+    if t2 is not None:
+        t2 = np.asarray(t2).flatten()
+    if y1 is not None:
+        y1 = np.asarray(y1).flatten()
+    if y2 is not None:
+        y2 = np.asarray(y2).flatten()
+
+    # Validar que t i y tenen la mateixa longitud
+    t1_valid = t1 is not None and y1 is not None and len(t1) == len(y1) and len(y1) > 10
+    t2_valid = t2 is not None and y2 is not None and len(t2) == len(y2) and len(y2) > 10
+
+    if t1_valid and t2_valid:
         # Interpolar si longituds diferents
         if len(y1) != len(y2):
             t_common = t1 if len(t1) <= len(t2) else t2
@@ -943,49 +972,73 @@ def compare_replicas(r1_result, r2_result, mode="COLUMN", config=None):
                     result["doc"]["fraction_diff_pct"][frac] = 0.0
 
     # =========================================================================
-    # COMPARACIÓ DAD (254nm)
+    # COMPARACIÓ DAD (totes les λ: 220, 252, 254, 272, 290, 362)
     # =========================================================================
     df_dad1 = r1_result.get("df_dad")
     df_dad2 = r2_result.get("df_dad")
+    wavelengths = ['220', '252', '254', '272', '290', '362']
 
     if df_dad1 is not None and df_dad2 is not None:
         if not df_dad1.empty and not df_dad2.empty:
-            if '254' in df_dad1.columns and '254' in df_dad2.columns:
-                try:
-                    t_dad1 = df_dad1['time (min)'].to_numpy()
-                    t_dad2 = df_dad2['time (min)'].to_numpy()
-                    y_254_1 = df_dad1['254'].to_numpy()
-                    y_254_2 = df_dad2['254'].to_numpy()
+            try:
+                t_dad1 = df_dad1['time (min)'].to_numpy()
+                t_dad2 = df_dad2['time (min)'].to_numpy()
 
-                    # Interpolar si cal
-                    if len(y_254_1) != len(y_254_2):
-                        t_common = t_dad1 if len(t_dad1) <= len(t_dad2) else t_dad2
-                        y_254_1 = np.interp(t_common, t_dad1, y_254_1)
-                        y_254_2 = np.interp(t_common, t_dad2, y_254_2)
+                # Calcular R² per cada λ
+                pearson_per_wl = {}
+                for wl in wavelengths:
+                    if wl in df_dad1.columns and wl in df_dad2.columns:
+                        y1_wl = df_dad1[wl].to_numpy()
+                        y2_wl = df_dad2[wl].to_numpy()
 
-                    # Pearson 254nm
-                    pearson_254, _ = pearsonr(y_254_1, y_254_2)
-                    result["dad"]["pearson_254"] = float(pearson_254)
-                    if pearson_254 < REPLICA_PEARSON_THRESHOLD:
-                        result["dad"]["warnings"].append("LOW_CORRELATION_254")
+                        # Validar longituds
+                        if len(t_dad1) != len(y1_wl) or len(t_dad2) != len(y2_wl):
+                            continue
 
-                    # Diferència àrea 254
-                    snr_dad1 = r1_result.get("snr_info_dad", {}).get("A254", {})
-                    snr_dad2 = r2_result.get("snr_info_dad", {}).get("A254", {})
-                    # Usar àrea de les fraccions si disponible
-                    areas1_254 = r1_result.get("areas", {}).get("A254", {})
-                    areas2_254 = r2_result.get("areas", {}).get("A254", {})
-                    a1_254 = areas1_254.get("total", 0)
-                    a2_254 = areas2_254.get("total", 0)
+                        # Interpolar si cal
+                        if len(y1_wl) != len(y2_wl):
+                            t_common = t_dad1 if len(t_dad1) <= len(t_dad2) else t_dad2
+                            y1_wl = np.interp(t_common, t_dad1, y1_wl)
+                            y2_wl = np.interp(t_common, t_dad2, y2_wl)
 
-                    if max(a1_254, a2_254) > 0:
-                        diff_254 = abs(a1_254 - a2_254) / max(a1_254, a2_254) * 100
-                        result["dad"]["area_diff_pct"] = diff_254
-                        if diff_254 > REPLICA_AREA_DIFF_THRESHOLD:
-                            result["dad"]["warnings"].append("AREA_DIFF_HIGH_254")
+                        # Pearson per aquesta λ
+                        try:
+                            pearson_wl, _ = pearsonr(y1_wl, y2_wl)
+                            pearson_per_wl[wl] = float(pearson_wl)
+                        except Exception:
+                            pass
 
-                except Exception:
-                    pass
+                # Guardar resultats
+                result["dad"]["pearson_per_wavelength"] = pearson_per_wl
+
+                # Trobar mínim i la seva λ
+                if pearson_per_wl:
+                    min_wl = min(pearson_per_wl, key=pearson_per_wl.get)
+                    result["dad"]["pearson_min"] = pearson_per_wl[min_wl]
+                    result["dad"]["wavelength_min"] = min_wl
+
+                    # Warning si mínim és baix
+                    if pearson_per_wl[min_wl] < REPLICA_PEARSON_THRESHOLD:
+                        result["dad"]["warnings"].append(f"LOW_CORRELATION_{min_wl}")
+
+                # Mantenir pearson_254 per compatibilitat
+                if '254' in pearson_per_wl:
+                    result["dad"]["pearson_254"] = pearson_per_wl['254']
+
+                # Diferència àrea 254
+                areas1_254 = r1_result.get("areas", {}).get("A254", {})
+                areas2_254 = r2_result.get("areas", {}).get("A254", {})
+                a1_254 = areas1_254.get("total", 0)
+                a2_254 = areas2_254.get("total", 0)
+
+                if max(a1_254, a2_254) > 0:
+                    diff_254 = abs(a1_254 - a2_254) / max(a1_254, a2_254) * 100
+                    result["dad"]["area_diff_pct"] = diff_254
+                    if diff_254 > REPLICA_AREA_DIFF_THRESHOLD:
+                        result["dad"]["warnings"].append("AREA_DIFF_HIGH_254")
+
+            except Exception:
+                pass
 
     return result
 
@@ -1084,57 +1137,117 @@ def quantify_sample(sample_result, calibration_data, mode="COLUMN"):
     """
     Aplica calibració per convertir àrees a concentracions.
 
+    Fórmula: concentration = area_sample / RF
+    On RF (Response Factor) = area_khp / conc_khp (àrea per ppm)
+
     Args:
         sample_result: Resultat de analyze_sample()
         calibration_data: Dict amb dades de calibració:
-            - concentration_ratio (CR): factor de conversió (ppm/àrea)
-            - O alternativament: area_khp, conc_khp per calcular CR
+            - rf_direct: Response Factor per DOC Direct (àrea/ppm)
+            - rf_uib: Response Factor per DOC UIB (àrea/ppm)
+            - rf: Response Factor genèric (fallback per compatibilitat)
         mode: "COLUMN" o "BP"
 
     Returns:
         dict amb:
-            - concentration_ppm: concentració total (ppm)
+            - concentration_ppm: concentració total DOC Direct (ppm) - compatibilitat
+            - concentration_ppm_direct: concentració DOC Direct (ppm)
+            - concentration_ppm_uib: concentració DOC UIB (ppm) - si DUAL
             - fractions: dict amb concentració per fracció (COLUMN)
-                - BioP, HS, BB, SB, LMW: ppm per cada fracció
+            - fractions_uib: dict amb concentració UIB per fracció (COLUMN DUAL)
     """
     result = {
         "concentration_ppm": None,
-        "fractions": {}
+        "concentration_ppm_direct": None,
+        "concentration_ppm_uib": None,
+        "fractions": {},
+        "fractions_uib": {}
     }
 
     if not sample_result.get("processed"):
         return result
 
-    # Obtenir factor de conversió (CR)
-    cr = None
+    # =========================================================================
+    # OBTENIR RF DIRECT i RF UIB
+    # =========================================================================
+    rf_direct = None
+    rf_uib = None
+
     if calibration_data:
-        cr = calibration_data.get("concentration_ratio")
-        if cr is None:
-            # Calcular CR a partir de KHP
-            area_khp = calibration_data.get("area_khp", 0)
-            conc_khp = calibration_data.get("conc_khp", 0)
+        # RF Direct: prioritzar rf_direct, després rf genèric
+        rf_direct = calibration_data.get("rf_direct") or calibration_data.get("rf")
+
+        if rf_direct is None or rf_direct <= 0:
+            # Fallback: calcular RF a partir de KHP àrea i concentració
+            area_khp = (
+                calibration_data.get("khp_area_direct") or
+                calibration_data.get("area") or
+                calibration_data.get("area_khp") or
+                calibration_data.get("khp_area") or
+                calibration_data.get("area_main_peak") or
+                calibration_data.get("mean_area") or 0
+            )
+            conc_khp = (
+                calibration_data.get("conc_ppm") or
+                calibration_data.get("khp_conc_ppm") or
+                calibration_data.get("khp_conc") or
+                calibration_data.get("conc_khp") or 0
+            )
             if area_khp > 0 and conc_khp > 0:
-                cr = conc_khp / area_khp
+                rf_direct = area_khp / conc_khp
 
-    if cr is None or cr <= 0:
-        return result
+        # RF UIB: específic per UIB
+        rf_uib = calibration_data.get("rf_uib", 0)
+        if rf_uib is None or rf_uib <= 0:
+            # Fallback: calcular des de khp_area_uib
+            area_khp_uib = calibration_data.get("khp_area_uib", 0)
+            conc_khp = (
+                calibration_data.get("conc_ppm") or
+                calibration_data.get("khp_conc_ppm") or
+                calibration_data.get("khp_conc") or 0
+            )
+            if area_khp_uib > 0 and conc_khp > 0:
+                rf_uib = area_khp_uib / conc_khp
 
-    # Obtenir àrees
-    areas = sample_result.get("areas", {}).get("DOC", {})
-    area_total = areas.get("total", 0)
+    # =========================================================================
+    # QUANTIFICACIÓ DOC DIRECT
+    # =========================================================================
+    if rf_direct and rf_direct > 0:
+        areas_direct = sample_result.get("areas", {}).get("DOC", {})
+        area_total_direct = areas_direct.get("total", 0)
 
-    # Concentració total
-    if area_total > 0:
-        result["concentration_ppm"] = float(area_total * cr)
+        if area_total_direct > 0:
+            ppm_direct = float(area_total_direct / rf_direct)
+            result["concentration_ppm_direct"] = ppm_direct
+            result["concentration_ppm"] = ppm_direct  # Compatibilitat
 
-    # Concentracions per fracció (només COLUMN)
-    if mode.upper() == "COLUMN":
-        for frac in ["BioP", "HS", "BB", "SB", "LMW"]:
-            area_frac = areas.get(frac, 0)
-            if area_frac > 0:
-                result["fractions"][frac] = float(area_frac * cr)
-            else:
-                result["fractions"][frac] = 0.0
+        # Concentracions per fracció (només COLUMN)
+        if mode.upper() == "COLUMN":
+            for frac in ["BioP", "HS", "BB", "SB", "LMW"]:
+                area_frac = areas_direct.get(frac, 0)
+                if area_frac > 0:
+                    result["fractions"][frac] = float(area_frac / rf_direct)
+                else:
+                    result["fractions"][frac] = 0.0
+
+    # =========================================================================
+    # QUANTIFICACIÓ DOC UIB (si DUAL i rf_uib disponible)
+    # =========================================================================
+    if rf_uib and rf_uib > 0:
+        areas_uib = sample_result.get("areas_uib", {})
+        area_total_uib = areas_uib.get("total", 0)
+
+        if area_total_uib > 0:
+            result["concentration_ppm_uib"] = float(area_total_uib / rf_uib)
+
+        # Concentracions UIB per fracció (només COLUMN)
+        if mode.upper() == "COLUMN":
+            for frac in ["BioP", "HS", "BB", "SB", "LMW"]:
+                area_frac = areas_uib.get(frac, 0)
+                if area_frac > 0:
+                    result["fractions_uib"][frac] = float(area_frac / rf_uib)
+                else:
+                    result["fractions_uib"][frac] = 0.0
 
     return result
 
@@ -1195,6 +1308,7 @@ def analyze_sample(sample_data, calibration_data=None, config=None):
     result = {
         "name": sample_data.get("name", "UNKNOWN"),
         "replica": sample_data.get("replica", "1"),
+        "inj_volume": sample_data.get("inj_volume"),  # Preservar per quantificació
         "processed": False,
         "anomalies": [],
     }
@@ -1251,17 +1365,23 @@ def analyze_sample(sample_data, calibration_data=None, config=None):
             # UIB: interpolar a escala t_doc (referencia Direct)
             if t_doc_uib is not None and y_doc_uib is not None and len(y_doc_uib) > 0:
                 t_uib_arr = np.asarray(t_doc_uib).flatten()
-                # Aplicar shift + interpolació a RAW
-                if abs(shift_uib) > 0.001:
-                    y_doc_uib = apply_shift(t_doc, t_uib_arr, y_doc_uib, shift_uib)
-                elif len(t_uib_arr) != len(t_doc):
-                    y_doc_uib = np.interp(t_doc, t_uib_arr, y_doc_uib, left=0, right=0)
-                # Aplicar shift + interpolació a NET (si disponible)
-                if y_doc_uib_net_precomp is not None:
+                # Validar que t_uib i y_uib tenen la mateixa longitud
+                if len(t_uib_arr) == len(y_doc_uib):
+                    # Aplicar shift + interpolació a RAW
                     if abs(shift_uib) > 0.001:
-                        y_doc_uib_net_precomp = apply_shift(t_doc, t_uib_arr, y_doc_uib_net_precomp, shift_uib)
+                        y_doc_uib = apply_shift(t_doc, t_uib_arr, y_doc_uib, shift_uib)
                     elif len(t_uib_arr) != len(t_doc):
-                        y_doc_uib_net_precomp = np.interp(t_doc, t_uib_arr, y_doc_uib_net_precomp, left=0, right=0)
+                        y_doc_uib = np.interp(t_doc, t_uib_arr, y_doc_uib, left=0, right=0)
+                    # Aplicar shift + interpolació a NET (si disponible)
+                    if y_doc_uib_net_precomp is not None and len(t_uib_arr) == len(y_doc_uib_net_precomp):
+                        if abs(shift_uib) > 0.001:
+                            y_doc_uib_net_precomp = apply_shift(t_doc, t_uib_arr, y_doc_uib_net_precomp, shift_uib)
+                        elif len(t_uib_arr) != len(t_doc):
+                            y_doc_uib_net_precomp = np.interp(t_doc, t_uib_arr, y_doc_uib_net_precomp, left=0, right=0)
+                else:
+                    # Longitud no coincideix - invalidar UIB
+                    y_doc_uib = None
+                    y_doc_uib_net_precomp = None
             elif y_doc_uib is not None and len(y_doc_uib) != len(t_doc):
                 y_doc_uib = None
                 y_doc_uib_net_precomp = None
@@ -1282,12 +1402,17 @@ def analyze_sample(sample_data, calibration_data=None, config=None):
     # Necessari quan UIB té diferent resolució temporal que Direct
     if is_dual and t_doc_uib is not None and y_doc_uib is not None:
         t_uib_arr = np.asarray(t_doc_uib).flatten()
-        if len(t_uib_arr) != len(t_doc):
+        # Validar que t i y tenen la mateixa longitud
+        if len(t_uib_arr) == len(y_doc_uib) and len(t_uib_arr) != len(t_doc):
             # Interpolar UIB RAW a escala Direct
             y_doc_uib = np.interp(t_doc, t_uib_arr, y_doc_uib, left=0, right=0)
             # Interpolar UIB NET si disponible
-            if y_doc_uib_net_precomp is not None:
+            if y_doc_uib_net_precomp is not None and len(t_uib_arr) == len(y_doc_uib_net_precomp):
                 y_doc_uib_net_precomp = np.interp(t_doc, t_uib_arr, y_doc_uib_net_precomp, left=0, right=0)
+        elif len(t_uib_arr) != len(y_doc_uib):
+            # Longitud no coincideix - invalidar UIB
+            y_doc_uib = None
+            y_doc_uib_net_precomp = None
 
     # Correcció de baseline
     # REQUEREIX y_net precalculat per import. Si no disponible → error.
@@ -1366,6 +1491,41 @@ def analyze_sample(sample_data, calibration_data=None, config=None):
         result["fwhm_doc"] = fwhm_doc
         result["symmetry_doc"] = sym_doc
 
+        # Bi-Gaussian fit DOC (NOMÉS BP mode)
+        if is_bp:
+            try:
+                # Ampliar límits per fit (necessita més punts que per integració)
+                if fwhm_doc and fwhm_doc > 0:
+                    dt = t_doc[1] - t_doc[0] if len(t_doc) > 1 else 0.07
+                    n_points_fwhm = int(fwhm_doc * 3 / dt)
+                    fit_left = max(0, peak_idx - max(n_points_fwhm, 30))
+                    fit_right = min(len(t_doc) - 1, peak_idx + max(n_points_fwhm, 30))
+                else:
+                    n_fallback = max(30, len(t_doc) // 5)
+                    fit_left = max(0, peak_idx - n_fallback)
+                    fit_right = min(len(t_doc) - 1, peak_idx + n_fallback)
+
+                bigauss_result = fit_bigaussian(t_doc, y_smooth, peak_idx, fit_left, fit_right)
+                if bigauss_result.get("valid"):
+                    result["bigaussian_doc"] = {
+                        "r2": bigauss_result.get("r2", 0),
+                        "amplitude": bigauss_result.get("amplitude", 0),
+                        "mu": bigauss_result.get("mu", 0),
+                        "sigma_left": bigauss_result.get("sigma_left", 0),
+                        "sigma_right": bigauss_result.get("sigma_right", 0),
+                        "asymmetry": bigauss_result.get("asymmetry", 1),
+                        "valid": True,
+                    }
+                    r2 = bigauss_result.get("r2", 0)
+                    if r2 >= THRESH_R2_VALID:
+                        result["bigaussian_doc"]["quality"] = "VALID"
+                    elif r2 >= THRESH_R2_CHECK:
+                        result["bigaussian_doc"]["quality"] = "CHECK"
+                    else:
+                        result["bigaussian_doc"]["quality"] = "INVALID"
+            except Exception:
+                result["bigaussian_doc"] = {"valid": False, "r2": 0}
+
         # FWHM per UIB si és DUAL
         if is_dual and y_doc_uib_net is not None and len(y_doc_uib_net) > 0:
             y_uib_smooth = apply_smoothing(y_doc_uib_net)
@@ -1407,15 +1567,31 @@ def analyze_sample(sample_data, calibration_data=None, config=None):
                             peak_idx_254, left_idx_254, right_idx_254
                         )
                         result["symmetry_254"] = sym_254
+
+                        # Bi-Gaussian fit DAD 254 (BP mode)
+                        try:
+                            bigauss_254 = fit_bigaussian(t_dad, y_254_smooth, peak_idx_254, left_idx_254, right_idx_254)
+                            if bigauss_254.get("valid"):
+                                result["bigaussian_254"] = {
+                                    "r2": bigauss_254.get("r2", 0),
+                                    "asymmetry": bigauss_254.get("asymmetry", 1),
+                                    "valid": True,
+                                }
+                                r2_254 = bigauss_254.get("r2", 0)
+                                if r2_254 >= THRESH_R2_VALID:
+                                    result["bigaussian_254"]["quality"] = "VALID"
+                                elif r2_254 >= THRESH_R2_CHECK:
+                                    result["bigaussian_254"]["quality"] = "CHECK"
+                                else:
+                                    result["bigaussian_254"]["quality"] = "INVALID"
+                        except Exception:
+                            pass
             except Exception:
                 pass
 
-    # Calcular àrees per fraccions
-    if not is_bp:
-        areas = calcular_arees_fraccions_complet(t_doc, y_doc_net, df_dad, config)
-    else:
-        # Per BP, només àrea total
-        areas = {"DOC": calcular_fraccions_temps(t_doc, y_doc_net, config)}
+    # Calcular àrees per fraccions (inclou DAD si disponible)
+    # Usar funció completa per tots els modes - les fraccions s'adapten al temps
+    areas = calcular_arees_fraccions_complet(t_doc, y_doc_net, df_dad, config)
 
     result["areas"] = areas
 
@@ -1440,7 +1616,22 @@ def analyze_sample(sample_data, calibration_data=None, config=None):
         result["snr_info_dad"] = dad_snr_info
 
     # =========================================================================
-    # MÈTRIQUES ADDICIONALS (només COLUMN i DUAL)
+    # ÀREES UIB (per DUAL o quan només hi ha UIB)
+    # =========================================================================
+    # A08: Calcular areas_uib si:
+    #   - Mode DUAL amb y_doc_uib_net disponible
+    #   - O mode simple però dades venen d'UIB (is_uib_only)
+    is_uib_only = sample_data.get("is_uib_only", False)
+
+    if is_dual and "DOC" in areas and y_doc_uib_net is not None:
+        areas_uib = calcular_fraccions_temps(t_doc, y_doc_uib_net, config)
+        result["areas_uib"] = areas_uib
+    elif is_uib_only and "DOC" in areas:
+        # Només UIB: les àrees DOC ja són d'UIB, copiar a areas_uib
+        result["areas_uib"] = areas.get("DOC", {}).copy()
+
+    # =========================================================================
+    # MÈTRIQUES ADDICIONALS (només COLUMN)
     # =========================================================================
     if not is_bp:
         # --- Pearson Direct vs UIB ---
@@ -1452,12 +1643,9 @@ def analyze_sample(sample_data, calibration_data=None, config=None):
                 result["pearson_direct_uib"] = np.nan
 
         # --- Area diff % Direct vs UIB per fracció ---
-        if is_dual and "DOC" in areas:
+        if is_dual and "areas_uib" in result:
             areas_direct = areas.get("DOC", {})
-            # Calcular àrees UIB per fraccions
-            areas_uib = calcular_fraccions_temps(t_doc, y_doc_uib_net, config) if y_doc_uib_net is not None else {}
-            result["areas_uib"] = areas_uib
-
+            areas_uib = result["areas_uib"]
             area_diff_pct = {}
             for frac in ["BioP", "HS", "BB", "SB", "LMW", "total"]:
                 a_d = areas_direct.get(frac, 0)
@@ -1602,13 +1790,15 @@ def _flatten_samples_for_processing(imported_data, data_mode="DUAL"):
                     if "t_doc" not in flat_sample:
                         flat_sample["t_doc"] = uib["t"]
                     flat_sample["y_doc_uib"] = uib["y"]
-                    if "y_net" in uib:
+                    if "y_net" in uib and uib["y_net"] is not None:
                         flat_sample["y_doc_uib_net"] = uib["y_net"]
                     if "baseline" in uib:
                         flat_sample["baseline_uib"] = uib["baseline"]
 
                 # Fallback DUAL: si nomes hi ha un senyal, convertir a mode simple
                 if has_uib and not has_direct:
+                    # A08: Marcar que les dades venen d'UIB per calcular areas_uib
+                    flat_sample["is_uib_only"] = True
                     flat_sample["y_doc"] = uib["y"]
                     if "y_net" in uib:
                         flat_sample["y_doc_net"] = uib["y_net"]
@@ -1721,6 +1911,40 @@ def analyze_sequence(imported_data, calibration_data=None, config=None, progress
         result["errors"].append("No samples to process")
         return result
 
+    # =========================================================================
+    # SUPORT MÚLTIPLES CALIBRACIONS: Seleccionar calibració segons inj_volume
+    # =========================================================================
+    # Si una SEQ té múltiples KHP amb diferents condicions (ex: KHP2@100µL i KHP2@50µL),
+    # cada mostra usarà la calibració que coincideixi amb el seu volum d'injecció.
+    seq_path = imported_data.get("seq_path", "")
+    method = imported_data.get("method", "COLUMN")
+    mode = "BP" if method.upper() == "BP" else "COLUMN"
+
+    # Carregar totes les calibracions actives per aquesta SEQ
+    multi_calibrations = {}  # Cache: volume -> calibration_data
+    if seq_path:
+        try:
+            active_cals = get_all_active_calibrations(seq_path, mode)
+            for cal in active_cals:
+                vol = cal.get("volume_uL", 0)
+                if vol > 0:
+                    multi_calibrations[vol] = cal
+        except Exception as e:
+            result["warnings"].append(f"No s'han pogut carregar calibracions: {e}")
+
+    def get_sample_calibration(sample):
+        """Retorna la calibració correcta per una mostra segons el seu inj_volume."""
+        # Si hi ha múltiples calibracions, buscar per volum
+        if multi_calibrations:
+            inj_vol = sample.get("inj_volume")
+            if inj_vol and inj_vol in multi_calibrations:
+                return multi_calibrations[inj_vol]
+            # Fallback: usar la primera disponible
+            if multi_calibrations:
+                return list(multi_calibrations.values())[0]
+        # Fallback: usar calibration_data passat (compatibilitat)
+        return calibration_data
+
     # Processar mostres regulars
     processed_count = 0
     for i, sample in enumerate(all_samples):
@@ -1728,7 +1952,9 @@ def analyze_sequence(imported_data, calibration_data=None, config=None, progress
             progress_callback(f"Processing {sample.get('name', 'sample')}...", (i + 1) / total_samples * 100)
 
         try:
-            processed = analyze_sample(sample, calibration_data, config)
+            # Seleccionar calibració segons volum d'injecció de la mostra
+            sample_cal = get_sample_calibration(sample)
+            processed = analyze_sample(sample, sample_cal, config)
             result["samples"].append(processed)
 
             if not processed.get("processed"):
@@ -1745,7 +1971,8 @@ def analyze_sequence(imported_data, calibration_data=None, config=None, progress
             progress_callback(f"Processing KHP {khp.get('name', '')}...", (processed_count + i + 1) / total_samples * 100)
 
         try:
-            processed = analyze_sample(khp, calibration_data, config)
+            sample_cal = get_sample_calibration(khp)
+            processed = analyze_sample(khp, sample_cal, config)
             result["khp_samples"].append(processed)
         except Exception as e:
             result["errors"].append(f"KHP {khp.get('name')}: {str(e)}")
@@ -1758,7 +1985,8 @@ def analyze_sequence(imported_data, calibration_data=None, config=None, progress
             progress_callback(f"Processing {ctrl.get('name', '')}...", (processed_count + i + 1) / total_samples * 100)
 
         try:
-            processed = analyze_sample(ctrl, calibration_data, config)
+            sample_cal = get_sample_calibration(ctrl)
+            processed = analyze_sample(ctrl, sample_cal, config)
             result["control_samples"].append(processed)
         except Exception as e:
             result["errors"].append(f"Control {ctrl.get('name')}: {str(e)}")
@@ -1769,10 +1997,8 @@ def analyze_sequence(imported_data, calibration_data=None, config=None, progress
     if progress_callback:
         progress_callback("Comparing replicas...", 90)
 
-    # Detectar mode
-    method = imported_data.get("method", "COLUMN")
-    is_bp = method.upper() == "BP"
-    mode = "BP" if is_bp else "COLUMN"
+    # is_bp ja definit a dalt (mode, method extrets per multi-calibració)
+    is_bp = mode == "BP"
 
     # Agrupar mostres per nom
     samples_by_name = {}
@@ -1820,7 +2046,9 @@ def analyze_sequence(imported_data, calibration_data=None, config=None, progress
                 # Quantificació (usar rèplica seleccionada per DOC)
                 selected_replica = sample_group["selected"]["doc"]
                 selected_sample = replicas.get(selected_replica, r1)
-                quantification = quantify_sample(selected_sample, calibration_data, mode=mode)
+                # Usar calibració específica segons volum d'injecció
+                sample_cal = get_sample_calibration(selected_sample)
+                quantification = quantify_sample(selected_sample, sample_cal, mode=mode)
                 sample_group["quantification"] = quantification
 
         elif len(replica_keys) == 1:
@@ -1830,7 +2058,9 @@ def analyze_sequence(imported_data, calibration_data=None, config=None, progress
 
             # Quantificació
             if r1:
-                quantification = quantify_sample(r1, calibration_data, mode=mode)
+                # Usar calibració específica segons volum d'injecció
+                sample_cal = get_sample_calibration(r1)
+                quantification = quantify_sample(r1, sample_cal, mode=mode)
                 sample_group["quantification"] = quantification
 
         result["samples_grouped"][sample_name] = sample_group
@@ -1923,6 +2153,7 @@ def save_analysis_result(analysis_data, output_path=None):
     result = {
         "version": "1.0",
         "timestamp": datetime.now().isoformat(),
+        "date_processed": datetime.now().isoformat(),
         "seq_name": analysis_data.get("seq_name", ""),
         "seq_path": seq_path,
         "method": analysis_data.get("method", ""),
@@ -1935,6 +2166,8 @@ def save_analysis_result(analysis_data, output_path=None):
         "samples": [],
         "khp_samples": [],
         "control_samples": [],
+        # Mostres agrupades per nom (per GUI)
+        "samples_grouped": {},
     }
 
     def summarize_sample(sample):
@@ -1954,6 +2187,7 @@ def save_analysis_result(analysis_data, output_path=None):
             "timeout_info": sample.get("timeout_info", {}),
             # SNR
             "snr_info": sample.get("snr_info", {}),
+            "snr_info_dad": sample.get("snr_info_dad", {}),
             # Mètriques DUAL
             "batman_uib": sample.get("batman_uib"),
             "pearson_direct_uib": sample.get("pearson_direct_uib"),
@@ -1969,6 +2203,21 @@ def save_analysis_result(analysis_data, output_path=None):
 
     for ctrl in analysis_data.get("control_samples", []):
         result["control_samples"].append(summarize_sample(ctrl))
+
+    # Guardar samples_grouped (estructura agrupada per GUI)
+    samples_grouped = analysis_data.get("samples_grouped", {})
+    if samples_grouped:
+        for sample_name, sample_data in samples_grouped.items():
+            grouped_entry = {
+                "replicas": {},
+                "comparison": sample_data.get("comparison"),
+                "recommendation": sample_data.get("recommendation"),
+                "selected": sample_data.get("selected"),
+                "quantification": sample_data.get("quantification"),
+            }
+            for rep_key, rep_data in sample_data.get("replicas", {}).items():
+                grouped_entry["replicas"][rep_key] = summarize_sample(rep_data)
+            result["samples_grouped"][sample_name] = grouped_entry
 
     # Guardar
     try:
