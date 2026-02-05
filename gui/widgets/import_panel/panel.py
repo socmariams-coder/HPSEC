@@ -1905,6 +1905,7 @@ class ImportPanel(QWidget):
                     rep_data[signal_type] = {}
                 rep_data[signal_type]["manual_assignment"] = True
                 rep_data[signal_type]["manual_file"] = filename
+                rep_data[signal_type]["file"] = filename  # També guardar com a file per compatibilitat
 
         # Actualitzar manifest
         try:

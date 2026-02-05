@@ -2889,7 +2889,11 @@ def generate_import_manifest(imported_data, include_injection_details=True):
                     "t_max": float(max(t_arr)),
                     "baseline": uib.get("baseline"),
                 }
-            elif uib.get("file") or uib.get("n_points"):
+                # Afegir info d'assignació manual si existeix
+                if uib.get("manual_assignment"):
+                    replica_entry["uib"]["manual_assignment"] = True
+                    replica_entry["uib"]["manual_file"] = uib.get("manual_file", "")
+            elif uib.get("file") or uib.get("n_points") or uib.get("manual_file"):
                 # Preservar metadades encara que no hi hagi dades reals
                 replica_entry["uib"] = {
                     "source": "CSV",
@@ -2897,6 +2901,9 @@ def generate_import_manifest(imported_data, include_injection_details=True):
                     "n_points": uib.get("n_points", 0),
                     "baseline": uib.get("baseline"),
                 }
+                if uib.get("manual_assignment"):
+                    replica_entry["uib"]["manual_assignment"] = True
+                    replica_entry["uib"]["manual_file"] = uib.get("manual_file", "")
 
             # DAD
             dad = rep_data.get("dad") or {}
@@ -2905,13 +2912,27 @@ def generate_import_manifest(imported_data, include_injection_details=True):
                 t_col = df.columns[0]
                 replica_entry["dad"] = {
                     "source": rep_data.get("dad_source", "unknown"),
-                    "file": os.path.basename(dad.get("path", "")),
+                    "file": os.path.basename(dad.get("path", "") or dad.get("file", "")),
                     "n_points": len(df),
                     "n_wavelengths": len(df.columns) - 1,  # -1 per columna temps
                     "t_min": float(df[t_col].min()),
                     "t_max": float(df[t_col].max()),
                     "wavelengths_range": f"{df.columns[1]}-{df.columns[-1]}",
                 }
+                # Afegir info d'assignació manual si existeix
+                if dad.get("manual_assignment"):
+                    replica_entry["dad"]["manual_assignment"] = True
+                    replica_entry["dad"]["manual_file"] = dad.get("manual_file") or dad.get("file", "")
+            elif dad.get("file") or dad.get("manual_file"):
+                # Preservar metadades encara que no hi hagi DataFrame
+                replica_entry["dad"] = {
+                    "source": rep_data.get("dad_source", "unknown"),
+                    "file": dad.get("file", ""),
+                    "n_points": 0,
+                }
+                if dad.get("manual_assignment"):
+                    replica_entry["dad"]["manual_assignment"] = True
+                    replica_entry["dad"]["manual_file"] = dad.get("manual_file") or dad.get("file", "")
 
             # Suggeriments de matching (si n'hi ha)
             dad_suggestion = rep_data.get("dad_suggestion")
@@ -3231,7 +3252,8 @@ def import_from_manifest(seq_path, manifest=None, config=None, progress_callback
             # === DOC UIB ===
             uib_info = rep_info.get("uib")
             if uib_info:
-                uib_file = uib_info.get("file", "")
+                # Prioritzar manual_file si existeix (assignació manual de l'usuari)
+                uib_file = uib_info.get("manual_file") or uib_info.get("file", "")
 
                 # Preservar metadades del manifest encara que no es puguin llegir les dades
                 rep_data["uib"] = {
@@ -3243,6 +3265,7 @@ def import_from_manifest(seq_path, manifest=None, config=None, progress_callback
                     "n_points": uib_info.get("n_points", 0),
                     "y_net": None,
                     "baseline": None,
+                    "manual_assignment": uib_info.get("manual_assignment", False),
                 }
 
                 if uib_file:
@@ -3288,8 +3311,74 @@ def import_from_manifest(seq_path, manifest=None, config=None, progress_callback
                 dad_source = dad_info.get("source", "export3d")
                 rep_data["dad_source"] = dad_source
 
-                # Buscar fitxer DAD
-                if dad_source == "export3d":
+                # Prioritzar manual_file si existeix (assignació manual de l'usuari)
+                manual_dad_file = dad_info.get("manual_file")
+                dad_file_from_manifest = dad_info.get("file", "")
+
+                dad_loaded = False
+
+                # 1. Intentar carregar des de manual_file
+                if manual_dad_file and not dad_loaded:
+                    # Buscar el fitxer manual
+                    dad_dirs = ["Export3d", "Export3D", "CSV", "csv", ""]
+                    for subdir in dad_dirs:
+                        test_path = os.path.join(seq_path, subdir, manual_dad_file) if subdir else os.path.join(seq_path, manual_dad_file)
+                        if os.path.exists(test_path):
+                            try:
+                                df_dad, status = llegir_dad_export3d(test_path)
+                                if df_dad is not None and status.startswith("OK"):
+                                    rep_data["dad"] = {
+                                        "df": df_dad,
+                                        "path": test_path,
+                                        "file": manual_dad_file,
+                                        "manual_assignment": True,
+                                    }
+                                    rep_data["dad_source"] = "export3d"
+                                    rep_data["has_data"] = True
+                                    dad_loaded = True
+                                    break
+                            except Exception:
+                                pass
+                    if not dad_loaded:
+                        # Intentar amb dad1a
+                        for subdir in dad_dirs:
+                            test_path = os.path.join(seq_path, subdir, manual_dad_file) if subdir else os.path.join(seq_path, manual_dad_file)
+                            if os.path.exists(test_path):
+                                try:
+                                    df_dad, status = llegir_dad_1a(test_path)
+                                    if df_dad is not None and status.startswith("OK"):
+                                        rep_data["dad"] = {
+                                            "df": df_dad,
+                                            "path": test_path,
+                                            "file": manual_dad_file,
+                                            "manual_assignment": True,
+                                        }
+                                        rep_data["dad_source"] = "dad1a"
+                                        rep_data["has_data"] = True
+                                        dad_loaded = True
+                                        break
+                                except Exception:
+                                    pass
+
+                # 2. Intentar carregar des de file guardat al manifest
+                if dad_file_from_manifest and not dad_loaded:
+                    dad_dirs = ["Export3d", "Export3D", "CSV", "csv", ""]
+                    for subdir in dad_dirs:
+                        test_path = os.path.join(seq_path, subdir, dad_file_from_manifest) if subdir else os.path.join(seq_path, dad_file_from_manifest)
+                        if os.path.exists(test_path):
+                            try:
+                                df_dad, status = llegir_dad_export3d(test_path)
+                                if df_dad is not None and status.startswith("OK"):
+                                    rep_data["dad"] = {"df": df_dad, "path": test_path, "file": dad_file_from_manifest}
+                                    rep_data["dad_source"] = "export3d"
+                                    rep_data["has_data"] = True
+                                    dad_loaded = True
+                                    break
+                            except Exception:
+                                pass
+
+                # 3. Fallback: buscar per nom de mostra (comportament original)
+                if not dad_loaded and dad_source == "export3d":
                     path_3d = os.path.join(seq_path, "Export3d")
                     if not os.path.isdir(path_3d):
                         path_3d = os.path.join(seq_path, "Export3D")
