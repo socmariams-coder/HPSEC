@@ -2214,34 +2214,108 @@ def find_data_for_injection(injection, seq_path, uib_files, dad_files, dad_csv_f
                     result["has_data"] = True
                 break
 
+    # 2b. Fallback: buscar DAD a CSV (DAD1A format) si no hem trobat Export3d
+    if result["dad"] is None and dad_csv_files:
+        for dad_path in dad_csv_files:
+            if dad_path in used_files.get("dad", set()):
+                continue
+
+            filename = os.path.basename(dad_path)
+            # Extreure nom mostra del fitxer CSV (format típic: MOSTRA_DAD1A.csv)
+            file_sample = filename.replace("_DAD1A", "").replace("_DAD", "")
+            file_sample = os.path.splitext(file_sample)[0]
+
+            # Intentar extreure rèplica del nom
+            match = re.match(r'^(.+?)_R(\d+)$', file_sample, re.IGNORECASE)
+            if match:
+                file_sample_base = match.group(1)
+                file_rep = int(match.group(2))
+            else:
+                file_sample_base = file_sample
+                file_rep = 1
+
+            file_sample_norm = normalize_key(file_sample_base)
+            original_norm = normalize_key(original_name)
+
+            if file_sample_norm == original_norm and file_rep == inj_num:
+                df_dad, status = llegir_dad_1a(dad_path)
+                if status.startswith("OK") and not df_dad.empty:
+                    used_files.setdefault("dad", set()).add(dad_path)
+                    result["dad"] = {
+                        "path": dad_path,
+                        "df": df_dad,
+                    }
+                    result["dad_source"] = "csv"
+                    result["has_data"] = True
+                    break
+
     # 3. Si és KHP i no tenim DAD, buscar a MasterFile 3-DAD_KHP
     if sample_type == "KHP" and result["dad"] is None and master_khp_data is not None:
         # Buscar columna corresponent al KHP
-        khp_key = f"{original_name}_R{inj_num}"
+        # Format MasterFile 3-DAD_KHP: {SAMPLE}_{INJ}_R{REP} (e.g., KHP5_1_R1, KHP5_2_R2)
+        # Per KHP controls: injection number = replica number
+        khp_keys = [
+            # Format correcte: SAMPLE_INJ_R{REP} (prioritari)
+            f"{sample_name}_{inj_num}_R{inj_num}",  # KHP5_1_R1
+            f"{original_name}_{inj_num}_R{inj_num}",
+            # Formats alternatius
+            f"{original_name}_R{inj_num}",
+            f"{sample_name}_R{inj_num}",
+            f"{original_name}_{inj_num}",
+            f"{sample_name}_{inj_num}",
+        ]
+        # DEBUG: mostrar què busquem
+        print(f"[DEBUG 3-DAD_KHP] Buscant KHP: sample={sample_name}, original={original_name}, inj={inj_num}")
+        print(f"[DEBUG 3-DAD_KHP] Claus a buscar: {khp_keys}")
+        all_cols = list(master_khp_data.columns)
+        print(f"[DEBUG 3-DAD_KHP] Totes les columnes ({len(all_cols)}): {all_cols}")
 
-        for col in master_khp_data.columns:
-            if normalize_key(col) == normalize_key(khp_key):
-                col_idx = master_khp_data.columns.get_loc(col)
-                # Format 3-DAD_KHP: columna KHP té temps, següent té valors
-                # Estructura: KHP5_R1 | Unnamed:1 | NaN | KHP5_R2 | Unnamed:4
-                #             time     | value     | NaN | time    | value
-                if col_idx + 1 < len(master_khp_data.columns):
-                    time_col = col
-                    value_col = master_khp_data.columns[col_idx + 1]
-                    # Construir DataFrame (saltar primera fila que és capçalera "time (min)", "value (mAU)")
-                    df_khp = pd.DataFrame({
-                        "time (min)": pd.to_numeric(master_khp_data[time_col], errors="coerce"),
-                        "254": pd.to_numeric(master_khp_data[value_col], errors="coerce"),
-                    }).dropna()
-
-                    if not df_khp.empty and len(df_khp) > 5:
-                        result["dad"] = {
-                            "path": "MasterFile:3-DAD_KHP",
-                            "df": df_khp,
-                        }
-                        result["dad_source"] = "masterfile"
-                        result["has_data"] = True
+        found = False
+        for khp_key in khp_keys:
+            if found:
                 break
+            khp_key_norm = normalize_key(khp_key)
+            for col in master_khp_data.columns:
+                col_norm = normalize_key(str(col))
+                # Match exacte o parcial (la columna conté la clau)
+                if col_norm == khp_key_norm or khp_key_norm in col_norm:
+                    col_idx = master_khp_data.columns.get_loc(col)
+                    print(f"[DEBUG 3-DAD_KHP] MATCH! col='{col}', idx={col_idx}, key='{khp_key}'")
+
+                    # Format 3-DAD_KHP: columna KHP té temps, següent té valors
+                    # Estructura: KHP5_1_R1 | Unnamed:1 | NaN | KHP5_2_R2 | Unnamed:4
+                    #             time      | value     | NaN | time      | value
+                    if col_idx + 1 < len(master_khp_data.columns):
+                        time_col = col
+                        value_col = master_khp_data.columns[col_idx + 1]
+
+                        # Llegir dades saltant la primera fila (capçalera "time (min)", "value (mAU)")
+                        time_data = master_khp_data[time_col].iloc[1:] if len(master_khp_data) > 1 else master_khp_data[time_col]
+                        value_data = master_khp_data[value_col].iloc[1:] if len(master_khp_data) > 1 else master_khp_data[value_col]
+
+                        df_khp = pd.DataFrame({
+                            "time (min)": pd.to_numeric(time_data, errors="coerce"),
+                            "254": pd.to_numeric(value_data, errors="coerce"),
+                        }).dropna().reset_index(drop=True)
+
+                        print(f"[DEBUG 3-DAD_KHP] df_khp len={len(df_khp)}, empty={df_khp.empty}")
+                        if len(df_khp) > 0:
+                            print(f"[DEBUG 3-DAD_KHP] Primeres files: {df_khp.head(3).to_dict()}")
+
+                        if not df_khp.empty and len(df_khp) > 5:
+                            result["dad"] = {
+                                "path": "MasterFile:3-DAD_KHP",
+                                "df": df_khp,
+                                "source": "masterfile",
+                            }
+                            result["dad_source"] = "masterfile"
+                            result["has_data"] = True
+                            found = True
+                            print(f"[DEBUG 3-DAD_KHP] SUCCESS! Carregades {len(df_khp)} files de 3-DAD_KHP")
+                    break
+
+        if not found:
+            print(f"[DEBUG 3-DAD_KHP] NO MATCH per {sample_name} (inj {inj_num})")
 
     return result
 
@@ -2397,16 +2471,31 @@ def import_sequence(seq_path, config=None, progress_callback=None):
         master_khp_data = None
         toc_df = None
         toc_calc_df = None
+        has_3dad_khp_sheet = False
         try:
             xl = pd.ExcelFile(master_path)
             if "3-DAD_KHP" in xl.sheet_names:
                 master_khp_data = pd.read_excel(master_path, sheet_name="3-DAD_KHP")
+                has_3dad_khp_sheet = True
+                print(f"[DEBUG] Full 3-DAD_KHP trobat: {master_khp_data.shape if master_khp_data is not None else 'None'}")
+                if master_khp_data is not None:
+                    print(f"[DEBUG] Columnes 3-DAD_KHP: {list(master_khp_data.columns)}")
             if "2-TOC" in xl.sheet_names:
                 toc_df = pd.read_excel(master_path, sheet_name="2-TOC", header=6)
             if "4-TOC_CALC" in xl.sheet_names:
                 toc_calc_df = pd.read_excel(master_path, sheet_name="4-TOC_CALC")
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[WARNING] Error llegint fulls addicionals del MasterFile: {e}")
+
+        # Warning si no hi ha Export3D ni 3-DAD_KHP però hi ha KHP
+        has_export3d = os.path.isdir(path_3d) and len(dad_files) > 0
+        has_khp = any(inj.get("sample_type") == "KHP" for inj in injections)
+        if has_khp and not has_export3d and not has_3dad_khp_sheet:
+            result["warnings"].append(
+                "⚠️ ATENCIÓ: No s'ha trobat Export3D ni full 3-DAD_KHP al MasterFile. "
+                "Les mostres KHP no tindran dades DAD 254nm."
+            )
+            print("[WARNING] KHP sense Export3D ni 3-DAD_KHP - DAD 254nm no disponible")
 
         report_progress(40, "Processant injeccions...")
 
@@ -2832,6 +2921,7 @@ def generate_import_manifest(imported_data, include_injection_details=True):
 
         # Estat de revisió d'avisos
         "orphan_warning_dismissed": imported_data.get("orphan_warning_dismissed", False),
+        "warnings_confirmed": imported_data.get("warnings_confirmed", False),
     }
 
     # Detall per mostra
@@ -3128,6 +3218,7 @@ def import_from_manifest(seq_path, manifest=None, config=None, progress_callback
         "from_manifest": True,
         "manifest_date": manifest.get("generated_at", ""),
         "orphan_warning_dismissed": manifest.get("orphan_warning_dismissed", False),
+        "warnings_confirmed": manifest.get("warnings_confirmed", False),
     }
 
     # Verificar que MasterFile existeix

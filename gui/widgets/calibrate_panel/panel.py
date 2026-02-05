@@ -87,9 +87,9 @@ class CalibratePanel(QWidget):
             self.condition_selector_frame.setVisible(False)
             return
 
-        # Si ja tenim calibració carregada, no tornar a carregar
-        if self.calibration_data and self.calibration_data.get("success"):
-            return
+        # Sempre actualitzar el selector (pot haver-hi noves calibracions)
+        # Però no recarregar si ja tenim dades vàlides
+        has_valid_data = self.calibration_data and self.calibration_data.get("success")
 
         try:
             # Carregar totes les calibracions locals
@@ -117,8 +117,20 @@ class CalibratePanel(QWidget):
             # Guardar calibracions disponibles
             self._all_calibrations = list(calibrations_by_condition.values())
 
-            # Configurar selector de condicions
+            # Configurar selector de condicions (sempre actualitzar per mostrar totes)
             self._populate_condition_combo()
+
+            # Si ja tenim dades vàlides, només actualitzar el selector sense recarregar
+            if has_valid_data:
+                # Seleccionar la condició actual al combo si existeix
+                if self._current_condition_key:
+                    for i in range(self.condition_combo.count()):
+                        if self.condition_combo.itemData(i) == self._current_condition_key:
+                            self.condition_combo.blockSignals(True)
+                            self.condition_combo.setCurrentIndex(i)
+                            self.condition_combo.blockSignals(False)
+                            break
+                return
 
             # Carregar la primera calibració activa (o la primera disponible)
             active_cal = None
@@ -472,11 +484,11 @@ class CalibratePanel(QWidget):
 
         replica_sel_layout.addLayout(replica_header)
 
-        # Taula comparació rèpliques
+        # Taula comparació rèpliques (C09: eliminada columna Outlier, botó separat)
         self.replica_comparison_table = QTableWidget()
-        self.replica_comparison_table.setColumnCount(10)
+        self.replica_comparison_table.setColumnCount(9)
         self.replica_comparison_table.setHorizontalHeaderLabels([
-            "Rèplica", "Àrea", "t_max", "SNR", "Sym", "DOC/254", "Shift", "Q", "Seleccionada", "Outlier"
+            "Rèplica", "Àrea", "t_max", "SNR", "Sym", "DOC/254", "Shift", "Q", "Status"
         ])
         self.replica_comparison_table.horizontalHeaderItem(1).setToolTip("Àrea DOC integrada")
         self.replica_comparison_table.horizontalHeaderItem(2).setToolTip("Temps del pic màxim (min)")
@@ -486,7 +498,6 @@ class CalibratePanel(QWidget):
         self.replica_comparison_table.horizontalHeaderItem(6).setToolTip("Shift vs 254nm (segons)")
         self.replica_comparison_table.horizontalHeaderItem(7).setToolTip("Quality Score")
         self.replica_comparison_table.horizontalHeaderItem(8).setToolTip("Usada en calibració actual")
-        self.replica_comparison_table.horizontalHeaderItem(9).setToolTip("Marcada manualment com a outlier")
         self.replica_comparison_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         self.replica_comparison_table.setAlternatingRowColors(True)
         self.replica_comparison_table.setMaximumHeight(120)
@@ -497,18 +508,11 @@ class CalibratePanel(QWidget):
         # Fila inferior: botó per marcar outlier i estadístiques
         replica_footer = QHBoxLayout()
 
-        # Botó per marcar rèplica com a outlier
-        self.mark_replica_outlier_btn = QPushButton("Marcar com a Outlier")
-        self.mark_replica_outlier_btn.setToolTip("Marca la rèplica seleccionada com a outlier (no es farà servir per calibrar)")
-        self.mark_replica_outlier_btn.clicked.connect(self._on_mark_replica_outlier)
-        self.mark_replica_outlier_btn.setStyleSheet("""
-            QPushButton {
-                background: #E74C3C; color: white; border: none;
-                border-radius: 4px; padding: 5px 10px; font-size: 11px;
-            }
-            QPushButton:hover { background: #C0392B; }
-        """)
-        replica_footer.addWidget(self.mark_replica_outlier_btn)
+        # Botó per marcar rèplica com a outlier (C08: amagat - ara usen dropdown a columna Status)
+        # self.mark_replica_outlier_btn = QPushButton("Marcar com a Outlier")
+        # self.mark_replica_outlier_btn.setToolTip("Marca la rèplica seleccionada com a outlier")
+        # self.mark_replica_outlier_btn.clicked.connect(self._on_mark_replica_outlier)
+        # replica_footer.addWidget(self.mark_replica_outlier_btn)
 
         replica_footer.addStretch()
 
@@ -555,26 +559,20 @@ class CalibratePanel(QWidget):
 
         history_header.addStretch()
 
-        # Botó info petit i elegant
+        # Botó info per mostrar llegenda (C16: ara mostra diàleg al clicar)
         self.history_info_btn = QPushButton("?")
-        self.history_info_btn.setFixedSize(18, 18)
+        self.history_info_btn.setFixedSize(20, 20)
         self.history_info_btn.setCursor(Qt.WhatsThisCursor)
         self.history_info_btn.setStyleSheet("""
             QPushButton {
-                background: transparent; border: 1px solid #BDC3C7;
-                border-radius: 9px; font-size: 10px; font-weight: bold;
+                background: #ECF0F1; border: 1px solid #BDC3C7;
+                border-radius: 10px; font-size: 11px; font-weight: bold;
                 color: #7F8C8D;
             }
-            QPushButton:hover { background: #ECF0F1; color: #2E86AB; border-color: #2E86AB; }
+            QPushButton:hover { background: #3498DB; color: white; border-color: #2E86AB; }
         """)
-        self.history_info_btn.setToolTip(
-            "<b>Llegenda</b><br>"
-            "<span style='color:#27AE60'>■</span> Actual<br>"
-            "<span style='color:#5DADE2'>■</span> Vàlid<br>"
-            "<span style='color:#E74C3C'>■</span> Outlier<br>"
-            "<span style='color:#27AE60'>━</span> Mitjana ± σ<br><br>"
-            "<b>Filtres:</b> mode · conc · volum"
-        )
+        self.history_info_btn.setToolTip("Clic per veure llegenda i detalls")
+        self.history_info_btn.clicked.connect(self._show_history_legend)
         history_header.addWidget(self.history_info_btn)
         history_layout.addLayout(history_header)
 
@@ -1494,21 +1492,35 @@ class CalibratePanel(QWidget):
                 item.setBackground(QColor('#D5F5E3'))
             self.replica_comparison_table.setItem(row, 7, item)
 
-            # Col 8: Seleccionada
-            item = QTableWidgetItem("✓" if is_selected else "")
-            item.setTextAlignment(Qt.AlignCenter)
-            if is_selected:
-                item.setBackground(QColor('#D5F5E3'))
-            self.replica_comparison_table.setItem(row, 8, item)
-
-            # Col 9: Outlier (checkbox visual)
+            # Col 8: Status amb ComboBox (C08: permetre canviar manualment)
             is_outlier = rep.get('is_outlier', False)
-            item = QTableWidgetItem("✗" if is_outlier else "")
-            item.setTextAlignment(Qt.AlignCenter)
+            status_combo = QComboBox()
+            status_combo.addItems(["✓ Vàlida", "✗ Outlier"])
+            status_combo.setStyleSheet("""
+                QComboBox {
+                    border: none;
+                    background: transparent;
+                    padding: 2px;
+                    min-width: 80px;
+                }
+                QComboBox:drop-down { border: none; }
+            """)
+
             if is_outlier:
-                item.setBackground(QColor('#FADBD8'))
-                item.setForeground(QColor('#C0392B'))
-            self.replica_comparison_table.setItem(row, 9, item)
+                status_combo.setCurrentIndex(1)  # Outlier
+                status_combo.setStyleSheet(status_combo.styleSheet() + "QComboBox { color: #C0392B; background: #FADBD8; }")
+            elif is_selected:
+                status_combo.setCurrentIndex(0)  # Vàlida
+                status_combo.setStyleSheet(status_combo.styleSheet() + "QComboBox { color: #27AE60; background: #D5F5E3; }")
+            else:
+                status_combo.setCurrentIndex(0)
+
+            # Guardar referència a la rèplica per poder-la actualitzar
+            status_combo.setProperty("replica_num", rep.get('replica_num', row + 1))
+            status_combo.currentIndexChanged.connect(
+                lambda idx, r=rep.get('replica_num', row + 1): self._on_replica_status_changed(r, idx)
+            )
+            self.replica_comparison_table.setCellWidget(row, 8, status_combo)
 
         # === Actualitzar etiqueta diferències ===
         if comparison.get('comparable') and len(replica_details) >= 2:
@@ -1531,6 +1543,52 @@ class CalibratePanel(QWidget):
             self.replica_diff_label.setText("Diferències entre rèpliques: " + " | ".join(diff_parts))
         else:
             self.replica_diff_label.setText("")
+
+    def _on_replica_status_changed(self, replica_num, status_idx):
+        """Handler quan canvia l'estat d'una rèplica via dropdown (C08)."""
+        is_outlier = (status_idx == 1)  # 0 = Vàlida, 1 = Outlier
+
+        try:
+            from hpsec_calibrate import load_local_calibrations, save_local_calibrations
+            import os
+
+            seq_path = self.main_window.seq_path
+            if not seq_path:
+                return
+
+            calibrations = load_local_calibrations(seq_path)
+            seq_name = os.path.basename(seq_path)
+
+            # Buscar la calibració actual i actualitzar la rèplica
+            updated = False
+            for cal in calibrations:
+                if cal.get('seq_name') != seq_name:
+                    continue
+
+                # Actualitzar replicas_info
+                replicas_info = cal.get('replicas_info', [])
+                for rep in replicas_info:
+                    if rep.get('replica_num') == replica_num:
+                        rep['is_outlier'] = is_outlier
+                        updated = True
+                        break
+
+                # Actualitzar replica_comparison si existeix
+                replica_comp = cal.get('replica_comparison', {})
+                replica_details = replica_comp.get('replica_details', [])
+                for rep in replica_details:
+                    if rep.get('replica_num') == replica_num:
+                        rep['is_outlier'] = is_outlier
+                        updated = True
+                        break
+
+            if updated:
+                save_local_calibrations(seq_path, calibrations)
+                action = "marcada com a Outlier" if is_outlier else "restaurada com a Vàlida"
+                self.main_window.set_status(f"Rèplica R{replica_num} {action}", 3000)
+
+        except Exception as e:
+            print(f"[ERROR] Error canviant estat rèplica: {e}")
 
     def _on_selection_combo_changed(self):
         """Handler quan canvia la selecció al combo."""
@@ -1607,9 +1665,9 @@ class CalibratePanel(QWidget):
 
         replica_name = replica_item.text()
 
-        # Obtenir estat actual d'outlier
-        outlier_item = self.replica_comparison_table.item(row, 9)
-        is_currently_outlier = outlier_item and outlier_item.text() == "✗"
+        # Obtenir estat actual d'outlier (columna 8 = Status)
+        status_item = self.replica_comparison_table.item(row, 8)
+        is_currently_outlier = status_item and "Outlier" in status_item.text()
 
         # Confirmar acció
         action = "desmarcar" if is_currently_outlier else "marcar"
@@ -2063,6 +2121,49 @@ class CalibratePanel(QWidget):
         else:
             self.toggle_outlier_btn.setText("Marcar Outlier")
 
+    def _show_history_legend(self):
+        """Mostra diàleg amb llegenda i detalls del gràfic d'històric (C16)."""
+        from PySide6.QtWidgets import QMessageBox
+
+        legend_html = """
+<h3>Llegenda del Gràfic d'Històric</h3>
+
+<p><b>Colors de les barres:</b></p>
+<ul>
+<li><span style='color:#27AE60'>■ Verd</span> - Calibració actual (seqüència oberta)</li>
+<li><span style='color:#5DADE2'>■ Blau</span> - Calibracions vàlides</li>
+<li><span style='color:#E74C3C'>■ Vermell</span> - Outliers (exclosos de la mitjana)</li>
+</ul>
+
+<p><b>Línies horitzontals:</b></p>
+<ul>
+<li><span style='color:#27AE60'>━━━</span> Mitjana de calibracions vàlides</li>
+<li><span style='color:#27AE60'>- - -</span> Desviació estàndard (±1σ)</li>
+</ul>
+
+<p><b>Criteris per marcar Outlier automàtic:</b></p>
+<ul>
+<li>Àrea fora del rang mitjana ± 2σ</li>
+<li>Qualitat (Q) > 100 punts</li>
+<li>SNR < 50</li>
+</ul>
+
+<p><b>Columna "Motiu" a la taula:</b></p>
+<ul>
+<li>Desv. X% - Desviació respecte la mitjana</li>
+<li>Outlier - Marcat manualment o automàtic</li>
+<li>Invalid - Dades incompletes</li>
+</ul>
+
+<p><i>Nota: Pots marcar/desmarcar outliers manualment amb el botó "Marcar Outlier"</i></p>
+"""
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Llegenda Gràfic Històric")
+        msg.setTextFormat(Qt.RichText)
+        msg.setText(legend_html)
+        msg.setIcon(QMessageBox.Information)
+        msg.exec()
+
     def _on_show_outliers_changed(self, state):
         """Handler quan canvia el checkbox d'incloure outliers."""
         if self.calibration_data:
@@ -2151,16 +2252,33 @@ class CalibratePanel(QWidget):
         else:
             self.validation_group.setVisible(False)
 
-        # Actualitzar dades internes
+        # Actualitzar dades internes (CRÍTIC: RF i shift han de propagar correctament)
         new_rf = area / conc if conc > 0 else 0  # RF = area/conc (Response Factor)
-        if self.calibration_data:
-            self.calibration_data["rf_direct"] = new_rf
-            self.calibration_data["rf"] = new_rf
-            self.calibration_data["khp_source"] = f"ALTERNATIU: {seq_name}"
-            self.calibration_data["alternative_cal"] = cal
-            self.calibration_data["khp_conc"] = conc
-            self.calibration_data["shift_uib"] = shift_min
-            self.main_window.calibration_data = self.calibration_data
+
+        # Crear calibration_data si no existeix
+        if not self.calibration_data:
+            self.calibration_data = {"success": True}
+
+        # Actualitzar RF (Response Factor)
+        self.calibration_data["rf_direct"] = new_rf
+        self.calibration_data["rf_uib"] = cal.get('rf_uib', new_rf)  # Usar rf_uib de l'històric si disponible
+        self.calibration_data["rf"] = new_rf  # Compatibilitat
+
+        # Actualitzar SHIFT (IMPORTANT: propagar correctament)
+        self.calibration_data["shift_direct"] = shift_min  # En minuts
+        self.calibration_data["shift_uib"] = cal.get('shift_uib_min', shift_min)  # En minuts
+        self.calibration_data["shift"] = shift_min  # Compatibilitat
+
+        # Altres metadades
+        self.calibration_data["khp_source"] = f"ALTERNATIU: {seq_name}"
+        self.calibration_data["alternative_cal"] = cal
+        self.calibration_data["khp_conc"] = conc
+        self.calibration_data["success"] = True
+
+        # Propagar a main_window
+        self.main_window.calibration_data = self.calibration_data
+
+        print(f"[DEBUG] Calibració aplicada: RF={new_rf:.0f}, shift_direct={shift_min:.4f} min")
 
         QMessageBox.information(
             self, "Calibració Aplicada",
