@@ -1119,8 +1119,36 @@ class DashboardPanel(QWidget):
                             "reviewer": wc.get("reviewer", ""),
                         })
 
+                # 5. USER_NOTES (notes afegides manualment)
+                user_notes = data.get("user_notes", [])
+                for un in user_notes[-3:]:  # Últimes 3
+                    if isinstance(un, dict):
+                        notes.append({
+                            "stage": stage_name,
+                            "type": "USR",
+                            "content": un.get("note", "")[:60],
+                            "reviewer": un.get("reviewer", ""),
+                        })
+
             except Exception as e:
                 pass
+
+        # 6. Fitxer user_notes.json (notes sense etapa executada)
+        try:
+            notes_file = data_path / "user_notes.json"
+            if notes_file.exists():
+                with open(notes_file, 'r', encoding='utf-8') as f:
+                    notes_data = json.load(f)
+                for un in notes_data.get("notes", [])[-3:]:
+                    stage = un.get("stage", "?")[:3].upper()
+                    notes.append({
+                        "stage": stage,
+                        "type": "USR",
+                        "content": un.get("note", "")[:60],
+                        "reviewer": un.get("reviewer", ""),
+                    })
+        except Exception:
+            pass
 
         return notes
 

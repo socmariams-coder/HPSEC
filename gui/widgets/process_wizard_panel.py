@@ -753,14 +753,16 @@ class ProcessWizardPanel(QWidget):
             self.main_window.set_status("Confirmació revertida - revisar avisos", 2000)
 
     def _on_add_note(self):
-        """Obre diàleg per afegir una nota a l'etapa actual (sense warnings)."""
+        """Obre diàleg per afegir una nota a l'etapa actual.
+
+        SEMPRE disponible, independentment de l'estat de l'etapa.
+        """
         current_idx = self.tab_widget.currentIndex()
+        current_state = self.tab_states[current_idx]
+        stage_names = {0: "Importar", 1: "Calibrar", 2: "Analitzar", 3: "Consolidar"}
+        stage_name = stage_names.get(current_idx, "Etapa")
 
-        # Només permetre si l'etapa està completada (ok)
-        if self.tab_states[current_idx] != "ok":
-            return
-
-        # Diàleg simplificat per afegir nota
+        # Diàleg per afegir nota
         dialog = QDialog(self)
         dialog.setWindowTitle("Afegir Nota")
         dialog.setMinimumWidth(400)
@@ -806,15 +808,20 @@ class ProcessWizardPanel(QWidget):
             self.main_window.set_status(f"Nota afegida per {reviewer}", 2000)
 
     def _save_note(self, stage_idx: int, reviewer: str, note: str):
-        """Guarda una nota al JSON corresponent."""
+        """Guarda una nota al JSON corresponent.
+
+        SEMPRE funciona: si el JSON no existeix, crea un fitxer de notes separat.
+        """
         from datetime import datetime
         import json
 
         seq_path = self.main_window.seq_path
         if not seq_path:
+            QMessageBox.warning(self, "Avís", "No hi ha cap seqüència seleccionada.")
             return
 
         data_path = Path(seq_path) / "CHECK" / "data"
+        data_path.mkdir(parents=True, exist_ok=True)
 
         json_files = {
             0: "import_manifest.json",
@@ -822,32 +829,48 @@ class ProcessWizardPanel(QWidget):
             2: "analysis_result.json",
             3: "consolidation.json",
         }
+        stage_names = {0: "import", 1: "calibrate", 2: "analyze", 3: "consolidate"}
 
         filename = json_files.get(stage_idx)
-        if not filename:
-            return
+        stage_name = stage_names.get(stage_idx, "unknown")
 
-        json_file = data_path / filename
-        if not json_file.exists():
-            return
+        note_entry = {
+            "timestamp": datetime.now().isoformat(),
+            "reviewer": reviewer,
+            "note": note,
+            "stage": stage_name,
+        }
 
         try:
-            with open(json_file, 'r', encoding='utf-8') as f:
-                data = json.load(f)
+            json_file = data_path / filename if filename else None
 
-            # Afegir nota a l'historial
-            note_entry = {
-                "timestamp": datetime.now().isoformat(),
-                "reviewer": reviewer,
-                "note": note,
-            }
+            # Si el JSON de l'etapa existeix, afegir la nota allà
+            if json_file and json_file.exists():
+                with open(json_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
 
-            if "user_notes" not in data:
-                data["user_notes"] = []
-            data["user_notes"].append(note_entry)
+                if "user_notes" not in data:
+                    data["user_notes"] = []
+                data["user_notes"].append(note_entry)
 
-            with open(json_file, 'w', encoding='utf-8') as f:
-                json.dump(data, f, indent=2, ensure_ascii=False, default=str)
+                with open(json_file, 'w', encoding='utf-8') as f:
+                    json.dump(data, f, indent=2, ensure_ascii=False, default=str)
+
+            else:
+                # Si no existeix, guardar a un fitxer de notes general
+                notes_file = data_path / "user_notes.json"
+                if notes_file.exists():
+                    with open(notes_file, 'r', encoding='utf-8') as f:
+                        notes_data = json.load(f)
+                else:
+                    notes_data = {"notes": []}
+
+                notes_data["notes"].append(note_entry)
+
+                with open(notes_file, 'w', encoding='utf-8') as f:
+                    json.dump(notes_data, f, indent=2, ensure_ascii=False, default=str)
+
+            self.main_window.set_status(f"Nota guardada: {stage_name}", 2000)
 
         except Exception as e:
             QMessageBox.warning(self, "Error", f"No s'ha pogut guardar la nota: {e}")
