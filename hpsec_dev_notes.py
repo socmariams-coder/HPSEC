@@ -30,12 +30,26 @@ from typing import Optional, Dict, List, Any
 # Path del fitxer de notes (REGISTRY)
 def _get_notes_path() -> Path:
     """Retorna el path del fitxer de notes."""
-    from hpsec_config import load_config
-    config = load_config()
-    registry = Path(config.get("paths", {}).get("registry", ""))
-    if not registry.exists():
-        registry = Path(__file__).parent / "REGISTRY"
-    return registry / "Development_Notes.json"
+    # Intentar llegir del config, sinó usar default
+    try:
+        from hpsec_config import get_config
+        config = get_config()
+        registry_path = config.get("paths.registry", "")
+        if registry_path:
+            registry = Path(registry_path)
+            if registry.exists():
+                return registry / "Development_Notes.json"
+    except Exception:
+        pass
+
+    # Fallback: buscar REGISTRY a Dades3 o Dades2
+    for folder in ["Dades3", "Dades2"]:
+        registry = Path(f"C:/Users/Lequia/Desktop/{folder}/REGISTRY")
+        if registry.exists():
+            return registry / "Development_Notes.json"
+
+    # Últim fallback: REGISTRY local
+    return Path(__file__).parent / "REGISTRY" / "Development_Notes.json"
 
 
 def _load_notes() -> Dict:
