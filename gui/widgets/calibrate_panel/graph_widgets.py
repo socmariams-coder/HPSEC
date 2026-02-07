@@ -13,6 +13,13 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 import numpy as np
 
+# Importar funció bigaussiana per plotar el fit
+try:
+    from hpsec_core import bigaussian
+    HAS_BIGAUSSIAN = True
+except ImportError:
+    HAS_BIGAUSSIAN = False
+
 
 class KHPReplicaGraphWidget(QWidget):
     """Widget que mostra gràfics de KHP per rèplica amb DOC i DAD 254nm."""
@@ -89,6 +96,29 @@ class KHPReplicaGraphWidget(QWidget):
 
         # Plotar DOC
         ax.plot(t_doc, y_doc, color=color_doc, linewidth=1.2, label=f'DOC (A={area:.1f})')
+
+        # Plotar bigaussian fit si disponible (C05)
+        bigauss = rep.get('bigaussian_doc')
+        if HAS_BIGAUSSIAN and bigauss and bigauss.get('status') in ['VALID', 'CHECK']:
+            try:
+                amp = bigauss.get('amplitude', 0)
+                mu = bigauss.get('mu', 0)
+                sigma_l = bigauss.get('sigma_left', 0)
+                sigma_r = bigauss.get('sigma_right', 0)
+                r2 = bigauss.get('r2', 0)
+
+                if amp > 0 and mu > 0 and sigma_l > 0 and sigma_r > 0:
+                    # Crear rang de temps per la corba
+                    t_fit = np.linspace(mu - 4*sigma_l, mu + 4*sigma_r, 200)
+                    # Calcular bigaussiana (baseline=0 perquè ja treballem amb y_net)
+                    y_fit = bigaussian(t_fit, amp, mu, sigma_l, sigma_r, 0)
+
+                    # Plotar fit amb línia discontínua
+                    fit_color = '#27AE60' if bigauss.get('status') == 'VALID' else '#F39C12'
+                    ax.plot(t_fit, y_fit, color=fit_color, linewidth=1.5, linestyle='--',
+                           alpha=0.8, label=f'Fit (R²={r2:.3f})')
+            except Exception as e:
+                print(f"Warning: Error plotant bigaussian fit: {e}")
 
         # Marcar pic principal
         peak_info = rep.get('peak_info', {})
@@ -171,6 +201,137 @@ class KHPReplicaGraphWidget(QWidget):
                 else:
                     ax.annotate(f'TO@{t_label:.1f}', xy=(0.02, 0.88), xycoords='axes fraction',
                                fontsize=7, color='#E67E22', va='top')
+
+    def clear(self):
+        self.figure.clear()
+        self.canvas.draw()
+
+
+class CalibrationLineWidget(QWidget):
+    """Widget que mostra la recta de calibració amb punts de SEQs recents."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.figure = Figure(figsize=(5, 2.5), dpi=100)
+        self.canvas = FigureCanvas(self.figure)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.canvas)
+
+        self.setMinimumHeight(180)
+        self.setMaximumHeight(220)
+
+    def plot_calibration(self, qc_history, current_seq_name, rf_mass_cal=682,
+                         warning_pct=5.0, fail_pct=10.0, n_context=2):
+        """
+        Gràfic de recta de calibració amb punts de SEQs recents.
+
+        Args:
+            qc_history: Llista d'entrades del QC_History.json
+            current_seq_name: Nom de la SEQ actual
+            rf_mass_cal: Pendent de la recta (rf_mass de calibració)
+            warning_pct: % tolerància warning
+            fail_pct: % tolerància fail
+            n_context: Nombre de SEQs a mostrar abans/després de l'actual
+        """
+        self.figure.clear()
+        ax = self.figure.add_subplot(111)
+
+        # Recta de calibració: Area = rf_mass_cal × µg_DOC
+        # µg_DOC = conc_ppm × volume_uL / 1000
+        max_ug = 5  # Fins a 5 µg DOC
+        x_line = np.linspace(0, max_ug, 100)
+        y_line = rf_mass_cal * x_line
+
+        # Bandes de tolerància
+        y_warning_upper = y_line * (1 + warning_pct / 100)
+        y_warning_lower = y_line * (1 - warning_pct / 100)
+        y_fail_upper = y_line * (1 + fail_pct / 100)
+        y_fail_lower = y_line * (1 - fail_pct / 100)
+
+        # Omplir zones
+        ax.fill_between(x_line, y_fail_lower, y_fail_upper,
+                       alpha=0.1, color='#E74C3C', label=f'±{fail_pct:.0f}% fail')
+        ax.fill_between(x_line, y_warning_lower, y_warning_upper,
+                       alpha=0.15, color='#F39C12', label=f'±{warning_pct:.0f}% warning')
+
+        # Recta central
+        ax.plot(x_line, y_line, 'k-', linewidth=2, label=f'rf={rf_mass_cal}')
+
+        # Punts de QC history
+        if qc_history:
+            current_short = current_seq_name.replace('_SEQ', '').replace('_BP', '') if current_seq_name else ""
+
+            # Filtrar i ordenar per SEQ
+            entries = sorted(qc_history, key=lambda e: e.get('seq_name', ''))
+
+            # Trobar índex de l'actual
+            current_idx = None
+            for i, entry in enumerate(entries):
+                name = entry.get('seq_name', '').replace('_SEQ', '').replace('_BP', '')
+                if name == current_short:
+                    current_idx = i
+                    break
+
+            # Seleccionar ±n_context
+            if current_idx is not None:
+                start = max(0, current_idx - n_context)
+                end = min(len(entries), current_idx + n_context + 1)
+                entries_to_plot = entries[start:end]
+            else:
+                # Si no trobem l'actual, mostrar les últimes
+                entries_to_plot = entries[-5:] if len(entries) > 5 else entries
+
+            for entry in entries_to_plot:
+                seq_name = entry.get('seq_name', '').replace('_SEQ', '').replace('_BP', '')
+                measured = entry.get('measured', {})
+                area = measured.get('area', 0)
+                conc = entry.get('khp_conc_ppm', 0)
+                volume = entry.get('volume_uL', 0)
+
+                if area > 0 and conc > 0 and volume > 0:
+                    ug_doc = conc * volume / 1000
+                    is_current = seq_name == current_short
+                    status = entry.get('qc_result', {}).get('status', 'UNKNOWN')
+
+                    # Color segons status
+                    if is_current:
+                        color = '#27AE60'
+                        marker = 's'
+                        size = 80
+                        zorder = 10
+                    elif status == 'PASS':
+                        color = '#3498DB'
+                        marker = 'o'
+                        size = 50
+                        zorder = 5
+                    elif status == 'WARNING':
+                        color = '#F39C12'
+                        marker = '^'
+                        size = 60
+                        zorder = 6
+                    else:  # FAIL
+                        color = '#E74C3C'
+                        marker = 'x'
+                        size = 70
+                        zorder = 7
+
+                    ax.scatter(ug_doc, area, c=color, marker=marker, s=size,
+                              zorder=zorder, edgecolors='white', linewidths=0.5)
+                    ax.annotate(seq_name, (ug_doc, area), fontsize=7,
+                               xytext=(3, 3), textcoords='offset points',
+                               color=color if is_current else 'gray')
+
+        ax.set_xlabel('µg DOC', fontsize=9)
+        ax.set_ylabel('Àrea (mAU·min)', fontsize=9)
+        ax.set_xlim(0, max_ug)
+        ax.set_ylim(0, max(rf_mass_cal * max_ug * 1.15, 3500))
+        ax.grid(True, alpha=0.3)
+        ax.legend(loc='upper left', fontsize=7, framealpha=0.9)
+
+        self.figure.tight_layout()
+        self.canvas.draw()
 
     def clear(self):
         self.figure.clear()

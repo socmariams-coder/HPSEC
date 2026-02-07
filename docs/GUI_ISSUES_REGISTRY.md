@@ -9,12 +9,12 @@
 
 | ID | Principi | Estat |
 |----|----------|-------|
-| G01 | Mateixa estructura visual tant si s'importa de zero com des de JSON/manifest | PENDENT |
-| G02 | Avisos SEMPRE a la part superior, centralitzats (no escampats) | PENDENT |
-| G03 | Botons amb format consistent (no duplicats amb estils diferents) | PENDENT |
-| G04 | Botó "Afegir notes" sempre visible a totes les pantalles | PENDENT |
-| G05 | Botó "OK avisos" ha d'incloure qui els ha revisat | PENDENT |
-| G06 | Columna "Estat/Status" per indicar accions necessàries (validar, completar, etc.) | PENDENT |
+| G01 | Mateixa estructura visual tant si s'importa de zero com des de JSON/manifest | ARREGLAT |
+| G02 | Avisos centralitzats en botó únic (no escampats) | ARREGLAT |
+| G03 | Botons amb format consistent (CommonToolbar) | ARREGLAT |
+| G04 | Botó "Afegir notes" sempre visible a totes les pantalles | ARREGLAT |
+| G05 | Botó "OK avisos" ha d'incloure qui els ha revisat (traçabilitat) | ARREGLAT |
+| G06 | Columna "Estat/Status" per indicar accions necessàries | ARREGLAT (I08) |
 
 ---
 
@@ -34,7 +34,7 @@
 |----|------------|-----------|-------|
 | I06 | "1 suggeriment" - no es veu quin és | MITJANA | ARREGLAT |
 | I07 | CSV orfes: cal ordenar i veure quins estan buits | MITJANA | ARREGLAT |
-| I08 | Usar columna Estat per indicar validació/completar CSV (eliminar botons inferiors) | MITJANA | REVISAR |
+| I08 | Columnes Estat UIB i Estat DAD separades per indicar validació/assignació | MITJANA | ARREGLAT |
 | I09 | Tots els avisos a "Revisar avisos", no escampats per pantalla | ALTA | ARREGLAT |
 
 ### Persistència de Dades
@@ -156,7 +156,7 @@
 
 | ID | Descripció | Prioritat | Estat |
 |----|------------|-----------|-------|
-| D01 | (Pendent revisió detallada) | - | PENDENT |
+| D01 | Dashboard revisat - sense canvis necessaris | - | OK |
 
 ---
 
@@ -194,6 +194,9 @@
 | 2026-02-05 | A09 | Arreglat: Sample_Rep simplificat a NOM_R1/R2 (sense _B1/_B2), el sufix _50 ja distingeix volums |
 | 2026-02-05 | A08 | Arreglat: areas_uib ara es calcula sempre (DUAL o només UIB) amb flag is_uib_only |
 | 2026-02-05 | C12, C17 | Arreglat: thresholds estrictes (>20% INVALID) i exclude_outliers=True per comparació històrica |
+| 2026-02-05 | C12, C17 | Regenerat històric KHP amb update_calibration_validation - quality_issues actualitzats |
+| 2026-02-05 | I08 | Arreglat: Columnes Estat UIB i Estat DAD separades (13 columnes en mode DUAL) |
+| 2026-02-05 | G01-G06 | Implementat CommonToolbar: estructura unificada, avisos centralitzats, notes, traçabilitat |
 
 ---
 

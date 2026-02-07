@@ -954,6 +954,431 @@ def generate_all_reports(seq_path, xlsx_files, info, output_path=None):
 
 
 # =============================================================================
+# FUNCIONS DE GENERACIÓ DE GRÀFICS PER FASE
+# =============================================================================
+
+def generate_import_plots(seq_path, import_result):
+    """
+    Genera gràfics de la fase d'importació (cromatogrames raw en grid).
+
+    Args:
+        seq_path: Ruta a la carpeta SEQ
+        import_result: Dict amb el resultat de la importació
+
+    Returns:
+        Path del PDF generat o None si hi ha error
+    """
+    if not import_result or not import_result.get('success'):
+        return None
+
+    apply_style()
+
+    # Preparar paths
+    check_path = os.path.join(seq_path, "CHECK", "data")
+    os.makedirs(check_path, exist_ok=True)
+
+    seq_name = os.path.basename(seq_path)
+    pdf_path = os.path.join(check_path, f"PLOTS_Import_{seq_name}.pdf")
+
+    samples = import_result.get("samples", {})
+    if not samples:
+        return None
+
+    # Ordenar mostres (excloure controls)
+    sample_names = [n for n in sorted(samples.keys()) if not is_control(n)]
+
+    with PdfPages(pdf_path) as pdf:
+        # Grid: 3 columnes x 4 files per pàgina = 12 gràfics
+        samples_per_page = 12
+        n_cols, n_rows = 3, 4
+
+        for page_start in range(0, len(sample_names), samples_per_page):
+            page_samples = sample_names[page_start:page_start + samples_per_page]
+
+            fig = plt.figure(figsize=(11.69, 8.27))  # A4 landscape
+            fig.patch.set_facecolor('white')
+
+            page_num = (page_start // samples_per_page) + 1
+            total_pages = (len(sample_names) + samples_per_page - 1) // samples_per_page
+
+            draw_header(fig, "CROMATOGRAMES RAW - IMPORTACIÓ",
+                       f"Seqüència: {seq_name}", seq_name, page_num, total_pages)
+
+            gs = GridSpec(n_rows, n_cols, figure=fig,
+                         left=0.06, right=0.98, top=0.88, bottom=0.06,
+                         hspace=0.35, wspace=0.25)
+
+            for idx, sample_name in enumerate(page_samples):
+                row = idx // n_cols
+                col = idx % n_cols
+                ax = fig.add_subplot(gs[row, col])
+
+                sample_data = samples.get(sample_name, {})
+                replicas = sample_data.get("replicas", {})
+
+                # Plotar primera rèplica (o totes si n'hi ha poques)
+                _plot_sample_chromatogram(ax, sample_name, replicas)
+
+            pdf.savefig(fig, dpi=150)
+            plt.close(fig)
+
+    return pdf_path
+
+
+def _plot_sample_chromatogram(ax, sample_name, replicas):
+    """Plotar cromatograma d'una mostra amb DOC i DAD."""
+    if not replicas:
+        ax.text(0.5, 0.5, "Sense dades", ha='center', va='center',
+               fontsize=8, color='gray')
+        ax.set_title(sample_name, fontsize=8, fontweight='bold')
+        ax.axis('off')
+        return
+
+    # Usar primera rèplica
+    rep_key = sorted(replicas.keys())[0]
+    rep_data = replicas[rep_key]
+
+    has_data = False
+
+    # DOC Direct
+    direct = rep_data.get("direct", {})
+    if direct and direct.get("t") is not None:
+        t = np.asarray(direct["t"])
+        y = direct.get("y") if direct.get("y") is not None else direct.get("y_raw")
+        if y is not None:
+            y = np.asarray(y)
+            if len(t) > 0 and len(y) > 0:
+                ax.plot(t, y, color=COLORS["doc_direct"], linewidth=0.7, label="DOC")
+                has_data = True
+
+    # DOC UIB (si disponible)
+    uib = rep_data.get("uib", {})
+    if uib and uib.get("t") is not None:
+        t = np.asarray(uib["t"])
+        y = uib.get("y") if uib.get("y") is not None else uib.get("y_raw")
+        if y is not None:
+            y = np.asarray(y)
+            if len(t) > 0 and len(y) > 0:
+                ax.plot(t, y, color=COLORS["doc_uib"], linewidth=0.7,
+                       alpha=0.8, label="UIB")
+                has_data = True
+
+    # DAD 254nm (eix secundari)
+    dad = rep_data.get("dad", {})
+    if dad:
+        t_dad = None
+        y254 = None
+
+        # Format DataFrame
+        df_dad = dad.get("df")
+        if df_dad is not None:
+            try:
+                if "time (min)" in df_dad.columns:
+                    t_dad = df_dad["time (min)"].values
+                for col in df_dad.columns:
+                    if "254" in str(col):
+                        y254 = df_dad[col].values
+                        break
+            except:
+                pass
+
+        # Format arrays
+        if t_dad is None and dad.get("t") is not None:
+            t_dad = np.asarray(dad["t"])
+            wavelengths = dad.get("wavelengths", {})
+            y254 = wavelengths.get(254) or wavelengths.get("254")
+            if y254 is not None:
+                y254 = np.asarray(y254)
+
+        if t_dad is not None and y254 is not None and len(t_dad) > 0:
+            ax2 = ax.twinx()
+            ax2.plot(t_dad, y254, color=COLORS["dad_254"], linewidth=0.5,
+                    linestyle="--", alpha=0.6, label="254nm")
+            ax2.tick_params(axis='y', labelsize=6, colors=COLORS["dad_254"])
+            ax2.set_ylabel("254nm", fontsize=6, color=COLORS["dad_254"])
+            has_data = True
+
+    if not has_data:
+        ax.text(0.5, 0.5, "Sense dades", ha='center', va='center',
+               fontsize=8, color='gray')
+        ax.axis('off')
+    else:
+        ax.set_xlabel("min", fontsize=6)
+        ax.set_ylabel("DOC (mAU)", fontsize=6)
+        ax.tick_params(axis='both', labelsize=6)
+        ax.grid(True, alpha=0.3, linewidth=0.3)
+
+    # Truncar nom si és massa llarg
+    display_name = sample_name[:20] + "..." if len(sample_name) > 20 else sample_name
+    ax.set_title(display_name, fontsize=7, fontweight='bold')
+
+
+def generate_calibration_plots(seq_path, calibration_result, imported_data=None):
+    """
+    Genera gràfics de la fase de calibració (KHP).
+
+    Args:
+        seq_path: Ruta a la carpeta SEQ
+        calibration_result: Dict amb el resultat de la calibració
+        imported_data: Dict amb les dades importades (opcional)
+
+    Returns:
+        Path del PDF generat o None si hi ha error
+    """
+    if not calibration_result or not calibration_result.get('success'):
+        return None
+
+    apply_style()
+
+    # Preparar paths
+    check_path = os.path.join(seq_path, "CHECK", "data")
+    os.makedirs(check_path, exist_ok=True)
+
+    seq_name = os.path.basename(seq_path)
+    pdf_path = os.path.join(check_path, f"PLOTS_Calibration_{seq_name}.pdf")
+
+    with PdfPages(pdf_path) as pdf:
+        fig = plt.figure(figsize=(11.69, 8.27))  # A4 landscape
+        fig.patch.set_facecolor('white')
+
+        draw_header(fig, "CALIBRACIÓ KHP",
+                   f"Seqüència: {seq_name}", seq_name, 1, 1)
+
+        # Layout: 2x2 grid
+        gs = GridSpec(2, 2, figure=fig,
+                     left=0.08, right=0.95, top=0.85, bottom=0.10,
+                     hspace=0.30, wspace=0.25)
+
+        # Obtenir dades KHP
+        khp_data = calibration_result.get("khp_data", {})
+        replicas_direct = khp_data.get("replicas_direct", [])
+        replicas_uib = khp_data.get("replicas_uib", [])
+        factor = calibration_result.get("factor", 1.0)
+        khp_source = calibration_result.get("khp_source", "")
+        khp_conc = calibration_result.get("khp_conc_ppm", 0)
+
+        # Plot 1: Rèpliques Direct
+        ax1 = fig.add_subplot(gs[0, 0])
+        _plot_khp_replicas(ax1, replicas_direct, "KHP Direct", COLORS["doc_direct"])
+
+        # Plot 2: Rèpliques UIB (si existeixen)
+        ax2 = fig.add_subplot(gs[0, 1])
+        if replicas_uib:
+            _plot_khp_replicas(ax2, replicas_uib, "KHP UIB", COLORS["doc_uib"])
+        else:
+            ax2.text(0.5, 0.5, "Sense dades UIB", ha='center', va='center',
+                    fontsize=10, color='gray')
+            ax2.axis('off')
+            ax2.set_title("KHP UIB", fontsize=9, fontweight='bold')
+
+        # Plot 3: Àrees i factor
+        ax3 = fig.add_subplot(gs[1, 0])
+        _plot_calibration_summary(ax3, calibration_result)
+
+        # Plot 4: Info textual
+        ax4 = fig.add_subplot(gs[1, 1])
+        ax4.axis('off')
+
+        info_text = f"""
+RESUM CALIBRACIÓ
+================
+Font KHP: {khp_source}
+Concentració: {khp_conc:.1f} ppm
+
+Factor calibració: {factor:.4f}
+
+Rèpliques Direct: {len(replicas_direct)}
+Rèpliques UIB: {len(replicas_uib)}
+"""
+        ax4.text(0.1, 0.9, info_text, transform=ax4.transAxes,
+                fontsize=10, verticalalignment='top', fontfamily='monospace')
+
+        pdf.savefig(fig, dpi=150)
+        plt.close(fig)
+
+    return pdf_path
+
+
+def _plot_khp_replicas(ax, replicas, title, color):
+    """Plotar rèpliques KHP superposades."""
+    if not replicas:
+        ax.text(0.5, 0.5, "Sense dades", ha='center', va='center',
+               fontsize=10, color='gray')
+        ax.axis('off')
+        ax.set_title(title, fontsize=9, fontweight='bold')
+        return
+
+    for i, rep in enumerate(replicas):
+        t = rep.get('t_doc')
+        y = rep.get('y_doc')
+        area = rep.get('area', 0)
+
+        if t is not None and y is not None:
+            t = np.asarray(t)
+            y = np.asarray(y)
+            alpha = 0.7 if i > 0 else 1.0
+            ax.plot(t, y, color=color, linewidth=0.8, alpha=alpha,
+                   label=f"R{i+1} (A={area:.0f})")
+
+    ax.set_xlabel("Temps (min)", fontsize=8)
+    ax.set_ylabel("DOC (mAU)", fontsize=8)
+    ax.tick_params(axis='both', labelsize=7)
+    ax.grid(True, alpha=0.3)
+    ax.legend(fontsize=7, loc='upper right')
+    ax.set_title(title, fontsize=9, fontweight='bold')
+
+
+def _plot_calibration_summary(ax, calibration_result):
+    """Plotar resum de calibració (àrees per rèplica)."""
+    khp_data = calibration_result.get("khp_data", {})
+    replicas_direct = khp_data.get("replicas_direct", [])
+    replicas_uib = khp_data.get("replicas_uib", [])
+
+    areas_direct = [r.get('area', 0) for r in replicas_direct]
+    areas_uib = [r.get('area', 0) for r in replicas_uib]
+
+    x = np.arange(max(len(areas_direct), len(areas_uib)))
+    width = 0.35
+
+    if areas_direct:
+        ax.bar(x[:len(areas_direct)] - width/2, areas_direct, width,
+              label='Direct', color=COLORS["doc_direct"], alpha=0.8)
+    if areas_uib:
+        ax.bar(x[:len(areas_uib)] + width/2, areas_uib, width,
+              label='UIB', color=COLORS["doc_uib"], alpha=0.8)
+
+    ax.set_xlabel("Rèplica", fontsize=8)
+    ax.set_ylabel("Àrea", fontsize=8)
+    ax.set_xticks(x)
+    ax.set_xticklabels([f"R{i+1}" for i in x], fontsize=7)
+    ax.tick_params(axis='y', labelsize=7)
+    ax.legend(fontsize=7)
+    ax.set_title("Àrees KHP per rèplica", fontsize=9, fontweight='bold')
+    ax.grid(True, alpha=0.3, axis='y')
+
+
+def generate_analysis_plots(seq_path, analysis_result):
+    """
+    Genera gràfics de la fase d'anàlisi (cromatogrames processats en grid).
+
+    Args:
+        seq_path: Ruta a la carpeta SEQ
+        analysis_result: Dict amb el resultat de l'anàlisi
+
+    Returns:
+        Path del PDF generat o None si hi ha error
+    """
+    if not analysis_result or not analysis_result.get('success'):
+        return None
+
+    apply_style()
+
+    # Preparar paths
+    check_path = os.path.join(seq_path, "CHECK", "data")
+    os.makedirs(check_path, exist_ok=True)
+
+    seq_name = os.path.basename(seq_path)
+    pdf_path = os.path.join(check_path, f"PLOTS_Analysis_{seq_name}.pdf")
+
+    samples_grouped = analysis_result.get("samples_grouped", {})
+    if not samples_grouped:
+        return None
+
+    # Ordenar mostres (excloure controls i KHP)
+    sample_names = [n for n in sorted(samples_grouped.keys())
+                   if not is_control(n) and not is_khp(n)]
+
+    with PdfPages(pdf_path) as pdf:
+        # Grid: 3 columnes x 3 files per pàgina = 9 mostres
+        # Cada mostra mostra totes les rèpliques
+        samples_per_page = 9
+        n_cols, n_rows = 3, 3
+
+        for page_start in range(0, len(sample_names), samples_per_page):
+            page_samples = sample_names[page_start:page_start + samples_per_page]
+
+            fig = plt.figure(figsize=(11.69, 8.27))  # A4 landscape
+            fig.patch.set_facecolor('white')
+
+            page_num = (page_start // samples_per_page) + 1
+            total_pages = (len(sample_names) + samples_per_page - 1) // samples_per_page
+
+            draw_header(fig, "CROMATOGRAMES ANALITZATS",
+                       f"Seqüència: {seq_name}", seq_name, page_num, total_pages)
+
+            gs = GridSpec(n_rows, n_cols, figure=fig,
+                         left=0.06, right=0.98, top=0.88, bottom=0.06,
+                         hspace=0.35, wspace=0.25)
+
+            for idx, sample_name in enumerate(page_samples):
+                row = idx // n_cols
+                col = idx % n_cols
+                ax = fig.add_subplot(gs[row, col])
+
+                sample_data = samples_grouped.get(sample_name, {})
+                _plot_analyzed_sample(ax, sample_name, sample_data)
+
+            pdf.savefig(fig, dpi=150)
+            plt.close(fig)
+
+    return pdf_path
+
+
+def _plot_analyzed_sample(ax, sample_name, sample_data):
+    """Plotar mostra analitzada amb totes les rèpliques."""
+    replicas = sample_data.get("replicas", {})
+
+    if not replicas:
+        ax.text(0.5, 0.5, "Sense dades", ha='center', va='center',
+               fontsize=8, color='gray')
+        ax.set_title(sample_name, fontsize=7, fontweight='bold')
+        ax.axis('off')
+        return
+
+    colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd']
+    has_data = False
+
+    for i, (rep_key, rep_data) in enumerate(sorted(replicas.items())):
+        color = colors[i % len(colors)]
+
+        # Obtenir cromatograma (preferir DOC_final, després direct)
+        t = rep_data.get("t")
+        y = rep_data.get("y_final") or rep_data.get("y") or rep_data.get("y_raw")
+
+        # Format alternatiu: dins de "direct"
+        if t is None:
+            direct = rep_data.get("direct", {})
+            t = direct.get("t")
+            y = direct.get("y") or direct.get("y_raw")
+
+        if t is not None and y is not None:
+            t = np.asarray(t)
+            y = np.asarray(y)
+            if len(t) > 0 and len(y) > 0:
+                area = rep_data.get("area_total", 0)
+                label = f"R{rep_key}"
+                if area > 0:
+                    label += f" ({area:.0f})"
+                ax.plot(t, y, color=color, linewidth=0.6, alpha=0.8, label=label)
+                has_data = True
+
+    if not has_data:
+        ax.text(0.5, 0.5, "Sense dades", ha='center', va='center',
+               fontsize=8, color='gray')
+        ax.axis('off')
+    else:
+        ax.set_xlabel("min", fontsize=6)
+        ax.set_ylabel("mAU", fontsize=6)
+        ax.tick_params(axis='both', labelsize=6)
+        ax.grid(True, alpha=0.3, linewidth=0.3)
+        ax.legend(fontsize=5, loc='upper right', framealpha=0.7)
+
+    # Truncar nom si és massa llarg
+    display_name = sample_name[:18] + "..." if len(sample_name) > 18 else sample_name
+    ax.set_title(display_name, fontsize=7, fontweight='bold')
+
+
+# =============================================================================
 # TEST STANDALONE
 # =============================================================================
 if __name__ == "__main__":

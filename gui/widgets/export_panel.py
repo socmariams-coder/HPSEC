@@ -186,7 +186,8 @@ class ExportPanel(QWidget):
         self.empty_state = create_empty_state_widget(
             "📤",
             "No hi ha dades per exportar",
-            "Completa primer l'anàlisi per poder generar els fitxers d'exportació."
+            "Completa primer l'anàlisi per poder generar els fitxers d'exportació.",
+            parent=self
         )
         self.empty_state.setVisible(True)
         layout.addWidget(self.empty_state)

@@ -24,6 +24,43 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from hpsec_calibrate import load_khp_history
 
 import numpy as np
+import re
+
+# =========================================================================
+# HELPER: Extreu número de seqüència del nom
+# =========================================================================
+def extract_seq_number(seq_name):
+    """
+    Extreu el número de seqüència d'un nom de SEQ.
+    Ex: '2024121001_SEQ' -> 2024121001
+        'SEQ_001' -> 1
+        'HPSEC_20241210_02_SEQ' -> 2024121002
+    """
+    if not seq_name:
+        return 0
+
+    # Intentar patró comú: YYYYMMDDXX (10 dígits)
+    match = re.search(r'(\d{10})', seq_name)
+    if match:
+        return int(match.group(1))
+
+    # Patró alternatiu: YYYYMMDD_XX -> combinar
+    match = re.search(r'(\d{8})[_-]?(\d{1,2})', seq_name)
+    if match:
+        return int(match.group(1)) * 100 + int(match.group(2))
+
+    # Només números al final
+    match = re.search(r'(\d+)(?:_SEQ)?$', seq_name, re.IGNORECASE)
+    if match:
+        return int(match.group(1))
+
+    # Qualsevol número
+    match = re.search(r'(\d+)', seq_name)
+    if match:
+        return int(match.group(1))
+
+    return 0
+
 
 # Matplotlib
 import matplotlib
@@ -129,7 +166,7 @@ class HistoryPanel(QWidget):
         self.history_table.setColumnCount(22)
         self.history_table.setHorizontalHeaderLabels([
             "Data", "SEQ", "Mode", "KHP", "Vol", "Sens",
-            "Àrea_D", "Àrea_U", "RF_D", "RF_V",
+            "Àrea_D", "Àrea_U", "RF_D", "RF_M",
             "t_max", "FWHM", "Sym", "SNR",
             "DOC/254", "UIB/254", "AR", "nP",
             "Sel", "Q", "Estat", "Motiu"
@@ -137,7 +174,7 @@ class HistoryPanel(QWidget):
 
         # Tooltips capçaleres (veure docs/PARAMETRES_CALIBRACIO.md)
         # Columnes: Data(0), SEQ(1), Mode(2), KHP(3), Vol(4), Sens(5),
-        #           Àrea_D(6), Àrea_U(7), RF_D(8), RF_V(9), t_max(10), FWHM(11),
+        #           Àrea_D(6), Àrea_U(7), RF_D(8), RF_M(9), t_max(10), FWHM(11),
         #           Sym(12), SNR(13), DOC/254(14), UIB/254(15), AR(16), nP(17),
         #           Sel(18), Q(19), Estat(20), Motiu(21)
         headers = self.history_table.horizontalHeader()
@@ -146,7 +183,7 @@ class HistoryPanel(QWidget):
         self.history_table.horizontalHeaderItem(6).setToolTip("Àrea_D: Àrea DOC Direct")
         self.history_table.horizontalHeaderItem(7).setToolTip("Àrea_U: Àrea DOC UIB")
         self.history_table.horizontalHeaderItem(8).setToolTip("RF_D: Response Factor Direct = Àrea/Conc")
-        self.history_table.horizontalHeaderItem(9).setToolTip("RF_V: RF normalitzat per volum (RF/Vol×100) - CLAU!")
+        self.history_table.horizontalHeaderItem(9).setToolTip("RF_MASS: Àrea/µg DOC injectat - CLAU!")
         self.history_table.horizontalHeaderItem(10).setToolTip("t_max: Temps del pic màxim (min)")
         self.history_table.horizontalHeaderItem(11).setToolTip("FWHM: Full Width at Half Maximum (min)")
         self.history_table.horizontalHeaderItem(12).setToolTip("Sym: Simetria del pic")
@@ -193,16 +230,16 @@ class HistoryPanel(QWidget):
 
         self.content_tabs.addTab(tmax_widget, "⏱️ t_max (Deriva)")
 
-        # === TAB 4: Gràfic RF_V (clau!) ===
-        rfv_widget = QWidget()
-        rfv_layout = QVBoxLayout(rfv_widget)
-        rfv_layout.setContentsMargins(0, 8, 0, 0)
+        # === TAB 4: Gràfic RF_MASS (clau!) ===
+        rfmass_widget = QWidget()
+        rfmass_layout = QVBoxLayout(rfmass_widget)
+        rfmass_layout.setContentsMargins(0, 8, 0, 0)
 
-        self.rfv_figure = Figure(figsize=(10, 5), dpi=100)
+        self.rfv_figure = Figure(figsize=(10, 5), dpi=100)  # Mantenim nom intern
         self.rfv_canvas = FigureCanvas(self.rfv_figure)
-        rfv_layout.addWidget(self.rfv_canvas)
+        rfmass_layout.addWidget(self.rfv_canvas)
 
-        self.content_tabs.addTab(rfv_widget, "⚡ RF_V (Clau)")
+        self.content_tabs.addTab(rfmass_widget, "⚡ RF_MASS")
 
         # === TAB 5: Gràfic D/254 ===
         ratio_widget = QWidget()
@@ -225,6 +262,17 @@ class HistoryPanel(QWidget):
         fwhm_layout.addWidget(self.fwhm_canvas)
 
         self.content_tabs.addTab(fwhm_widget, "📉 FWHM")
+
+        # === TAB 7: Gràfic UIB Ratio (Àrea Direct / Àrea UIB) ===
+        uib_widget = QWidget()
+        uib_layout = QVBoxLayout(uib_widget)
+        uib_layout.setContentsMargins(0, 8, 0, 0)
+
+        self.uib_figure = Figure(figsize=(10, 5), dpi=100)
+        self.uib_canvas = FigureCanvas(self.uib_figure)
+        uib_layout.addWidget(self.uib_canvas)
+
+        self.content_tabs.addTab(uib_widget, "🔬 UIB Ratio")
 
         layout.addWidget(self.content_tabs)
 
@@ -286,47 +334,17 @@ class HistoryPanel(QWidget):
         self._load_history()
 
     def _load_history(self):
-        """Carrega tot l'històric de calibracions."""
+        """Carrega tot l'històric de calibracions des de REGISTRY/KHP_History.json."""
         self._all_calibrations = []
 
-        # Intentar carregar des de múltiples ubicacions
-        possible_paths = []
-
-        # 1. Path de la SEQ actual
-        if self.main_window.seq_path:
-            seq_path = Path(self.main_window.seq_path)
-            possible_paths.extend([
-                seq_path.parent / "khp_calibration_history.json",
-                seq_path.parent.parent / "khp_calibration_history.json",
-                seq_path / "CALDATA" / "khp_calibration_history.json",
-            ])
-
-        # 2. Paths comuns
-        possible_paths.extend([
-            Path.home() / "HPSEC_Data" / "khp_calibration_history.json",
-            Path("D:/HPSEC/khp_calibration_history.json"),
-            Path("C:/HPSEC/khp_calibration_history.json"),
-        ])
-
-        for hist_path in possible_paths:
-            if hist_path.exists():
-                try:
-                    with open(hist_path, 'r', encoding='utf-8') as f:
-                        data = json.load(f)
-                        if isinstance(data, list):
-                            self._all_calibrations.extend(data)
-                        print(f"[INFO] Carregades {len(data)} calibracions de {hist_path}")
-                except Exception as e:
-                    print(f"[WARNING] Error llegint {hist_path}: {e}")
-
-        # També provar amb load_khp_history si tenim seq_path
-        if self.main_window.seq_path and not self._all_calibrations:
-            try:
-                history = load_khp_history(self.main_window.seq_path)
-                if history:
-                    self._all_calibrations = history
-            except Exception as e:
-                print(f"[WARNING] Error amb load_khp_history: {e}")
+        # load_khp_history usa get_registry_path() que és global (no depèn de seq_path)
+        try:
+            history = load_khp_history(None)  # seq_path s'ignora, usa REGISTRY global
+            if history:
+                self._all_calibrations = history
+                print(f"[INFO] Carregades {len(history)} calibracions des de REGISTRY")
+        except Exception as e:
+            print(f"[WARNING] Error carregant històric: {e}")
 
         # Eliminar duplicats per seq_name + date
         seen = set()
@@ -504,9 +522,9 @@ class HistoryPanel(QWidget):
             rf = cal.get('rf', 0)
             self.history_table.setItem(row, 8, QTableWidgetItem(f"{rf:.1f}" if rf > 0 else "-"))
 
-            # Col 9: RF_V (RF normalitzat per volum)
-            rf_v = cal.get('rf_v', 0)
-            self.history_table.setItem(row, 9, QTableWidgetItem(f"{rf_v:.3f}" if rf_v > 0 else "-"))
+            # Col 9: RF_MASS (RF normalitzat per massa = àrea/µg DOC)
+            rf_mass = cal.get('rf_mass', 0)
+            self.history_table.setItem(row, 9, QTableWidgetItem(f"{rf_mass:.1f}" if rf_mass > 0 else "-"))
 
             # Col 10: t_max
             t_max = cal.get('t_retention', 0)
@@ -657,47 +675,131 @@ class HistoryPanel(QWidget):
         # Actualitzar gràfics
         self._update_graphs(calibrations)
 
+    def _get_maintenance_events(self):
+        """Obté events de manteniment del MaintenancePanel."""
+        try:
+            # Accedir al MaintenancePanel via main_window
+            if hasattr(self.main_window, 'maintenance_panel'):
+                return self.main_window.maintenance_panel.events
+        except Exception as e:
+            print(f"[DEBUG] No s'han pogut obtenir events de manteniment: {e}")
+        return []
+
+    def _add_maintenance_markers(self, ax, dates, seq_names, y_min, y_max):
+        """
+        Afegeix marcadors de manteniment a una grafica.
+
+        Args:
+            ax: Axes de matplotlib
+            dates: Llista de dates de les calibracions (YYYY-MM-DD)
+            seq_names: Llista de noms de sequencies
+            y_min, y_max: Limits de l'eix Y
+        """
+        events = self._get_maintenance_events()
+        if not events or not dates:
+            return
+
+        # Colors per tipus de manteniment
+        maint_colors = {
+            "Canvi columna": "#E74C3C",       # Vermell
+            "Neteja columna": "#3498DB",       # Blau
+            "Neteja azida sodica": "#F39C12",  # Taronja
+            "Canvi cartutx": "#9B59B6",        # Lila
+            "Visita tecnic": "#E74C3C",        # Vermell
+        }
+        default_color = "#95A5A6"  # Gris
+
+        # Per cada event, trobar on cau entre les dates
+        added_events = []
+        for event in events:
+            event_date = event.get('date', '')
+            if not event_date:
+                continue
+
+            category = event.get('category', 'Altres')
+            color = maint_colors.get(category, default_color)
+
+            # Trobar posicio: entre quines seqs cau aquest event
+            for i in range(len(dates)):
+                cal_date = dates[i]
+
+                # Si l'event es just abans o el mateix dia que aquesta calibracio
+                if event_date <= cal_date:
+                    # Verificar que no es massa antic (dins els ultims 30 dies abans)
+                    if i > 0:
+                        prev_date = dates[i-1]
+                        if event_date > prev_date:
+                            # Event entre prev i actual
+                            x_pos = i - 0.5
+
+                            # Evitar duplicats molt propers
+                            if not any(abs(x_pos - pos) < 0.3 for pos, _, _ in added_events):
+                                added_events.append((x_pos, category, color))
+                    break
+
+        # Dibuixar marcadors
+        for x_pos, category, color in added_events:
+            ax.axvline(x=x_pos, color=color, linestyle='--', linewidth=1.5, alpha=0.7, zorder=1)
+
+            # Etiqueta curta a dalt
+            label_short = category[:10] + "..." if len(category) > 10 else category
+            ax.annotate(label_short, xy=(x_pos, y_max), xytext=(x_pos, y_max),
+                       fontsize=7, color=color, rotation=90, ha='right', va='top',
+                       alpha=0.8)
+
     def _update_graphs(self, calibrations):
-        """Actualitza tots els gràfics amb les calibracions filtrades."""
-        # Ordenar per data per als gràfics
-        sorted_cals = sorted(calibrations, key=lambda x: x.get('date_processed', ''))
+        """
+        Actualitza tots els gràfics amb les calibracions filtrades.
+
+        Millores:
+        - Eix X ordenat per número de seqüència (ordre cronològic real)
+        - Símbols: BP=quadrat ('s'), COLUMN=cercle ('o')
+        - Colors per condicions (volum, concentració, sensibilitat)
+        - Nou gràfic UIB Ratio
+        """
+        from matplotlib.lines import Line2D
+
+        # Ordenar per número de seqüència (ordre cronològic)
+        sorted_cals = sorted(
+            calibrations,
+            key=lambda x: extract_seq_number(x.get('seq_name', ''))
+        )
 
         # Preparar dades
         dates = []
         seq_names = []
-        areas = []
+        seq_numbers = []
+        areas_d = []      # Àrea Direct
+        areas_u = []      # Àrea UIB
         t_maxs = []
         doc_254s = []
-        rf_vs = []
+        rf_masses = []    # RF normalitzat per massa
         fwhms = []
         volumes = []
+        concs = []        # Concentració KHP
+        uib_sens = []     # Sensibilitat UIB
         modes = []
         is_valids = []
 
         for cal in sorted_cals:
             date_str = cal.get('date_processed', '')[:10]
             dates.append(date_str)
-            seq_names.append(cal.get('seq_name', 'N/A').replace('_SEQ', ''))
 
-            area = cal.get('area', 0)
-            areas.append(area)
+            seq_name = cal.get('seq_name', 'N/A')
+            seq_names.append(seq_name.replace('_SEQ', ''))
+            seq_numbers.append(extract_seq_number(seq_name))
 
-            # t_max
-            t_max = cal.get('t_retention', 0)
-            t_maxs.append(t_max)
-
+            areas_d.append(cal.get('area', 0))
+            areas_u.append(cal.get('area_u', 0))
+            t_maxs.append(cal.get('t_retention', 0))
             doc_254s.append(cal.get('d254_d', 0))
 
-            # RF_V = RF / volum × 100
             vol = cal.get('volume_uL', 0)
             volumes.append(vol)
-            rf_v = cal.get('rf_v', 0)
-            rf_vs.append(rf_v)
-
-            # FWHM
-            fwhm = cal.get('fwhm_doc', 0)
-            fwhms.append(fwhm)
-
+            rf_masses.append(cal.get('rf_mass', 0))
+            fwhms.append(cal.get('fwhm_doc', 0))
+            concs.append(cal.get('conc_ppm', 0))
+            uib_sens.append(cal.get('uib_sensitivity', 0) or 0)
             modes.append(cal.get('mode', 'COLUMN'))
 
             is_valid = cal.get('valid_for_calibration', True)
@@ -705,46 +807,106 @@ class HistoryPanel(QWidget):
             is_valids.append(is_valid and not is_outlier)
 
         # Convertir a numpy
-        areas = np.array(areas)
+        areas_d = np.array(areas_d)
+        areas_u = np.array(areas_u)
         t_maxs = np.array(t_maxs)
         doc_254s = np.array(doc_254s)
-        rf_vs = np.array(rf_vs)
+        rf_masses = np.array(rf_masses)
         fwhms = np.array(fwhms)
         volumes = np.array(volumes)
-
-        # Colors per mode i validesa
-        colors = []
-        for mode, valid in zip(modes, is_valids):
-            if not valid:
-                colors.append('#CCCCCC')
-            elif mode == 'BP':
-                colors.append('#E67E22')
-            else:
-                colors.append('#3498DB')
+        concs = np.array(concs)
+        uib_sens = np.array(uib_sens)
 
         x = np.arange(len(dates))
 
-        # === Gràfic 1: Àrea ===
+        # =====================================================================
+        # HELPER: Obtenir marcador per mode (BP=quadrat, COLUMN=cercle)
+        # =====================================================================
+        def get_marker(mode):
+            return 's' if mode == 'BP' else 'o'
+
+        # =====================================================================
+        # HELPER: Obtenir color per condicions
+        # =====================================================================
+        def get_color_by_volume(vol, valid):
+            if not valid:
+                return '#CCCCCC'
+            elif vol == 100:
+                return '#9B59B6'  # Lila
+            elif vol == 400:
+                return '#1ABC9C'  # Verd
+            else:
+                return '#3498DB'  # Blau
+
+        def get_color_by_conc(conc, valid):
+            if not valid:
+                return '#CCCCCC'
+            elif conc == 5:
+                return '#3498DB'  # Blau
+            elif conc == 10:
+                return '#E67E22'  # Taronja
+            else:
+                return '#9B59B6'  # Lila
+
+        def get_color_by_sensitivity(sens, valid):
+            if not valid:
+                return '#CCCCCC'
+            elif sens == 700:
+                return '#27AE60'  # Verd
+            elif sens == 1000:
+                return '#E74C3C'  # Vermell
+            else:
+                return '#3498DB'  # Blau
+
+        def get_color_by_mode(mode, valid):
+            if not valid:
+                return '#CCCCCC'
+            elif mode == 'BP':
+                return '#E67E22'  # Taronja
+            else:
+                return '#3498DB'  # Blau
+
+        # =====================================================================
+        # HELPER: Scatter plot amb símbols i colors personalitzats
+        # =====================================================================
+        def scatter_with_markers(ax, x_vals, y_vals, modes_list, colors_list, valid_mask):
+            """Scatter plot amb símbols BP=quadrat, COLUMN=cercle."""
+            for i, (xi, yi, mode, color) in enumerate(zip(x_vals, y_vals, modes_list, colors_list)):
+                if valid_mask[i] and yi > 0:
+                    marker = get_marker(mode)
+                    ax.scatter(xi, yi, c=color, s=70, marker=marker,
+                               edgecolors='white', linewidth=0.5, zorder=3)
+
+        # =====================================================================
+        # Gràfic 1: Àrea (colors per mode)
+        # =====================================================================
         self.area_figure.clear()
         ax1 = self.area_figure.add_subplot(111)
 
-        if len(x) > 0 and any(areas > 0):
-            ax1.bar(x, areas, color=colors, alpha=0.8, edgecolor='white')
+        colors_mode = [get_color_by_mode(m, v) for m, v in zip(modes, is_valids)]
+
+        if len(x) > 0 and any(areas_d > 0):
+            # Bar plot amb colors per mode
+            ax1.bar(x, areas_d, color=colors_mode, alpha=0.8, edgecolor='white')
 
             # Mitjana i ±σ de vàlids
-            valid_areas = areas[np.array(is_valids) & (areas > 0)]
+            valid_areas = areas_d[np.array(is_valids) & (areas_d > 0)]
             if len(valid_areas) > 1:
                 mean_a = np.mean(valid_areas)
                 std_a = np.std(valid_areas)
-                ax1.axhline(mean_a, color='#27AE60', linestyle='-', linewidth=2, label=f'Mitjana: {mean_a:.0f}')
+                ax1.axhline(mean_a, color='#27AE60', linestyle='-', linewidth=2,
+                           label=f'Mitjana: {mean_a:.0f}')
                 ax1.axhspan(mean_a - std_a, mean_a + std_a, alpha=0.2, color='#27AE60')
                 ax1.legend(loc='upper right')
 
             ax1.set_xticks(x)
             ax1.set_xticklabels(seq_names, rotation=45, ha='right', fontsize=8)
             ax1.set_ylabel("Àrea", fontsize=10)
-            ax1.set_title("Evolució Àrea KHP", fontsize=12, fontweight='bold')
+            ax1.set_title("Evolució Àrea KHP (ordenat per nº SEQ)", fontsize=12, fontweight='bold')
             ax1.grid(True, alpha=0.3, axis='y')
+
+            y_min, y_max = ax1.get_ylim()
+            self._add_maintenance_markers(ax1, dates, seq_names, y_min, y_max)
         else:
             ax1.text(0.5, 0.5, "No hi ha dades", ha='center', va='center', fontsize=12, color='gray')
             ax1.set_xlim(0, 1)
@@ -753,18 +915,17 @@ class HistoryPanel(QWidget):
         self.area_figure.tight_layout()
         self.area_canvas.draw()
 
-        # === Gràfic 2: t_max (Deriva) ===
+        # =====================================================================
+        # Gràfic 2: t_max (Deriva) - colors per mode, símbols per mode
+        # =====================================================================
         self.tmax_figure.clear()
         ax2 = self.tmax_figure.add_subplot(111)
 
-        valid_tmax_mask = (t_maxs > 0)
+        valid_tmax_mask = t_maxs > 0
         if any(valid_tmax_mask):
-            # Scatter plot amb colors
-            for i, (t, c, name) in enumerate(zip(t_maxs, colors, seq_names)):
-                if t > 0:
-                    ax2.scatter(i, t, c=c, s=60, edgecolors='white', linewidth=0.5, zorder=3)
+            scatter_with_markers(ax2, x, t_maxs, modes, colors_mode, valid_tmax_mask)
 
-            # Línia de tendència si hi ha prou punts
+            # Línia de tendència
             valid_x = x[valid_tmax_mask]
             valid_t = t_maxs[valid_tmax_mask]
             if len(valid_t) > 2:
@@ -772,156 +933,249 @@ class HistoryPanel(QWidget):
                 p = np.poly1d(z)
                 ax2.plot(valid_x, p(valid_x), '--', color='#E74C3C', alpha=0.7,
                         label=f'Tendència: {z[0]*10:.3f} min/10 SEQ')
-                ax2.legend(loc='upper right')
 
-            # Mitjana i rang
             mean_t = np.mean(valid_t)
-            std_t = np.std(valid_t)
+            std_t = np.std(valid_t) if len(valid_t) > 1 else 0
             ax2.axhline(mean_t, color='#27AE60', linestyle='-', linewidth=1.5, alpha=0.7)
             ax2.axhspan(mean_t - 2*std_t, mean_t + 2*std_t, alpha=0.1, color='#27AE60')
 
             ax2.set_xticks(x)
             ax2.set_xticklabels(seq_names, rotation=45, ha='right', fontsize=8)
             ax2.set_ylabel("t_max (min)", fontsize=10)
-            ax2.set_title(f"Deriva Temps de Pic · Mitjana: {mean_t:.2f} ± {std_t:.2f} min",
+            ax2.set_title(f"Deriva Temps de Pic - Mitjana: {mean_t:.2f} ± {std_t:.2f} min",
                          fontsize=12, fontweight='bold')
             ax2.grid(True, alpha=0.3)
+
+            # Llegenda símbols
+            legend_elements = [
+                Line2D([0], [0], marker='o', color='w', markerfacecolor='#3498DB',
+                       markersize=8, label='COLUMN'),
+                Line2D([0], [0], marker='s', color='w', markerfacecolor='#E67E22',
+                       markersize=8, label='BP'),
+            ]
+            ax2.legend(handles=legend_elements, loc='upper right')
+
+            y_min, y_max = ax2.get_ylim()
+            self._add_maintenance_markers(ax2, dates, seq_names, y_min, y_max)
         else:
-            ax2.text(0.5, 0.5, "No hi ha dades de t_max", ha='center', va='center', fontsize=12, color='gray')
+            ax2.text(0.5, 0.5, "No hi ha dades de t_max", ha='center', va='center',
+                    fontsize=12, color='gray')
             ax2.set_xlim(0, 1)
             ax2.set_ylim(0, 1)
 
         self.tmax_figure.tight_layout()
         self.tmax_canvas.draw()
 
-        # === Gràfic 3: RF_V (Response Factor normalitzat per volum) - CLAU! ===
+        # =====================================================================
+        # Gràfic 3: RF_MASS - colors per VOLUM, símbols per mode
+        # =====================================================================
         self.rfv_figure.clear()
         ax3 = self.rfv_figure.add_subplot(111)
 
-        valid_rfv_mask = (rf_vs > 0)
-        if any(valid_rfv_mask):
-            # Separar per volum per colors diferents
-            colors_rfv = []
-            for vol, valid in zip(volumes, is_valids):
-                if not valid:
-                    colors_rfv.append('#CCCCCC')
-                elif vol == 100:
-                    colors_rfv.append('#9B59B6')  # Lila per 100µL
-                elif vol == 400:
-                    colors_rfv.append('#1ABC9C')  # Verd per 400µL
-                else:
-                    colors_rfv.append('#3498DB')  # Blau per altres
+        colors_vol = [get_color_by_volume(v, val) for v, val in zip(volumes, is_valids)]
+        valid_rfmass_mask = rf_masses > 0
 
-            for i, (rfv, c, name) in enumerate(zip(rf_vs, colors_rfv, seq_names)):
-                if rfv > 0:
-                    ax3.scatter(i, rfv, c=c, s=60, edgecolors='white', linewidth=0.5, zorder=3)
+        if any(valid_rfmass_mask):
+            scatter_with_markers(ax3, x, rf_masses, modes, colors_vol, valid_rfmass_mask)
 
-            valid_rfv = rf_vs[valid_rfv_mask & np.array(is_valids)]
-            if len(valid_rfv) > 1:
-                mean_rfv = np.mean(valid_rfv)
-                std_rfv = np.std(valid_rfv)
-                cv_rfv = (std_rfv / mean_rfv * 100) if mean_rfv > 0 else 0
-                ax3.axhline(mean_rfv, color='#27AE60', linestyle='-', linewidth=2, alpha=0.8)
-                ax3.axhspan(mean_rfv - 2*std_rfv, mean_rfv + 2*std_rfv, alpha=0.15, color='#27AE60')
-                # Límits d'alerta (±10%)
-                ax3.axhline(mean_rfv * 1.1, color='#E74C3C', linestyle='--', linewidth=1, alpha=0.5)
-                ax3.axhline(mean_rfv * 0.9, color='#E74C3C', linestyle='--', linewidth=1, alpha=0.5)
-
-                ax3.set_title(f"RF_V (Normalitzat per Volum) · Mitjana: {mean_rfv:.3f} · CV: {cv_rfv:.1f}%",
+            valid_rfmass = rf_masses[valid_rfmass_mask & np.array(is_valids)]
+            if len(valid_rfmass) > 1:
+                mean_rfmass = np.mean(valid_rfmass)
+                std_rfmass = np.std(valid_rfmass)
+                cv_rfmass = (std_rfmass / mean_rfmass * 100) if mean_rfmass > 0 else 0
+                ax3.axhline(mean_rfmass, color='#27AE60', linestyle='-', linewidth=2, alpha=0.8)
+                ax3.axhspan(mean_rfmass - 2*std_rfmass, mean_rfmass + 2*std_rfmass, alpha=0.15, color='#27AE60')
+                ax3.axhline(mean_rfmass * 1.1, color='#E74C3C', linestyle='--', linewidth=1, alpha=0.5)
+                ax3.axhline(mean_rfmass * 0.9, color='#E74C3C', linestyle='--', linewidth=1, alpha=0.5)
+                ax3.set_title(f"RF_MASS · Mitjana: {mean_rfmass:.1f} · CV: {cv_rfmass:.1f}%",
                              fontsize=12, fontweight='bold')
             else:
-                ax3.set_title("RF_V (Normalitzat per Volum)", fontsize=12, fontweight='bold')
+                ax3.set_title("RF_MASS (Àrea/µg DOC)", fontsize=12, fontweight='bold')
 
             ax3.set_xticks(x)
             ax3.set_xticklabels(seq_names, rotation=45, ha='right', fontsize=8)
-            ax3.set_ylabel("RF_V (RF/Vol×100)", fontsize=10)
+            ax3.set_ylabel("RF_MASS (Àrea/µg DOC)", fontsize=10)
             ax3.grid(True, alpha=0.3)
 
-            # Llegenda per volums
-            from matplotlib.lines import Line2D
+            # Llegenda: colors per volum, símbols per mode
             legend_elements = [
-                Line2D([0], [0], marker='o', color='w', markerfacecolor='#9B59B6', markersize=8, label='100 µL'),
-                Line2D([0], [0], marker='o', color='w', markerfacecolor='#1ABC9C', markersize=8, label='400 µL'),
+                Line2D([0], [0], marker='o', color='w', markerfacecolor='#9B59B6',
+                       markersize=8, label='100 µL · COLUMN'),
+                Line2D([0], [0], marker='s', color='w', markerfacecolor='#9B59B6',
+                       markersize=8, label='100 µL · BP'),
+                Line2D([0], [0], marker='o', color='w', markerfacecolor='#1ABC9C',
+                       markersize=8, label='400 µL · COLUMN'),
+                Line2D([0], [0], marker='s', color='w', markerfacecolor='#1ABC9C',
+                       markersize=8, label='400 µL · BP'),
             ]
-            ax3.legend(handles=legend_elements, loc='upper right')
+            ax3.legend(handles=legend_elements, loc='upper right', fontsize=8)
+
+            y_min, y_max = ax3.get_ylim()
+            self._add_maintenance_markers(ax3, dates, seq_names, y_min, y_max)
         else:
-            ax3.text(0.5, 0.5, "No hi ha dades de RF_V", ha='center', va='center', fontsize=12, color='gray')
+            ax3.text(0.5, 0.5, "No hi ha dades de RF_MASS", ha='center', va='center',
+                    fontsize=12, color='gray')
             ax3.set_xlim(0, 1)
             ax3.set_ylim(0, 1)
 
         self.rfv_figure.tight_layout()
         self.rfv_canvas.draw()
 
-        # === Gràfic 4: D/254 ===
+        # =====================================================================
+        # Gràfic 4: D/254 - colors per concentració KHP
+        # =====================================================================
         self.ratio_figure.clear()
         ax4 = self.ratio_figure.add_subplot(111)
 
-        valid_ratio_mask = (doc_254s > 0)
+        colors_conc = [get_color_by_conc(c, val) for c, val in zip(concs, is_valids)]
+        valid_ratio_mask = doc_254s > 0
+
         if any(valid_ratio_mask):
-            for i, (r, c, name) in enumerate(zip(doc_254s, colors, seq_names)):
-                if r > 0:
-                    ax4.scatter(i, r, c=c, s=60, edgecolors='white', linewidth=0.5, zorder=3)
+            scatter_with_markers(ax4, x, doc_254s, modes, colors_conc, valid_ratio_mask)
 
             valid_r = doc_254s[valid_ratio_mask]
             mean_r = np.mean(valid_r)
-            std_r = np.std(valid_r)
+            std_r = np.std(valid_r) if len(valid_r) > 1 else 0
             ax4.axhline(mean_r, color='#27AE60', linestyle='-', linewidth=1.5, alpha=0.7)
             ax4.axhspan(mean_r - 2*std_r, mean_r + 2*std_r, alpha=0.1, color='#27AE60')
 
             ax4.set_xticks(x)
             ax4.set_xticklabels(seq_names, rotation=45, ha='right', fontsize=8)
             ax4.set_ylabel("Ratio DOC/254", fontsize=10)
-            ax4.set_title(f"Ratio DOC/254nm · Mitjana: {mean_r:.2f} ± {std_r:.2f}",
+            ax4.set_title(f"Ratio DOC/254nm - Mitjana: {mean_r:.2f} ± {std_r:.2f}",
                          fontsize=12, fontweight='bold')
             ax4.grid(True, alpha=0.3)
+
+            # Llegenda per concentració
+            legend_elements = [
+                Line2D([0], [0], marker='o', color='w', markerfacecolor='#3498DB',
+                       markersize=8, label='5 ppm'),
+                Line2D([0], [0], marker='o', color='w', markerfacecolor='#E67E22',
+                       markersize=8, label='10 ppm'),
+            ]
+            ax4.legend(handles=legend_elements, loc='upper right')
+
+            y_min, y_max = ax4.get_ylim()
+            self._add_maintenance_markers(ax4, dates, seq_names, y_min, y_max)
         else:
-            ax4.text(0.5, 0.5, "No hi ha dades de D/254", ha='center', va='center', fontsize=12, color='gray')
+            ax4.text(0.5, 0.5, "No hi ha dades de D/254", ha='center', va='center',
+                    fontsize=12, color='gray')
             ax4.set_xlim(0, 1)
             ax4.set_ylim(0, 1)
 
         self.ratio_figure.tight_layout()
         self.ratio_canvas.draw()
 
-        # === Gràfic 5: FWHM (indicador degradació columna) ===
+        # =====================================================================
+        # Gràfic 5: FWHM - colors per mode
+        # =====================================================================
         self.fwhm_figure.clear()
         ax5 = self.fwhm_figure.add_subplot(111)
 
-        valid_fwhm_mask = (fwhms > 0)
+        valid_fwhm_mask = fwhms > 0
         if any(valid_fwhm_mask):
-            for i, (fw, c, name) in enumerate(zip(fwhms, colors, seq_names)):
-                if fw > 0:
-                    ax5.scatter(i, fw, c=c, s=60, edgecolors='white', linewidth=0.5, zorder=3)
+            scatter_with_markers(ax5, x, fwhms, modes, colors_mode, valid_fwhm_mask)
 
-            # Línia de tendència per detectar degradació
             valid_x = x[valid_fwhm_mask]
             valid_fw = fwhms[valid_fwhm_mask]
             if len(valid_fw) > 2:
                 z = np.polyfit(valid_x, valid_fw, 1)
                 p = np.poly1d(z)
-                trend_color = '#E74C3C' if z[0] > 0.01 else '#27AE60'  # Vermell si augmenta
+                trend_color = '#E74C3C' if z[0] > 0.01 else '#27AE60'
                 ax5.plot(valid_x, p(valid_x), '--', color=trend_color, alpha=0.7,
                         label=f'Tendència: {z[0]*10:.3f} min/10 SEQ')
-                ax5.legend(loc='upper left')
 
             mean_fw = np.mean(valid_fw)
-            std_fw = np.std(valid_fw)
+            std_fw = np.std(valid_fw) if len(valid_fw) > 1 else 0
             ax5.axhline(mean_fw, color='#27AE60', linestyle='-', linewidth=1.5, alpha=0.7)
-            # Límit d'alerta (1.5 min)
-            ax5.axhline(1.5, color='#E74C3C', linestyle='--', linewidth=1.5, alpha=0.7, label='Límit (1.5 min)')
+            ax5.axhline(1.5, color='#E74C3C', linestyle='--', linewidth=1.5, alpha=0.7,
+                       label='Límit (1.5 min)')
 
             ax5.set_xticks(x)
             ax5.set_xticklabels(seq_names, rotation=45, ha='right', fontsize=8)
             ax5.set_ylabel("FWHM (min)", fontsize=10)
-            ax5.set_title(f"FWHM (Amplada de Pic) · Mitjana: {mean_fw:.2f} ± {std_fw:.2f} min",
+            ax5.set_title(f"FWHM (Amplada de Pic) - Mitjana: {mean_fw:.2f} ± {std_fw:.2f} min",
                          fontsize=12, fontweight='bold')
             ax5.grid(True, alpha=0.3)
+
+            legend_elements = [
+                Line2D([0], [0], marker='o', color='w', markerfacecolor='#3498DB',
+                       markersize=8, label='COLUMN'),
+                Line2D([0], [0], marker='s', color='w', markerfacecolor='#E67E22',
+                       markersize=8, label='BP'),
+            ]
+            ax5.legend(handles=legend_elements, loc='upper left')
+
+            y_min, y_max = ax5.get_ylim()
+            self._add_maintenance_markers(ax5, dates, seq_names, y_min, y_max)
         else:
-            ax5.text(0.5, 0.5, "No hi ha dades de FWHM", ha='center', va='center', fontsize=12, color='gray')
+            ax5.text(0.5, 0.5, "No hi ha dades de FWHM", ha='center', va='center',
+                    fontsize=12, color='gray')
             ax5.set_xlim(0, 1)
             ax5.set_ylim(0, 1)
 
         self.fwhm_figure.tight_layout()
         self.fwhm_canvas.draw()
+
+        # =====================================================================
+        # Gràfic 6: UIB Ratio (Àrea Direct / Àrea UIB) - colors per sensibilitat
+        # =====================================================================
+        self.uib_figure.clear()
+        ax6 = self.uib_figure.add_subplot(111)
+
+        # Calcular ratio Direct/UIB
+        uib_ratios = np.zeros(len(areas_d))
+        for i in range(len(areas_d)):
+            if areas_u[i] > 0:
+                uib_ratios[i] = areas_d[i] / areas_u[i]
+
+        colors_sens = [get_color_by_sensitivity(s, val) for s, val in zip(uib_sens, is_valids)]
+        valid_uib_mask = uib_ratios > 0
+
+        if any(valid_uib_mask):
+            scatter_with_markers(ax6, x, uib_ratios, modes, colors_sens, valid_uib_mask)
+
+            valid_ratio = uib_ratios[valid_uib_mask & np.array(is_valids)]
+            if len(valid_ratio) > 1:
+                mean_ratio = np.mean(valid_ratio)
+                std_ratio = np.std(valid_ratio)
+                ax6.axhline(mean_ratio, color='#27AE60', linestyle='-', linewidth=2, alpha=0.8)
+                ax6.axhspan(mean_ratio - std_ratio, mean_ratio + std_ratio, alpha=0.15, color='#27AE60')
+                ax6.set_title(f"Ratio Àrea Direct / Àrea UIB · Mitjana: {mean_ratio:.2f} ± {std_ratio:.2f}",
+                             fontsize=12, fontweight='bold')
+            else:
+                ax6.set_title("Ratio Àrea Direct / Àrea UIB", fontsize=12, fontweight='bold')
+
+            ax6.set_xticks(x)
+            ax6.set_xticklabels(seq_names, rotation=45, ha='right', fontsize=8)
+            ax6.set_ylabel("Ratio D/U", fontsize=10)
+            ax6.grid(True, alpha=0.3)
+
+            # Llegenda: colors per sensibilitat, símbols per mode
+            legend_elements = [
+                Line2D([0], [0], marker='o', color='w', markerfacecolor='#27AE60',
+                       markersize=8, label='700 ppb'),
+                Line2D([0], [0], marker='o', color='w', markerfacecolor='#E74C3C',
+                       markersize=8, label='1000 ppb'),
+                Line2D([0], [0], marker='o', color='w', markerfacecolor='#3498DB',
+                       markersize=8, label='Altra sens.'),
+                Line2D([0], [0], marker='o', color='w', markerfacecolor='white',
+                       markeredgecolor='black', markersize=8, label='COLUMN'),
+                Line2D([0], [0], marker='s', color='w', markerfacecolor='white',
+                       markeredgecolor='black', markersize=8, label='BP'),
+            ]
+            ax6.legend(handles=legend_elements, loc='upper right', fontsize=8)
+
+            y_min, y_max = ax6.get_ylim()
+            self._add_maintenance_markers(ax6, dates, seq_names, y_min, y_max)
+        else:
+            ax6.text(0.5, 0.5, "No hi ha dades UIB (cal DUAL mode)",
+                    ha='center', va='center', fontsize=12, color='gray')
+            ax6.set_xlim(0, 1)
+            ax6.set_ylim(0, 1)
+
+        self.uib_figure.tight_layout()
+        self.uib_canvas.draw()
 
     def _export_csv(self):
         """Exporta les calibracions visibles a CSV."""
@@ -1009,7 +1263,7 @@ class HistoryPanel(QWidget):
             ("Àrea_D", f"{cal.get('area', 0):.1f}"),
             ("Àrea_U", f"{cal.get('area_u', 0):.1f}"),
             ("RF", f"{cal.get('rf', 0):.2f}"),
-            ("RF_V", f"{cal.get('rf_v', 0):.4f}"),
+            ("RF_MASS", f"{cal.get('rf_mass', 0):.1f}"),
             ("t_max", f"{cal.get('t_retention', 0):.2f} min"),
             ("FWHM", f"{cal.get('fwhm_doc', 0):.2f} min"),
             ("SNR", f"{cal.get('snr', 0):.0f}"),
@@ -1099,7 +1353,7 @@ class HistoryPanel(QWidget):
         from pathlib import Path
 
         # Buscar calibration_result.json
-        cal_result_path = Path(seq_path) / "CHECK" / "dades" / "calibration_result.json"
+        cal_result_path = Path(seq_path) / "CHECK" / "data" / "calibration_result.json"
         if not cal_result_path.exists():
             return None
 

@@ -22,7 +22,8 @@ from datetime import datetime
 DEFAULT_CONFIG = {
     # --- PATHS ---
     "paths": {
-        "data_folder": "C:/Users/Lequia/Desktop/Dades2",  # Carpeta base amb les SEQs
+        "data_folder": "C:/Users/Lequia/Desktop/Dades3",  # Carpeta base amb les SEQs
+        "registry_folder": "C:/Users/Lequia/Desktop/Dades3/REGISTRY",  # Carpeta global JSONs (KHP_History, etc.)
     },
 
     # --- FRACCIONS TEMPORALS (min) ---
@@ -43,25 +44,20 @@ DEFAULT_CONFIG = {
         "smoothing_order": 3,
     },
 
-    # --- CÀLCUL BASELINE/SOROLL ---
-    # Finestres temporals per calcular soroll baseline (evita timeouts)
+    # --- CÀLCUL BASELINE ---
+    # Correcció de baseline: zona del cromatograma a usar
     "baseline": {
-        # Finestres per mode COLUMN (múltiples, es tria la primera sense timeout)
-        "windows_column": [
-            {"start": 0.0, "end": 3.0, "name": "pre-peak"},      # Abans dels pics
-            {"start": 55.0, "end": 65.0, "name": "LMW-stable"},  # Zona LMW estable
-        ],
-        # Finestres per mode BP (pic al principi, baseline després)
-        "windows_bp": [
-            {"start": 5.0, "end": 10.0, "name": "post-peak"},    # Després del pic BP
-        ],
-        # Marge al voltant del timeout a excloure (minuts)
-        "timeout_margin_min": 1.5,
+        # BP: usar FINAL del cromatograma (després del pic)
+        "bp_end_pct": 20,           # Últim 20% del cromatograma
+        # COLUMN: usar INICI del cromatograma (abans dels pics)
+        "column_start_pct": 15,     # Primer 15% (~10 min en run de 70 min)
+        # Mètode de càlcul
+        "method": "mode",           # "mode" (robust) o "median"
+        # Paràmetres per estadístiques (SNR, etc.)
+        "stats_percentile_low": 5,  # Percentil baix per excloure outliers
+        "stats_percentile_high": 40, # Percentil alt per zona "baixa"
         # Soroll mínim instrumental (mAU)
         "min_noise_mau": 0.01,
-        # Fallback: usar mètode percentil si no hi ha finestra vàlida
-        "fallback_percentile_low": 10,
-        "fallback_percentile_high": 30,
     },
 
     # --- PLANIFICACIÓ SEQÜÈNCIES ---
@@ -211,6 +207,9 @@ class ConfigManager:
                     result[key] = self._merge_configs(result[key], value)
                 else:
                     result[key] = value
+            else:
+                # Claus noves del fitxer guardat (no existeixen als defaults)
+                result[key] = value
         return result
 
     def save(self):
@@ -287,6 +286,28 @@ class ConfigManager:
         """Retorna les wavelengths seleccionades."""
         return self.get("wavelengths", "selected", default=[254])
 
+    def get_section(self, section_name):
+        """
+        Obté una secció completa de configuració.
+
+        Args:
+            section_name: Nom de la secció (ex: "samples_db")
+
+        Returns:
+            Dict amb la secció o None si no existeix
+        """
+        return self.config.get(section_name)
+
+    def set_section(self, section_name, section_data):
+        """
+        Estableix una secció completa de configuració.
+
+        Args:
+            section_name: Nom de la secció
+            section_data: Dict amb les dades de la secció
+        """
+        self.config[section_name] = section_data
+
     def export_config(self, filepath):
         """Exporta la configuració a un fitxer."""
         try:
@@ -343,6 +364,36 @@ def get_ui_param(name):
     """Obté un paràmetre d'interfície."""
     cfg = get_config()
     return cfg.get("ui", name)
+
+def get_data_folder():
+    """Obté la carpeta base de dades."""
+    cfg = get_config()
+    return cfg.get("paths", "data_folder")
+
+def get_registry_path():
+    """
+    Obté la carpeta REGISTRY per JSONs globals (KHP_History, Samples_History).
+    La crea si no existeix.
+    """
+    cfg = get_config()
+    registry = cfg.get("paths", "registry_folder")
+    if registry:
+        os.makedirs(registry, exist_ok=True)
+    return registry
+
+def save_config(cfg=None):
+    """
+    Guarda la configuració actual.
+
+    Args:
+        cfg: Instància ConfigManager (o usa global si no es proporciona)
+
+    Returns:
+        True si s'ha guardat correctament
+    """
+    if cfg is None:
+        cfg = get_config()
+    return cfg.save()
 
 
 if __name__ == "__main__":

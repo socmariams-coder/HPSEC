@@ -1905,9 +1905,13 @@ def apply_shift(t_ref, t_signal, y_signal, shift):
     Returns:
         y_shifted: senyal desplaçat i interpolat a t_ref
     """
-    t_ref = np.asarray(t_ref)
-    t_signal = np.asarray(t_signal)
-    y_signal = np.asarray(y_signal)
+    t_ref = np.asarray(t_ref).flatten()
+    t_signal = np.asarray(t_signal).flatten()
+    y_signal = np.asarray(y_signal).flatten()
+
+    # Validar que t_signal i y_signal tenen la mateixa longitud
+    if len(t_signal) != len(y_signal):
+        raise ValueError(f"apply_shift: t_signal ({len(t_signal)}) i y_signal ({len(y_signal)}) tenen longituds diferents")
 
     t_shifted = t_signal + shift
     y_shifted = np.interp(t_ref, t_shifted, y_signal, left=0, right=0)

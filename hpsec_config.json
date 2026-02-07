@@ -1,4 +1,9 @@
 {
+  "paths": {
+    "data_folder": "C:/Users/Lequia/Desktop/Dades3",
+    "registry_folder": "C:/Users/Lequia/Desktop/Dades3/REGISTRY",
+    "maintenance_excel": "C:/Users/Lequia/Desktop/Manteniment/Registre manteniment HPLC-DAD-TOC.xlsx"
+  },
   "time_fractions": {
     "BioP": {
       "start": 0.0,
@@ -100,6 +105,12 @@
     "snr_min_khp": 50.0,
     "deviation_threshold_column": 20.0,
     "deviation_threshold_bp": 100.0,
+    "qc_thresholds": {
+      "warning_pct": 5.0,
+      "fail_pct": 10.0,
+      "n_seqs_context": 2,
+      "_comment": "Toleràncies QC per patró KHP vs calibració global"
+    },
     "reference_values": {
       "COLUMN_KHP2_400uL_Direct": {
         "area_mean": 630,
@@ -199,7 +210,8 @@
     "PATRÓ_REF": {
       "label": "PATRÓ_REF",
       "description": "Patró de referència per QC",
-      "patterns": ["REF", "QC", "CHECK", "SUWANNEE", "SRNOM"],
+      "patterns": ["Br", "NO3", "CaCO3", "SUWANNEE", "SRNOM"],
+      "suffixes": ["HA", "FA"],
       "color": "#9B59B6"
     },
     "CONTROL": {
@@ -213,6 +225,59 @@
       "description": "Blanc o aigua MQ",
       "patterns": ["BLANC", "BLANK", "BLK", "MQ", "H2O", "WATER", "MILLI"],
       "color": "#888888"
+    }
+  },
+  "warnings": {
+    "_comment": "Llindars per avisos estructurats. Modifica per ajustar sensibilitat.",
+    "thresholds": {
+      "replica_pearson": {
+        "warning": 0.995,
+        "description": "Correlació Pearson mínima entre rèpliques"
+      },
+      "replica_area_diff_pct": {
+        "warning": 10.0,
+        "description": "Diferència % àrea total entre rèpliques"
+      },
+      "replica_fraction_diff_pct": {
+        "warning": 15.0,
+        "description": "Diferència % àrea per fracció entre rèpliques"
+      },
+      "snr_low": {
+        "warning": 10.0,
+        "blocker": 5.0,
+        "description": "SNR mínim (warning si <10, blocker si <5)"
+      },
+      "rsd_replicas": {
+        "warning": 10.0,
+        "description": "RSD % entre rèpliques KHP"
+      },
+      "historical_deviation_pct": {
+        "warning": 15.0,
+        "blocker": 30.0,
+        "description": "Desviació % vs històric"
+      },
+      "concentration_ratio": {
+        "warning": 0.70,
+        "blocker": 0.50,
+        "description": "Ratio concentració pic principal vs total"
+      }
+    },
+    "levels": {
+      "blocker": {
+        "icon": "🚫",
+        "color": "#D32F2F",
+        "description": "Bloqueja el pas a la següent etapa"
+      },
+      "warning": {
+        "icon": "⚠️",
+        "color": "#F57C00",
+        "description": "Requereix revisió amb nota per continuar"
+      },
+      "info": {
+        "icon": "ℹ️",
+        "color": "#1976D2",
+        "description": "Informatiu, no bloqueja"
+      }
     }
   }
 }

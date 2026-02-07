@@ -40,14 +40,27 @@ class OrphanFilesDialog(QDialog):
 
         if uib_files:
             content += "=== UIB (DOC) ===\n"
-            for f in uib_files:
-                content += f"  • {Path(f).name}\n"
+            for item in uib_files:
+                # Suporta tant format antic (string) com nou (dict amb info)
+                if isinstance(item, dict):
+                    fname = Path(item.get("file", "")).name
+                    n_pts = item.get("n_points", 0)
+                    status = "BUIT" if n_pts == 0 else f"{n_pts} pts"
+                    content += f"  • {fname}  [{status}]\n"
+                else:
+                    content += f"  • {Path(item).name}\n"
             content += "\n"
 
         if dad_files:
             content += "=== DAD (254nm) ===\n"
-            for f in dad_files:
-                content += f"  • {Path(f).name}\n"
+            for item in dad_files:
+                if isinstance(item, dict):
+                    fname = Path(item.get("file", "")).name
+                    n_pts = item.get("n_points", 0)
+                    status = "BUIT" if n_pts == 0 else f"{n_pts} pts"
+                    content += f"  • {fname}  [{status}]\n"
+                else:
+                    content += f"  • {Path(item).name}\n"
 
         text.setText(content or "Cap fitxer orfe.")
         layout.addWidget(text)

@@ -40,6 +40,11 @@ from hpsec_utils import get_baseline_value
 from hpsec_core import detect_timeout
 from hpsec_migrate_master import migrate_single
 
+# Import sistema d'avisos estructurats
+from hpsec_warnings import (
+    create_warning, get_max_warning_level, WarningLevel,
+)
+
 # =============================================================================
 # CONSTANTS
 # =============================================================================
@@ -2320,6 +2325,84 @@ def find_data_for_injection(injection, seq_path, uib_files, dad_files, dad_csv_f
     return result
 
 
+# =============================================================================
+# GENERACIÓ D'AVISOS ESTRUCTURATS PER IMPORTACIÓ
+# =============================================================================
+
+def _generate_import_warnings(result: dict) -> list:
+    """
+    Genera avisos estructurats a partir del resultat d'importació.
+
+    Args:
+        result: Dict del resultat de import_sequence()
+
+    Returns:
+        Llista d'avisos estructurats
+    """
+    warnings = []
+
+    # 1. Errors crítics (BLOCKER)
+    for error in result.get("errors", []):
+        if "no data" in error.lower() or "buida" in error.lower() or "empty" in error.lower():
+            warnings.append(create_warning(
+                code="IMP_NO_DATA",
+                stage="import",
+            ))
+        elif "uib" in error.lower() and ("missing" in error.lower() or "falt" in error.lower()):
+            warnings.append(create_warning(
+                code="IMP_MISSING_UIB",
+                stage="import",
+            ))
+        elif "dad" in error.lower() and ("missing" in error.lower() or "falt" in error.lower()):
+            warnings.append(create_warning(
+                code="IMP_MISSING_DAD",
+                stage="import",
+            ))
+        else:
+            warnings.append(create_warning(
+                code="IMP_ERROR",
+                level=WarningLevel.BLOCKER,
+                message=error,
+                stage="import",
+            ))
+
+    # 2. Fitxers orfes
+    orphan_uib = result.get("orphan_files", {}).get("uib", [])
+    orphan_dad = result.get("orphan_files", {}).get("dad", [])
+    n_orphan = len(orphan_uib) + len(orphan_dad)
+
+    if n_orphan > 0:
+        warnings.append(create_warning(
+            code="IMP_ORPHAN_FILES",
+            stage="import",
+            details={"n": n_orphan, "uib": orphan_uib, "dad": orphan_dad},
+        ))
+
+    # 3. CSV buits
+    n_empty_csv = 0
+    for sample_name, sample_data in result.get("samples", {}).items():
+        for rep_key, rep_data in sample_data.get("replicas", {}).items():
+            uib_data = rep_data.get("uib") or {}
+            if uib_data.get("t") is None and uib_data.get("y_raw") is None:
+                n_empty_csv += 1
+
+    if n_empty_csv > 0:
+        warnings.append(create_warning(
+            code="IMP_EMPTY_CSV",
+            stage="import",
+            details={"n": n_empty_csv},
+        ))
+
+    # 4. Fallback DAD (INFO)
+    if result.get("dad_source") == "masterfile":
+        warnings.append(create_warning(
+            code="IMP_FALLBACK_DAD",
+            stage="import",
+        ))
+
+    return warnings
+
+
 def import_sequence(seq_path, config=None, progress_callback=None):
     """
     FASE 1: Importar dades RAW d'una seqüència (v2).
@@ -2858,7 +2941,286 @@ def import_sequence(seq_path, config=None, progress_callback=None):
         result["errors"].append(str(e))
         result["errors"].append(traceback.format_exc())
 
+    # Generar avisos estructurats (nou sistema)
+    result["warnings_structured"] = _generate_import_warnings(result)
+    result["warning_level"] = get_max_warning_level(result["warnings_structured"])
+
     return result
+
+
+# =============================================================================
+# IMPORT PACK (SIBLINGS)
+# =============================================================================
+
+def extract_seq_num(seq_name):
+    """Extreu el número de SEQ del nom (ex: '282B_SEQ' → 282)."""
+    import re
+    match = re.search(r'^(\d+)', os.path.basename(seq_name).replace('_SEQ', '').replace('_BP', ''))
+    return int(match.group(1)) if match else 0
+
+
+def detect_sibling_packs(seq_paths):
+    """
+    Agrupa carpetes per número de SEQ (siblings).
+
+    Args:
+        seq_paths: Llista de paths a carpetes SEQ
+
+    Returns:
+        dict: {seq_num: [paths]} on seq_num és el número base
+
+    Example:
+        Input: ['282_SEQ', '282B_SEQ', '283_SEQ']
+        Output: {282: ['282_SEQ', '282B_SEQ'], 283: ['283_SEQ']}
+    """
+    packs = {}
+    for path in seq_paths:
+        seq_num = extract_seq_num(path)
+        if seq_num not in packs:
+            packs[seq_num] = []
+        packs[seq_num].append(path)
+
+    # Ordenar cada pack: base primer (282_SEQ), després amb lletra (282B_SEQ, 282C_SEQ)
+    def sort_key(path):
+        name = os.path.basename(path).replace('_SEQ', '').replace('_BP', '')
+        # Extreure número i lletra (282 vs 282B)
+        import re
+        match = re.match(r'^(\d+)([A-Z]?)$', name, re.IGNORECASE)
+        if match:
+            num = int(match.group(1))
+            letter = match.group(2).upper() if match.group(2) else ''
+            # '' < 'A' < 'B' < 'C' ...
+            return (num, letter)
+        return (0, name)
+
+    for seq_num in packs:
+        packs[seq_num].sort(key=sort_key)
+
+    return packs
+
+
+def import_sequence_pack(seq_paths, config=None, progress_callback=None):
+    """
+    Importa múltiples carpetes siblings com un pack unificat.
+
+    Quan l'equip s'atura i es reinicia, es creen carpetes com:
+    282_SEQ, 282B_SEQ, 282C_SEQ
+
+    Aquesta funció les importa totes i fusiona els resultats.
+
+    Args:
+        seq_paths: Llista de paths (siblings) o path únic
+        config: Configuració (opcional)
+        progress_callback: Callback(pct, msg)
+
+    Returns:
+        dict unificat amb totes les mostres dels siblings
+    """
+    # Si és un sol path, convertir a llista
+    if isinstance(seq_paths, str):
+        seq_paths = [seq_paths]
+
+    if not seq_paths:
+        return {"success": False, "errors": ["Cap path proporcionat"]}
+
+    # Si només hi ha un path, importar directament
+    if len(seq_paths) == 1:
+        return import_sequence(seq_paths[0], config, progress_callback)
+
+    def report_progress(pct, msg):
+        if progress_callback:
+            progress_callback(pct, msg)
+
+    # Ordenar paths (282_SEQ abans de 282B_SEQ)
+    seq_paths = sorted(seq_paths)
+    primary_path = seq_paths[0]  # El principal és el primer (sense lletra)
+
+    report_progress(0, f"Importació pack: {len(seq_paths)} siblings")
+
+    # Importar cada sibling
+    imported_results = []
+    for i, path in enumerate(seq_paths):
+        pct_start = int(100 * i / len(seq_paths))
+        pct_end = int(100 * (i + 1) / len(seq_paths))
+
+        def sub_progress(pct, msg):
+            real_pct = pct_start + int((pct_end - pct_start) * pct / 100)
+            report_progress(real_pct, f"[{os.path.basename(path)}] {msg}")
+
+        result = import_sequence(path, config, sub_progress)
+        imported_results.append(result)
+
+    # Fusionar resultats
+    report_progress(95, "Fusionant resultats...")
+    merged = _merge_import_results(imported_results, primary_path)
+
+    report_progress(100, f"Pack importat: {len(seq_paths)} siblings fusionats")
+
+    return merged
+
+
+def _merge_import_results(results, primary_path):
+    """
+    Fusiona múltiples resultats d'importació en un de sol.
+
+    Args:
+        results: Llista de dicts retornats per import_sequence()
+        primary_path: Path principal (on es guarden els resultats)
+
+    Returns:
+        dict fusionat
+    """
+    if not results:
+        return {"success": False, "errors": ["Cap resultat per fusionar"]}
+
+    if len(results) == 1:
+        return results[0]
+
+    # Usar el primer com a base
+    primary = results[0]
+
+    merged = {
+        "success": True,
+        "seq_path": primary_path,
+        "seq_name": os.path.basename(primary_path),
+        "method": primary.get("method", "COLUMN"),
+        "data_mode": primary.get("data_mode", "DUAL"),
+        "date": primary.get("date", ""),
+        "is_pack": True,
+        "pack_sources": [r.get("seq_path") for r in results],
+        "pack_count": len(results),
+        "master_data": primary.get("master_data"),
+        "master_file": primary.get("master_file"),
+        "master_format": primary.get("master_format"),
+        "injections": [],
+        "samples": {},
+        "khp_samples": [],
+        "control_samples": [],
+        "valid_samples": set(),
+        "orphan_files": {"uib": [], "dad": []},
+        "errors": [],
+        "warnings": [],
+    }
+
+    # Afegir info de pack als warnings
+    sibling_names = [os.path.basename(r.get("seq_path", "")) for r in results]
+    merged["warnings"].append(
+        f"📦 PACK FUSIONAT: {', '.join(sibling_names)}"
+    )
+
+    # Fusionar dades de cada resultat
+    seen_samples = {}  # Per detectar duplicats
+
+    for idx, result in enumerate(results):
+        source_name = os.path.basename(result.get("seq_path", f"sibling_{idx}"))
+
+        # Fusionar errors/warnings
+        for err in result.get("errors", []):
+            merged["errors"].append(f"[{source_name}] {err}")
+        for warn in result.get("warnings", []):
+            # No duplicar el warning de pack
+            if "PACK FUSIONAT" not in warn:
+                merged["warnings"].append(f"[{source_name}] {warn}")
+
+        # Fusionar injeccions
+        for inj in result.get("injections", []):
+            inj_copy = inj.copy()
+            inj_copy["source_seq"] = source_name
+            merged["injections"].append(inj_copy)
+
+        # Fusionar samples
+        for sample_name, sample_data in result.get("samples", {}).items():
+            if sample_name not in merged["samples"]:
+                merged["samples"][sample_name] = {
+                    "type": sample_data.get("type", "SAMPLE"),
+                    "original_name": sample_data.get("original_name", sample_name),
+                    "replicas": {},
+                    "sources": []
+                }
+
+            # Afegir font
+            merged["samples"][sample_name]["sources"].append(source_name)
+
+            # Fusionar rèpliques (evitar sobreescriure)
+            for rep_key, rep_data in sample_data.get("replicas", {}).items():
+                # Crear clau única si ja existeix
+                unique_key = rep_key
+                base_key = rep_key
+                counter = 1
+                while unique_key in merged["samples"][sample_name]["replicas"]:
+                    # Comprovar si són dades idèntiques (mateixa mostra processada 2 cops)
+                    existing = merged["samples"][sample_name]["replicas"][unique_key]
+                    if _replicas_identical(existing, rep_data):
+                        break  # No afegir duplicat
+                    unique_key = f"{base_key}_{source_name}"
+                    counter += 1
+
+                if unique_key not in merged["samples"][sample_name]["replicas"]:
+                    rep_copy = rep_data.copy() if rep_data else {}
+                    rep_copy["source_seq"] = source_name
+                    merged["samples"][sample_name]["replicas"][unique_key] = rep_copy
+
+        # Fusionar llistes KHP/Control
+        for khp in result.get("khp_samples", []):
+            if khp not in merged["khp_samples"]:
+                merged["khp_samples"].append(khp)
+
+        for ctrl in result.get("control_samples", []):
+            if ctrl not in merged["control_samples"]:
+                merged["control_samples"].append(ctrl)
+
+        # Fusionar valid_samples
+        merged["valid_samples"].update(result.get("valid_samples", set()))
+
+        # Fusionar orphan_files
+        merged["orphan_files"]["uib"].extend(result.get("orphan_files", {}).get("uib", []))
+        merged["orphan_files"]["dad"].extend(result.get("orphan_files", {}).get("dad", []))
+
+    # Estadístiques fusionades
+    merged["stats"] = {
+        "total_injections": len(merged["injections"]),
+        "total_samples": len(merged["samples"]),
+        "khp_count": len(merged["khp_samples"]),
+        "control_count": len(merged["control_samples"]),
+        "pack_sources": len(results),
+    }
+
+    # Check success
+    merged["success"] = not any("error" in str(e).lower() for e in merged["errors"])
+
+    return merged
+
+
+def _replicas_identical(rep1, rep2):
+    """Comprova si dues rèpliques tenen les mateixes dades (evitar duplicats)."""
+    if not rep1 or not rep2:
+        return False
+
+    # Comparar per injection_info
+    inj1 = rep1.get("injection_info", {})
+    inj2 = rep2.get("injection_info", {})
+
+    if inj1.get("line_num") == inj2.get("line_num") and \
+       inj1.get("inj_num") == inj2.get("inj_num"):
+        return True
+
+    # Comparar per dades DOC
+    direct1 = rep1.get("direct", {})
+    direct2 = rep2.get("direct", {})
+
+    t1 = direct1.get("t")
+    t2 = direct2.get("t")
+
+    if t1 is not None and t2 is not None:
+        if len(t1) == len(t2) and len(t1) > 0:
+            # Comparar primer i últim punt
+            try:
+                if abs(t1[0] - t2[0]) < 0.001 and abs(t1[-1] - t2[-1]) < 0.001:
+                    return True
+            except (IndexError, TypeError):
+                pass
+
+    return False
 
 
 # =============================================================================

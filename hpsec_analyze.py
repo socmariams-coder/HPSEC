@@ -81,7 +81,19 @@ from hpsec_core import (
 from hpsec_config import get_config
 
 # Import funcions calibració per seleccionar calibració segons volum d'injecció
-from hpsec_calibrate import get_calibration_for_conditions, get_all_active_calibrations
+from hpsec_calibrate import (
+    get_calibration_for_conditions,
+    get_all_active_calibrations,
+    get_rf_mass_cal,
+    get_calibration_intercept,
+    quantify_with_global_calibration
+)
+
+# Import sistema d'avisos estructurats
+from hpsec_warnings import (
+    create_warning, get_max_warning_level, WarningLevel,
+    migrate_warnings_list
+)
 
 
 # =============================================================================
@@ -854,7 +866,20 @@ def analyze_signal_comparison(signal1_result, signal2_result, t1=None, y1=None, 
 # COMPARACIÓ DE RÈPLIQUES
 # =============================================================================
 
-# Llindars per warnings
+def _get_warning_thresholds():
+    """Obté llindars de warnings des de config, amb defaults."""
+    try:
+        config = get_config()
+        thresholds = config.get("warnings", {}).get("thresholds", {})
+        return {
+            "pearson": thresholds.get("replica_pearson", {}).get("warning", 0.995),
+            "area_diff": thresholds.get("replica_area_diff_pct", {}).get("warning", 10.0),
+            "frac_diff": thresholds.get("replica_fraction_diff_pct", {}).get("warning", 15.0),
+        }
+    except Exception:
+        return {"pearson": 0.995, "area_diff": 10.0, "frac_diff": 15.0}
+
+# Defaults (usats si config no disponible)
 REPLICA_PEARSON_THRESHOLD = 0.995      # Warning si Pearson < 0.995
 REPLICA_AREA_DIFF_THRESHOLD = 10.0     # Warning si diff àrea total > 10%
 REPLICA_FRAC_DIFF_THRESHOLD = 15.0     # Warning si diff fracció > 15%
@@ -882,6 +907,12 @@ def compare_replicas(r1_result, r2_result, mode="COLUMN", config=None):
                 - area_diff_pct: diferència àrea total (%)
                 - warnings: llista de warnings
     """
+    # Obtenir llindars de config (o usar defaults)
+    thresholds = _get_warning_thresholds()
+    pearson_threshold = thresholds["pearson"]
+    area_diff_threshold = thresholds["area_diff"]
+    frac_diff_threshold = thresholds["frac_diff"]
+
     result = {
         "doc": {
             "pearson": np.nan,
@@ -941,7 +972,7 @@ def compare_replicas(r1_result, r2_result, mode="COLUMN", config=None):
         try:
             pearson_val, _ = pearsonr(y1_interp, y2_interp)
             result["doc"]["pearson"] = float(pearson_val)
-            if pearson_val < REPLICA_PEARSON_THRESHOLD:
+            if pearson_val < pearson_threshold:
                 result["doc"]["warnings"].append("LOW_CORRELATION")
         except Exception:
             pass
@@ -955,7 +986,7 @@ def compare_replicas(r1_result, r2_result, mode="COLUMN", config=None):
         if max(area1_total, area2_total) > 0:
             diff_pct = abs(area1_total - area2_total) / max(area1_total, area2_total) * 100
             result["doc"]["area_diff_pct"] = diff_pct
-            if diff_pct > REPLICA_AREA_DIFF_THRESHOLD:
+            if diff_pct > area_diff_threshold:
                 result["doc"]["warnings"].append("AREA_DIFF_HIGH")
 
         # Diferència per fracció (només COLUMN)
@@ -966,7 +997,7 @@ def compare_replicas(r1_result, r2_result, mode="COLUMN", config=None):
                 if max(a1, a2) > 0:
                     frac_diff = abs(a1 - a2) / max(a1, a2) * 100
                     result["doc"]["fraction_diff_pct"][frac] = frac_diff
-                    if frac_diff > REPLICA_FRAC_DIFF_THRESHOLD:
+                    if frac_diff > frac_diff_threshold:
                         result["doc"]["warnings"].append(f"{frac}_DIFF_HIGH")
                 else:
                     result["doc"]["fraction_diff_pct"][frac] = 0.0
@@ -1133,20 +1164,21 @@ def recommend_replica(r1_result, r2_result, comparison, mode="COLUMN"):
     return result
 
 
-def quantify_sample(sample_result, calibration_data, mode="COLUMN"):
+def quantify_sample(sample_result, calibration_data, mode="COLUMN", seq_date=None):
     """
-    Aplica calibració per convertir àrees a concentracions.
+    Aplica calibració GLOBAL per convertir àrees a concentracions.
 
-    Fórmula: concentration = area_sample / RF
-    On RF (Response Factor) = area_khp / conc_khp (àrea per ppm)
+    Utilitza rf_mass_cal de Calibration_Reference.json (calibració global versionada).
+
+    Fórmules segons model:
+    - origin:    ppm = Area × 1000 / (rf_mass_cal × volume_uL)
+    - intercept: ppm = (Area - intercept) × 1000 / (rf_mass_cal × volume_uL)
 
     Args:
         sample_result: Resultat de analyze_sample()
-        calibration_data: Dict amb dades de calibració:
-            - rf_direct: Response Factor per DOC Direct (àrea/ppm)
-            - rf_uib: Response Factor per DOC UIB (àrea/ppm)
-            - rf: Response Factor genèric (fallback per compatibilitat)
+        calibration_data: Dict amb dades de calibració local (per volum i shift)
         mode: "COLUMN" o "BP"
+        seq_date: Data de la SEQ per seleccionar calibració (None = activa)
 
     Returns:
         dict amb:
@@ -1155,99 +1187,131 @@ def quantify_sample(sample_result, calibration_data, mode="COLUMN"):
             - concentration_ppm_uib: concentració DOC UIB (ppm) - si DUAL
             - fractions: dict amb concentració per fracció (COLUMN)
             - fractions_uib: dict amb concentració UIB per fracció (COLUMN DUAL)
+            - calibration_source: "GLOBAL" o "LOCAL" (fallback)
+            - rf_mass_cal_used: rf_mass_cal utilitzat
+            - intercept: valor intercept aplicat (0 si origin)
     """
     result = {
         "concentration_ppm": None,
         "concentration_ppm_direct": None,
         "concentration_ppm_uib": None,
         "fractions": {},
-        "fractions_uib": {}
+        "fractions_uib": {},
+        "calibration_source": None,
+        "rf_mass_cal_used": None,
+        "intercept": 0
     }
 
     if not sample_result.get("processed"):
         return result
 
     # =========================================================================
-    # OBTENIR RF DIRECT i RF UIB
+    # OBTENIR VOLUM D'INJECCIÓ
     # =========================================================================
-    rf_direct = None
-    rf_uib = None
+    volume_uL = sample_result.get("inj_volume")
+    if volume_uL is None and calibration_data:
+        volume_uL = calibration_data.get("volume_uL") or calibration_data.get("inj_volume")
+    if volume_uL is None:
+        # Default segons mode
+        volume_uL = 100 if mode.upper() == "BP" else 400
 
-    if calibration_data:
-        # RF Direct: prioritzar rf_direct, després rf genèric
-        rf_direct = calibration_data.get("rf_direct") or calibration_data.get("rf")
+    # =========================================================================
+    # OBTENIR rf_mass_cal GLOBAL I INTERCEPT
+    # =========================================================================
+    mode_key = mode.lower()  # 'column' o 'bp'
 
-        if rf_direct is None or rf_direct <= 0:
-            # Fallback: calcular RF a partir de KHP àrea i concentració
-            area_khp = (
-                calibration_data.get("khp_area_direct") or
-                calibration_data.get("area") or
-                calibration_data.get("area_khp") or
-                calibration_data.get("khp_area") or
-                calibration_data.get("area_main_peak") or
-                calibration_data.get("mean_area") or 0
-            )
-            conc_khp = (
-                calibration_data.get("conc_ppm") or
-                calibration_data.get("khp_conc_ppm") or
-                calibration_data.get("khp_conc") or
-                calibration_data.get("conc_khp") or 0
-            )
-            if area_khp > 0 and conc_khp > 0:
-                rf_direct = area_khp / conc_khp
+    # Intentar usar calibració global
+    rf_mass_direct = get_rf_mass_cal(signal='direct', mode=mode_key, seq_date=seq_date)
+    rf_mass_uib = get_rf_mass_cal(signal='uib', mode=mode_key, seq_date=seq_date)
 
-        # RF UIB: específic per UIB
-        rf_uib = calibration_data.get("rf_uib", 0)
-        if rf_uib is None or rf_uib <= 0:
-            # Fallback: calcular des de khp_area_uib
-            area_khp_uib = calibration_data.get("khp_area_uib", 0)
-            conc_khp = (
-                calibration_data.get("conc_ppm") or
-                calibration_data.get("khp_conc_ppm") or
-                calibration_data.get("khp_conc") or 0
-            )
-            if area_khp_uib > 0 and conc_khp > 0:
-                rf_uib = area_khp_uib / conc_khp
+    # Obtenir intercept (0 si origin)
+    intercept = get_calibration_intercept(seq_date=seq_date)
+
+    use_global = rf_mass_direct is not None and rf_mass_direct > 0
+
+    # Fórmula única: ppm = (Area - intercept) × 1000 / (rf_mass × volume)
+    def apply_formula(area, rf_mass):
+        area_corrected = max(0, area - intercept)
+        return area_corrected * 1000 / (rf_mass * volume_uL)
 
     # =========================================================================
     # QUANTIFICACIÓ DOC DIRECT
     # =========================================================================
-    if rf_direct and rf_direct > 0:
-        areas_direct = sample_result.get("areas", {}).get("DOC", {})
-        area_total_direct = areas_direct.get("total", 0)
+    areas_direct = sample_result.get("areas", {}).get("DOC", {})
+    area_total_direct = areas_direct.get("total", 0)
 
-        if area_total_direct > 0:
-            ppm_direct = float(area_total_direct / rf_direct)
-            result["concentration_ppm_direct"] = ppm_direct
-            result["concentration_ppm"] = ppm_direct  # Compatibilitat
+    if area_total_direct > 0:
+        if use_global:
+            ppm_direct = apply_formula(area_total_direct, rf_mass_direct)
+            result["concentration_ppm_direct"] = float(ppm_direct)
+            result["concentration_ppm"] = float(ppm_direct)
+            result["calibration_source"] = "GLOBAL"
+            result["rf_mass_cal_used"] = rf_mass_direct
+            result["intercept"] = intercept
+        else:
+            # Fallback: usar RF local (àrea/ppm) si disponible
+            rf_local = None
+            if calibration_data:
+                rf_local = calibration_data.get("rf_direct") or calibration_data.get("rf")
+                if rf_local and rf_local > 0:
+                    ppm_direct = area_total_direct / rf_local
+                    result["concentration_ppm_direct"] = float(ppm_direct)
+                    result["concentration_ppm"] = float(ppm_direct)
+                    result["calibration_source"] = "LOCAL"
 
         # Concentracions per fracció (només COLUMN)
         if mode.upper() == "COLUMN":
-            for frac in ["BioP", "HS", "BB", "SB", "LMW"]:
-                area_frac = areas_direct.get(frac, 0)
-                if area_frac > 0:
-                    result["fractions"][frac] = float(area_frac / rf_direct)
-                else:
-                    result["fractions"][frac] = 0.0
+            if use_global:
+                for frac in ["BioP", "HS", "BB", "SB", "LMW"]:
+                    area_frac = areas_direct.get(frac, 0)
+                    if area_frac > 0:
+                        result["fractions"][frac] = float(apply_formula(area_frac, rf_mass_direct))
+                    else:
+                        result["fractions"][frac] = 0.0
+            elif calibration_data and calibration_data.get("rf_direct"):
+                rf_local = calibration_data.get("rf_direct") or calibration_data.get("rf")
+                if rf_local and rf_local > 0:
+                    for frac in ["BioP", "HS", "BB", "SB", "LMW"]:
+                        area_frac = areas_direct.get(frac, 0)
+                        if area_frac > 0:
+                            result["fractions"][frac] = float(area_frac / rf_local)
+                        else:
+                            result["fractions"][frac] = 0.0
 
     # =========================================================================
-    # QUANTIFICACIÓ DOC UIB (si DUAL i rf_uib disponible)
+    # QUANTIFICACIÓ DOC UIB (si DUAL i rf_mass_uib disponible)
     # =========================================================================
-    if rf_uib and rf_uib > 0:
-        areas_uib = sample_result.get("areas_uib", {})
-        area_total_uib = areas_uib.get("total", 0)
+    areas_uib = sample_result.get("areas_uib", {})
+    area_total_uib = areas_uib.get("total", 0)
 
-        if area_total_uib > 0:
-            result["concentration_ppm_uib"] = float(area_total_uib / rf_uib)
+    if area_total_uib > 0:
+        if rf_mass_uib and rf_mass_uib > 0:
+            # Usar fórmula global amb model (origin/intercept)
+            ppm_uib = apply_formula(area_total_uib, rf_mass_uib)
+            result["concentration_ppm_uib"] = float(ppm_uib)
 
-        # Concentracions UIB per fracció (només COLUMN)
-        if mode.upper() == "COLUMN":
-            for frac in ["BioP", "HS", "BB", "SB", "LMW"]:
-                area_frac = areas_uib.get(frac, 0)
-                if area_frac > 0:
-                    result["fractions_uib"][frac] = float(area_frac / rf_uib)
-                else:
-                    result["fractions_uib"][frac] = 0.0
+            # Concentracions UIB per fracció (només COLUMN)
+            if mode.upper() == "COLUMN":
+                for frac in ["BioP", "HS", "BB", "SB", "LMW"]:
+                    area_frac = areas_uib.get(frac, 0)
+                    if area_frac > 0:
+                        result["fractions_uib"][frac] = float(apply_formula(area_frac, rf_mass_uib))
+                    else:
+                        result["fractions_uib"][frac] = 0.0
+        else:
+            # Fallback: usar RF UIB local si disponible
+            if calibration_data:
+                rf_uib_local = calibration_data.get("rf_uib", 0)
+                if rf_uib_local and rf_uib_local > 0:
+                    result["concentration_ppm_uib"] = float(area_total_uib / rf_uib_local)
+
+                    if mode.upper() == "COLUMN":
+                        for frac in ["BioP", "HS", "BB", "SB", "LMW"]:
+                            area_frac = areas_uib.get(frac, 0)
+                            if area_frac > 0:
+                                result["fractions_uib"][frac] = float(area_frac / rf_uib_local)
+                            else:
+                                result["fractions_uib"][frac] = 0.0
 
     return result
 
@@ -1854,6 +1918,151 @@ def _flatten_samples_for_processing(imported_data, data_mode="DUAL"):
 
 
 # =============================================================================
+# GENERACIÓ D'AVISOS ESTRUCTURATS PER ANÀLISI
+# =============================================================================
+
+def _generate_analysis_warnings(result: dict) -> list:
+    """
+    Genera avisos estructurats a partir del resultat d'anàlisi.
+
+    Analitza el resultat i crea avisos amb nivells (BLOCKER/WARNING/INFO)
+    segons la jerarquia definida a docs/SISTEMA_AVISOS.md.
+
+    Args:
+        result: Dict del resultat de analyze_sequence()
+
+    Returns:
+        Llista d'avisos estructurats
+    """
+    warnings = []
+    method = result.get("method", "COLUMN")
+
+    # 1. Errors crítics (BLOCKER)
+    for error in result.get("errors", []):
+        if "calibr" in error.lower():
+            warnings.append(create_warning(
+                code="ANA_NO_CALIBRATION",
+                stage="analyze",
+            ))
+        else:
+            warnings.append(create_warning(
+                code="ANA_ERROR",
+                level=WarningLevel.BLOCKER,
+                message=error,
+                stage="analyze",
+            ))
+
+    # 2. Mostres buides
+    n_empty = 0
+    for sample_name, sample_group in result.get("samples_grouped", {}).items():
+        replicas = sample_group.get("replicas", {})
+        if not replicas or not any(r.get("processed") for r in replicas.values()):
+            n_empty += 1
+
+    if n_empty > 0:
+        warnings.append(create_warning(
+            code="ANA_EMPTY_SAMPLES",
+            stage="analyze",
+            details={"n": n_empty},
+        ))
+
+    # 3. Analitzar cada mostra
+    for sample_name, sample_group in result.get("samples_grouped", {}).items():
+        for replica in sample_group.get("replicas", {}).values():
+            if not replica.get("processed"):
+                continue
+
+            # Timeout
+            timeout_info = replica.get("timeout_info", {})
+            if timeout_info.get("n_timeouts", 0) > 0:
+                severity = timeout_info.get("severity", "CRITICAL")
+                if severity == "CRITICAL":
+                    warnings.append(create_warning(
+                        code="ANA_TIMEOUT",
+                        stage="analyze",
+                        sample=sample_name,
+                        details={
+                            "n_timeouts": timeout_info["n_timeouts"],
+                            "zones": timeout_info.get("zone_summary", {}),
+                        },
+                    ))
+
+            # Batman
+            batman_info = replica.get("batman_info", {})
+            if batman_info.get("is_batman", False):
+                warnings.append(create_warning(
+                    code="ANA_BATMAN",
+                    stage="analyze",
+                    sample=sample_name,
+                    details={
+                        "valley_depth": batman_info.get("max_depth", 0),
+                    },
+                ))
+
+            # SNR baix
+            snr = replica.get("snr_info", {}).get("snr", 0)
+            if 0 < snr < 10:
+                warnings.append(create_warning(
+                    code="ANA_SNR_LOW",
+                    stage="analyze",
+                    sample=sample_name,
+                    details={"snr": snr},
+                ))
+
+            # Peak no trobat
+            peak_info = replica.get("peak_info", {})
+            if not peak_info.get("valid", False):
+                warnings.append(create_warning(
+                    code="ANA_NO_PEAK",
+                    stage="analyze",
+                    sample=sample_name,
+                ))
+
+            # Àrea negativa
+            areas = replica.get("areas", {})
+            if areas.get("area_total", 0) < 0:
+                warnings.append(create_warning(
+                    code="ANA_AREA_NEGATIVE",
+                    stage="analyze",
+                    sample=sample_name,
+                ))
+
+        # Comparació rèpliques
+        comparison = sample_group.get("comparison", {})
+        doc_comparison = comparison.get("doc", {})
+        dad_comparison = comparison.get("dad", {})
+
+        # Correlació baixa DOC
+        if doc_comparison.get("warnings"):
+            for warn in doc_comparison["warnings"]:
+                if "CORRELATION" in warn.upper():
+                    warnings.append(create_warning(
+                        code="ANA_REPLICA_CORRELATION_LOW",
+                        stage="analyze",
+                        sample=sample_name,
+                    ))
+                elif "AREA_DIFF" in warn.upper():
+                    warnings.append(create_warning(
+                        code="ANA_REPLICA_AREA_DIFF",
+                        stage="analyze",
+                        sample=sample_name,
+                    ))
+
+        # Correlació baixa DAD
+        if dad_comparison.get("warnings"):
+            for warn in dad_comparison["warnings"]:
+                if "CORRELATION" in warn.upper():
+                    warnings.append(create_warning(
+                        code="ANA_REPLICA_CORRELATION_LOW",
+                        stage="analyze",
+                        sample=sample_name,
+                        details={"source": "DAD"},
+                    ))
+
+    return warnings
+
+
+# =============================================================================
 # FUNCIÓ PRINCIPAL: PROCESSAR SEQÜÈNCIA
 # =============================================================================
 def analyze_sequence(imported_data, calibration_data=None, config=None, progress_callback=None):
@@ -2091,6 +2300,18 @@ def analyze_sequence(imported_data, calibration_data=None, config=None, progress
     }
 
     result["success"] = len(result["errors"]) == 0
+
+    # Generar avisos estructurats (nou sistema)
+    result["warnings_structured"] = _generate_analysis_warnings(result)
+    result["warning_level"] = get_max_warning_level(result["warnings_structured"])
+
+    # Registrar mostres a l'índex global (Sample Database)
+    try:
+        from hpsec_samples_db import register_samples_from_analysis
+        register_samples_from_analysis(result)
+    except Exception as e:
+        # No bloquejar l'anàlisi si falla el registre
+        print(f"[WARNING] Error registrant mostres a l'índex: {e}")
 
     if progress_callback:
         progress_callback("Processing complete", 100)
