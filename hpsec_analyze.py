@@ -97,6 +97,34 @@ from hpsec_warnings import (
 
 
 # =============================================================================
+# DEV NOTES - Logging per desenvolupament
+# =============================================================================
+_DEV_NOTES_ENABLED = os.environ.get("HPSEC_DEV_NOTES", "0") == "1"
+
+def _log_detection_issue(seq_name: str, sample_name: str, issue_type: str,
+                         signal: str, details: dict):
+    """Log un problema de detecció a les dev notes (si actiu)."""
+    if not _DEV_NOTES_ENABLED:
+        return
+    try:
+        from hpsec_dev_notes import add_detection_issue
+        add_detection_issue(
+            seq_name=seq_name,
+            sample_name=sample_name,
+            issue_type=issue_type,
+            signal=signal,
+            details={
+                "max_depth": details.get("max_depth", 0),
+                "n_valleys": details.get("n_valleys", 0),
+                "reason": details.get("reason", ""),
+            },
+            severity="warning"
+        )
+    except Exception:
+        pass  # No fallar si dev_notes no disponible
+
+
+# =============================================================================
 # CONFIGURACIÓ PER DEFECTE
 # =============================================================================
 DEFAULT_PROCESS_CONFIG = {
@@ -1528,6 +1556,9 @@ def analyze_sample(sample_data, calibration_data=None, config=None):
         if batman_result.get("is_batman"):
             result["anomalies"].append("BATMAN_DIRECT")
             result["batman_direct"] = True
+            result["batman_direct_info"] = batman_result
+            # Log per dev notes (si actiu)
+            _log_detection_issue(seq_name, sample_name, "batman", "direct", batman_result)
         else:
             result["batman_direct"] = False
 
@@ -1538,6 +1569,9 @@ def analyze_sample(sample_data, calibration_data=None, config=None):
         if batman_uib_result.get("is_batman"):
             result["anomalies"].append("BATMAN_UIB")
             result["batman_uib"] = True
+            result["batman_uib_info"] = batman_uib_result
+            # Log per dev notes (si actiu)
+            _log_detection_issue(seq_name, sample_name, "batman", "uib", batman_uib_result)
         else:
             result["batman_uib"] = False
 
