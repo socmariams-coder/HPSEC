@@ -692,19 +692,41 @@ class DashboardPanel(QWidget):
                 item.setToolTip(tooltip)
                 self.table.setItem(row, col, item)
 
-            # Col 12: Notes (preview, doble-clic per editar)
-            notes_text = seq.notes if seq.notes else ""
-            # Mostrar preview (primera línia, màx 50 chars)
-            if notes_text:
-                preview = notes_text.split('\n')[0][:50]
-                if len(notes_text) > 50 or '\n' in notes_text:
-                    preview += "..."
+            # Col 12: Notes (JSON + manuals, doble-clic per veure/editar)
+            json_notes = self._load_json_notes(seq.seq_path)
+            manual_notes = seq.notes if seq.notes else ""
+
+            # Construir preview combinat
+            preview_parts = []
+            tooltip_parts = []
+
+            # Notes dels JSON (observacions de processament)
+            for jn in json_notes[:2]:  # Màxim 2 per no saturar
+                stage = jn.get("stage", "?")
+                content = jn.get("content", "")[:40]
+                preview_parts.append(f"[{stage}] {content}")
+                tooltip_parts.append(f"[{stage}] {jn.get('content', '')}")
+
+            # Notes manuals
+            if manual_notes:
+                preview_parts.append(f"[Manual] {manual_notes[:30]}")
+                tooltip_parts.append(f"[Manual] {manual_notes}")
+
+            if preview_parts:
+                preview = " | ".join(preview_parts)
+                if len(preview) > 60:
+                    preview = preview[:57] + "..."
+                tooltip = "\n".join(tooltip_parts)
+                color = QColor("#B8860B") if json_notes else QColor("#666")  # Daurat si té obs.
             else:
                 preview = ""
+                tooltip = "Doble-clic per afegir notes"
+                color = QColor("#999")
+
             item_notes = QTableWidgetItem(preview)
-            item_notes.setToolTip(notes_text if notes_text else "Doble-clic per afegir notes")
-            item_notes.setForeground(QColor("#666"))
-            item_notes.setFlags(item_notes.flags() & ~Qt.ItemIsEditable)  # No editable inline
+            item_notes.setToolTip(tooltip)
+            item_notes.setForeground(color)
+            item_notes.setFlags(item_notes.flags() & ~Qt.ItemIsEditable)
             self.table.setItem(row, 12, item_notes)
 
         # Reactivar sorting i signals
