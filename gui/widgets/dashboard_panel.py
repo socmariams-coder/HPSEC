@@ -699,25 +699,49 @@ class DashboardPanel(QWidget):
             # Construir preview combinat
             preview_parts = []
             tooltip_parts = []
+            has_anomaly = False
+            has_warning = False
 
-            # Notes dels JSON (observacions de processament)
-            for jn in json_notes[:2]:  # Màxim 2 per no saturar
+            # Notes dels JSON (tot: warnings, anomalies, notes)
+            for jn in json_notes[:4]:  # Màxim 4 per preview
                 stage = jn.get("stage", "?")
-                content = jn.get("content", "")[:40]
-                preview_parts.append(f"[{stage}] {content}")
-                tooltip_parts.append(f"[{stage}] {jn.get('content', '')}")
+                ntype = jn.get("type", "")
+                content = jn.get("content", "")[:35]
+
+                # Prefix segons tipus
+                if ntype == "ANOM":
+                    prefix = "!"
+                    has_anomaly = True
+                elif ntype == "WARN":
+                    prefix = "W"
+                    has_warning = True
+                elif ntype == "QUAL":
+                    prefix = "Q"
+                elif ntype == "NOTE":
+                    prefix = "N"
+                else:
+                    prefix = ""
+
+                preview_parts.append(f"[{stage}:{prefix}] {content}")
+                tooltip_parts.append(f"[{stage}] ({ntype}) {jn.get('content', '')}")
 
             # Notes manuals
             if manual_notes:
-                preview_parts.append(f"[Manual] {manual_notes[:30]}")
+                preview_parts.append(f"[MAN] {manual_notes[:25]}")
                 tooltip_parts.append(f"[Manual] {manual_notes}")
 
             if preview_parts:
                 preview = " | ".join(preview_parts)
-                if len(preview) > 60:
-                    preview = preview[:57] + "..."
+                if len(preview) > 80:
+                    preview = preview[:77] + "..."
                 tooltip = "\n".join(tooltip_parts)
-                color = QColor("#B8860B") if json_notes else QColor("#666")  # Daurat si té obs.
+                # Colors segons gravetat
+                if has_anomaly:
+                    color = QColor("#C62828")  # Vermell per anomalies
+                elif has_warning:
+                    color = QColor("#E65100")  # Taronja per warnings
+                else:
+                    color = QColor("#1565C0")  # Blau per notes
             else:
                 preview = ""
                 tooltip = "Doble-clic per afegir notes"
@@ -970,7 +994,7 @@ class DashboardPanel(QWidget):
                 )
 
     def _load_json_notes(self, seq_path: str) -> list:
-        """Carrega les notes dels JSON (warnings_confirmed.user_note)."""
+        """Carrega TOT dels JSON: warnings, anomalies, notes."""
         import json
         from pathlib import Path
 
@@ -981,10 +1005,10 @@ class DashboardPanel(QWidget):
             return notes
 
         json_files = {
-            "import_manifest.json": "Importar",
-            "calibration_result.json": "Calibrar",
-            "analysis_result.json": "Analitzar",
-            "consolidation.json": "Consolidar",
+            "import_manifest.json": "IMP",
+            "calibration_result.json": "CAL",
+            "analysis_result.json": "ANA",
+            "consolidation.json": "CON",
         }
 
         for filename, stage_name in json_files.items():
@@ -996,28 +1020,86 @@ class DashboardPanel(QWidget):
                 with open(json_file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
 
+                # 1. WARNINGS pendents
+                warnings = data.get("warnings", [])
+                if isinstance(warnings, list):
+                    for w in warnings[:3]:  # Màxim 3 per etapa
+                        if isinstance(w, str) and w.strip():
+                            notes.append({
+                                "stage": stage_name,
+                                "type": "WARN",
+                                "content": w[:80],
+                            })
+                        elif isinstance(w, dict):
+                            msg = w.get("message", w.get("code", ""))
+                            if msg:
+                                notes.append({
+                                    "stage": stage_name,
+                                    "type": "WARN",
+                                    "content": msg[:80],
+                                })
+
+                # 2. ANOMALIES (batman, timeout, etc.) - analysis_result
+                if filename == "analysis_result.json":
+                    samples = data.get("samples_analyzed", {})
+                    batman_count = 0
+                    timeout_count = 0
+                    for sample_name, sample_data in samples.items():
+                        if sample_data.get("batman_direct") or sample_data.get("batman_uib"):
+                            batman_count += 1
+                        if sample_data.get("has_timeout"):
+                            timeout_count += 1
+
+                    if batman_count > 0:
+                        notes.append({
+                            "stage": stage_name,
+                            "type": "ANOM",
+                            "content": f"BATMAN detectat en {batman_count} mostres",
+                        })
+                    if timeout_count > 0:
+                        notes.append({
+                            "stage": stage_name,
+                            "type": "ANOM",
+                            "content": f"TIMEOUT en {timeout_count} mostres",
+                        })
+
+                # 3. CALIBRACIÓ - problemes KHP
+                if filename == "calibration_result.json":
+                    cals = data.get("calibrations", [])
+                    for cal in cals:
+                        if cal.get("has_batman"):
+                            notes.append({
+                                "stage": stage_name,
+                                "type": "ANOM",
+                                "content": "KHP amb batman",
+                            })
+                        if cal.get("has_timeout"):
+                            notes.append({
+                                "stage": stage_name,
+                                "type": "ANOM",
+                                "content": "KHP amb timeout",
+                            })
+                        # Quality issues
+                        for issue in cal.get("quality_issues", [])[:2]:
+                            notes.append({
+                                "stage": stage_name,
+                                "type": "QUAL",
+                                "content": issue[:60],
+                            })
+
+                # 4. NOTES D'USUARI (confirmació warnings)
                 wc = data.get("warnings_confirmed")
                 if isinstance(wc, dict):
                     user_note = wc.get("user_note", "")
                     if user_note:
                         notes.append({
                             "stage": stage_name,
+                            "type": "NOTE",
+                            "content": user_note[:80],
                             "reviewer": wc.get("reviewer", ""),
-                            "date": wc.get("timestamp", ""),
-                            "content": user_note,
                         })
 
-                    # Afegir auto_notes si són rellevants
-                    for auto_note in wc.get("auto_notes", []):
-                        if auto_note and "sense avisos" not in auto_note.lower():
-                            notes.append({
-                                "stage": stage_name,
-                                "reviewer": "",
-                                "date": wc.get("timestamp", ""),
-                                "content": f"[Auto] {auto_note}",
-                            })
-
-            except Exception:
+            except Exception as e:
                 pass
 
         return notes
