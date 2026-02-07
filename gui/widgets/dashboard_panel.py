@@ -693,7 +693,11 @@ class DashboardPanel(QWidget):
                 self.table.setItem(row, col, item)
 
             # Col 12: Notes (JSON + manuals, doble-clic per veure/editar)
-            json_notes = self._load_json_notes(seq.seq_path)
+            # SEMPRE disponible, independentment de l'estat
+            try:
+                json_notes = self._load_json_notes(seq.seq_path) if seq.seq_path else []
+            except Exception:
+                json_notes = []
             manual_notes = seq.notes if seq.notes else ""
 
             # Construir preview combinat
@@ -920,8 +924,13 @@ class DashboardPanel(QWidget):
 
         layout = QVBoxLayout(dialog)
 
-        # === SECCIÓ 1: Notes dels JSON (warnings confirmats) ===
-        json_notes = self._load_json_notes(seq.seq_path)
+        # === SECCIÓ 1: Notes dels JSON (warnings, anomalies, etc.) ===
+        # SEMPRE intentar carregar, mai fallar
+        try:
+            json_notes = self._load_json_notes(seq.seq_path) if seq.seq_path else []
+        except Exception:
+            json_notes = []
+
         if json_notes:
             obs_group = QGroupBox("Observacions de processament")
             obs_layout = QVBoxLayout(obs_group)
@@ -994,14 +1003,25 @@ class DashboardPanel(QWidget):
                 )
 
     def _load_json_notes(self, seq_path: str) -> list:
-        """Carrega TOT dels JSON: warnings, anomalies, notes."""
+        """Carrega TOT dels JSON: warnings, anomalies, notes.
+
+        IMPORTANT: Sempre retorna llista (buida si no hi ha res).
+        Mai falla - Notes ha d'estar sempre disponible.
+        """
         import json
         from pathlib import Path
 
         notes = []
-        data_path = Path(seq_path) / "CHECK" / "data"
 
-        if not data_path.exists():
+        # Validar path
+        if not seq_path:
+            return notes
+
+        try:
+            data_path = Path(seq_path) / "CHECK" / "data"
+            if not data_path.exists():
+                return notes
+        except Exception:
             return notes
 
         json_files = {
