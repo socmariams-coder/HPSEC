@@ -31,8 +31,8 @@ from hpsec_consolidate import (
     detect_seq_type,
 )
 from gui.widgets.styles import (
-    PANEL_MARGINS, PANEL_SPACING, STYLE_WARNING_BAR, STYLE_WARNING_TEXT,
-    COLOR_SUCCESS, COLOR_WARNING, create_title_font, apply_panel_layout,
+    PANEL_MARGINS, PANEL_SPACING,
+    COLOR_SUCCESS, COLOR_WARNING, apply_panel_layout,
     create_empty_state_widget
 )
 
@@ -97,56 +97,29 @@ class ConsolidatePanel(QWidget):
         self.main_window = main_window
         self.bp_data = {}
         self.worker = None
+        self._warnings_confirmed = False  # G05: Traçabilitat
+        self._warnings_confirmed_by = None
+        self._notes = ""
 
         self._setup_ui()
 
     def _setup_ui(self):
-        """Configura la interfície."""
+        """Configura la interfície - NET i MINIMALISTA.
+
+        Estructura:
+        - Info SEQ actual (tipus COLUMN/BP)
+        - Empty state o Resultat BP
+        - Progress durant cerca
+
+        Nota: Títol, avisos, notes i navegació són al wizard header.
+        """
         layout = QVBoxLayout(self)
         apply_panel_layout(layout)
 
-        # === HEADER ===
-        header_layout = QHBoxLayout()
-
-        title = QLabel("Consolidació COLUMN + BP")
-        title.setFont(create_title_font())
-        header_layout.addWidget(title)
-
-        header_layout.addStretch()
-
-        # Botó cercar
-        self.search_btn = QPushButton("🔍 Cercar BP")
-        self.search_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #3498DB; color: white;
-                border: none; border-radius: 4px;
-                padding: 8px 20px; font-weight: bold;
-            }
-            QPushButton:hover { background-color: #2980B9; }
-            QPushButton:disabled { background-color: #BDC3C7; }
-        """)
+        # Botó cercar (amagat - l'acció es dispara des del wizard header)
+        self.search_btn = QPushButton()
+        self.search_btn.setVisible(False)
         self.search_btn.clicked.connect(self._search_bp)
-        header_layout.addWidget(self.search_btn)
-
-        layout.addLayout(header_layout)
-
-        # === BARRA D'AVISOS (consistent per tots els panels) ===
-        self.warnings_bar = QFrame()
-        self.warnings_bar.setVisible(False)
-        self.warnings_bar.setStyleSheet(STYLE_WARNING_BAR)
-        warnings_bar_layout = QHBoxLayout(self.warnings_bar)
-        warnings_bar_layout.setContentsMargins(12, 8, 12, 8)
-
-        warnings_icon = QLabel("⚠")
-        warnings_icon.setStyleSheet("font-size: 16px;")
-        warnings_bar_layout.addWidget(warnings_icon)
-
-        self.warnings_text = QLabel()
-        self.warnings_text.setStyleSheet(STYLE_WARNING_TEXT)
-        self.warnings_text.setWordWrap(True)
-        warnings_bar_layout.addWidget(self.warnings_text, 1)
-
-        layout.addWidget(self.warnings_bar)
 
         # === INFO SEQ ACTUAL ===
         self.current_seq_frame = QFrame()
@@ -172,7 +145,8 @@ class ConsolidatePanel(QWidget):
         self.empty_state = create_empty_state_widget(
             "🔗",
             "No hi ha dades analitzades",
-            "Completa primer l'anàlisi per poder consolidar dades COLUMN + BP."
+            "Completa primer l'anàlisi per poder consolidar dades COLUMN + BP.",
+            parent=self
         )
         self.empty_state.setVisible(True)
         layout.addWidget(self.empty_state)
@@ -256,29 +230,76 @@ class ConsolidatePanel(QWidget):
 
         layout.addWidget(self.bp_result_frame, 1)
 
-        # === BOTONS NAVEGACIÓ ===
-        nav_layout = QHBoxLayout()
-        nav_layout.addStretch()
-
-        self.next_btn = QPushButton("Següent: Exportar →")
-        self.next_btn.setEnabled(False)
-        self.next_btn.setStyleSheet("font-weight: bold; padding: 8px 16px;")
-        self.next_btn.clicked.connect(self._go_next)
-        nav_layout.addWidget(self.next_btn)
-
-        layout.addLayout(nav_layout)
+        # Referència dummy per compatibilitat amb wizard (el wizard l'amaga)
+        self.next_btn = QPushButton()
+        self.next_btn.setVisible(False)
 
     def showEvent(self, event):
         """Es crida quan el panel es fa visible."""
         super().showEvent(event)
+        self._check_existing_consolidation()
+
+    def _check_existing_consolidation(self):
+        """Comprova si existeix consolidació prèvia i la carrega automàticament."""
+        import json
+
+        seq_path = self.main_window.seq_path
+        if not seq_path:
+            self._update_current_seq_info()
+            return
+
+        # Si ja tenim dades carregades, no tornar a carregar
+        if self.bp_data:
+            return
+
+        # Intentar carregar consolidation.json
+        try:
+            json_path = Path(seq_path) / "CHECK" / "data" / "consolidation.json"
+            if json_path.exists():
+                with open(json_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+
+                # Carregar dades a memòria
+                self.bp_data = data.get("bp_linked", {})
+
+                # Actualitzar UI
+                self._update_current_seq_info()
+
+                bp_path = data.get("bp_seq_found")
+                if bp_path:
+                    bp_name = Path(bp_path).name
+                    self.bp_found_label.setText(f"✓ SEQ BP trobada: <b>{bp_name}</b>")
+                    self.bp_found_frame.setStyleSheet(
+                        "background-color: #E8F5E9; border-radius: 4px; padding: 8px;"
+                    )
+                else:
+                    self.bp_found_label.setText("✗ No s'ha trobat cap SEQ BP relacionada")
+                    self.bp_found_frame.setStyleSheet(
+                        "background-color: #FFEBEE; border-radius: 4px; padding: 8px;"
+                    )
+
+                self.empty_state.setVisible(False)
+                self.bp_result_frame.setVisible(True)
+                self._populate_link_table(data)
+
+                self.main_window.set_status("Consolidació carregada des de fitxer existent", 3000)
+                return
+
+        except Exception as e:
+            print(f"[WARNING] Error comprovant consolidació existent: {e}")
+
+        # Si no hi ha consolidació prèvia, mostrar estat normal
         self._update_current_seq_info()
 
     def reset(self):
         """Reinicia el panel al seu estat inicial."""
         self.bp_data = {}
         self.worker = None
-        self.warnings_bar.setVisible(False)
-        self.warnings_text.setText("")
+        self._warnings_confirmed = False
+        self._warnings_confirmed_by = None
+        self._notes = ""
+
+        # Reset UI
         self.current_seq_label.setText("Seqüència actual: -")
         self.current_type_label.setText("")
         self.empty_state.setVisible(True)
@@ -290,7 +311,6 @@ class ConsolidatePanel(QWidget):
         self.link_table.setRowCount(0)
         self.bp_stats_label.setText("")
         self.search_btn.setEnabled(True)
-        self.next_btn.setEnabled(False)
 
     def _update_current_seq_info(self):
         """Actualitza la info de la seqüència actual."""

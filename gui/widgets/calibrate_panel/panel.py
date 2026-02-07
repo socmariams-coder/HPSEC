@@ -18,20 +18,22 @@ from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 
-from hpsec_calibrate import calibrate_from_import, load_khp_history, load_local_calibrations, get_all_active_calibrations
+from hpsec_calibrate import (
+    calibrate_from_import, load_khp_history, load_local_calibrations,
+    get_all_active_calibrations, load_qc_history, get_rf_mass_cal
+)
+from hpsec_config import get_config
 
 import numpy as np
 
 # Importar components del paquet
 from .worker import CalibrateWorker
-from .graph_widgets import KHPReplicaGraphWidget, HistoryBarWidget
-
+from .graph_widgets import KHPReplicaGraphWidget, HistoryBarWidget, CalibrationLineWidget
 # Importar estils compartits
 from gui.widgets.styles import (
-    PANEL_MARGINS, PANEL_SPACING, STYLE_WARNING_BAR, STYLE_WARNING_TEXT,
-    STYLE_SUCCESS_BAR, STYLE_SUCCESS_TEXT, STYLE_GROUPBOX,
+    PANEL_MARGINS, PANEL_SPACING, STYLE_GROUPBOX,
     COLOR_SUCCESS, COLOR_WARNING, COLOR_ERROR, COLOR_TEXT_SECONDARY,
-    create_title_font, create_subtitle_font, apply_panel_layout
+    create_subtitle_font, apply_panel_layout
 )
 
 
@@ -48,6 +50,9 @@ class CalibratePanel(QWidget):
         self._existing_calibration = None  # Calibració existent carregada
         self._all_calibrations = []  # Totes les calibracions disponibles (múltiples condicions)
         self._current_condition_key = None  # Condició seleccionada
+        self._warnings_confirmed = False  # G05: Traçabilitat
+        self._warnings_confirmed_by = None
+        self._notes = ""
 
         self._setup_ui()
 
@@ -58,20 +63,23 @@ class CalibratePanel(QWidget):
         self._existing_calibration = None
         self._all_calibrations = []
         self._current_condition_key = None
+        self._warnings_confirmed = False
+        self._warnings_confirmed_by = None
+        self._notes = ""
 
         # Reset UI elements
-        self.warnings_bar.setVisible(False)
-        self.warnings_text.setText("")
         self.condition_selector_frame.setVisible(False)
         self.condition_combo.clear()
+        if hasattr(self, 'placeholder'):
+            self.placeholder.setVisible(True)
         if hasattr(self, 'summary_group'):
             self.summary_group.setVisible(False)
-        if hasattr(self, 'next_btn'):
-            self.next_btn.setEnabled(False)
         if hasattr(self, 'khp_graph'):
             self.khp_graph.clear()
         if hasattr(self, 'history_graph'):
             self.history_graph.clear()
+        if hasattr(self, 'calibration_line_graph'):
+            self.calibration_line_graph.clear()
 
     def showEvent(self, event):
         """Quan el panel es mostra, comprovar si hi ha calibració existent."""
@@ -94,6 +102,17 @@ class CalibratePanel(QWidget):
         try:
             # Carregar totes les calibracions locals
             all_cals = load_local_calibrations(seq_path)
+            from_local = bool(all_cals)
+
+            # Si no hi ha locals, intentar carregar des de l'històric global
+            if not all_cals:
+                all_cals = load_khp_history(seq_path)
+                from_local = False
+
+            # Marcar origen per mostrar a la UI
+            for cal in all_cals:
+                cal['_from_local'] = from_local
+
             if not all_cals:
                 self.condition_selector_frame.setVisible(False)
                 return
@@ -103,7 +122,9 @@ class CalibratePanel(QWidget):
             calibrations_by_condition = {}
 
             for cal in all_cals:
-                if cal.get('seq_name') != seq_name:
+                cal_seq = cal.get('seq_name', '')
+                # Acceptar coincidència exacta o si el seq_name està contingut
+                if cal_seq != seq_name and seq_name not in cal_seq:
                     continue
                 condition_key = cal.get('condition_key', 'default')
                 # Guardar la més recent (primera trobada) per cada condició
@@ -245,47 +266,32 @@ class CalibratePanel(QWidget):
         self._update_validation(result)
         self._update_history(result)
 
-        self.next_btn.setEnabled(True)
         self.main_window.enable_tab(2)
-        self.main_window.set_status("Calibració carregada des d'històric", 3000)
+
+        # Indicar font de la calibració
+        source = "local" if cal.get('_from_local') else "global"
+        self.main_window.set_status(f"Calibració carregada ({source}): {cal.get('condition_key', 'N/A')}", 3000)
 
         # Emetre senyal per notificar al wizard
         self.calibration_completed.emit(result)
 
     def _setup_ui(self):
-        """Configura la interfaz."""
+        """Configura la interfície - NET i MINIMALISTA.
+
+        Estructura:
+        - Selector de condicions (si múltiples calibracions)
+        - Resum de calibració
+        - Gràfics i mètriques
+
+        Nota: Títol, avisos, notes i navegació són al wizard header.
+        """
         layout = QVBoxLayout(self)
         apply_panel_layout(layout)
 
-        # Título
-        title = QLabel("Calibració KHP")
-        title.setFont(create_title_font())
-        layout.addWidget(title)
-
-        # Info
-        info = QLabel(
-            "La calibració analitza les mostres KHP per calcular els factors de correcció."
-        )
-        info.setWordWrap(True)
-        layout.addWidget(info)
-
-        # === BARRA D'AVISOS (consistent per tots els panels) ===
-        self.warnings_bar = QFrame()
-        self.warnings_bar.setVisible(False)
-        self.warnings_bar.setStyleSheet(STYLE_WARNING_BAR)
-        warnings_bar_layout = QHBoxLayout(self.warnings_bar)
-        warnings_bar_layout.setContentsMargins(12, 8, 12, 8)
-
-        warnings_icon = QLabel("⚠")
-        warnings_icon.setStyleSheet("font-size: 16px; border: none;")
-        warnings_bar_layout.addWidget(warnings_icon)
-
-        self.warnings_text = QLabel()
-        self.warnings_text.setStyleSheet(STYLE_WARNING_TEXT + " border: none;")
-        self.warnings_text.setWordWrap(True)
-        warnings_bar_layout.addWidget(self.warnings_text, 1)
-
-        layout.addWidget(self.warnings_bar)
+        # Botó calibrar (amagat - l'acció es dispara des del wizard header)
+        self.calibrate_btn = QPushButton()
+        self.calibrate_btn.setVisible(False)
+        self.calibrate_btn.clicked.connect(self._run_calibrate)
 
         # Selector de condicions de calibració (visible quan hi ha múltiples condicions)
         self.condition_selector_frame = QFrame()
@@ -314,6 +320,12 @@ class CalibratePanel(QWidget):
         content_widget = QWidget()
         content_layout = QVBoxLayout(content_widget)
         content_layout.setSpacing(16)
+
+        # === PLACEHOLDER (mentre carrega) ===
+        self.placeholder = QLabel("Preparant calibració...")
+        self.placeholder.setAlignment(Qt.AlignCenter)
+        self.placeholder.setStyleSheet("color: #888; font-size: 14px; padding: 40px;")
+        content_layout.addWidget(self.placeholder)
 
         # === SECCIÓN: Resumen de Calibración (reorganitzat per senyals) ===
         self.summary_group = QGroupBox("Resum de Calibració")
@@ -355,7 +367,7 @@ class CalibratePanel(QWidget):
 
         direct_items = [
             ("rf_direct", "RF (Àrea/ppm):", 0, 0),
-            ("rf_v_direct", "RF_V:", 0, 2),
+            ("rf_mass_direct", "RF_MASS:", 0, 2),
             ("fwhm_direct", "FWHM:", 1, 0),
             ("shift_direct", "Shift (vs 254):", 1, 2),
             ("snr_direct", "SNR:", 2, 0),
@@ -380,7 +392,7 @@ class CalibratePanel(QWidget):
 
         uib_items = [
             ("rf_uib", "RF (Àrea/ppm):", 0, 0),
-            ("rf_v_uib", "RF_V:", 0, 2),
+            ("rf_mass_uib", "RF_MASS:", 0, 2),
             ("fwhm_uib", "FWHM:", 1, 0),
             ("shift_uib", "Shift (vs 254):", 1, 2),
             ("snr_uib", "SNR:", 2, 0),
@@ -418,14 +430,14 @@ class CalibratePanel(QWidget):
         self.metrics_table = QTableWidget()
         self.metrics_table.setColumnCount(16)
         self.metrics_table.setHorizontalHeaderLabels([
-            "Rep", "Senyal", "Àrea", "DOC/254", "FWHM", "RF_V", "CR",
+            "Rep", "Senyal", "Àrea", "DOC/254", "FWHM", "RF_M", "CR",
             "t_max", "Shift", "SNR", "Sym", "Pic_J", "TO", "Pics", "Q", "Estat"
         ])
         # Tooltips per les capçaleres de mètriques
         self.metrics_table.horizontalHeaderItem(2).setToolTip("Àrea DOC integrada")
         self.metrics_table.horizontalHeaderItem(3).setToolTip("Ratio DOC/254nm - Consistència entre senyals")
         self.metrics_table.horizontalHeaderItem(4).setToolTip("FWHM (min) - Amplada a mitja alçada\nNormal: 0.9-1.5 min")
-        self.metrics_table.horizontalHeaderItem(5).setToolTip("RF_V = Àrea/(ppm×µL) - Response Factor normalitzat per volum")
+        self.metrics_table.horizontalHeaderItem(5).setToolTip("RF_MASS = Àrea×1000/(ppm×µL) - Àrea per µg DOC injectat")
         self.metrics_table.horizontalHeaderItem(6).setToolTip("CR = pic/total - Concentration Ratio\nCOLUMN: ~0.65, BP: ~1.0")
         self.metrics_table.horizontalHeaderItem(7).setToolTip("Temps del pic màxim (min)")
         self.metrics_table.horizontalHeaderItem(8).setToolTip("Shift vs 254nm (segons)")
@@ -602,9 +614,19 @@ class CalibratePanel(QWidget):
         self.history_table.setStyleSheet("QTableWidget { font-size: 11px; }")
         history_content.addWidget(self.history_table, 3)
 
-        # Gràfic de barres compacte (dreta)
+        # Gràfics (dreta): recta calibració + barres
+        graphs_layout = QVBoxLayout()
+        graphs_layout.setSpacing(5)
+
+        # Gràfic recta de calibració (a sobre)
+        self.calibration_line_graph = CalibrationLineWidget()
+        graphs_layout.addWidget(self.calibration_line_graph)
+
+        # Gràfic de barres compacte (a sota)
         self.history_graph = HistoryBarWidget()
-        history_content.addWidget(self.history_graph, 2)
+        graphs_layout.addWidget(self.history_graph)
+
+        history_content.addLayout(graphs_layout, 2)
 
         history_layout.addLayout(history_content)
 
@@ -651,25 +673,33 @@ class CalibratePanel(QWidget):
         scroll.setWidget(content_widget)
         layout.addWidget(scroll, 1)
 
-        # Botones
-        buttons_layout = QHBoxLayout()
-        buttons_layout.addStretch()
-
-        self.calibrate_btn = QPushButton("Calibrar")
-        self.calibrate_btn.clicked.connect(self._run_calibrate)
-        buttons_layout.addWidget(self.calibrate_btn)
-
-        self.next_btn = QPushButton("Següent →")
-        self.next_btn.setEnabled(False)
-        self.next_btn.clicked.connect(self._go_next)
-        buttons_layout.addWidget(self.next_btn)
-
-        layout.addLayout(buttons_layout)
+        # Referència dummy per compatibilitat amb wizard (el wizard l'amaga)
+        self.next_btn = QPushButton()
+        self.next_btn.setVisible(False)
 
     def _run_calibrate(self):
-        """Ejecuta la calibración."""
+        """Executa la calibració."""
         imported_data = self.main_window.imported_data
+
+        # Auto-carregar dades d'importació si no estan en memòria
         if not imported_data:
+            seq_path = self.main_window.seq_path
+            if seq_path:
+                from hpsec_import import import_from_manifest
+                self.main_window.set_status("Carregant dades d'importació...")
+                imported_data = import_from_manifest(seq_path)
+                if imported_data and imported_data.get('success'):
+                    self.main_window.imported_data = imported_data
+                    self.main_window.set_status("Dades carregades", 1000)
+
+        if not imported_data:
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.warning(
+                self,
+                "No hi ha dades",
+                "No s'han trobat dades d'importació.\n\n"
+                "Cal importar la seqüència primer."
+            )
             return
 
         self.calibrate_btn.setEnabled(False)
@@ -710,43 +740,13 @@ class CalibratePanel(QWidget):
         # Recarregar el selector de condicions (potser s'han creat noves calibracions)
         self._reload_condition_selector()
 
-        # Mostrar avisos si n'hi ha
-        self._show_warnings(result)
+        # Nota: Els avisos es gestionen des del wizard header
 
-        self.next_btn.setEnabled(True)
         self.main_window.enable_tab(2)
         self.main_window.set_status("Calibració completada", 5000)
 
         # Emetre senyal per notificar al wizard
         self.calibration_completed.emit(result)
-
-    def _show_warnings(self, result):
-        """Mostra avisos a la barra superior si n'hi ha."""
-        warnings = []
-
-        # Recollir warnings de calibració
-        cal_warnings = result.get("calibration_warnings", [])
-        warnings.extend(cal_warnings)
-
-        # Warnings de qualitat
-        khp_data = result.get("khp_data_direct") or result.get("khp_data_uib") or {}
-        quality_issues = khp_data.get("quality_issues", [])
-        warnings.extend(quality_issues[:2])
-
-        # Warnings de validació
-        validation = khp_data.get("validation_details", {})
-        val_warnings = validation.get("warnings", [])
-        warnings.extend(val_warnings[:2])
-
-        if warnings:
-            self.warnings_bar.setVisible(True)
-            n_warnings = len(warnings)
-            display_warnings = warnings[:3]  # Màxim 3
-            self.warnings_text.setText(
-                f"<b>{n_warnings} avisos:</b> " + " · ".join(display_warnings)
-            )
-        else:
-            self.warnings_bar.setVisible(False)
 
     def _reload_condition_selector(self):
         """Recarrega el selector de condicions després d'una nova calibració."""
@@ -804,6 +804,7 @@ class CalibratePanel(QWidget):
         }
         self.main_window.calibration_data = self.calibration_data
 
+        self.placeholder.setVisible(False)
         self.summary_group.setVisible(True)
         # Reset all labels
         self.result_labels["seq_name"].setText("-")
@@ -834,13 +835,13 @@ class CalibratePanel(QWidget):
             f"<pre>{error_msg}</pre>"
         )
 
-        self.next_btn.setEnabled(True)
         self.main_window.enable_tab(2)
 
     def _update_summary(self, result):
         """Actualiza el resumen de calibración amb format per senyals."""
         import os
 
+        self.placeholder.setVisible(False)
         self.summary_group.setVisible(True)
 
         # === INFORMACIÓ GENERAL ===
@@ -862,7 +863,7 @@ class CalibratePanel(QWidget):
         if khp_data_main:
             volume = khp_data_main.get('volume_uL')
             if not volume:
-                replicas = khp_data_main.get('replicas', [])
+                replicas = khp_data_main.get('replicas') or []
                 if replicas:
                     volume = replicas[0].get('volume_uL')
         self.result_labels["volume"].setText(f"{int(volume)} µL" if volume else "-")
@@ -876,7 +877,7 @@ class CalibratePanel(QWidget):
         if khp_data_main:
             uib_sensitivity = khp_data_main.get('uib_sensitivity')
             if not uib_sensitivity:
-                replicas = khp_data_main.get('replicas', [])
+                replicas = khp_data_main.get('replicas') or []
                 for r in replicas:
                     uib_sensitivity = r.get('uib_sensitivity')
                     if uib_sensitivity:
@@ -904,19 +905,19 @@ class CalibratePanel(QWidget):
             shift_direct_sec = shift_direct * 60
             self.result_labels["shift_direct"].setText(f"{shift_direct_sec:.1f}s")
 
-            # SNR, t_max, FWHM, RF_V Direct (de les rèpliques)
-            replicas_direct = khp_data_direct.get('replicas', [khp_data_direct])
+            # SNR, t_max, FWHM, RF_MASS Direct (de les rèpliques)
+            replicas_direct = khp_data_direct.get('replicas') or [khp_data_direct]
             if replicas_direct:
                 snr_vals = [r.get('snr', 0) for r in replicas_direct if r.get('snr')]
                 tmax_vals = [r.get('t_retention', 0) or r.get('t_doc_max', 0) for r in replicas_direct]
                 tmax_vals = [t for t in tmax_vals if t > 0]
                 fwhm_vals = [r.get('fwhm_doc', 0) for r in replicas_direct if r.get('fwhm_doc')]
-                rf_v_vals = [r.get('rf_v_doc', 0) for r in replicas_direct if r.get('rf_v_doc')]
+                rf_mass_vals = [r.get('rf_mass_doc', 0) for r in replicas_direct if r.get('rf_mass_doc')]
 
                 self.result_labels["snr_direct"].setText(f"{np.mean(snr_vals):.0f}" if snr_vals else "-")
                 self.result_labels["tmax_direct"].setText(f"{np.mean(tmax_vals):.2f} min" if tmax_vals else "-")
                 self.result_labels["fwhm_direct"].setText(f"{np.mean(fwhm_vals):.2f} min" if fwhm_vals else "-")
-                self.result_labels["rf_v_direct"].setText(f"{np.mean(rf_v_vals):.3f}" if rf_v_vals else "-")
+                self.result_labels["rf_mass_direct"].setText(f"{np.mean(rf_mass_vals):.1f}" if rf_mass_vals else "-")
         else:
             self.direct_group.setVisible(False)
 
@@ -938,19 +939,19 @@ class CalibratePanel(QWidget):
             shift_uib_sec = shift_uib * 60
             self.result_labels["shift_uib"].setText(f"{shift_uib_sec:.1f}s")
 
-            # SNR, t_max, FWHM, RF_V UIB (de les rèpliques)
-            replicas_uib = khp_data_uib.get('replicas', [khp_data_uib])
+            # SNR, t_max, FWHM, RF_MASS UIB (de les rèpliques)
+            replicas_uib = khp_data_uib.get('replicas') or [khp_data_uib]
             if replicas_uib:
                 snr_vals = [r.get('snr', 0) for r in replicas_uib if r.get('snr')]
                 tmax_vals = [r.get('t_retention', 0) or r.get('t_doc_max', 0) for r in replicas_uib]
                 tmax_vals = [t for t in tmax_vals if t > 0]
                 fwhm_vals = [r.get('fwhm_doc', 0) for r in replicas_uib if r.get('fwhm_doc')]
-                rf_v_vals = [r.get('rf_v_doc', 0) for r in replicas_uib if r.get('rf_v_doc')]
+                rf_mass_vals = [r.get('rf_mass_doc', 0) for r in replicas_uib if r.get('rf_mass_doc')]
 
                 self.result_labels["snr_uib"].setText(f"{np.mean(snr_vals):.0f}" if snr_vals else "-")
                 self.result_labels["tmax_uib"].setText(f"{np.mean(tmax_vals):.2f} min" if tmax_vals else "-")
                 self.result_labels["fwhm_uib"].setText(f"{np.mean(fwhm_vals):.2f} min" if fwhm_vals else "-")
-                self.result_labels["rf_v_uib"].setText(f"{np.mean(rf_v_vals):.3f}" if rf_v_vals else "-")
+                self.result_labels["rf_mass_uib"].setText(f"{np.mean(rf_mass_vals):.1f}" if rf_mass_vals else "-")
         else:
             self.uib_group.setVisible(False)
 
@@ -1214,9 +1215,9 @@ class CalibratePanel(QWidget):
                 item_fwhm.setToolTip(f"FWHM elevat (>{FWHM_THRESHOLD} min)")
             self.metrics_table.setItem(row, 4, item_fwhm)
 
-            # Col 5: RF_V (Response Factor / Volum)
-            rf_v = khp.get('rf_v_doc', 0)
-            self.metrics_table.setItem(row, 5, QTableWidgetItem(f"{rf_v:.3f}" if rf_v > 0 else "-"))
+            # Col 5: RF_MASS (Àrea / µg DOC)
+            rf_mass = khp.get('rf_mass_doc', 0)
+            self.metrics_table.setItem(row, 5, QTableWidgetItem(f"{rf_mass:.1f}" if rf_mass > 0 else "-"))
 
             # Col 6: CR (Concentration Ratio amb color segons mode)
             cr = khp.get('concentration_ratio', khp.get('cr_doc', 0))
@@ -1341,9 +1342,9 @@ class CalibratePanel(QWidget):
             return
 
         # Obtenir info de selecció i comparació
-        selection = khp_data.get('selection', {})
-        comparison = khp_data.get('replica_comparison', {})
-        replicas = khp_data.get('replicas', [])
+        selection = khp_data.get('selection') or {}
+        comparison = khp_data.get('replica_comparison') or {}
+        replicas = khp_data.get('replicas') or []
 
         if not replicas or len(replicas) < 1:
             self.replica_selection_group.setVisible(False)
@@ -1857,7 +1858,7 @@ class CalibratePanel(QWidget):
         if khp_data:
             current_volume = khp_data.get('volume_uL')
             if not current_volume:
-                replicas = khp_data.get('replicas', [])
+                replicas = khp_data.get('replicas') or []
                 if replicas:
                     current_volume = replicas[0].get('volume_uL')
         if not current_volume and self.main_window.imported_data:
@@ -1874,6 +1875,7 @@ class CalibratePanel(QWidget):
             history = load_khp_history(seq_path)
             if not history:
                 self.history_graph.clear()
+                self.calibration_line_graph.clear()
                 self.history_group.setVisible(False)
                 return
 
@@ -1907,6 +1909,7 @@ class CalibratePanel(QWidget):
 
             if not filtered_history:
                 self.history_graph.clear()
+                self.calibration_line_graph.clear()
                 self.history_group.setVisible(False)
                 self.history_filters_label.setText("")
                 return
@@ -2066,6 +2069,23 @@ class CalibratePanel(QWidget):
             # Gràfic de barres (passar valid_indices per colors correctes)
             self.history_graph.plot_history(filtered_history, current_seq, valid_indices)
 
+            # Gràfic de recta de calibració (amb QC_History)
+            try:
+                qc_history = load_qc_history()
+                config = get_config()
+                rf_mass_cal = get_rf_mass_cal(signal='direct', mode=method.lower())
+                self.calibration_line_graph.plot_calibration(
+                    qc_history=qc_history,
+                    current_seq_name=current_seq,
+                    rf_mass_cal=rf_mass_cal or 682,
+                    warning_pct=config.get('calibration', 'qc_thresholds', 'warning_pct', default=5.0),
+                    fail_pct=config.get('calibration', 'qc_thresholds', 'fail_pct', default=10.0),
+                    n_context=config.get('calibration', 'qc_thresholds', 'n_seqs_context', default=2)
+                )
+            except Exception as e:
+                print(f"Error plotant gràfic calibració: {e}")
+                self.calibration_line_graph.clear()
+
             # Resum
             n_valid = len(valid_indices)
             n_excluded = len(filtered_history) - n_valid
@@ -2091,6 +2111,7 @@ class CalibratePanel(QWidget):
             print(f"[WARNING] Error carregant històric: {e}")
             traceback.print_exc()
             self.history_graph.clear()
+            self.calibration_line_graph.clear()
             self.history_group.setVisible(False)
 
     def _on_history_selection_changed(self):

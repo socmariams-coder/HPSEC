@@ -33,7 +33,7 @@ import pandas as pd
 from datetime import datetime
 from scipy.signal import savgol_filter
 from scipy.integrate import trapezoid
-from hpsec_config import get_registry_path
+from hpsec_config import get_registry_path, get_config
 
 # Import funcions de detecció des de hpsec_core (Single Source of Truth)
 from hpsec_core import (
@@ -57,6 +57,12 @@ from hpsec_import import is_khp, extract_khp_conc, obtenir_seq
 # NOTA (2026-02-03): Baseline functions ara a hpsec_core.py
 from hpsec_core import mode_robust, get_baseline_value, get_baseline_stats
 from hpsec_utils import t_at_max
+
+# Import sistema d'avisos estructurats
+from hpsec_warnings import (
+    create_warning, get_max_warning_level, WarningLevel,
+    migrate_warnings_list
+)
 
 # =============================================================================
 # JSON ENCODER PER NUMPY TYPES
@@ -143,6 +149,568 @@ CR_THRESHOLDS = {
         'ok': 0.55,        # CR >= 55% → OK
     },
 }
+
+
+# =============================================================================
+# CALIBRACIÓ DE REFERÈNCIA GLOBAL (VERSIONADA)
+# =============================================================================
+#
+# Sistema de calibració global amb:
+# - Calibracions versionades (valid_from / valid_to)
+# - rf_mass_cal separat per senyal (direct/uib) i mode (column/bp)
+# - QC check del KHP local vs calibració global
+# - Batch reprocessing usa calibració vigent per data SEQ
+#
+# Estructura rf_mass_cal:
+#   {
+#     "direct": {"column": 682, "bp": 682},
+#     "uib": {"column": 682, "bp": 682}
+#   }
+#
+# =============================================================================
+
+CALIBRATION_REFERENCE_FILENAME = "Calibration_Reference.json"
+QC_HISTORY_FILENAME = "QC_History.json"
+
+
+def get_calibration_reference_path():
+    """Retorna el path al fitxer de calibració de referència global."""
+    registry = get_registry_path()
+    if registry:
+        return os.path.join(registry, CALIBRATION_REFERENCE_FILENAME)
+    return None
+
+
+def get_qc_history_path():
+    """Retorna el path al fitxer d'historial QC."""
+    registry = get_registry_path()
+    if registry:
+        return os.path.join(registry, QC_HISTORY_FILENAME)
+    return None
+
+
+def load_qc_history():
+    """
+    Carrega l'historial QC.
+
+    Returns:
+        list d'entrades QC o [] si no existeix
+    """
+    qc_path = get_qc_history_path()
+    if not qc_path or not os.path.exists(qc_path):
+        return []
+
+    try:
+        with open(qc_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+            return data.get('entries', [])
+    except Exception as e:
+        print(f"Error carregant QC History: {e}")
+        return []
+
+
+def load_calibration_reference():
+    """
+    Carrega la calibració de referència global.
+
+    Returns:
+        dict amb les dades de calibració o None si no existeix
+    """
+    ref_path = get_calibration_reference_path()
+    if not ref_path or not os.path.exists(ref_path):
+        return None
+
+    try:
+        with open(ref_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"Error carregant calibració de referència: {e}")
+        return None
+
+
+def save_calibration_reference(data):
+    """
+    Guarda la calibració de referència global.
+
+    Args:
+        data: dict amb les dades de calibració
+
+    Returns:
+        bool indicant èxit
+    """
+    ref_path = get_calibration_reference_path()
+    if not ref_path:
+        return False
+
+    try:
+        data['updated'] = datetime.now().strftime('%Y-%m-%d')
+        with open(ref_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        return True
+    except Exception as e:
+        print(f"Error guardant calibració de referència: {e}")
+        return False
+
+
+def get_calibration_for_date(seq_date):
+    """
+    Retorna la calibració vigent per una data donada.
+
+    Args:
+        seq_date: Data de la SEQ (YYYY-MM-DD string o datetime)
+
+    Returns:
+        dict amb la calibració vigent o None
+    """
+    ref = load_calibration_reference()
+    if not ref or 'calibrations' not in ref:
+        return None
+
+    # Normalitzar data a string YYYY-MM-DD
+    if hasattr(seq_date, 'strftime'):
+        seq_date_str = seq_date.strftime('%Y-%m-%d')
+    else:
+        seq_date_str = str(seq_date)[:10]
+
+    # Buscar calibració vigent per aquesta data
+    for cal in ref['calibrations']:
+        valid_from = cal.get('valid_from', '1900-01-01')
+        valid_to = cal.get('valid_to')
+
+        if seq_date_str >= valid_from:
+            if valid_to is None or seq_date_str <= valid_to:
+                return cal
+
+    return None
+
+
+def get_active_global_calibration():
+    """
+    Retorna la calibració global activa actual (Calibration_Reference.json).
+
+    Nota: Diferent de get_active_calibration() que obté calibracions locals per SEQ.
+
+    Returns:
+        dict amb la calibració activa o None
+    """
+    ref = load_calibration_reference()
+    if not ref:
+        return None
+
+    active_id = ref.get('active_calibration_id')
+    if active_id:
+        for cal in ref.get('calibrations', []):
+            if cal.get('id') == active_id:
+                return cal
+
+    # Fallback: primera calibració activa
+    for cal in ref.get('calibrations', []):
+        if cal.get('is_active', False):
+            return cal
+
+    return None
+
+
+def get_rf_mass_cal(signal='direct', mode='column', seq_date=None):
+    """
+    Obté el RF_mass de calibració global per senyal i mode.
+
+    Args:
+        signal: 'direct' o 'uib'
+        mode: 'column' o 'bp'
+        seq_date: Data SEQ per seleccionar calibració (None = activa)
+
+    Returns:
+        float: rf_mass_cal o None si no està definit
+    """
+    if seq_date:
+        cal = get_calibration_for_date(seq_date)
+    else:
+        cal = get_active_global_calibration()
+
+    if not cal:
+        return None
+
+    rf_mass_cal = cal.get('rf_mass_cal', {})
+
+    # Estructura: {"direct": {"column": X, "bp": Y}, "uib": {...}}
+    signal_data = rf_mass_cal.get(signal.lower(), {})
+    if isinstance(signal_data, dict):
+        return signal_data.get(mode.lower())
+
+    # Fallback: valor simple (compatibilitat)
+    if isinstance(rf_mass_cal, (int, float)):
+        return rf_mass_cal
+
+    return None
+
+
+def get_all_rf_mass_cal(seq_date=None):
+    """
+    Obté tots els rf_mass_cal per una data.
+
+    Args:
+        seq_date: Data SEQ (None = calibració activa)
+
+    Returns:
+        dict amb estructura {"direct": {"column": X, "bp": Y}, "uib": {...}}
+    """
+    if seq_date:
+        cal = get_calibration_for_date(seq_date)
+    else:
+        cal = get_active_global_calibration()
+
+    if not cal:
+        return None
+
+    return cal.get('rf_mass_cal')
+
+
+def get_calibration_intercept(seq_date=None):
+    """
+    Obté l'intercept de la calibració (0 si forçada a origen).
+
+    Args:
+        seq_date: Data SEQ (None = calibració activa)
+
+    Returns:
+        float: intercept (0 si model origin)
+    """
+    if seq_date:
+        cal = get_calibration_for_date(seq_date)
+    else:
+        cal = get_active_global_calibration()
+
+    if not cal:
+        return 0
+
+    return cal.get('intercept', 0)
+
+
+def quantify_with_global_calibration(area, volume_uL, signal='direct', mode='column', seq_date=None):
+    """
+    Quantifica una mostra usant rf_mass_cal global (Calibration_Reference.json).
+
+    Nota: Diferent de quantify_sample() que usa calibració local de la SEQ.
+    Aquesta funció és la recomanada per quantificació estàndard.
+
+    Fórmules segons model:
+    - origin:    ppm = Area × 1000 / (rf_mass_cal × volume_uL)
+    - intercept: ppm = (Area - intercept) × 1000 / (rf_mass_cal × volume_uL)
+
+    Args:
+        area: Àrea del pic (mAU·min)
+        volume_uL: Volum d'injecció (µL)
+        signal: 'direct' o 'uib'
+        mode: 'column' o 'bp'
+        seq_date: Data SEQ per seleccionar calibració correcta
+
+    Returns:
+        dict amb:
+            - concentration_ppm: concentració calculada
+            - rf_mass_cal_used: valor rf_mass_cal utilitzat
+            - calibration_id: ID de la calibració usada
+            - model: 'origin' o 'intercept'
+            - intercept: valor intercept (0 si origin)
+            - success: bool
+    """
+    if seq_date:
+        cal = get_calibration_for_date(seq_date)
+    else:
+        cal = get_active_global_calibration()
+
+    if not cal:
+        return {
+            'success': False,
+            'concentration_ppm': None,
+            'rf_mass_cal_used': None,
+            'calibration_id': None,
+            'error': 'No hi ha calibració disponible'
+        }
+
+    rf_mass_cal = get_rf_mass_cal(signal, mode, seq_date)
+    if rf_mass_cal is None or rf_mass_cal <= 0:
+        return {
+            'success': False,
+            'concentration_ppm': None,
+            'rf_mass_cal_used': None,
+            'calibration_id': cal.get('id'),
+            'error': f'No hi ha rf_mass_cal per signal={signal}, mode={mode}'
+        }
+
+    if volume_uL <= 0:
+        return {
+            'success': False,
+            'concentration_ppm': None,
+            'rf_mass_cal_used': rf_mass_cal,
+            'calibration_id': cal.get('id'),
+            'error': 'Volum invàlid'
+        }
+
+    # Obtenir intercept (0 si origin)
+    intercept = cal.get('intercept', 0)
+
+    # Fórmula única: ppm = (Area - intercept) × 1000 / (rf_mass_cal × volume)
+    # Si intercept = 0 (origin), queda: ppm = Area × 1000 / (rf_mass_cal × volume)
+    area_corrected = max(0, area - intercept)  # No permetre àrees negatives
+    concentration_ppm = area_corrected * 1000 / (rf_mass_cal * volume_uL)
+
+    return {
+        'success': True,
+        'concentration_ppm': concentration_ppm,
+        'rf_mass_cal_used': rf_mass_cal,
+        'calibration_id': cal.get('id'),
+        'intercept': intercept
+    }
+
+
+def validate_khp_qc(khp_data, seq_date=None, signal='direct', mode='column'):
+    """
+    Valida el KHP d'una SEQ com a QC check.
+
+    Compara el rf_mass mesurat del KHP vs rf_mass_cal vigent.
+
+    Args:
+        khp_data: dict amb dades del KHP (area, conc_ppm, volume_uL, rf_mass)
+        seq_date: Data de la SEQ
+        signal: 'direct' o 'uib'
+        mode: 'column' o 'bp'
+
+    Returns:
+        dict amb:
+            - status: 'PASS', 'WARNING', 'FAIL'
+            - deviation_pct: desviació percentual
+            - rf_mass_measured: valor mesurat
+            - rf_mass_expected: valor esperat (rf_mass_cal)
+            - calibration_id: ID calibració usada
+            - message: missatge descriptiu
+    """
+    # Llegir thresholds del config (permet ajustar sense tocar codi)
+    config = get_config()
+    warning_pct = config.get('calibration', 'qc_thresholds', 'warning_pct', default=5.0)
+    fail_pct = config.get('calibration', 'qc_thresholds', 'fail_pct', default=10.0)
+
+    rf_mass_cal = get_rf_mass_cal(signal, mode, seq_date)
+    if rf_mass_cal is None:
+        return {
+            'status': 'UNKNOWN',
+            'deviation_pct': None,
+            'rf_mass_measured': None,
+            'rf_mass_expected': None,
+            'calibration_id': None,
+            'message': 'No hi ha calibració de referència'
+        }
+
+    cal = get_calibration_for_date(seq_date) if seq_date else get_active_global_calibration()
+    cal_id = cal.get('id') if cal else None
+
+    # Obtenir rf_mass mesurat del KHP
+    rf_mass_measured = khp_data.get('rf_mass', 0)
+    if rf_mass_measured <= 0:
+        # Calcular si no està disponible
+        area = khp_data.get('area', 0)
+        conc = khp_data.get('conc_ppm', 0)
+        volume = khp_data.get('volume_uL', 0)
+        if area > 0 and conc > 0 and volume > 0:
+            rf_mass_measured = area * 1000 / (conc * volume)
+
+    if rf_mass_measured <= 0:
+        return {
+            'status': 'FAIL',
+            'deviation_pct': None,
+            'rf_mass_measured': None,
+            'rf_mass_expected': rf_mass_cal,
+            'calibration_id': cal_id,
+            'message': 'KHP sense rf_mass vàlid'
+        }
+
+    deviation_pct = abs(rf_mass_measured - rf_mass_cal) / rf_mass_cal * 100
+
+    if deviation_pct <= warning_pct:
+        status = 'PASS'
+        message = f"QC PASS: RF_mass {rf_mass_measured:.0f} dins tolerància ({deviation_pct:.1f}%)"
+    elif deviation_pct <= fail_pct:
+        status = 'WARNING'
+        message = f"QC WARNING: RF_mass {rf_mass_measured:.0f} desviació {deviation_pct:.1f}% (limit {warning_pct}%)"
+    else:
+        status = 'FAIL'
+        message = f"QC FAIL: RF_mass {rf_mass_measured:.0f} fora rang ({deviation_pct:.1f}% > {fail_pct}%)"
+
+    return {
+        'status': status,
+        'deviation_pct': deviation_pct,
+        'rf_mass_measured': rf_mass_measured,
+        'rf_mass_expected': rf_mass_cal,
+        'calibration_id': cal_id,
+        'message': message
+    }
+
+
+def register_qc_result(seq_name, seq_date, qc_result, khp_data):
+    """
+    Registra el resultat QC a QC_History.json.
+
+    Args:
+        seq_name: Nom de la SEQ
+        seq_date: Data de la SEQ
+        qc_result: Resultat de validate_khp_qc()
+        khp_data: Dades del KHP
+
+    Returns:
+        bool indicant èxit
+    """
+    qc_path = get_qc_history_path()
+    if not qc_path:
+        return False
+
+    # Carregar historial existent
+    if os.path.exists(qc_path):
+        try:
+            with open(qc_path, 'r', encoding='utf-8') as f:
+                history = json.load(f)
+        except Exception:
+            history = {'version': '1.0', 'entries': []}
+    else:
+        history = {'version': '1.0', 'entries': []}
+
+    # Crear entrada
+    entry = {
+        'seq_name': seq_name,
+        'seq_date': str(seq_date)[:10] if seq_date else None,
+        'timestamp': datetime.now().isoformat(),
+        'calibration_id': qc_result.get('calibration_id'),
+        'khp_name': khp_data.get('name', khp_data.get('khp_name', 'KHP')),
+        'khp_conc_ppm': khp_data.get('conc_ppm'),
+        'volume_uL': khp_data.get('volume_uL'),
+        'measured': {
+            'area': khp_data.get('area'),
+            'rf_mass': qc_result.get('rf_mass_measured')
+        },
+        'expected': {
+            'rf_mass_cal': qc_result.get('rf_mass_expected')
+        },
+        'qc_result': {
+            'status': qc_result.get('status'),
+            'deviation_pct': qc_result.get('deviation_pct'),
+            'message': qc_result.get('message')
+        }
+    }
+
+    history['entries'].insert(0, entry)
+    history['updated'] = datetime.now().isoformat()
+
+    # Guardar
+    try:
+        with open(qc_path, 'w', encoding='utf-8') as f:
+            json.dump(history, f, indent=2, ensure_ascii=False)
+        return True
+    except Exception as e:
+        print(f"Error guardant QC History: {e}")
+        return False
+
+
+def add_calibration(rf_mass_cal_values, source, valid_from, r2=None, n_points=None,
+                    conditions=None, reason=""):
+    """
+    Afegeix una nova calibració i tanca l'anterior.
+
+    Args:
+        rf_mass_cal_values: dict amb estructura {"direct": {"column": X, "bp": Y}, "uib": {...}}
+        source: dict amb info de la font (type, description, seq_references)
+        valid_from: Data inici vigència (YYYY-MM-DD)
+        r2: Coeficient de determinació
+        n_points: Nombre de punts usats
+        conditions: dict amb condicions (column_type, flow_rate, etc.)
+        reason: Motiu del canvi
+
+    Returns:
+        str: ID de la nova calibració o None si error
+    """
+    ref = load_calibration_reference()
+    if not ref:
+        ref = {
+            'version': '2.0',
+            'created': datetime.now().strftime('%Y-%m-%d'),
+            'calibrations': [],
+            'qc_thresholds': {
+                'rf_mass_deviation_warning_pct': 15,
+                'rf_mass_deviation_fail_pct': 25,
+                'min_r2_new_calibration': 0.98,
+                'min_points_new_calibration': 5
+            }
+        }
+
+    # Generar ID
+    cal_id = f"CAL_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+
+    # Tancar calibració anterior
+    valid_from_date = str(valid_from)[:10]
+    for cal in ref['calibrations']:
+        if cal.get('is_active', False):
+            # Calcular dia anterior
+            from datetime import timedelta
+            try:
+                vf = datetime.strptime(valid_from_date, '%Y-%m-%d')
+                valid_to = (vf - timedelta(days=1)).strftime('%Y-%m-%d')
+                cal['valid_to'] = valid_to
+            except Exception:
+                pass
+            cal['is_active'] = False
+
+    # Crear nova calibració
+    new_cal = {
+        'id': cal_id,
+        'rf_mass_cal': rf_mass_cal_values,
+        'model': 'origin',
+        'r2': r2,
+        'n_points': n_points,
+        'valid_from': valid_from_date,
+        'valid_to': None,
+        'is_active': True,
+        'source': source or {},
+        'conditions': conditions or {},
+        'validation': ref.get('qc_thresholds', {}),
+        'metadata': {
+            'created_date': datetime.now().strftime('%Y-%m-%d'),
+            'created_by': 'user',
+            'reason': reason
+        }
+    }
+
+    ref['calibrations'].insert(0, new_cal)
+    ref['active_calibration_id'] = cal_id
+
+    if save_calibration_reference(ref):
+        return cal_id
+    return None
+
+
+def list_calibrations():
+    """
+    Llista totes les calibracions ordenades per data.
+
+    Returns:
+        list de dicts amb info de cada calibració
+    """
+    ref = load_calibration_reference()
+    if not ref:
+        return []
+
+    result = []
+    for cal in ref.get('calibrations', []):
+        result.append({
+            'id': cal.get('id'),
+            'rf_mass_cal': cal.get('rf_mass_cal'),
+            'r2': cal.get('r2'),
+            'n_points': cal.get('n_points'),
+            'valid_from': cal.get('valid_from'),
+            'valid_to': cal.get('valid_to'),
+            'is_active': cal.get('is_active', False),
+            'source_type': cal.get('source', {}).get('type'),
+            'reason': cal.get('metadata', {}).get('reason')
+        })
+
+    return result
 
 
 # =============================================================================
@@ -2019,7 +2587,7 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
         quality_issues.append("Límits expandits")
 
     # =========================================================================
-    # NOVES MÈTRIQUES: FWHM, RF, RF_V, CR per tots els senyals
+    # NOVES MÈTRIQUES: FWHM, RF, RF_MASS, CR per tots els senyals
     # =========================================================================
 
     # FWHM per DOC
@@ -2079,12 +2647,12 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
     # RF = Area / Concentració (ppm)
     rf_doc = peak_info['area'] / conc if conc > 0 else 0.0
 
-    # RF_V = Area / (Concentració × Volum) - normalitzat per condicions
-    rf_v_doc = peak_info['area'] / (conc * volume_uL) if conc > 0 and volume_uL > 0 else 0.0
+    # RF_MASS = Area × 1000 / (Concentració × Volum) = Area / µg DOC injectat
+    rf_mass_doc = peak_info['area'] * 1000 / (conc * volume_uL) if conc > 0 and volume_uL > 0 else 0.0
 
-    # RF i RF_V per 254nm
+    # RF i RF_MASS per 254nm
     rf_254 = a254_area / conc if conc > 0 and a254_area > 0 else 0.0
-    rf_v_254 = a254_area / (conc * volume_uL) if conc > 0 and volume_uL > 0 and a254_area > 0 else 0.0
+    rf_mass_254 = a254_area * 1000 / (conc * volume_uL) if conc > 0 and volume_uL > 0 and a254_area > 0 else 0.0
 
     # CR per 254nm (àrea pic principal / àrea total)
     # Necessitem calcular l'àrea total de 254nm
@@ -2148,9 +2716,9 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
         'fwhm_doc': fwhm_doc,
         'fwhm_254': fwhm_254,
         'rf_doc': rf_doc,
-        'rf_v_doc': rf_v_doc,
+        'rf_mass_doc': rf_mass_doc,
         'rf_254': rf_254,
-        'rf_v_254': rf_v_254,
+        'rf_mass_254': rf_mass_254,
         'cr_254': cr_254,
         'a254_area_total': a254_area_total,
         # Bigaussian fit (C05 - per BP mode)
@@ -2282,7 +2850,7 @@ def register_calibration(seq_path, khp_data, khp_source, mode="COLUMN"):
 
     # --- DIRECT ---
     rf_d = khp_data.get('rf_doc', rf)
-    rf_v_d = khp_data.get('rf_v_doc', rf_d / volume * 100 if volume > 0 else 0)
+    rf_mass_d = khp_data.get('rf_mass_doc', rf_d * 1000 / volume if volume > 0 else 0)  # rf_mass = area*1000/(conc*vol)
     t_max_d = khp_data.get('t_doc_max', khp_data.get('t_retention', 0))
     fwhm_d = khp_data.get('fwhm_doc', 0)
     snr_d = khp_data.get('snr', 0)
@@ -2292,11 +2860,19 @@ def register_calibration(seq_path, khp_data, khp_source, mode="COLUMN"):
 
     # --- UIB ---
     area_u = khp_data.get('area_uib', 0)
+    area_total_u = khp_data.get('area_total_uib', 0)
     rf_u = khp_data.get('rf_uib', 0)
     if rf_u == 0 and area_u > 0 and conc > 0:
         rf_u = area_u / conc
-    rf_v_u = khp_data.get('rf_v_uib', rf_u / volume * 100 if rf_u > 0 and volume > 0 else 0)
+    rf_mass_u = khp_data.get('rf_mass_uib', rf_u * 1000 / volume if rf_u > 0 and volume > 0 else 0)  # rf_mass = area*1000/(conc*vol)
+    t_retention_u = khp_data.get('t_retention_uib', khp_data.get('t_doc_max_uib', 0))
+    fwhm_u = khp_data.get('fwhm_uib', 0)
     snr_u = khp_data.get('snr_uib', 0)
+    symmetry_u = khp_data.get('symmetry_uib', 1.0)
+    ar_u = khp_data.get('area_ratio_uib', khp_data.get('concentration_ratio_uib', 1.0))
+    n_peaks_u = khp_data.get('n_peaks_uib', khp_data.get('all_peaks_count_uib', 1))
+    shift_sec_u = khp_data.get('shift_sec_uib', khp_data.get('shift_min_uib', 0) * 60)
+    shift_min_u = khp_data.get('shift_min_uib', 0)
     d254_u = khp_data.get('a254_doc_ratio_uib', 0)
 
     # --- 254nm ---
@@ -2304,7 +2880,7 @@ def register_calibration(seq_path, khp_data, khp_source, mode="COLUMN"):
     rf_254 = khp_data.get('rf_254', 0)
     if rf_254 == 0 and area_254 > 0 and conc > 0:
         rf_254 = area_254 / conc
-    rf_v_254 = khp_data.get('rf_v_254', rf_254 / volume * 100 if rf_254 > 0 and volume > 0 else 0)
+    rf_mass_254 = khp_data.get('rf_mass_254', rf_254 * 1000 / volume if rf_254 > 0 and volume > 0 else 0)  # rf_mass = area*1000/(conc*vol)
     fwhm_254 = khp_data.get('fwhm_254', 0)
     ar_254 = khp_data.get('cr_254', khp_data.get('area_ratio_254', 0))
     t_dad_max = khp_data.get('t_dad_max', 0)  # t_max del senyal 254nm (referència)
@@ -2389,7 +2965,6 @@ def register_calibration(seq_path, khp_data, khp_source, mode="COLUMN"):
         "area_total": khp_data.get('area_total', 0),
         "rf": rf,                          # Response Factor Direct (àrea/conc)
         "rf_mass": rf_mass,                # RF normalitzat per massa (àrea/µg DOC)
-        "rf_v": rf_v_d,                    # RF normalitzat per volum
         "t_retention": t_max_d,            # Temps pic màxim
         "fwhm_doc": fwhm_d,                # FWHM Direct
         "snr": snr_d,                      # SNR Direct
@@ -2398,26 +2973,37 @@ def register_calibration(seq_path, khp_data, khp_source, mode="COLUMN"):
         "n_peaks": khp_data.get('all_peaks_count', 1),  # Nombre de pics (antic all_peaks_count)
         "shift_sec": khp_data.get('shift_sec', khp_data.get('shift_min', 0) * 60),
         "shift_min": khp_data.get('shift_min', 0),
+        "bigaussian_doc": khp_data.get('bigaussian_doc'),  # Bigaussian fit DOC
 
         # =====================================================================
         # PARÀMETRES UIB (U) - Senyal alternatiu
         # =====================================================================
         "area_u": area_u,                  # Àrea pic principal UIB
+        "area_total_u": area_total_u,      # Àrea total UIB
         "rf_u": rf_u,                      # Response Factor UIB
-        "rf_v_u": rf_v_u,                  # RF UIB normalitzat per volum
+        "rf_mass_u": rf_mass_u,            # RF UIB normalitzat per massa (àrea/µg DOC)
+        "t_retention_u": t_retention_u,    # Temps pic màxim UIB
+        "fwhm_u": fwhm_u,                  # FWHM UIB
         "snr_u": snr_u,                    # SNR UIB
+        "symmetry_u": symmetry_u,          # Simetria UIB
+        "area_ratio_u": ar_u,              # Àrea pic / Àrea total UIB
+        "n_peaks_u": n_peaks_u,            # Nombre de pics UIB
+        "shift_sec_u": shift_sec_u,        # Shift temporal UIB (segons)
+        "shift_min_u": shift_min_u,        # Shift temporal UIB (minuts)
         "d254_u": d254_u,                  # Ratio DOC/254 amb UIB
+        "bigaussian_uib": khp_data.get('bigaussian_uib'),  # Bigaussian fit UIB
 
         # =====================================================================
         # PARÀMETRES 254nm - Senyal DAD
         # =====================================================================
         "area_254": area_254,              # Àrea pic 254nm
         "rf_254": rf_254,                  # Response Factor 254nm
-        "rf_v_254": rf_v_254,              # RF 254nm normalitzat per volum
+        "rf_mass_254": rf_mass_254,        # RF 254nm normalitzat per massa (àrea/µg DOC)
         "fwhm_254": fwhm_254,              # FWHM 254nm
         "ar_254": ar_254,                  # Area Ratio 254nm
         "t_dad_max": t_dad_max,            # t_max del 254nm (referència per shift)
         "d254_d": d254_d,                  # Ratio DOC/254 amb Direct
+        "bigaussian_254": khp_data.get('bigaussian_254'),  # Bigaussian fit 254nm
 
         # =====================================================================
         # TRAÇABILITAT I QUALITAT
@@ -2922,6 +3508,14 @@ def update_calibration_validation(seq_path=None, update_global=True):
                 cal['calibration_warnings'] = validation.get('warnings', [])
                 cal['quality_score'] = validation.get('quality_score', 0)
 
+                # C12/C17: Actualitzar quality_issues (issues + warnings + historical)
+                all_issues = validation.get('issues', []) + validation.get('warnings', [])
+                hist_comp = validation.get('historical_comparison', {})
+                if hist_comp:
+                    all_issues.extend(hist_comp.get('issues', []))
+                    all_issues.extend(hist_comp.get('warnings', []))
+                cal['quality_issues'] = all_issues
+
                 # Validació shift
                 t_retention = cal.get('t_retention', 0)
                 valid_for_shift = True
@@ -2992,65 +3586,11 @@ def update_calibration_validation(seq_path=None, update_global=True):
 
 
 # =============================================================================
-# HELPERS PER FALLBACK SIBLING/HISTORY
+# HELPERS PER FALLBACK HISTORY
 # =============================================================================
-
-def _try_sibling_calibration(seq_path, method, config, report_progress=None):
-    """
-    Busca KHP en SEQ siblings (mateix prefix numeric).
-
-    Returns:
-        Dict amb resultats de calibracio o None si no trobat
-    """
-    import re
-    from pathlib import Path
-
-    # Importar aqui per evitar circular import
-    try:
-        from hpsec_import import import_sequence
-    except ImportError:
-        return None
-
-    seq_path = Path(seq_path)
-    folder_name = seq_path.name
-    parent_dir = seq_path.parent
-
-    # Extreure prefix numeric (256, 257, etc.)
-    match = re.match(r'^(\d+)', folder_name)
-    if not match:
-        return None
-
-    seq_id = match.group(1)
-
-    try:
-        all_folders = [d for d in parent_dir.iterdir() if d.is_dir()]
-        siblings = [d for d in all_folders
-                   if d.name.startswith(seq_id) and d.name != folder_name]
-
-        for sib in siblings:
-            if report_progress:
-                report_progress(16, f"Provant sibling {sib.name}...")
-
-            # Importar sibling
-            sib_imported = import_sequence(str(sib))
-            if not sib_imported.get("success"):
-                continue
-
-            sib_khp = sib_imported.get("khp_samples", [])
-            if not sib_khp:
-                continue
-
-            # Calibrar amb dades del sibling
-            sib_cal = calibrate_from_import(sib_imported, config=config)
-            if sib_cal.get("success"):
-                sib_cal["khp_source"] = f"SIBLING:{sib.name}"
-                return sib_cal
-
-    except Exception as e:
-        pass
-
-    return None
-
+# NOTA: La cerca de siblings s'ha eliminat perquè ara els packs
+# s'importen junts amb import_sequence_pack(). Si hi ha siblings
+# (282_SEQ, 282B_SEQ), es fusionen a la importació.
 
 def _try_history_calibration(seq_path, method):
     """
@@ -3096,6 +3636,229 @@ def _try_history_calibration(seq_path, method):
         }
 
     return None
+
+
+# =============================================================================
+# GENERACIÓ D'AVISOS ESTRUCTURATS PER CALIBRACIÓ
+# =============================================================================
+
+def _generate_calibration_warnings(result: dict, method: str = "COLUMN") -> list:
+    """
+    Genera avisos estructurats a partir del resultat de calibració.
+
+    Analitza el resultat i crea avisos amb nivells (BLOCKER/WARNING/INFO)
+    segons la jerarquia definida a docs/SISTEMA_AVISOS.md.
+
+    Args:
+        result: Dict del resultat de calibrate_from_import()
+        method: "COLUMN" o "BP"
+
+    Returns:
+        Llista d'avisos estructurats
+    """
+    warnings = []
+
+    # 1. Errors crítics (BLOCKER)
+    if not result.get("success"):
+        for error in result.get("errors", []):
+            if "no s'han trobat" in error.lower() or "no khp" in error.lower():
+                warnings.append(create_warning(
+                    code="CAL_NO_KHP",
+                    stage="calibrate",
+                ))
+            elif "invàlid" in error.lower() or "invalid" in error.lower():
+                warnings.append(create_warning(
+                    code="CAL_ALL_REPLICAS_INVALID",
+                    stage="calibrate",
+                ))
+            else:
+                # Error genèric
+                warnings.append(create_warning(
+                    code="CAL_ERROR",
+                    level=WarningLevel.BLOCKER,
+                    message=error,
+                    stage="calibrate",
+                ))
+
+    # 2. Analitzar cada calibració
+    for cal in result.get("calibrations", []) + result.get("calibrations_direct", []) + result.get("calibrations_uib", []):
+        condition_key = f"{method}_{cal.get('conc_ppm', 0)}_{cal.get('volume_uL', 0)}"
+
+        # Timeout
+        if cal.get("timeout_info", {}).get("n_timeouts", 0) > 0:
+            severity = cal.get("timeout_info", {}).get("severity", "CRITICAL")
+            if severity == "CRITICAL":
+                warnings.append(create_warning(
+                    code="CAL_TIMEOUT",
+                    stage="calibrate",
+                    condition_key=condition_key,
+                    details={
+                        "n_timeouts": cal["timeout_info"]["n_timeouts"],
+                        "zones": cal["timeout_info"].get("zone_summary", {}),
+                    },
+                ))
+            elif severity == "WARNING":
+                warnings.append(create_warning(
+                    code="CAL_TIMEOUT",
+                    level=WarningLevel.WARNING,
+                    message=f"Timeout detectat (zones no crítiques)",
+                    stage="calibrate",
+                    condition_key=condition_key,
+                ))
+
+        # Batman (doble pic)
+        batman_info = cal.get("batman_info", {}) or cal.get("anomalies", {}).get("batman", {})
+        if batman_info.get("is_batman", False):
+            warnings.append(create_warning(
+                code="CAL_BATMAN",
+                stage="calibrate",
+                condition_key=condition_key,
+                details={
+                    "valley_depth": batman_info.get("max_depth", 0),
+                },
+            ))
+
+        # RSD alt
+        rsd = cal.get("rsd", 0)
+        if rsd > 10:
+            warnings.append(create_warning(
+                code="CAL_RSD_HIGH",
+                stage="calibrate",
+                condition_key=condition_key,
+                details={"rsd": rsd, "threshold": 10},
+            ))
+
+        # Quality issues
+        for issue in cal.get("calibration_issues", []):
+            if "MULTI" in issue.upper():
+                warnings.append(create_warning(
+                    code="CAL_MULTI_PEAK",
+                    stage="calibrate",
+                    condition_key=condition_key,
+                ))
+            elif "SNR" in issue.upper():
+                snr = cal.get("snr", 0)
+                if "extrema" in issue.lower() or snr < 5:
+                    warnings.append(create_warning(
+                        code="CAL_SNR_VERY_LOW",
+                        stage="calibrate",
+                        condition_key=condition_key,
+                        details={"snr": snr},
+                    ))
+                else:
+                    warnings.append(create_warning(
+                        code="CAL_SNR_LOW",
+                        stage="calibrate",
+                        condition_key=condition_key,
+                        details={"snr": snr},
+                    ))
+            elif "CR" in issue.upper() or "CONCENTRATION_RATIO" in issue.upper():
+                cr = cal.get("concentration_ratio", 0)
+                if cr < 0.5:
+                    warnings.append(create_warning(
+                        code="CAL_CR_VERY_LOW",
+                        stage="calibrate",
+                        condition_key=condition_key,
+                        details={"cr": cr},
+                    ))
+                else:
+                    warnings.append(create_warning(
+                        code="CAL_CR_LOW",
+                        stage="calibrate",
+                        condition_key=condition_key,
+                        details={"cr": cr},
+                    ))
+            elif "INTENSITY" in issue.upper():
+                intensity = cal.get("intensity_max", 0)
+                if "extreme" in issue.lower():
+                    warnings.append(create_warning(
+                        code="CAL_INTENSITY_EXTREME",
+                        stage="calibrate",
+                        condition_key=condition_key,
+                        details={"val": intensity},
+                    ))
+                else:
+                    warnings.append(create_warning(
+                        code="CAL_INTENSITY_LOW",
+                        stage="calibrate",
+                        condition_key=condition_key,
+                        details={"val": intensity},
+                    ))
+
+        # Calibration warnings (INFO level mostly)
+        for warn in cal.get("calibration_warnings", []):
+            if "ASYMMETRY" in warn.upper() or "SIMETRIA" in warn.upper():
+                sym = cal.get("symmetry", 0)
+                warnings.append(create_warning(
+                    code="CAL_SYMMETRY_LOW",
+                    stage="calibrate",
+                    condition_key=condition_key,
+                    details={"sym": sym},
+                ))
+            elif "SMOOTHNESS" in warn.upper() or "IRREGULAR" in warn.upper():
+                warnings.append(create_warning(
+                    code="CAL_SMOOTHNESS_LOW",
+                    stage="calibrate",
+                    condition_key=condition_key,
+                    details={"val": cal.get("smoothness", 0)},
+                ))
+            elif "EXPANSION" in warn.upper():
+                warnings.append(create_warning(
+                    code="CAL_EXPANSION_HIGH",
+                    stage="calibrate",
+                    condition_key=condition_key,
+                    details={"pct": 0},  # TODO: extreure de warn
+                ))
+            elif "HISTORICAL" in warn.upper():
+                hist = cal.get("historical_comparison", {})
+                dev = hist.get("area_deviation_pct", 0)
+                if dev > 15:
+                    warnings.append(create_warning(
+                        code="CAL_DEVIATION_HIGH",
+                        stage="calibrate",
+                        condition_key=condition_key,
+                        details={"dev": dev},
+                    ))
+                elif dev > 5:
+                    warnings.append(create_warning(
+                        code="CAL_DEVIATION_MINOR",
+                        stage="calibrate",
+                        condition_key=condition_key,
+                        details={"dev": dev},
+                    ))
+                else:
+                    # Històric insuficient
+                    warnings.append(create_warning(
+                        code="CAL_HISTORICAL_INSUFFICIENT",
+                        stage="calibrate",
+                        condition_key=condition_key,
+                    ))
+
+    # 3. KHP source = GLOBAL (sense KHP local ni historial)
+    if result.get("khp_source") == "GLOBAL":
+        warnings.append(create_warning(
+            code="CAL_GLOBAL_ONLY",
+            stage="calibrate",
+            details={"msg": "Sense KHP - shift no disponible"},
+        ))
+
+    # 4. Replicas amb outliers
+    for cal in result.get("calibrations", []):
+        selection = cal.get("selection", {})
+        if selection.get("reason") == "rsd_high" and selection.get("n_replicas_available", 0) > 1:
+            # Alguna rèplica exclosa
+            selected = selection.get("selected_replicas", [])
+            n_available = selection.get("n_replicas_available", 0)
+            if len(selected) < n_available:
+                for i in range(1, n_available + 1):
+                    if i not in selected:
+                        warnings.append(create_warning(
+                            code="CAL_REPLICA_OUTLIER",
+                            stage="calibrate",
+                            details={"n": i},
+                        ))
+
+    return warnings
 
 
 # =============================================================================
@@ -3194,26 +3957,9 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
         khp_names = [name for name in samples.keys() if "KHP" in name.upper()]
 
     if not khp_names:
-        # FALLBACK 1: Buscar KHP en SEQ sibling
-        report_progress(15, "No KHP local, buscant siblings...")
-        sibling_result = _try_sibling_calibration(seq_path, method, config, report_progress)
-        if sibling_result:
-            # Copiar resultats del sibling
-            for key, value in sibling_result.items():
-                result[key] = value
-            khp_source = sibling_result.get("khp_source", "SIBLING")
-            result["khp_source"] = khp_source
-
-            # IMPORTANT: Registrar calibració sibling a KHP_History
-            if result.get("khp_data"):
-                report_progress(95, "Registrant calibració sibling...")
-                calibration = register_calibration(seq_path, result["khp_data"], khp_source, method)
-                result["calibration"] = calibration
-            result["success"] = True
-            return result
-
-        # FALLBACK 2: Usar KHP_History.json
-        report_progress(18, "No sibling, buscant historial...")
+        # Sense KHP local: provar historial per obtenir shift
+        # NOTA: Els siblings ja estan fusionats a la importació (pack), no cal buscar-los
+        report_progress(15, "No KHP, buscant historial per shift...")
         history_result = _try_history_calibration(seq_path, method)
         if history_result:
             result["rf"] = history_result.get("rf", 0)
@@ -3222,11 +3968,14 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
             result["khp_conc"] = history_result.get("khp_conc", 0)
             result["khp_source"] = "HISTORY"
             result["success"] = True
-            result["errors"].append("WARN: Usant RF d'historial (només quantificació, no shift)")
-            # NOTA: No registrem calibracions HISTORY perquè no tenen khp_data complet
+            result["warnings"].append("Usant shift d'historial (sense KHP local)")
             return result
 
-        result["errors"].append("No s'han trobat mostres KHP (local, sibling, ni historial)")
+        # Sense KHP ni historial: usar calibració global (rf_mass_cal)
+        # Això és acceptable - la quantificació usa rf_mass_cal global
+        result["khp_source"] = "GLOBAL"
+        result["success"] = True
+        result["warnings"].append("Sense KHP - usant calibració global (sense shift)")
         return result
 
     report_progress(20, f"Analitzant {len(khp_names)} KHP...")
@@ -3440,8 +4189,14 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
                 conc = cal['conc_ppm']
                 vol = cal['volume_uL']
                 if conc > 0 and vol > 0:
-                    cal['rf'] = cal['area'] / conc  # RF tradicional
-                    cal['rf_mass'] = cal['area'] * 1000 / (conc * vol)  # RF normalitzat
+                    cal['rf'] = cal['area'] / conc  # RF tradicional (àrea/ppm)
+                    cal['rf_mass'] = cal['area'] * 1000 / (conc * vol)  # RF normalitzat per massa (àrea/µg DOC)
+                    # Crear camp específic segons doc_source (Direct o UIB)
+                    doc_source = cal.get('doc_source', 'direct')
+                    if doc_source == 'uib':
+                        cal['rf_mass_uib'] = cal['rf_mass']
+                    else:
+                        cal['rf_mass_doc'] = cal['rf_mass']
                 calibrations.append(cal)
 
         # Ordenar per concentració (desc) i volum (desc)
@@ -3554,6 +4309,7 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
             'a254_doc_ratio': selected_a254_ratio,
             'a254_area': selected_a254_area,
             'is_bp': replicas[0].get('is_bp', False),
+            'doc_source': replicas[0].get('doc_source', 'direct'),  # 'direct' o 'uib'
 
             # Mètriques de qualitat (promig de rèpliques)
             'snr': mean_snr,
@@ -3731,9 +4487,73 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
         calibration = register_calibration(seq_path, result["khp_data"], "LOCAL", mode)
         result["calibration"] = calibration
 
+    report_progress(95, "Validant KHP vs calibracio global...")
+
+    # =========================================================================
+    # VALIDACIÓ QC: Comparar KHP local vs calibració global
+    # =========================================================================
+    qc_results = []
+
+    # Obtenir data SEQ per seleccionar calibració correcta
+    seq_date = imported_data.get("seq_date") or imported_data.get("date")
+    if not seq_date and seq_path:
+        # Intentar obtenir del manifest
+        manifest_path = os.path.join(seq_path, "CHECK", "import_manifest.json")
+        if os.path.exists(manifest_path):
+            try:
+                with open(manifest_path, 'r', encoding='utf-8') as f:
+                    manifest = json.load(f)
+                    seq_date = manifest.get("seq_date") or manifest.get("date")
+            except Exception:
+                pass
+
+    # QC per DOC Direct
+    if result.get("khp_data_direct"):
+        khp_data = result["khp_data_direct"]
+        qc = validate_khp_qc(khp_data, seq_date=seq_date, signal='direct', mode=method.lower())
+        qc['signal'] = 'direct'
+        qc_results.append(qc)
+
+        # Afegir info QC al resultat
+        result["qc_direct"] = qc
+
+        # Registrar a QC_History
+        if qc.get("status") != "UNKNOWN":
+            seq_name = os.path.basename(seq_path) if seq_path else "UNKNOWN"
+            register_qc_result(seq_name, seq_date, qc, khp_data)
+
+    # QC per DOC UIB
+    if result.get("khp_data_uib"):
+        khp_data = result["khp_data_uib"]
+        qc = validate_khp_qc(khp_data, seq_date=seq_date, signal='uib', mode=method.lower())
+        qc['signal'] = 'uib'
+        qc_results.append(qc)
+
+        # Afegir info QC al resultat
+        result["qc_uib"] = qc
+
+        # Registrar a QC_History
+        if qc.get("status") != "UNKNOWN":
+            seq_name = os.path.basename(seq_path) if seq_path else "UNKNOWN"
+            register_qc_result(seq_name, seq_date, qc, khp_data)
+
+    result["qc_results"] = qc_results
+
+    # Afegir warning si QC no passa
+    for qc in qc_results:
+        if qc.get("status") == "WARNING":
+            result["warnings"].append(f"⚠️ QC {qc.get('signal', '').upper()}: {qc.get('message', '')}")
+        elif qc.get("status") == "FAIL":
+            result["warnings"].append(f"❌ QC {qc.get('signal', '').upper()}: {qc.get('message', '')}")
+
     report_progress(100, "Calibracio completada")
 
     result["success"] = True
+
+    # Generar avisos estructurats (nou sistema)
+    result["warnings_structured"] = _generate_calibration_warnings(result, method)
+    result["warning_level"] = get_max_warning_level(result["warnings_structured"])
+
     return result
 
 

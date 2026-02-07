@@ -25,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from gui.models.sequence_state import SequenceState, Phase, get_all_sequences
 from hpsec_config import get_config
-from hpsec_import import import_sequence, save_import_manifest, import_from_manifest, load_manifest
+from hpsec_import import import_sequence, import_sequence_pack, save_import_manifest, import_from_manifest, load_manifest
 from hpsec_calibrate import calibrate_from_import
 from hpsec_analyze import analyze_sequence, save_analysis_result
 from hpsec_reports import generate_import_plots, generate_calibration_plots, generate_analysis_plots
@@ -63,10 +63,23 @@ COLOR_CURRENT = "#2E86AB"  # Blau (fase actual)
 # Cada funció executa UNA sola fase - cridem les funcions de hpsec_*.py
 # =============================================================================
 
-def run_import(seq_path, default_uib_sensitivity=None):
-    """Executa IMPORT per una seqüència. Retorna (success, message, data)."""
+def run_import(seq_path, default_uib_sensitivity=None, siblings=None):
+    """
+    Executa IMPORT per una seqüència. Retorna (success, message, data).
+
+    Args:
+        seq_path: Path de la seqüència principal
+        default_uib_sensitivity: Sensibilitat UIB per defecte (opcional)
+        siblings: Llista de paths de siblings (282B_SEQ, 282C_SEQ...) o None
+    """
     try:
-        result = import_sequence(seq_path)
+        # Si hi ha siblings, usar import_sequence_pack
+        if siblings:
+            all_paths = [seq_path] + siblings
+            result = import_sequence_pack(all_paths)
+        else:
+            result = import_sequence(seq_path)
+
         if result and result.get('success'):
             # Aplicar sensibilitat UIB per defecte si cal
             data_mode = result.get("data_mode", "")
@@ -186,12 +199,16 @@ class SingleSeqWorker(QThread):
     def run(self):
         """Processa una seqüència executant les fases pendents."""
         seq_path = self.seq.seq_path
+        siblings = self.seq.siblings if hasattr(self.seq, 'siblings') else []
         errors = []
 
         # IMPORT (si pendent)
         if not self.seq.import_status.completed:
-            self.progress.emit("Importar...")
-            ok, msg, _ = run_import(seq_path)
+            if siblings:
+                self.progress.emit(f"Importar pack [{len(siblings)+1} carpetes]...")
+            else:
+                self.progress.emit("Importar...")
+            ok, msg, _ = run_import(seq_path, siblings=siblings)
             if not ok:
                 self.finished.emit(False, f"Import: {msg}")
                 return
@@ -246,13 +263,17 @@ class BatchWorker(QThread):
 
             if phase == Phase.IMPORT:
                 phase_name = "Importar"
-                runner = lambda p: run_import(p, self.default_uib_sensitivity)
+                # Usar funció que passa siblings
+                def import_runner(seq):
+                    siblings = seq.siblings if hasattr(seq, 'siblings') else []
+                    return run_import(seq.seq_path, self.default_uib_sensitivity, siblings)
+                runner = import_runner
             elif phase == Phase.CALIBRATE:
                 phase_name = "Calibrar"
-                runner = run_calibrate
+                runner = lambda seq: run_calibrate(seq.seq_path)
             elif phase == Phase.ANALYZE:
                 phase_name = "Analitzar"
-                runner = run_analyze
+                runner = lambda seq: run_analyze(seq.seq_path)
             else:
                 continue
 
@@ -261,9 +282,14 @@ class BatchWorker(QThread):
                 if self._stop_requested:
                     break
 
-                self.progress.emit(i + 1, n_seqs, f"{phase_name}: {seq.seq_name}")
+                # Mostrar si és pack
+                if phase == Phase.IMPORT and hasattr(seq, 'siblings') and seq.siblings:
+                    display_name = f"{seq.seq_name} [pack {len(seq.siblings)+1}]"
+                else:
+                    display_name = seq.seq_name
+                self.progress.emit(i + 1, n_seqs, f"{phase_name}: {display_name}")
 
-                ok, msg, _ = runner(seq.seq_path)
+                ok, msg, _ = runner(seq)
                 self.seq_completed.emit(seq.seq_name, ok, msg)
 
                 if ok:
@@ -523,10 +549,17 @@ class DashboardPanel(QWidget):
             item_num.setFlags(item_num.flags() & ~Qt.ItemIsEditable)
             self.table.setItem(row, 0, item_num)
 
-            # Col 1: Nom
-            item_name = QTableWidgetItem(seq.seq_name)
+            # Col 1: Nom (amb indicador de siblings si n'hi ha)
+            display_name = seq.seq_name
+            if seq.siblings:
+                display_name = f"{seq.seq_name} [+{len(seq.siblings)}]"
+            item_name = QTableWidgetItem(display_name)
             item_name.setData(Qt.UserRole, seq.seq_path)
             item_name.setFlags(item_name.flags() & ~Qt.ItemIsEditable)
+            # Tooltip amb detall de siblings
+            if seq.siblings:
+                sibling_names = [os.path.basename(s) for s in seq.siblings]
+                item_name.setToolTip(f"Pack amb {len(seq.siblings)} siblings:\n" + "\n".join(sibling_names))
             self.table.setItem(row, 1, item_name)
 
             # Col 2: Data (amb valor ordenable)
@@ -745,7 +778,12 @@ class DashboardPanel(QWidget):
         menu = QMenu(self)
 
         # Opció: Processar (totes les etapes pendents)
-        action_process = menu.addAction(f"▶ Processar {seq.seq_name}")
+        siblings = seq.siblings if hasattr(seq, 'siblings') else []
+        if siblings:
+            action_text = f"▶ Processar {seq.seq_name} [pack {len(siblings)+1}]"
+        else:
+            action_text = f"▶ Processar {seq.seq_name}"
+        action_process = menu.addAction(action_text)
         action_process.triggered.connect(lambda: self._process_single(seq))
 
         menu.addSeparator()
@@ -774,10 +812,17 @@ class DashboardPanel(QWidget):
     def _run_single_phase(self, seq, phase_name):
         """Executa una sola fase per una seqüència."""
         self._set_controls_enabled(False)
-        self.main_window.set_status(f"{seq.seq_name}: {phase_name}...")
+
+        # Mostrar si és pack
+        siblings = seq.siblings if hasattr(seq, 'siblings') else []
+        if phase_name == "import" and siblings:
+            status_msg = f"{seq.seq_name} [pack {len(siblings)+1}]: {phase_name}..."
+        else:
+            status_msg = f"{seq.seq_name}: {phase_name}..."
+        self.main_window.set_status(status_msg)
 
         if phase_name == "import":
-            ok, msg, _ = run_import(seq.seq_path)
+            ok, msg, _ = run_import(seq.seq_path, siblings=siblings)
         elif phase_name == "calibrate":
             ok, msg, _ = run_calibrate(seq.seq_path)
         elif phase_name == "analyze":
@@ -866,9 +911,17 @@ class DashboardPanel(QWidget):
         self.sequence_selected.emit(seq.seq_path, seq.current_phase.value)
 
     def _process_single(self, seq: SequenceState):
+        # Construir missatge amb info de siblings
+        siblings = seq.siblings if hasattr(seq, 'siblings') else []
+        if siblings:
+            sibling_names = [os.path.basename(s) for s in siblings]
+            sibling_info = f"\n\nPack amb {len(siblings)} siblings:\n• " + "\n• ".join(sibling_names)
+        else:
+            sibling_info = ""
+
         reply = QMessageBox.question(
             self, "Processar",
-            f"Processar {seq.seq_name}?\n\n"
+            f"Processar {seq.seq_name}?{sibling_info}\n\n"
             f"Executarà: {seq.next_action} i següents",
             QMessageBox.Yes | QMessageBox.No
         )

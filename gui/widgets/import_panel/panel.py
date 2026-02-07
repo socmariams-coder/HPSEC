@@ -39,10 +39,9 @@ from .dialogs import OrphanFilesDialog, ChromatogramPreviewDialog
 
 # Importar estils compartits
 from gui.widgets.styles import (
-    PANEL_MARGINS, PANEL_SPACING, STYLE_WARNING_BAR, STYLE_WARNING_TEXT,
-    STYLE_ERROR_BAR, STYLE_ERROR_TEXT, STYLE_SUCCESS_BAR, STYLE_SUCCESS_TEXT,
+    PANEL_MARGINS, PANEL_SPACING,
     COLOR_SUCCESS, COLOR_WARNING, COLOR_ERROR,
-    create_title_font, apply_panel_layout
+    apply_panel_layout
 )
 
 CONFIG_PATH = Path(__file__).parent.parent.parent.parent / "hpsec_config.json"
@@ -110,13 +109,15 @@ class ImportPanel(QWidget):
     COL_DIRECT_PTS = 5
     COL_DIRECT_FILE = 6
     # Columnes dinàmiques (s'ajusten segons mode de dades)
-    # Per DUAL: UIB=7,8, DAD=9,10, Estat=11
-    # Per DIRECT: DAD=7,8, Estat=9
+    # Per DUAL: UIB=7,8, Estat_UIB=9, DAD=10,11, Estat_DAD=12
+    # Per DIRECT: DAD=7,8, Estat_DAD=9
     COL_UIB_PTS_ACTUAL = 7
     COL_UIB_FILE_ACTUAL = 8
-    COL_DAD_PTS_ACTUAL = 9
-    COL_DAD_FILE_ACTUAL = 10
-    COL_ESTAT = 11
+    COL_ESTAT_UIB = 9  # I08: Estat separat per UIB
+    COL_DAD_PTS_ACTUAL = 10
+    COL_DAD_FILE_ACTUAL = 11
+    COL_ESTAT_DAD = 12  # I08: Estat separat per DAD
+    COL_ESTAT = 12  # Compatibilitat (apunta a DAD per defecte)
 
     # Tipus de mostra que requereixen assignació obligatòria de fitxers
     TYPES_REQUIRE_ASSIGNMENT = {"MOSTRA", "PATRÓ_CAL", "PATRÓ_REF"}
@@ -140,6 +141,8 @@ class ImportPanel(QWidget):
         self._import_warnings = []  # Warnings d'importació
         self._loaded_from_manifest = False  # Si s'ha carregat des de manifest existent
         self._orphan_warning_dismissed = False  # Si l'usuari ha marcat l'avís d'orfes com revisat
+        self._warnings_confirmed = False  # Si l'usuari ha confirmat els warnings (FUZZY, etc.)
+        self._warnings_confirmed_by = None  # G05: Qui ha confirmat (traçabilitat)
 
         self._setup_ui()
 
@@ -158,11 +161,11 @@ class ImportPanel(QWidget):
         self._import_warnings = []
         self._loaded_from_manifest = False
         self._orphan_warning_dismissed = False
+        self._warnings_confirmed = False
+        self._warnings_confirmed_by = None
 
         # Reset UI elements
         self.path_input.clear()
-        self.warnings_bar.setVisible(False)
-        self.warnings_bar_text.setText("")
         self.info_frame.setVisible(False)
         self.table_help.setVisible(False)
         self.samples_table.setRowCount(0)
@@ -205,7 +208,7 @@ class ImportPanel(QWidget):
         self.next_btn.setVisible(False)
 
         # === MANIFEST INFO (eliminat - redundant amb header del wizard) ===
-        # El nom SEQ ja apareix al header i el botó "Executar" gestiona reimportació
+        # El nom SEQ ja apareix al header i el botó "Importar" gestiona reimportació
         self.manifest_frame = QFrame()
         self.manifest_frame.setVisible(False)  # Mai visible - mantingut per compatibilitat
         self.manifest_info = QLabel()
@@ -213,23 +216,7 @@ class ImportPanel(QWidget):
         self.full_import_radio = QRadioButton()
         self.import_mode_group = QButtonGroup(self)
 
-        # === BARRA D'AVISOS (consistent per tots els panels) ===
-        self.warnings_bar = QFrame()
-        self.warnings_bar.setVisible(False)
-        self.warnings_bar.setStyleSheet(STYLE_WARNING_BAR)
-        warnings_bar_layout = QHBoxLayout(self.warnings_bar)
-        warnings_bar_layout.setContentsMargins(12, 8, 12, 8)
-
-        warnings_icon = QLabel("⚠")
-        warnings_icon.setStyleSheet("font-size: 16px;")
-        warnings_bar_layout.addWidget(warnings_icon)
-
-        self.warnings_bar_text = QLabel()
-        self.warnings_bar_text.setStyleSheet(STYLE_WARNING_TEXT)
-        self.warnings_bar_text.setWordWrap(True)
-        warnings_bar_layout.addWidget(self.warnings_bar_text, 1)
-
-        layout.addWidget(self.warnings_bar)
+        # Nota: Avisos es gestionen des del wizard header
 
         # === INFO BARRA (resum injeccions) ===
         self.info_frame = QFrame()
@@ -280,44 +267,24 @@ class ImportPanel(QWidget):
 
         layout.addWidget(self.samples_table, 1)
 
-        # === WARNINGS / ORFES ===
+        # Referència dummy per compatibilitat amb wizard (el wizard l'amaga)
+        self.next_btn = QPushButton()
+        self.next_btn.setVisible(False)
+
+        # Botons legacy (mantinguts com a dummies per compatibilitat)
         self.warnings_frame = QFrame()
         self.warnings_frame.setVisible(False)
-        self.warnings_frame.setFixedHeight(48)  # Espai suficient pels botons
-        warnings_layout = QHBoxLayout(self.warnings_frame)
-        warnings_layout.setContentsMargins(8, 6, 8, 6)
-
-        self.warnings_label = QLabel()
-        self.warnings_label.setStyleSheet("color: #E67E22;")
-        warnings_layout.addWidget(self.warnings_label, 1)
-
-        self.confirm_btn = QPushButton("Confirmar suggeriments")
-        self.confirm_btn.setToolTip("Confirma tots els suggeriments automàtics")
-        self.confirm_btn.clicked.connect(self._confirm_all_suggestions)
+        self.confirm_btn = QPushButton()
         self.confirm_btn.setVisible(False)
-        warnings_layout.addWidget(self.confirm_btn)
-
-        self.orphans_btn = QPushButton("Veure orfes")
-        self.orphans_btn.clicked.connect(self._show_orphans)
+        self.orphans_btn = QPushButton()
         self.orphans_btn.setVisible(False)
-        warnings_layout.addWidget(self.orphans_btn)
-
-        self.refresh_btn = QPushButton("Actualitzar")
-        self.refresh_btn.setToolTip("Actualitza el comptador d'orfes després d'assignacions manuals")
-        self.refresh_btn.clicked.connect(self._refresh_orphan_count)
+        self.refresh_btn = QPushButton()
         self.refresh_btn.setVisible(False)
-        warnings_layout.addWidget(self.refresh_btn)
-
-        self.dismiss_btn = QPushButton("Marcar revisat")
-        self.dismiss_btn.setToolTip("Marca l'avís com a revisat (els fitxers orfes no s'assignaran)")
-        self.dismiss_btn.clicked.connect(self._dismiss_orphan_warning)
+        self.dismiss_btn = QPushButton()
         self.dismiss_btn.setVisible(False)
-        warnings_layout.addWidget(self.dismiss_btn)
-
-        layout.addWidget(self.warnings_frame)
 
         # === PLACEHOLDER ===
-        self.placeholder = QLabel("Prem 'Executar' per importar la seqüència")
+        self.placeholder = QLabel("Preparant importació...")
         self.placeholder.setAlignment(Qt.AlignCenter)
         self.placeholder.setStyleSheet("color: #888; font-size: 14px;")
         layout.addWidget(self.placeholder, 1)
@@ -443,6 +410,7 @@ class ImportPanel(QWidget):
         if not result.get("success"):
             errors = result.get("errors", ["Error desconegut"])
             QMessageBox.critical(self, "Error d'Importació", f"Error: {errors[0]}")
+            self.import_completed.emit({'success': False, 'errors': errors})
             return
 
         # Verificar si cal preguntar la sensibilitat UIB
@@ -450,12 +418,14 @@ class ImportPanel(QWidget):
 
         self.imported_data = result
         self.main_window.imported_data = result
-        # Restaurar estat "revisat" d'orfes si es va marcar anteriorment
+        # Restaurar estat "revisat" d'orfes i warnings si es van marcar anteriorment
         self._orphan_warning_dismissed = result.get("orphan_warning_dismissed", False)
+        self._warnings_confirmed = result.get("warnings_confirmed", False)
+        self._warnings_confirmed_by = result.get("warnings_confirmed_by", None)  # G05: traçabilitat
+
         self._show_results(result)
 
-        # Mostrar avisos si n'hi ha
-        self._show_warnings_bar(result)
+        # Nota: Els avisos es gestionen des del wizard header
 
         try:
             save_import_manifest(result)
@@ -468,32 +438,16 @@ class ImportPanel(QWidget):
         self.main_window.enable_tab(1)
         self.main_window.set_status("Importació completada", 5000)
 
-    def _show_warnings_bar(self, result):
-        """Mostra avisos a la barra superior si n'hi ha."""
-        warnings = result.get("warnings", [])
-        orphans_uib = len(result.get("orphan_files", {}).get("uib", []))
-        orphans_dad = len(result.get("orphan_files", {}).get("dad", []))
+        # Emetre senyal per al wizard
+        self.import_completed.emit({
+            'success': True,
+            'warnings': result.get('warnings', []),
+            'orphan_files': result.get('orphan_files', {}),
+            'warnings_confirmed': self._warnings_confirmed,
+            'orphan_warning_dismissed': self._orphan_warning_dismissed,
+        })
 
-        warning_parts = []
-        if orphans_uib > 0:
-            warning_parts.append(f"{orphans_uib} UIB orfes")
-        if orphans_dad > 0:
-            warning_parts.append(f"{orphans_dad} DAD orfes")
-
-        # Afegir warnings generals
-        for w in warnings:
-            if "⚠" in w or "FUZZY" in w:
-                warning_parts.append(w.replace("⚠️", "").strip()[:40])
-
-        if warning_parts:
-            self.warnings_bar.setVisible(True)
-            n = len(warning_parts)
-            display = warning_parts[:3]
-            self.warnings_bar_text.setText(
-                f"<b>{n} avisos:</b> " + " · ".join(display)
-            )
-        else:
-            self.warnings_bar.setVisible(False)
+    # Nota: _show_warnings_bar eliminada - avisos es gestionen des del wizard header
 
     def _check_uib_sensitivity(self, result):
         """Verifica si cal preguntar la sensibilitat UIB i actualitza el MasterFile."""
@@ -553,6 +507,7 @@ class ImportPanel(QWidget):
         self._manual_assignments = {}
         if not self._loaded_from_manifest:
             self._orphan_warning_dismissed = False
+            self._warnings_confirmed = False
 
     def _process_orphan_files(self, manifest, samples, result):
         """Processa i filtra fitxers orfes."""
@@ -755,10 +710,12 @@ class ImportPanel(QWidget):
         if uib_suggestion and (requires_assignment or optional_can_assign):
             suggested_file = uib_suggestion.get("file", "")
             confidence = uib_suggestion.get("confidence", 0)
+            suggestion_status = uib_suggestion.get("status", "SUGGESTED")
             replica_num = rep.get("replica", 1)
             display_name = f"{sample_name}_R{replica_num}"
 
-            if self._loaded_from_manifest:
+            # Mostrar cel·la de suggeriment si no està confirmat, independentment de la font
+            if suggestion_status == "CONFIRMED" or self._warnings_confirmed:
                 self._add_simple_cell(row, self.COL_UIB_FILE_ACTUAL, display_name)
             else:
                 self._add_suggestion_cell(row, self.COL_UIB_FILE_ACTUAL, suggested_file, confidence, display_name)
@@ -770,7 +727,8 @@ class ImportPanel(QWidget):
             if n_points > 0:
                 self.samples_table.item(row, self.COL_UIB_PTS_ACTUAL).setText(str(n_points))
 
-        elif uib_file and self._loaded_from_manifest:
+        elif uib_file:
+            # Fitxer ja assignat (des de manifest o durant importació)
             replica_num = rep.get("replica", 1)
             display_name = f"{sample_name}_R{replica_num}"
             self._add_simple_cell(row, self.COL_UIB_FILE_ACTUAL, display_name)
@@ -779,10 +737,11 @@ class ImportPanel(QWidget):
                 if n_points > 0:
                     self.samples_table.item(row, self.COL_UIB_PTS_ACTUAL).setText(str(n_points))
 
-        elif not uib_pts and not uib_file and self._orphan_files.get("uib") and requires_assignment:
+        elif not uib_pts and self._orphan_files.get("uib") and requires_assignment:
             self._add_file_cell(row, self.COL_UIB_FILE_ACTUAL, "-", editable=True)
-            missing_signals.append("UIB")
-            needs_review = True
+            if not self._warnings_confirmed:
+                missing_signals.append("UIB")
+                needs_review = True
 
         elif optional_can_assign and self._orphan_files.get("uib"):
             display_val = uib_file if uib_file else "-"
@@ -821,10 +780,12 @@ class ImportPanel(QWidget):
         if dad_suggestion and (requires_assignment or optional_can_assign):
             suggested_file = dad_suggestion.get("file", "")
             confidence = dad_suggestion.get("confidence", 0)
+            suggestion_status = dad_suggestion.get("status", "SUGGESTED")
             replica_num = rep.get("replica", 1)
             display_name = f"{sample_name}_R{replica_num}"
 
-            if self._loaded_from_manifest:
+            # Mostrar cel·la de suggeriment si no està confirmat, independentment de la font
+            if suggestion_status == "CONFIRMED" or self._warnings_confirmed:
                 self._add_simple_cell(row, self.COL_DAD_FILE_ACTUAL, display_name)
             else:
                 self._add_suggestion_cell(row, self.COL_DAD_FILE_ACTUAL, suggested_file, confidence, display_name)
@@ -837,7 +798,7 @@ class ImportPanel(QWidget):
                 self.samples_table.item(row, self.COL_DAD_PTS_ACTUAL).setText(str(n_points))
                 dad_pts = n_points
 
-        elif dad_file and self._loaded_from_manifest and not dad_file.startswith("["):
+        elif dad_file and not dad_file.startswith("["):
             replica_num = rep.get("replica", 1)
             display_name = f"{sample_name}_R{replica_num}"
             self._add_simple_cell(row, self.COL_DAD_FILE_ACTUAL, display_name)
@@ -848,8 +809,9 @@ class ImportPanel(QWidget):
 
         elif not dad_pts and not dad_file and self._orphan_files.get("dad") and requires_assignment:
             self._add_file_cell(row, self.COL_DAD_FILE_ACTUAL, "-", editable=True)
-            missing_signals.append("DAD")
-            needs_review = True
+            if not self._warnings_confirmed:
+                missing_signals.append("DAD")
+                needs_review = True
 
         elif optional_can_assign and self._orphan_files.get("dad"):
             display_val = dad_file if dad_file else "-"
@@ -861,22 +823,38 @@ class ImportPanel(QWidget):
         return review_signals, missing_signals, needs_review, dad_pts
 
     def _populate_row_estat(self, row, review_signals, missing_signals, needs_review):
-        """Omple la columna d'estat d'una fila."""
-        if review_signals:
-            estat = "Revisar " + ", ".join(review_signals)
-            color = QColor("#FCF3CF")  # Groc
-        elif missing_signals:
-            estat = "Assignar " + "+".join(missing_signals)
-            color = QColor("#FADBD8")  # Rosa
-        else:
-            estat = "OK"
-            color = QColor("#D5F5E3")  # Verd
+        """Omple les columnes d'estat (UIB i DAD) d'una fila."""
+        # I08: Separar estat per UIB i DAD
+        uib_review = [s for s in review_signals if "UIB" in s]
+        dad_review = [s for s in review_signals if "DAD" in s]
+        uib_missing = "UIB" in missing_signals
+        dad_missing = "DAD" in missing_signals
 
-        estat_item = QTableWidgetItem(estat)
-        estat_item.setTextAlignment(Qt.AlignCenter)
-        estat_item.setFlags(estat_item.flags() & ~Qt.ItemIsEditable)
-        estat_item.setBackground(QBrush(color))
-        self.samples_table.setItem(row, self.COL_ESTAT, estat_item)
+        def create_estat_item(review_list, is_missing):
+            if review_list:
+                # Extreure només el percentatge si existeix
+                text = "Revisar"
+                color = QColor("#FCF3CF")  # Groc
+            elif is_missing:
+                text = "Assignar"
+                color = QColor("#FADBD8")  # Rosa
+            else:
+                text = "OK"
+                color = QColor("#D5F5E3")  # Verd
+            item = QTableWidgetItem(text)
+            item.setTextAlignment(Qt.AlignCenter)
+            item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+            item.setBackground(QBrush(color))
+            return item
+
+        # Estat UIB (només si existeix la columna)
+        if self.COL_ESTAT_UIB is not None:
+            uib_item = create_estat_item(uib_review, uib_missing)
+            self.samples_table.setItem(row, self.COL_ESTAT_UIB, uib_item)
+
+        # Estat DAD
+        dad_item = create_estat_item(dad_review, dad_missing)
+        self.samples_table.setItem(row, self.COL_ESTAT_DAD, dad_item)
 
         if needs_review:
             self._unverified_fuzzy.add(row)
@@ -1025,21 +1003,25 @@ class ImportPanel(QWidget):
     def _setup_table_columns(self):
         """Configura les columnes segons el mode de dades."""
         if self._data_mode == "DIRECT":
-            # Sense UIB: Inj, Mostra, Tipus, Rep, Vol, Direct, Fila, DAD, Fitxer DAD, Estat
+            # Sense UIB: Inj, Mostra, Tipus, Rep, Vol, Direct, Fila, DAD, Fitxer DAD, Estat DAD
             self.samples_table.setColumnCount(10)
-            headers = ["Inj", "Mostra", "Tipus", "Rep", "Inj Vol", "Direct", "Fila", "DAD", "Fitxer DAD", "Estat"]
+            headers = ["Inj", "Mostra", "Tipus", "Rep", "Inj Vol", "Direct", "Fila", "DAD", "Fitxer DAD", "Estat DAD"]
             self.COL_DAD_PTS_ACTUAL = 7
             self.COL_DAD_FILE_ACTUAL = 8
-            self.COL_ESTAT = 9
+            self.COL_ESTAT_UIB = None  # No UIB en mode DIRECT
+            self.COL_ESTAT_DAD = 9
+            self.COL_ESTAT = 9  # Compatibilitat
         else:
-            # DUAL o UIB: Inj, Mostra, Tipus, Rep, Vol, Direct, Fila, UIB, Fitxer UIB, DAD, Fitxer DAD, Estat
-            self.samples_table.setColumnCount(12)
-            headers = ["Inj", "Mostra", "Tipus", "Rep", "Inj Vol", "Direct", "Fila", "UIB", "Fitxer UIB", "DAD", "Fitxer DAD", "Estat"]
+            # DUAL o UIB: Inj, Mostra, Tipus, Rep, Vol, Direct, Fila, UIB, Fitxer UIB, Estat UIB, DAD, Fitxer DAD, Estat DAD
+            self.samples_table.setColumnCount(13)
+            headers = ["Inj", "Mostra", "Tipus", "Rep", "Inj Vol", "Direct", "Fila", "UIB", "Fitxer UIB", "Estat UIB", "DAD", "Fitxer DAD", "Estat DAD"]
             self.COL_UIB_PTS_ACTUAL = 7
             self.COL_UIB_FILE_ACTUAL = 8
-            self.COL_DAD_PTS_ACTUAL = 9
-            self.COL_DAD_FILE_ACTUAL = 10
-            self.COL_ESTAT = 11
+            self.COL_ESTAT_UIB = 9
+            self.COL_DAD_PTS_ACTUAL = 10
+            self.COL_DAD_FILE_ACTUAL = 11
+            self.COL_ESTAT_DAD = 12
+            self.COL_ESTAT = 12  # Compatibilitat (apunta a DAD)
 
         self.samples_table.setHorizontalHeaderLabels(headers)
 
@@ -1180,6 +1162,12 @@ class ImportPanel(QWidget):
 
                     # Carregar dades del fitxer per a la gràfica
                     self._load_and_store_file_data(actual_filename, file_type, sample_name, replica)
+                    # Auto-guardar manifest per persistir assignació (I10)
+                    try:
+                        save_import_manifest(self.imported_data)
+                        self.main_window.mark_manifest_saved()
+                    except Exception as e:
+                        print(f"Warning: No s'ha pogut auto-guardar manifest: {e}")
                 else:
                     # Si es tria "(cap)", la cel·la queda sense assignació
                     item.setBackground(QBrush(MATCH_COLORS["NORMAL"]))
@@ -1446,23 +1434,39 @@ class ImportPanel(QWidget):
                 elif match_type == "SUGGESTED":
                     pending_review.append("DAD")
 
-        # Actualitzar Estat
-        estat_item = self.samples_table.item(row, self.COL_ESTAT)
-        if estat_item:
-            if missing:
-                estat_text = "Assignar " + "+".join(missing)
-                estat_item.setText(estat_text)
-                estat_item.setBackground(QBrush(QColor("#FADBD8")))  # Rosa
-                self._unverified_fuzzy.add(row)
-            elif pending_review:
-                estat_text = "Revisar " + "+".join(pending_review)
-                estat_item.setText(estat_text)
-                estat_item.setBackground(QBrush(QColor("#FCF3CF")))  # Groc
-                self._unverified_fuzzy.add(row)
-            else:
-                estat_item.setText("OK")
-                estat_item.setBackground(QBrush(QColor("#D5F5E3")))  # Verd
-                self._unverified_fuzzy.discard(row)
+        # I08: Actualitzar Estat UIB i DAD per separat
+        uib_missing = "UIB" in missing
+        dad_missing = "DAD" in missing
+        uib_review = "UIB" in pending_review
+        dad_review = "DAD" in pending_review
+
+        def update_estat_cell(col, is_missing, is_review):
+            if col is None:
+                return
+            item = self.samples_table.item(row, col)
+            if item:
+                if is_missing:
+                    item.setText("Assignar")
+                    item.setBackground(QBrush(QColor("#FADBD8")))  # Rosa
+                elif is_review:
+                    item.setText("Revisar")
+                    item.setBackground(QBrush(QColor("#FCF3CF")))  # Groc
+                else:
+                    item.setText("OK")
+                    item.setBackground(QBrush(QColor("#D5F5E3")))  # Verd
+
+        # Actualitzar UIB (si existeix)
+        if self.COL_ESTAT_UIB is not None:
+            update_estat_cell(self.COL_ESTAT_UIB, uib_missing, uib_review)
+
+        # Actualitzar DAD
+        update_estat_cell(self.COL_ESTAT_DAD, dad_missing, dad_review)
+
+        # Marcar fila com no verificada si hi ha pendents
+        if missing or pending_review:
+            self._unverified_fuzzy.add(row)
+        else:
+            self._unverified_fuzzy.discard(row)
 
     def _on_cell_double_clicked(self, row, col):
         """Handler de doble clic."""
@@ -1510,73 +1514,44 @@ class ImportPanel(QWidget):
                 dialog.exec()
 
     def _update_warnings(self):
-        """Actualitza warnings i orfes."""
-        # Si carregat des de manifest, no mostrar avisos d'orfes/suggeriments
-        # (ja estaven gestionats quan es va guardar el manifest)
-        if self._loaded_from_manifest:
-            self.warnings_frame.setVisible(False)
-            self.confirm_btn.setVisible(False)
-            self.orphans_btn.setVisible(False)
-            self.refresh_btn.setVisible(False)
-            self.dismiss_btn.setVisible(False)
-            return
+        """Actualitza avisos al CommonToolbar (G01-G06: estructura unificada)."""
+        # Recollir TOTS els avisos en una llista
+        warnings_list = []
 
-        # Si l'avís d'orfes ha estat marcat com revisat, no mostrar
-        if self._orphan_warning_dismissed:
-            self.warnings_frame.setVisible(False)
-            self.confirm_btn.setVisible(False)
-            self.orphans_btn.setVisible(False)
-            self.refresh_btn.setVisible(False)
-            self.dismiss_btn.setVisible(False)
-            return
-
-        # Comptar orfes que encara no estan assignats
-        unassigned_uib, unassigned_dad = self._count_unassigned_orphans()
-
-        # Comptar suggeriments pendents de confirmar
-        pending_suggestions = sum(
-            1 for (r, c), mt in self._match_types.items()
-            if mt == "SUGGESTED"
-        )
-
-        has_orphans = unassigned_uib > 0 or unassigned_dad > 0
-        has_suggestions = pending_suggestions > 0
-
-        # Warnings d'importació (injeccions faltants, etc.)
+        # 1. Warnings d'importació (injeccions faltants, etc.)
         import_warnings = getattr(self, '_import_warnings', [])
-        has_import_warnings = len(import_warnings) > 0
+        for w in import_warnings:
+            clean_w = w.replace("⚠️ ", "").replace("⚠", "").strip()
+            if clean_w:
+                warnings_list.append(clean_w)
 
-        if has_orphans or has_suggestions or has_import_warnings:
-            msg_parts = []
+        # 2. Suggeriments pendents
+        pending_suggestions = 0
+        suggestion_samples = []
+        for (r, c), mt in self._match_types.items():
+            if mt == "SUGGESTED":
+                pending_suggestions += 1
+                name_item = self.samples_table.item(r, self.COL_MOSTRA)
+                if name_item and name_item.text() not in suggestion_samples:
+                    suggestion_samples.append(name_item.text())
 
-            # Primer els warnings crítics d'importació
-            if has_import_warnings:
-                # Mostrar el primer warning crític (normalment el de injeccions faltants)
-                for w in import_warnings:
-                    if "ATENCIÓ" in w:
-                        msg_parts.append(w.replace("⚠️ ", ""))
-                        break
+        if pending_suggestions:
+            samples_preview = ", ".join(suggestion_samples[:3])
+            if len(suggestion_samples) > 3:
+                samples_preview += f"... (+{len(suggestion_samples)-3})"
+            warnings_list.append(f"{pending_suggestions} suggeriments FUZZY: {samples_preview}")
 
-            if pending_suggestions:
-                msg_parts.append(f"{pending_suggestions} suggeriments per revisar")
-            if unassigned_uib:
-                msg_parts.append(f"{unassigned_uib} UIB orfes (revisar noms i reimportar, o assignar manualment)")
-            if unassigned_dad:
-                msg_parts.append(f"{unassigned_dad} DAD orfes (revisar noms i reimportar, o assignar manualment)")
+        # 3. Fitxers orfes
+        unassigned_uib, unassigned_dad = self._count_unassigned_orphans()
+        if unassigned_uib > 0:
+            warnings_list.append(f"{unassigned_uib} fitxers UIB sense assignar")
+        if unassigned_dad > 0:
+            warnings_list.append(f"{unassigned_dad} fitxers DAD sense assignar")
 
-            self.warnings_label.setText("⚠️ " + " · ".join(msg_parts))
-            self.confirm_btn.setVisible(has_suggestions)
-            self.orphans_btn.setVisible(has_orphans)
-            self.refresh_btn.setVisible(has_orphans)
-            # Mostrar botó "Marcar revisat" si hi ha orfes (permet continuar sense assignar)
-            self.dismiss_btn.setVisible(has_orphans and not has_suggestions)
-            self.warnings_frame.setVisible(True)
-        else:
-            self.warnings_frame.setVisible(False)
-            self.confirm_btn.setVisible(False)
-            self.orphans_btn.setVisible(False)
-            self.refresh_btn.setVisible(False)
-            self.dismiss_btn.setVisible(False)
+        # Nota: Avisos es gestionen des del wizard header
+
+        # Amagar elements legacy
+        self.warnings_frame.setVisible(False)
 
     def _get_assigned_files_from_table(self, include_path_variants=False):
         """Obté els fitxers assignats des de la taula.
@@ -1682,6 +1657,11 @@ class ImportPanel(QWidget):
         self._update_next_button_state()
 
         if confirmed > 0:
+            # Marcar warnings com a confirmats per evitar que reapareguin
+            self._warnings_confirmed = True
+            if self.imported_data:
+                self.imported_data["warnings_confirmed"] = True
+
             # Guardar manifest immediatament
             try:
                 print(f"[DEBUG confirm] Guardant manifest amb {confirmed} confirmacions...")
@@ -1689,6 +1669,7 @@ class ImportPanel(QWidget):
                 manifest_path = save_import_manifest(self.imported_data)
                 print(f"[DEBUG confirm] Manifest guardat a: {manifest_path}")
                 self.main_window.mark_manifest_saved()
+                self.warnings_frame.setVisible(False)
                 QMessageBox.information(self, "Confirmat", f"S'han confirmat {confirmed} suggeriments i s'han guardat.")
             except Exception as e:
                 import traceback
@@ -1737,17 +1718,28 @@ class ImportPanel(QWidget):
                     if val == "-" and self._orphan_files.get("dad"):
                         missing.append("DAD")
 
-            # Actualitzar Estat
-            estat_item = self.samples_table.item(row, self.COL_ESTAT)
-            if estat_item:
-                if missing:
-                    estat_text = "Assignar " + "+".join(missing)
-                    estat_item.setText(estat_text)
-                    estat_item.setBackground(QBrush(QColor("#FADBD8")))
-                    self._unverified_fuzzy.add(row)
-                else:
-                    estat_item.setText("OK")
-                    estat_item.setBackground(QBrush(QColor("#D5F5E3")))
+            # I08: Actualitzar Estat UIB i DAD per separat
+            uib_missing = "UIB" in missing
+            dad_missing = "DAD" in missing
+
+            def update_estat(col, is_missing):
+                if col is None:
+                    return
+                item = self.samples_table.item(row, col)
+                if item:
+                    if is_missing:
+                        item.setText("Assignar")
+                        item.setBackground(QBrush(QColor("#FADBD8")))
+                    else:
+                        item.setText("OK")
+                        item.setBackground(QBrush(QColor("#D5F5E3")))
+
+            if self.COL_ESTAT_UIB is not None:
+                update_estat(self.COL_ESTAT_UIB, uib_missing)
+            update_estat(self.COL_ESTAT_DAD, dad_missing)
+
+            if missing:
+                self._unverified_fuzzy.add(row)
 
         self.samples_table.blockSignals(False)
 
@@ -1795,8 +1787,50 @@ class ImportPanel(QWidget):
         self.warnings_dismissed.emit()
 
     def _show_orphans(self):
-        dialog = OrphanFilesDialog(self, self._orphan_files)
+        # Preparar dades amb punts per cada fitxer orfe
+        orphans_with_info = {"uib": [], "dad": []}
+
+        for file_type in ["uib", "dad"]:
+            files = self._orphan_files.get(file_type, [])
+            for f in sorted(files):  # Ordenar alfabèticament
+                n_points = self._count_file_points(f, file_type)
+                orphans_with_info[file_type].append({
+                    "file": f,
+                    "n_points": n_points
+                })
+
+        dialog = OrphanFilesDialog(self, orphans_with_info)
         dialog.exec()
+
+    def _on_warnings_confirmed(self, initials: str):
+        """Handler quan es confirmen avisos via CommonToolbar."""
+        self._warnings_confirmed = True
+        self._warnings_confirmed_by = initials
+        self._orphan_warning_dismissed = True
+
+        # Guardar al manifest
+        if self.imported_data:
+            self.imported_data["warnings_confirmed"] = True
+            self.imported_data["warnings_confirmed_by"] = initials
+            self.imported_data["orphan_warning_dismissed"] = True
+            try:
+                save_import_manifest(self.imported_data)
+                self.main_window.set_status(f"Avisos confirmats per {initials}", 3000)
+            except Exception as e:
+                print(f"Warning: No s'ha pogut guardar: {e}")
+
+        # Notificar wizard
+        self.warnings_dismissed.emit()
+        self._update_next_button_state()
+
+    def _on_notes_changed(self, notes: str):
+        """Handler quan canvien les notes via CommonToolbar."""
+        if self.imported_data:
+            self.imported_data["notes"] = notes
+            try:
+                save_import_manifest(self.imported_data)
+            except Exception as e:
+                print(f"Warning: No s'ha pogut guardar notes: {e}")
 
     def _save_manifest(self):
         """Guarda el manifest amb les assignacions actuals."""

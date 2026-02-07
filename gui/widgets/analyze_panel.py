@@ -34,9 +34,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from hpsec_analyze import analyze_sequence, save_analysis_result, load_analysis_result
 from gui.widgets.styles import (
-    PANEL_MARGINS, PANEL_SPACING, STYLE_WARNING_BAR, STYLE_WARNING_TEXT,
-    STYLE_LABEL_SECONDARY, COLOR_SUCCESS, COLOR_WARNING, COLOR_ERROR,
-    create_title_font, apply_panel_layout, create_empty_state_widget
+    PANEL_MARGINS, PANEL_SPACING, STYLE_LABEL_SECONDARY,
+    COLOR_SUCCESS, COLOR_WARNING, COLOR_ERROR,
+    apply_panel_layout, create_empty_state_widget
 )
 
 # Matplotlib per gràfics
@@ -94,79 +94,21 @@ class AnalyzePanel(QWidget):
         self._setup_ui()
 
     def _setup_ui(self):
-        """Configura la interfície."""
+        """Configura la interfície - NET i MINIMALISTA.
+
+        Estructura:
+        - Info panel (dades importades + calibració)
+        - Empty state o Resultats (taules DOC/DAD)
+
+        Nota: Títol, avisos, notes i navegació són al wizard header.
+        """
         layout = QVBoxLayout(self)
         apply_panel_layout(layout)
 
-        # === HEADER ===
-        header_layout = QHBoxLayout()
-
-        title = QLabel("Anàlisi de Mostres")
-        title.setFont(create_title_font())
-        header_layout.addWidget(title)
-
-        header_layout.addStretch()
-
-        # Botó analitzar (amagat - l'acció és al header del wizard)
-        self.analyze_btn = QPushButton("▶ Analitzar")
-        self.analyze_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #27AE60; color: white;
-                border: none; border-radius: 4px;
-                padding: 8px 20px; font-weight: bold;
-            }
-            QPushButton:hover { background-color: #219A52; }
-            QPushButton:disabled { background-color: #BDC3C7; }
-        """)
+        # Botó analitzar (amagat - l'acció es dispara des del wizard header)
+        self.analyze_btn = QPushButton()
+        self.analyze_btn.setVisible(False)
         self.analyze_btn.clicked.connect(self._run_analyze)
-        self.analyze_btn.setVisible(False)  # Amagat - acció al header del wizard
-        header_layout.addWidget(self.analyze_btn)
-
-        layout.addLayout(header_layout)
-
-        # === BARRA D'AVISOS (consistent per tots els panels) ===
-        self.warnings_bar = QFrame()
-        self.warnings_bar.setVisible(False)
-        self.warnings_bar.setStyleSheet(STYLE_WARNING_BAR)
-        warnings_bar_layout = QHBoxLayout(self.warnings_bar)
-        warnings_bar_layout.setContentsMargins(12, 8, 12, 8)
-
-        self.warnings_icon = QLabel("⚠")
-        self.warnings_icon.setStyleSheet("font-size: 16px; border: none;")
-        warnings_bar_layout.addWidget(self.warnings_icon)
-
-        self.warnings_text = QLabel()
-        self.warnings_text.setStyleSheet(STYLE_WARNING_TEXT + " border: none;")
-        self.warnings_text.setWordWrap(True)
-        warnings_bar_layout.addWidget(self.warnings_text, 1)
-
-        # Botó revisar avisos (A02)
-        self.warnings_review_btn = QPushButton("Revisar")
-        self.warnings_review_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #F39C12; color: white;
-                border: none; border-radius: 4px;
-                padding: 4px 12px; font-weight: bold;
-            }
-            QPushButton:hover { background-color: #E67E22; }
-        """)
-        self.warnings_review_btn.clicked.connect(self._show_warnings_detail)
-        warnings_bar_layout.addWidget(self.warnings_review_btn)
-
-        # Botó OK avisos amb identificació (G05)
-        self.warnings_ok_btn = QPushButton("OK ✓")
-        self.warnings_ok_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #27AE60; color: white;
-                border: none; border-radius: 4px;
-                padding: 4px 12px; font-weight: bold;
-            }
-            QPushButton:hover { background-color: #219A52; }
-        """)
-        self.warnings_ok_btn.clicked.connect(self._confirm_warnings)
-        warnings_bar_layout.addWidget(self.warnings_ok_btn)
-
-        layout.addWidget(self.warnings_bar)
 
         # === INFO PANEL (professional) ===
         self.info_frame = QFrame()
@@ -209,8 +151,8 @@ class AnalyzePanel(QWidget):
         # Empty state (quan no hi ha dades)
         self.empty_state = create_empty_state_widget(
             "🔬",
-            "No hi ha dades importades",
-            "Vés a la pestanya «1. Importar» per carregar les dades de la seqüència."
+            "Preparant anàlisi...",
+            "Carregant dades de la seqüència."
         )
         self.empty_state.setVisible(False)
         layout.addWidget(self.empty_state)
@@ -299,6 +241,42 @@ class AnalyzePanel(QWidget):
 
         results_layout.addWidget(selector_frame)
 
+        # === BARRA D'AVISOS ESTRUCTURATS ===
+        self.warnings_bar = QFrame()
+        self.warnings_bar.setVisible(False)
+        self.warnings_bar.setStyleSheet("""
+            QFrame {
+                background-color: #FFF3E0;
+                border: 1px solid #FFB74D;
+                border-radius: 6px;
+            }
+        """)
+        warnings_bar_layout = QHBoxLayout(self.warnings_bar)
+        warnings_bar_layout.setContentsMargins(12, 8, 12, 8)
+
+        self.warnings_icon = QLabel("⚠️")
+        self.warnings_icon.setStyleSheet("border: none;")
+        warnings_bar_layout.addWidget(self.warnings_icon)
+
+        self.warnings_text = QLabel()
+        self.warnings_text.setStyleSheet("border: none; color: #E65100;")
+        self.warnings_text.setWordWrap(True)
+        warnings_bar_layout.addWidget(self.warnings_text, 1)
+
+        self.warnings_details_btn = QPushButton("Veure detalls")
+        self.warnings_details_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #FFB74D; color: white;
+                border: none; border-radius: 4px;
+                padding: 4px 12px;
+            }
+            QPushButton:hover { background-color: #FFA726; }
+        """)
+        self.warnings_details_btn.clicked.connect(self._show_warnings_details)
+        warnings_bar_layout.addWidget(self.warnings_details_btn)
+
+        results_layout.addWidget(self.warnings_bar)
+
         # === TAULA DOC ===
         self.doc_table = QTableWidget()
         self.doc_table.setColumnCount(10)
@@ -355,31 +333,9 @@ class AnalyzePanel(QWidget):
 
         layout.addWidget(self.results_frame, 1)  # Stretch
 
-        # === BOTONS NAVEGACIÓ (G04: Afegir notes sempre visible) ===
-        nav_layout = QHBoxLayout()
-
-        # Botó Afegir notes (G04)
-        self.notes_btn = QPushButton("📝 Afegir notes")
-        self.notes_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #6c757d; color: white;
-                border: none; border-radius: 4px;
-                padding: 8px 16px;
-            }
-            QPushButton:hover { background-color: #5a6268; }
-        """)
-        self.notes_btn.clicked.connect(self._add_notes)
-        nav_layout.addWidget(self.notes_btn)
-
-        nav_layout.addStretch()
-
-        self.next_btn = QPushButton("Següent: Consolidar →")
-        self.next_btn.setEnabled(False)
-        self.next_btn.setStyleSheet("font-weight: bold; padding: 8px 16px;")
-        self.next_btn.clicked.connect(self._go_next)
-        nav_layout.addWidget(self.next_btn)
-
-        layout.addLayout(nav_layout)
+        # Referència dummy per compatibilitat amb wizard (el wizard l'amaga)
+        self.next_btn = QPushButton()
+        self.next_btn.setVisible(False)
 
     def _configure_table(self, table):
         """Configura estil comú per les taules."""
@@ -450,13 +406,12 @@ class AnalyzePanel(QWidget):
         self.worker = None
         self._warnings_confirmed = False
         self._warnings_confirmed_by = ""
+
+        # Reset taules
         self.doc_table.setRowCount(0)
         self.dad_table.setRowCount(0)
-        self.warnings_bar.setVisible(False)
-        self.warnings_text.setText("")
-        self.warnings_ok_btn.setText("OK ✓")
-        self.warnings_ok_btn.setEnabled(True)
-        self.warnings_review_btn.setEnabled(True)
+
+        # Reset UI
         self.empty_state.setVisible(True)
         self.info_frame.setVisible(False)
         self.status_frame.setVisible(False)
@@ -464,7 +419,6 @@ class AnalyzePanel(QWidget):
         self.progress_bar.setValue(0)
         self.results_frame.setVisible(False)
         self.analyze_btn.setEnabled(True)
-        self.next_btn.setEnabled(False)
         self.detail_btn.setEnabled(False)
         self.stats_label.setText("")
         self._switch_view("DOC")
@@ -495,10 +449,9 @@ class AnalyzePanel(QWidget):
             self._populate_table()
             self.status_frame.setVisible(False)
             self.results_frame.setVisible(True)
-            self.next_btn.setEnabled(True)
             self.main_window.set_status("Anàlisi carregada des de fitxer existent", 3000)
 
-            # Emetre senyal
+            # Emetre senyal (el wizard actualitzarà l'estat)
             self.analyze_completed.emit(result)
 
     def _update_status(self):
@@ -580,12 +533,53 @@ class AnalyzePanel(QWidget):
         """Executa l'anàlisi."""
         imported_data = self.main_window.imported_data
         calibration_data = self.main_window.calibration_data
+        seq_path = self.main_window.seq_path
 
-        print(f"[DEBUG] _run_analyze: imported_data={imported_data is not None}")
-        print(f"[DEBUG] _run_analyze: calibration_data={calibration_data is not None}")
+        # Auto-carregar dades anteriors si no estan en memòria
+        if not imported_data and seq_path:
+            from hpsec_import import import_from_manifest
+            self.main_window.set_status("Carregant dades d'importació...")
+            imported_data = import_from_manifest(seq_path)
+            if imported_data and imported_data.get('success'):
+                self.main_window.imported_data = imported_data
+
+        if not calibration_data and seq_path:
+            import json
+            from pathlib import Path
+            cal_path = Path(seq_path) / "CHECK" / "data" / "calibration_result.json"
+            if cal_path.exists():
+                self.main_window.set_status("Carregant dades de calibració...")
+                with open(cal_path, 'r', encoding='utf-8') as f:
+                    cal_file = json.load(f)
+
+                # El fitxer té estructura { calibrations: [...] }
+                # Extreure la calibració activa (o la primera)
+                calibrations = cal_file.get("calibrations", [])
+                if calibrations:
+                    # Buscar la calibració activa
+                    active_cal = None
+                    for cal in calibrations:
+                        if cal.get("is_active", False):
+                            active_cal = cal
+                            break
+                    if not active_cal:
+                        active_cal = calibrations[0]
+
+                    # Només cal passar els SHIFTS - RF ve de calibració global
+                    # Mapeig de camps (el JSON usa noms diferents)
+                    shift_direct_val = active_cal.get("shift_direct") or active_cal.get("shift_min", 0)
+                    shift_uib_val = active_cal.get("shift_uib") or active_cal.get("shift_min_u", 0)
+
+                    calibration_data = {
+                        "success": True,
+                        "shift_direct": shift_direct_val,
+                        "shift_uib": shift_uib_val,
+                        "khp_source": active_cal.get("khp_source", "LOCAL"),
+                    }
+                    self.main_window.calibration_data = calibration_data
 
         if not imported_data:
-            QMessageBox.warning(self, "Avís", "No hi ha dades importades.\n\nVés a la pestanya '1. Importar' primer.")
+            QMessageBox.warning(self, "Avís", "No s'han trobat dades d'importació.")
             return
 
         # Verificar que hi ha mostres
@@ -593,8 +587,6 @@ class AnalyzePanel(QWidget):
         if not samples:
             QMessageBox.warning(self, "Avís", "No s'han trobat mostres a les dades importades.")
             return
-
-        print(f"[DEBUG] Iniciant anàlisi amb {len(samples)} mostres")
 
         # Mostrar progrés
         self.analyze_btn.setEnabled(False)
@@ -616,14 +608,11 @@ class AnalyzePanel(QWidget):
 
     def _on_finished(self, result):
         """Gestiona la finalització de l'anàlisi."""
-        print(f"[DEBUG] _on_finished: result success={result.get('success') if result else None}")
-
         self.progress_frame.setVisible(False)
         self.analyze_btn.setEnabled(True)
 
         if not result or not result.get("success"):
             error_msg = result.get("error", "Error desconegut") if result else "Resultat buit"
-            print(f"[DEBUG] Error: {error_msg}")
             QMessageBox.critical(self, "Error", f"Error durant l'anàlisi:\n{error_msg}")
             self._update_status()
             return
@@ -631,32 +620,9 @@ class AnalyzePanel(QWidget):
         # Amagar frame d'estat, mostrar resultats
         self.status_frame.setVisible(False)
 
-        print(f"[DEBUG] samples_grouped keys: {list(self.samples_grouped.keys())}")
-        print(f"[DEBUG] n_samples_grouped: {len(self.samples_grouped)}")
-
-        # Debug primer sample
-        if self.samples_grouped:
-            first_name = list(self.samples_grouped.keys())[0]
-            first = self.samples_grouped[first_name]
-            print(f"[DEBUG] First sample keys: {list(first.keys())}")
-            if first.get("replicas"):
-                rep_keys = list(first["replicas"].keys())
-                print(f"[DEBUG] Replica keys: {rep_keys}")
-                if rep_keys:
-                    first_rep = first["replicas"][rep_keys[0]]
-                    print(f"[DEBUG] First replica keys: {list(first_rep.keys())}")
-                    print(f"[DEBUG] areas: {first_rep.get('areas')}")
-                    print(f"[DEBUG] snr_info: {first_rep.get('snr_info')}")
-                    print(f"[DEBUG] snr_info_dad: {first_rep.get('snr_info_dad')}")
-            print(f"[DEBUG] comparison: {first.get('comparison')}")
-            print(f"[DEBUG] quantification: {first.get('quantification')}")
-
         # Guardar resultat
         self.main_window.processed_data = result
         self.samples_grouped = result.get("samples_grouped", {})
-
-        print(f"[DEBUG] result keys: {list(result.keys())}")
-        print(f"[DEBUG] samples_grouped from result: {result.get('samples_grouped') is not None}")
 
         # Guardar a JSON
         save_analysis_result(result)
@@ -665,131 +631,112 @@ class AnalyzePanel(QWidget):
         self._populate_table()
         self.results_frame.setVisible(True)
 
-        # Mostrar avisos si n'hi ha
-        self._show_warnings(result)
-
-        # Habilitar navegació
-        self.next_btn.setEnabled(True)
+        # Mostrar avisos estructurats si n'hi ha
+        self._show_warnings_bar(result)
 
         # Emetre senyal
         self.analyze_completed.emit(result)
 
-    def _show_warnings(self, result):
-        """Mostra avisos a la barra superior si n'hi ha."""
-        warnings = result.get("warnings", [])
-        anomalies = result.get("anomalies_summary", {})
+    def _show_warnings_bar(self, result):
+        """Mostra la barra d'avisos si hi ha warnings estructurats."""
+        warnings_structured = result.get("warnings_structured", [])
+        warning_level = result.get("warning_level", "none")
 
-        # Comptar anomalies
-        n_timeouts = anomalies.get("timeouts", 0)
-        n_batman = anomalies.get("batman", 0)
-        n_low_snr = anomalies.get("low_snr", 0)
+        if warning_level in ("warning", "blocker") and warnings_structured:
+            # Filtrar warnings no dismissed
+            pending_warnings = [w for w in warnings_structured if not w.get("dismissed", False)]
 
-        warning_parts = []
-        if n_timeouts > 0:
-            warning_parts.append(f"{n_timeouts} timeouts")
-        if n_batman > 0:
-            warning_parts.append(f"{n_batman} batman")
-        if n_low_snr > 0:
-            warning_parts.append(f"{n_low_snr} SNR baix")
-        if warnings:
-            warning_parts.extend(warnings[:2])  # Màxim 2 warnings addicionals
+            if pending_warnings:
+                n_warnings = len(pending_warnings)
+                # Agrupar per tipus
+                by_code = {}
+                for w in pending_warnings:
+                    code = w.get("code", "UNKNOWN")
+                    by_code[code] = by_code.get(code, 0) + 1
 
-        if warning_parts:
-            self.warnings_bar.setVisible(True)
-            self.warnings_text.setText(
-                f"<b>{len(warning_parts)} avisos:</b> " + " · ".join(warning_parts)
-            )
+                # Missatge resumit
+                summary_parts = []
+                for code, count in list(by_code.items())[:3]:
+                    msg = pending_warnings[[w.get("code") for w in pending_warnings].index(code)].get("message", code)
+                    if count > 1:
+                        summary_parts.append(f"{msg} ({count}x)")
+                    else:
+                        summary_parts.append(msg)
+
+                summary = " | ".join(summary_parts)
+                if len(by_code) > 3:
+                    summary += f" | +{len(by_code) - 3} més"
+
+                # Actualitzar UI
+                if warning_level == "blocker":
+                    self.warnings_bar.setStyleSheet("""
+                        QFrame {
+                            background-color: #FFEBEE;
+                            border: 1px solid #E57373;
+                            border-radius: 6px;
+                        }
+                    """)
+                    self.warnings_icon.setText("🚫")
+                    self.warnings_text.setStyleSheet("border: none; color: #C62828;")
+                else:
+                    self.warnings_bar.setStyleSheet("""
+                        QFrame {
+                            background-color: #FFF3E0;
+                            border: 1px solid #FFB74D;
+                            border-radius: 6px;
+                        }
+                    """)
+                    self.warnings_icon.setText("⚠️")
+                    self.warnings_text.setStyleSheet("border: none; color: #E65100;")
+
+                self.warnings_text.setText(f"<b>{n_warnings} avisos:</b> {summary}")
+                self.warnings_bar.setVisible(True)
+                self._current_warnings = pending_warnings
+            else:
+                self.warnings_bar.setVisible(False)
+                self._current_warnings = []
         else:
             self.warnings_bar.setVisible(False)
+            self._current_warnings = []
+
+    def _show_warnings_details(self):
+        """Mostra un diàleg amb tots els avisos."""
+        warnings = getattr(self, "_current_warnings", [])
+        if not warnings:
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"Avisos d'Anàlisi ({len(warnings)})")
+        dialog.setMinimumWidth(500)
+
+        layout = QVBoxLayout(dialog)
+
+        # Llista d'avisos
+        for w in warnings:
+            level = w.get("level", "info")
+            icon = {"blocker": "🚫", "warning": "⚠️", "info": "ℹ️"}.get(level, "•")
+            color = {"blocker": "#C62828", "warning": "#E65100", "info": "#1565C0"}.get(level, "#666")
+            message = w.get("message", w.get("code", "Avís"))
+            sample = w.get("sample", "")
+
+            label = QLabel(f'{icon} <span style="color:{color}"><b>{message}</b></span>')
+            if sample:
+                label.setText(label.text() + f' <span style="color:#666">[{sample}]</span>')
+            label.setWordWrap(True)
+            layout.addWidget(label)
+
+        # Botó tancar
+        close_btn = QPushButton("Tancar")
+        close_btn.clicked.connect(dialog.accept)
+        layout.addWidget(close_btn)
+
+        dialog.exec()
 
     def _on_error(self, error_msg):
         """Gestiona errors."""
         self.progress_frame.setVisible(False)
         self.analyze_btn.setEnabled(True)
         QMessageBox.critical(self, "Error", f"Error durant l'anàlisi:\n{error_msg}")
-
-    def _show_warnings_detail(self):
-        """Mostra detall dels avisos en un diàleg."""
-        if not self.main_window.processed_data:
-            return
-
-        warnings = self.main_window.processed_data.get("warnings", [])
-        anomalies = self.main_window.processed_data.get("anomalies_summary", {})
-
-        # Construir llista detallada
-        details = []
-
-        if anomalies.get("timeouts", 0) > 0:
-            details.append(f"⏱ Timeouts: {anomalies['timeouts']} mostres amb càlculs que han excedit el temps límit")
-        if anomalies.get("batman", 0) > 0:
-            details.append(f"🦇 Batman: {anomalies['batman']} mostres amb pics dobles (possible contaminació)")
-        if anomalies.get("low_snr", 0) > 0:
-            details.append(f"↓ SNR baix: {anomalies['low_snr']} mostres amb relació senyal/soroll baixa")
-
-        for w in warnings:
-            details.append(f"⚠ {w}")
-
-        if not details:
-            details.append("No hi ha avisos pendents.")
-
-        QMessageBox.information(
-            self,
-            "Detall d'Avisos",
-            "\n\n".join(details)
-        )
-
-    def _confirm_warnings(self):
-        """Confirma els avisos i registra qui els ha revisat."""
-        # Demanar identificació
-        from PySide6.QtWidgets import QInputDialog
-        name, ok = QInputDialog.getText(
-            self,
-            "Confirmar Avisos",
-            "Introdueix les teves inicials per confirmar la revisió:",
-            text=""
-        )
-
-        if ok and name.strip():
-            # Marcar avisos com a confirmats
-            self._warnings_confirmed = True
-            self._warnings_confirmed_by = name.strip().upper()
-
-            # Actualitzar botó i amagar barra
-            self.warnings_ok_btn.setText(f"OK ✓ {self._warnings_confirmed_by}")
-            self.warnings_ok_btn.setEnabled(False)
-            self.warnings_review_btn.setEnabled(False)
-
-            # Guardar a processed_data
-            if self.main_window.processed_data:
-                self.main_window.processed_data["warnings_confirmed"] = True
-                self.main_window.processed_data["warnings_confirmed_by"] = self._warnings_confirmed_by
-
-            self.main_window.set_status(f"Avisos confirmats per {self._warnings_confirmed_by}", 3000)
-
-    def _add_notes(self):
-        """Obre diàleg per afegir notes a l'anàlisi."""
-        from PySide6.QtWidgets import QInputDialog
-
-        current_notes = ""
-        if self.main_window.processed_data:
-            current_notes = self.main_window.processed_data.get("notes", "")
-
-        text, ok = QInputDialog.getMultiLineText(
-            self,
-            "Notes d'Anàlisi",
-            "Afegeix notes o observacions:",
-            current_notes
-        )
-
-        if ok:
-            if self.main_window.processed_data:
-                self.main_window.processed_data["notes"] = text
-                # Guardar canvis
-                try:
-                    save_analysis_result(self.main_window.processed_data)
-                    self.main_window.set_status("Notes guardades", 2000)
-                except Exception as e:
-                    print(f"Warning: No s'han pogut guardar les notes: {e}")
 
     def _populate_table(self):
         """Omple les dues taules (DOC i DAD) amb els resultats."""
