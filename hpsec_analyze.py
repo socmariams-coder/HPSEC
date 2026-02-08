@@ -1717,13 +1717,11 @@ def analyze_sample(sample_data, calibration_data=None, config=None):
                 pass
 
     # Calcular àrees per fraccions (inclou DAD si disponible)
-    # COLUMN mostres reals: excloure LMW del total (artefactes finals)
-    # BP: integrar tot (cromatograma curt, ~10 min)
+    # LMW s'inclou al total (és senyal real). mode passa per baseline DAD correcta.
     mode_type = "BP" if is_bp else "COLUMN"
-    exclude_lmw = ["LMW"] if not is_bp else None
     areas = calcular_arees_fraccions_complet(
         t_doc, y_doc_net, df_dad, config,
-        mode=mode_type, exclude_from_total=exclude_lmw)
+        mode=mode_type)
 
     result["areas"] = areas
     result["mode"] = mode_type
@@ -1758,8 +1756,7 @@ def analyze_sample(sample_data, calibration_data=None, config=None):
     is_uib_only = sample_data.get("is_uib_only", False)
 
     if is_dual and "DOC" in areas and y_doc_uib_net is not None:
-        areas_uib = calcular_fraccions_temps(t_doc, y_doc_uib_net, config,
-                                              exclude_from_total=exclude_lmw)
+        areas_uib = calcular_fraccions_temps(t_doc, y_doc_uib_net, config)
         result["areas_uib"] = areas_uib
     elif is_uib_only and "DOC" in areas:
         # Només UIB: les àrees DOC ja són d'UIB, copiar a areas_uib
@@ -2728,7 +2725,6 @@ def write_consolidated_excel(out_path, mostra, rep, seq_out, date_master,
     # === TMAX SHEET ===
     _is_bp = float(np.max(t_doc)) < 20 if t_doc is not None and len(t_doc) > 0 else False
     _mode = "BP" if _is_bp else "COLUMN"
-    _excl_lmw = ["LMW"] if not _is_bp else None
     tmax_data = detectar_tmax_senyals(t_doc, y_doc_net, df_dad, mode=_mode)
     tmax_rows = []
     for signal, tmax_val in tmax_data.items():
@@ -2737,11 +2733,9 @@ def write_consolidated_excel(out_path, mostra, rep, seq_out, date_master,
 
     # === AREAS SHEET ===
     fraccions_data = calcular_arees_fraccions_complet(
-        t_doc, y_doc_net, df_dad, mode=_mode, exclude_from_total=_excl_lmw)
+        t_doc, y_doc_net, df_dad, mode=_mode)
     fractions_config = DEFAULT_PROCESS_CONFIG.get("time_fractions", {})
     fraction_names = list(fractions_config.keys()) + ["total"]
-    if not _is_bp:
-        fraction_names.append("total_all")
 
     header = ["Fraction", "Range (min)", "DOC"]
     target_wls = DEFAULT_PROCESS_CONFIG.get("target_wavelengths", [220, 254, 280])
@@ -2751,8 +2745,6 @@ def write_consolidated_excel(out_path, mostra, rep, seq_out, date_master,
     areas_rows = []
     for frac_name in fraction_names:
         if frac_name == "total":
-            rang = "excl. LMW" if not _is_bp else "0-70"
-        elif frac_name == "total_all":
             rang = "0-70"
         else:
             t_ini, t_fi = fractions_config.get(frac_name, [0, 0])
