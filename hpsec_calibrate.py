@@ -2603,7 +2603,7 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
             fwhm_254 = calculate_fwhm(t_dad, dad_254, dad_peak_idx, dad_left_idx, dad_right_idx)
 
     # =========================================================================
-    # BIGAUSSIAN FIT (C05) - Necessari per BP mode
+    # BIGAUSSIAN FIT (C05) - Sempre guardar (INVALID = info QC valuosa)
     # =========================================================================
     bigaussian_doc = None
     bigaussian_254 = None
@@ -2612,18 +2612,17 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
     try:
         if len(t_doc) > 20 and peak_idx > 5 and peak_idx < len(t_doc) - 5:
             bigauss_result = fit_bigaussian(t_doc, y_doc_net, peak_idx, left_idx, right_idx)
-            if bigauss_result.get("status") in ["VALID", "CHECK"]:
-                bigaussian_doc = {
-                    "r2": bigauss_result.get("r2", 0),
-                    "amplitude": bigauss_result.get("amplitude", 0),
-                    "mu": bigauss_result.get("mu", 0),
-                    "sigma_left": bigauss_result.get("sigma_left", 0),
-                    "sigma_right": bigauss_result.get("sigma_right", 0),
-                    "asymmetry": bigauss_result.get("asymmetry", 1),
-                    "status": bigauss_result.get("status", "INVALID"),
-                }
+            bigaussian_doc = {
+                "r2": bigauss_result.get("r2", 0),
+                "amplitude": bigauss_result.get("amplitude", 0),
+                "mu": bigauss_result.get("mu", 0),
+                "sigma_left": bigauss_result.get("sigma_left", 0),
+                "sigma_right": bigauss_result.get("sigma_right", 0),
+                "asymmetry": bigauss_result.get("asymmetry", 1),
+                "status": bigauss_result.get("status", "INVALID"),
+            }
     except Exception as e:
-        pass  # Bigaussian fit optional
+        bigaussian_doc = {"r2": 0, "status": "ERROR", "error": str(e)}
 
     # Bigaussian per 254nm
     try:
@@ -2633,16 +2632,13 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
             dad_right_idx = dad_peak_info.get('right_idx', len(t_dad) - 1 if t_dad is not None else 0)
             if t_dad is not None and dad_254 is not None and len(t_dad) > 20:
                 bigauss_254 = fit_bigaussian(t_dad, dad_254, dad_peak_idx, dad_left_idx, dad_right_idx)
-                if bigauss_254.get("status") in ["VALID", "CHECK"]:
-                    bigaussian_254 = {
-                        "r2": bigauss_254.get("r2", 0),
-                        "asymmetry": bigauss_254.get("asymmetry", 1),
-                        "status": bigauss_254.get("status", "INVALID"),
-                    }
-                else:
-                    bigaussian_254 = None
+                bigaussian_254 = {
+                    "r2": bigauss_254.get("r2", 0),
+                    "asymmetry": bigauss_254.get("asymmetry", 1),
+                    "status": bigauss_254.get("status", "INVALID"),
+                }
     except Exception as e:
-        pass  # Bigaussian fit optional
+        bigaussian_254 = {"r2": 0, "status": "ERROR", "error": str(e)}
 
     # RF = Area / Concentració (ppm)
     rf_doc = peak_info['area'] / conc if conc > 0 else 0.0
@@ -4298,6 +4294,15 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
             selected_replicas = [best.get('replica_num', 1)]
             status = f"Millor qualitat R{selected_replicas[0]} (RSD {rsd:.1f}%)"
 
+        # Bigaussian: agafar de la primera rèplica seleccionada (o millor qualitat)
+        # Sempre propagar, encara que sigui INVALID (info QC valuosa)
+        bg_source = replicas[0]
+        if len(selected_replicas) == 1:
+            bg_source = next((r for r in replicas if r.get('replica_num') == selected_replicas[0]), replicas[0])
+        bigaussian_doc = bg_source.get('bigaussian_doc')
+        bigaussian_uib = bg_source.get('bigaussian_uib')
+        bigaussian_254 = bg_source.get('bigaussian_254')
+
         return {
             # Valors seleccionats
             'name': group_name,  # Nom del KHP (ex: "KHP2", "KHP2_50")
@@ -4319,6 +4324,11 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
             'fwhm_doc': mean_fwhm,
             'symmetry': mean_symmetry,
             'volume_uL': group_volume,  # Volum d'aquest grup
+
+            # Bigaussian fit (sempre guardat, INVALID = info QC)
+            'bigaussian_doc': bigaussian_doc,
+            'bigaussian_uib': bigaussian_uib,
+            'bigaussian_254': bigaussian_254,
 
             # Traçabilitat de selecció
             'selection': {

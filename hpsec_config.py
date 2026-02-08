@@ -130,11 +130,17 @@ DEFAULT_CONFIG = {
         "snr_min_khp": 50.0,
     },
 
+    # --- INJECCIONS BLANC ---
+    # Patrons de nom que identifiquen injeccions blanc (aigua MQ, etc.)
+    "blank_injections": {
+        "patterns": ["MQ", "BLANK", "BLK", "H2O", "WATER", "MILLI", "BLANC"],
+    },
+
     # --- INJECCIONS CONTROL ---
-    # Patrons de nom que identifiquen injeccions de control
+    # Patrons de nom que identifiquen injeccions de control (neteja, verificació)
     # Aquestes injeccions poden tenir múltiples rèpliques/blocs i NO s'han de considerar orfes
     "control_injections": {
-        "patterns": ["MQ", "NAOH", "BLANK", "H2O", "WASH"],
+        "patterns": ["NAOH", "WASH", "CONTROL"],
         "ignore_orphan": True,  # No marcar com a orfes els controls no trobats a 1-HPLC-SEQ
     },
 

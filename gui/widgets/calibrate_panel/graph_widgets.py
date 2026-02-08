@@ -87,8 +87,54 @@ class KHPReplicaGraphWidget(QWidget):
         snr = rep.get('snr', 0)
 
         if t_doc is None or y_doc is None:
-            ax.text(0.5, 0.5, "Sense dades", ha='center', va='center', fontsize=10, color='gray')
+            # Intentar mostrar bigaussian fit com a alternativa
+            bigauss = rep.get('bigaussian_doc')
+            if HAS_BIGAUSSIAN and bigauss and bigauss.get('status') in ['VALID', 'CHECK']:
+                try:
+                    amp = bigauss.get('amplitude', 0)
+                    mu = bigauss.get('mu', 0)
+                    sigma_l = bigauss.get('sigma_left', 0)
+                    sigma_r = bigauss.get('sigma_right', 0)
+                    r2 = bigauss.get('r2', 0)
+                    if amp > 0 and mu > 0 and sigma_l > 0 and sigma_r > 0:
+                        t_fit = np.linspace(mu - 4*sigma_l, mu + 4*sigma_r, 200)
+                        y_fit = bigaussian(t_fit, amp, mu, sigma_l, sigma_r, 0)
+                        fit_color = '#27AE60' if bigauss.get('status') == 'VALID' else '#F39C12'
+                        ax.plot(t_fit, y_fit, color=fit_color, linewidth=1.5,
+                               label=f'Fit (R²={r2:.3f})')
+                        ax.set_xlabel('Temps (min)', fontsize=8)
+                        ax.set_ylabel('DOC (mAU)', fontsize=8)
+                        ax.grid(True, alpha=0.3)
+                        title_text = f"{title}: A={area:.0f}"
+                        if snr > 0:
+                            title_text += f", SNR={snr:.0f}"
+                        title_text += " [fit]"
+                        ax.set_title(title_text, fontsize=9, fontweight='bold')
+                        ax.legend(fontsize=7, loc='upper right')
+                        return
+                except Exception:
+                    pass
+            # Mostrar info bàsica si tenim mètriques
+            info_lines = []
+            if area > 0:
+                info_lines.append(f"Àrea: {area:.0f}")
+            if snr > 0:
+                info_lines.append(f"SNR: {snr:.0f}")
+            t_max = rep.get('t_retention', 0) or rep.get('t_max', 0) or rep.get('t_doc_max', 0)
+            if t_max > 0:
+                info_lines.append(f"t_max: {t_max:.2f} min")
+            if info_lines:
+                info_text = "\n".join(info_lines)
+                ax.text(0.5, 0.55, info_text, ha='center', va='center', fontsize=9,
+                       color='#2C3E50', family='monospace')
+                ax.text(0.5, 0.25, "(sense senyal original)", ha='center', va='center',
+                       fontsize=8, color='gray', style='italic')
+            else:
+                ax.text(0.5, 0.5, "Sense dades", ha='center', va='center', fontsize=10, color='gray')
             ax.set_title(title, fontsize=9)
+            ax.set_xlim(0, 1)
+            ax.set_ylim(0, 1)
+            ax.axis('off')
             return
 
         t_doc = np.asarray(t_doc)
@@ -259,12 +305,32 @@ class CalibrationLineWidget(QWidget):
         # Recta central
         ax.plot(x_line, y_line, 'k-', linewidth=2, label=f'rf={rf_mass_cal}')
 
-        # Punts de QC history
+        # Punts de QC history (1 punt per SEQ = mitjana de rèpliques)
         if qc_history:
             current_short = current_seq_name.replace('_SEQ', '').replace('_BP', '') if current_seq_name else ""
 
-            # Filtrar i ordenar per SEQ
-            entries = sorted(qc_history, key=lambda e: e.get('seq_name', ''))
+            # Agrupar entrades per SEQ i fer mitjana
+            from collections import defaultdict
+            seq_groups = defaultdict(list)
+            for entry in qc_history:
+                seq_key = entry.get('seq_name', '')
+                seq_groups[seq_key].append(entry)
+
+            # Crear una entrada promig per SEQ
+            averaged_entries = []
+            for seq_key, group in seq_groups.items():
+                areas = [e.get('measured', {}).get('area', 0) for e in group if e.get('measured', {}).get('area', 0) > 0]
+                if not areas:
+                    continue
+                ref = group[-1]  # Usar l'última entrada com a referència
+                avg_entry = dict(ref)
+                avg_measured = dict(ref.get('measured', {}))
+                avg_measured['area'] = float(np.mean(areas))
+                avg_entry['measured'] = avg_measured
+                averaged_entries.append(avg_entry)
+
+            # Ordenar per SEQ
+            entries = sorted(averaged_entries, key=lambda e: e.get('seq_name', ''))
 
             # Trobar índex de l'actual
             current_idx = None

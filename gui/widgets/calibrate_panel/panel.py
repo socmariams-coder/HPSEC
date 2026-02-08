@@ -1,9 +1,10 @@
 """
-HPSEC Suite - Calibrate Panel
+HPSEC Suite - QA/QC KHP Panel
 ==============================
 
-Panel per a la fase 2: Calibració KHP.
-Mostra gràfics de rèpliques, mètriques detallades i comparació històrica.
+Panel per a la fase 2: QA/QC KHP.
+Verifica el KHP mesurat vs la calibració global (rf_mass_cal),
+determina el time shift necessari i mostra mètriques i històric.
 """
 
 from PySide6.QtWidgets import (
@@ -38,7 +39,7 @@ from gui.widgets.styles import (
 
 
 class CalibratePanel(QWidget):
-    """Panel de calibración con gráficos y métricas detalladas."""
+    """Panel QA/QC KHP: verificació vs calibració global i determinació del shift."""
 
     calibration_completed = Signal(dict)
 
@@ -212,33 +213,124 @@ class CalibratePanel(QWidget):
                 self.main_window.set_status(f"Mostrant calibració: {self.condition_combo.currentText()}", 3000)
                 break
 
+    def _try_load_signals_for_replicas(self, cal_enriched):
+        """Propaga dades de bigaussian fit i peak_info a les rèpliques per als gràfics.
+
+        Les dades de l'històric no contenen arrays de senyal (t_doc, y_doc).
+        Propagam el bigaussian fit des del top-level perquè el widget de gràfics
+        pugui dibuixar la corba de fit en lloc de "Sense dades".
+        """
+        replicas = cal_enriched.get('replicas', [])
+        if not replicas:
+            return
+
+        # Si ja tenen t_doc, no cal fer res
+        if replicas[0].get('t_doc') is not None:
+            return
+
+        # Propagar bigaussian_doc del top-level a les rèpliques
+        bigaussian_doc = cal_enriched.get('bigaussian_doc')
+        t_retention = cal_enriched.get('t_retention', 0)
+        area = cal_enriched.get('area', 0)
+
+        for rep in replicas:
+            # Bigaussian fit (per visualització)
+            if bigaussian_doc and not rep.get('bigaussian_doc'):
+                rep['bigaussian_doc'] = bigaussian_doc
+
+            # Peak info (per marcar pic al gràfic)
+            if not rep.get('peak_info') and t_retention > 0:
+                rep['peak_info'] = {
+                    't_max': rep.get('t_max', t_retention),
+                    'y_max': rep.get('area', area),
+                }
+
     def _load_existing_calibration(self, cal):
-        """Carrega una calibració existent de l'històric."""
-        # Construir resultat compatible
+        """Carrega una calibració existent de l'històric.
+
+        Enriqueix les dades per compatibilitat amb les funcions de visualització
+        que esperen el format de calibrate_from_import (amb replicas, rf_mass_doc, etc.)
+        """
         area = cal.get('area', 0)
         conc = cal.get('conc_ppm', 5)
-        # RF = area / conc (Response Factor)
+        volume = cal.get('volume_uL', 0)
         rf = cal.get('rf', 0)
         if rf == 0 and conc > 0:
             rf = area / conc
         rf_direct = cal.get('rf_direct', rf)
         rf_uib = cal.get('rf_uib', 0)
+        rf_mass = cal.get('rf_mass', 0)
+
+        # Preparar replicas a partir de replicas_info amb camps compatibles
+        replicas_info = cal.get('replicas_info', [])
+        replicas = []
+        for rep_info in replicas_info:
+            rep = dict(rep_info)
+            # Camps de compatibilitat per _update_summary i _update_metrics_table
+            rep['t_doc_max'] = rep.get('t_max', 0)
+            rep['t_retention'] = rep.get('t_max', 0)
+            # rf_mass_doc per rèplica
+            rep_area = rep.get('area', 0)
+            if rep_area > 0 and conc > 0 and volume > 0:
+                rep['rf_mass_doc'] = rep_area * 1000 / (conc * volume)
+            else:
+                rep['rf_mass_doc'] = rf_mass
+            # Camps no disponibles per rèplica: usar valors top-level
+            if 'fwhm_doc' not in rep:
+                rep['fwhm_doc'] = cal.get('fwhm_doc', 0)
+            if 'shift_sec' not in rep:
+                rep['shift_sec'] = cal.get('shift_sec', 0)
+            if 'concentration_ratio' not in rep:
+                rep['concentration_ratio'] = cal.get('concentration_ratio', 0)
+            if 'a254_doc_ratio' not in rep:
+                rep['a254_doc_ratio'] = cal.get('a254_doc_ratio', 0)
+            if 'is_bp' not in rep:
+                rep['is_bp'] = cal.get('is_bp', False)
+            replicas.append(rep)
+
+        # Si no hi ha replicas_info, crear rèplica virtual des de dades top-level
+        if not replicas:
+            replicas = [{
+                'filename': cal.get('khp_name', 'KHP'),
+                'area': area,
+                't_max': cal.get('t_retention', 0),
+                't_doc_max': cal.get('t_retention', 0),
+                't_retention': cal.get('t_retention', 0),
+                'snr': cal.get('snr', 0),
+                'symmetry': cal.get('symmetry', 0),
+                'fwhm_doc': cal.get('fwhm_doc', 0),
+                'rf_mass_doc': rf_mass,
+                'shift_sec': cal.get('shift_sec', 0),
+                'concentration_ratio': cal.get('concentration_ratio', 0),
+                'a254_doc_ratio': cal.get('a254_doc_ratio', 0),
+                'is_bp': cal.get('is_bp', False),
+            }]
+
+        # Enriquir cal amb replicas compatibles
+        cal_enriched = dict(cal)
+        cal_enriched['replicas'] = replicas
+        cal_enriched['rf_mass_doc'] = rf_mass
+        cal_enriched['n_replicas'] = cal.get('n_replicas', len(replicas))
+
+        # Intentar carregar senyals des del manifest (per gràfics)
+        self._try_load_signals_for_replicas(cal_enriched)
 
         result = {
             "success": True,
-            "mode": "DUAL" if cal.get('doc_mode') == 'DUAL' else "DIRECT",
+            "mode": cal.get('mode', "DUAL" if cal.get('doc_mode') == 'DUAL' else "DIRECT"),
             "rf_direct": rf_direct,
             "rf_uib": rf_uib,
             "rf": rf,
-            "shift_direct": 0,
-            "shift_uib": cal.get('shift_min', 0),
+            "rf_mass": rf_mass,
+            "shift_direct": cal.get('shift_min', 0),
+            "shift_uib": cal.get('shift_min_u', cal.get('shift_min', 0)),
             "khp_area_direct": area,
-            "khp_area_uib": 0,
+            "khp_area_uib": cal.get('area_u', 0),
             "khp_area": area,
             "khp_conc": conc,
             "khp_source": f"HISTÒRIC: {cal.get('seq_name', 'N/A')}",
-            "khp_data": cal,
-            "khp_data_direct": cal,
+            "khp_data": cal_enriched,
+            "khp_data_direct": cal_enriched,
             "khp_data_uib": None,
             "calibration": cal,
             "errors": [],
@@ -305,7 +397,7 @@ class CalibratePanel(QWidget):
 
         self.condition_combo = QComboBox()
         self.condition_combo.setMinimumWidth(200)
-        self.condition_combo.setToolTip("Seleccionar condició de calibració (volum/concentració)")
+        self.condition_combo.setToolTip("Seleccionar condició QA/QC (volum/concentració)")
         self.condition_combo.currentIndexChanged.connect(self._on_condition_changed)
         condition_layout.addWidget(self.condition_combo)
 
@@ -322,13 +414,13 @@ class CalibratePanel(QWidget):
         content_layout.setSpacing(16)
 
         # === PLACEHOLDER (mentre carrega) ===
-        self.placeholder = QLabel("Preparant calibració...")
+        self.placeholder = QLabel("Preparant QA/QC KHP...")
         self.placeholder.setAlignment(Qt.AlignCenter)
         self.placeholder.setStyleSheet("color: #888; font-size: 14px; padding: 40px;")
         content_layout.addWidget(self.placeholder)
 
         # === SECCIÓN: Resumen de Calibración (reorganitzat per senyals) ===
-        self.summary_group = QGroupBox("Resum de Calibració")
+        self.summary_group = QGroupBox("Resum QA/QC KHP")
         self.summary_group.setVisible(False)
         summary_main_layout = QVBoxLayout(self.summary_group)
 
@@ -347,6 +439,7 @@ class CalibratePanel(QWidget):
             ("volume", "Volum injecció:", 2, 0),
             ("n_replicas", "Rèpliques:", 2, 2),
             ("uib_sensitivity", "Sensibilitat UIB:", 3, 0),
+            ("qc_status", "QC Status:", 3, 2),
         ]
 
         for key, label_text, row, col in general_items:
@@ -428,10 +521,10 @@ class CalibratePanel(QWidget):
         metrics_layout = QVBoxLayout(self.metrics_group)
 
         self.metrics_table = QTableWidget()
-        self.metrics_table.setColumnCount(16)
+        self.metrics_table.setColumnCount(17)
         self.metrics_table.setHorizontalHeaderLabels([
             "Rep", "Senyal", "Àrea", "DOC/254", "FWHM", "RF_M", "CR",
-            "t_max", "Shift", "SNR", "Sym", "Pic_J", "TO", "Pics", "Q", "Estat"
+            "t_max", "Shift", "SNR", "Sym", "R²", "Pic_J", "TO", "Pics", "Q", "Estat"
         ])
         # Tooltips per les capçaleres de mètriques
         self.metrics_table.horizontalHeaderItem(2).setToolTip("Àrea DOC integrada")
@@ -442,10 +535,11 @@ class CalibratePanel(QWidget):
         self.metrics_table.horizontalHeaderItem(7).setToolTip("Temps del pic màxim (min)")
         self.metrics_table.horizontalHeaderItem(8).setToolTip("Shift vs 254nm (segons)")
         self.metrics_table.horizontalHeaderItem(10).setToolTip("Simetria (sigma_left/sigma_right)\nIdeal: 1.0, Rang: 0.5-2.0")
-        self.metrics_table.horizontalHeaderItem(11).setToolTip("Pic_J: Pic amb vall (artefacte)\n+100 si detectat")
-        self.metrics_table.horizontalHeaderItem(12).setToolTip("Timeout detectat\n+100 si afecta pic, 0 si fora")
-        self.metrics_table.horizontalHeaderItem(13).setToolTip("Pics en zona ±4min\n>1 = INVALID (+100)")
-        self.metrics_table.horizontalHeaderItem(14).setToolTip("Quality Score (0=perfecte, >=100=invalid)")
+        self.metrics_table.horizontalHeaderItem(11).setToolTip("R² del fit bigaussià\n≥0.95 VALID, ≥0.80 CHECK")
+        self.metrics_table.horizontalHeaderItem(12).setToolTip("Pic_J: Pic amb vall (artefacte)\n+100 si detectat")
+        self.metrics_table.horizontalHeaderItem(13).setToolTip("Timeout detectat\n+100 si afecta pic, 0 si fora")
+        self.metrics_table.horizontalHeaderItem(14).setToolTip("Pics en zona ±4min\n>1 = INVALID (+100)")
+        self.metrics_table.horizontalHeaderItem(15).setToolTip("Quality Score (0=perfecte, >=100=invalid)")
         self.metrics_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         self.metrics_table.setAlternatingRowColors(True)
         self.metrics_table.setMinimumHeight(150)
@@ -511,8 +605,10 @@ class CalibratePanel(QWidget):
         self.replica_comparison_table.horizontalHeaderItem(7).setToolTip("Quality Score")
         self.replica_comparison_table.horizontalHeaderItem(8).setToolTip("Usada en calibració actual")
         self.replica_comparison_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        # Columna Status (8) amb amplada mínima per no quedar tallada
+        self.replica_comparison_table.horizontalHeader().setMinimumSectionSize(90)
         self.replica_comparison_table.setAlternatingRowColors(True)
-        self.replica_comparison_table.setMaximumHeight(120)
+        self.replica_comparison_table.setMaximumHeight(140)
         self.replica_comparison_table.verticalHeader().setVisible(False)
         self.replica_comparison_table.setSelectionBehavior(QTableWidget.SelectRows)
         replica_sel_layout.addWidget(self.replica_comparison_table)
@@ -526,13 +622,14 @@ class CalibratePanel(QWidget):
         # self.mark_replica_outlier_btn.clicked.connect(self._on_mark_replica_outlier)
         # replica_footer.addWidget(self.mark_replica_outlier_btn)
 
-        replica_footer.addStretch()
-
-        # Estadístiques diferències
+        # Estadístiques diferències (sense stretch per no empènyer a la dreta)
         self.replica_diff_label = QLabel()
         self.replica_diff_label.setWordWrap(True)
-        self.replica_diff_label.setStyleSheet("color: #555; font-size: 11px; padding: 4px;")
-        replica_footer.addWidget(self.replica_diff_label)
+        self.replica_diff_label.setStyleSheet(
+            "color: #2C3E50; font-size: 12px; font-weight: bold; padding: 6px; "
+            "background: #EBF5FB; border-radius: 4px;"
+        )
+        replica_footer.addWidget(self.replica_diff_label, 1)
 
         replica_sel_layout.addLayout(replica_footer)
 
@@ -551,7 +648,7 @@ class CalibratePanel(QWidget):
         content_layout.addWidget(self.validation_group)
 
         # === SECCIÓN: Comparación Histórica ===
-        self.history_group = QGroupBox("Històric Calibracions")
+        self.history_group = QGroupBox("Històric QA/QC")
         self.history_group.setVisible(False)
         history_layout = QVBoxLayout(self.history_group)
         history_layout.setSpacing(6)
@@ -737,13 +834,24 @@ class CalibratePanel(QWidget):
         self._update_validation(result)
         self._update_history(result)
 
+        # Auto-generar PDF de QA/QC
+        try:
+            from generate_calibration_report import generate_calibration_report
+            seq_path = self.main_window.seq_path
+            if seq_path:
+                pdf = generate_calibration_report(seq_path)
+                if pdf:
+                    print(f"[INFO] Report QA/QC: {pdf}")
+        except Exception as e:
+            print(f"[WARNING] No s'ha pogut generar report de QA/QC: {e}")
+
         # Recarregar el selector de condicions (potser s'han creat noves calibracions)
         self._reload_condition_selector()
 
         # Nota: Els avisos es gestionen des del wizard header
 
         self.main_window.enable_tab(2)
-        self.main_window.set_status("Calibració completada", 5000)
+        self.main_window.set_status("QA/QC KHP completat", 5000)
 
         # Emetre senyal per notificar al wizard
         self.calibration_completed.emit(result)
@@ -831,7 +939,7 @@ class CalibratePanel(QWidget):
         # Mostrar error en validación
         self.validation_group.setVisible(True)
         self.validation_label.setText(
-            f"<span style='color: red;'><b>Error durant la calibració:</b></span><br>"
+            f"<span style='color: red;'><b>Error durant el QA/QC:</b></span><br>"
             f"<pre>{error_msg}</pre>"
         )
 
@@ -912,7 +1020,13 @@ class CalibratePanel(QWidget):
                 tmax_vals = [r.get('t_retention', 0) or r.get('t_doc_max', 0) for r in replicas_direct]
                 tmax_vals = [t for t in tmax_vals if t > 0]
                 fwhm_vals = [r.get('fwhm_doc', 0) for r in replicas_direct if r.get('fwhm_doc')]
-                rf_mass_vals = [r.get('rf_mass_doc', 0) for r in replicas_direct if r.get('rf_mass_doc')]
+                rf_mass_vals = [r.get('rf_mass_doc', 0) or r.get('rf_mass', 0) for r in replicas_direct]
+                rf_mass_vals = [v for v in rf_mass_vals if v > 0]
+                # Fallback: rf_mass top-level del khp_data
+                if not rf_mass_vals:
+                    top_rf = khp_data_direct.get('rf_mass', 0) or khp_data_direct.get('rf_mass_doc', 0)
+                    if top_rf > 0:
+                        rf_mass_vals = [top_rf]
 
                 self.result_labels["snr_direct"].setText(f"{np.mean(snr_vals):.0f}" if snr_vals else "-")
                 self.result_labels["tmax_direct"].setText(f"{np.mean(tmax_vals):.2f} min" if tmax_vals else "-")
@@ -946,7 +1060,12 @@ class CalibratePanel(QWidget):
                 tmax_vals = [r.get('t_retention', 0) or r.get('t_doc_max', 0) for r in replicas_uib]
                 tmax_vals = [t for t in tmax_vals if t > 0]
                 fwhm_vals = [r.get('fwhm_doc', 0) for r in replicas_uib if r.get('fwhm_doc')]
-                rf_mass_vals = [r.get('rf_mass_doc', 0) for r in replicas_uib if r.get('rf_mass_doc')]
+                rf_mass_vals = [r.get('rf_mass_doc', 0) or r.get('rf_mass', 0) for r in replicas_uib]
+                rf_mass_vals = [v for v in rf_mass_vals if v > 0]
+                if not rf_mass_vals:
+                    top_rf = khp_data_uib.get('rf_mass_u', 0) or khp_data_uib.get('rf_mass', 0)
+                    if top_rf > 0:
+                        rf_mass_vals = [top_rf]
 
                 self.result_labels["snr_uib"].setText(f"{np.mean(snr_vals):.0f}" if snr_vals else "-")
                 self.result_labels["tmax_uib"].setText(f"{np.mean(tmax_vals):.2f} min" if tmax_vals else "-")
@@ -954,6 +1073,48 @@ class CalibratePanel(QWidget):
                 self.result_labels["rf_mass_uib"].setText(f"{np.mean(rf_mass_vals):.1f}" if rf_mass_vals else "-")
         else:
             self.uib_group.setVisible(False)
+
+        # === QC: Comparació rf_mass vs rf_mass_cal (global) ===
+        try:
+            khp_data_main = result.get("khp_data_direct") or result.get("khp_data_uib")
+            rf_mass_measured = 0
+            if khp_data_main:
+                replicas_main = khp_data_main.get('replicas') or [khp_data_main]
+                rf_vals = [r.get('rf_mass_doc', 0) or r.get('rf_mass', 0) for r in replicas_main]
+                rf_vals = [v for v in rf_vals if v > 0]
+                if rf_vals:
+                    rf_mass_measured = np.mean(rf_vals)
+                elif khp_data_main.get('rf_mass', 0) > 0:
+                    rf_mass_measured = khp_data_main['rf_mass']
+
+            if rf_mass_measured > 0:
+                mode_str = result.get('mode', 'COLUMN').lower()
+                rf_mass_cal = get_rf_mass_cal(signal='direct', mode=mode_str)
+                if rf_mass_cal and rf_mass_cal > 0:
+                    deviation_pct = abs(rf_mass_measured - rf_mass_cal) / rf_mass_cal * 100
+                    config = get_config()
+                    warn_pct = config.get('calibration', 'qc_thresholds', 'warning_pct', default=5.0)
+                    fail_pct = config.get('calibration', 'qc_thresholds', 'fail_pct', default=10.0)
+
+                    if deviation_pct <= warn_pct:
+                        qc_text = f"PASS ({deviation_pct:.1f}% vs cal={rf_mass_cal:.0f})"
+                        qc_style = "color: #27AE60; font-weight: bold;"
+                    elif deviation_pct <= fail_pct:
+                        qc_text = f"WARNING ({deviation_pct:.1f}% vs cal={rf_mass_cal:.0f})"
+                        qc_style = "color: #F39C12; font-weight: bold;"
+                    else:
+                        qc_text = f"FAIL ({deviation_pct:.1f}% vs cal={rf_mass_cal:.0f})"
+                        qc_style = "color: #E74C3C; font-weight: bold;"
+
+                    self.result_labels["qc_status"].setText(qc_text)
+                    self.result_labels["qc_status"].setStyleSheet(qc_style)
+                else:
+                    self.result_labels["qc_status"].setText("N/A (sense cal global)")
+            else:
+                self.result_labels["qc_status"].setText("-")
+        except Exception as e:
+            print(f"[DEBUG] Error calculant QC: {e}")
+            self.result_labels["qc_status"].setText("-")
 
     def _extract_all_replicas(self, khp_data):
         """
@@ -1216,7 +1377,7 @@ class CalibratePanel(QWidget):
             self.metrics_table.setItem(row, 4, item_fwhm)
 
             # Col 5: RF_MASS (Àrea / µg DOC)
-            rf_mass = khp.get('rf_mass_doc', 0)
+            rf_mass = khp.get('rf_mass_doc', 0) or khp.get('rf_mass', 0)
             self.metrics_table.setItem(row, 5, QTableWidgetItem(f"{rf_mass:.1f}" if rf_mass > 0 else "-"))
 
             # Col 6: CR (Concentration Ratio amb color segons mode)
@@ -1256,15 +1417,33 @@ class CalibratePanel(QWidget):
                 item_sym.setToolTip(f"Asimètric (rang normal: {SYM_MIN}-{SYM_MAX})")
             self.metrics_table.setItem(row, 10, item_sym)
 
-            # Col 11: Pic_J (antic Batman)
+            # Col 11: R² bigaussian fit
+            bigauss = khp.get('bigaussian_doc')
+            if bigauss and isinstance(bigauss, dict):
+                r2 = bigauss.get('r2', 0)
+                bg_status = bigauss.get('status', 'INVALID')
+                item_r2 = QTableWidgetItem(f"{r2:.3f}")
+                if bg_status == 'VALID':
+                    item_r2.setBackground(QColor(150, 255, 150))
+                elif bg_status == 'CHECK':
+                    item_r2.setBackground(QColor(255, 255, 150))
+                else:
+                    item_r2.setBackground(QColor(255, 200, 100))
+                asym = bigauss.get('asymmetry', 0)
+                item_r2.setToolTip(f"Fit {bg_status}\nR²={r2:.4f}\nAsimetria={asym:.2f}")
+            else:
+                item_r2 = QTableWidgetItem("-")
+            self.metrics_table.setItem(row, 11, item_r2)
+
+            # Col 12: Pic_J (antic Batman)
             has_batman = khp.get('has_batman', False)
             item_picj = QTableWidgetItem("!" if has_batman else "-")
             if has_batman:
                 item_picj.setBackground(QColor(255, 150, 150))
                 item_picj.setToolTip("Pic_J: pic amb vall (artefacte) - INVALID")
-            self.metrics_table.setItem(row, 11, item_picj)
+            self.metrics_table.setItem(row, 12, item_picj)
 
-            # Col 12: Timeout (color segons si afecta pic o no)
+            # Col 13: Timeout (color segons si afecta pic o no)
             has_timeout = khp.get('has_timeout', False)
             timeout_info = khp.get('timeout_info', {})
             timeouts_list = timeout_info.get('timeouts', [])
@@ -1285,9 +1464,9 @@ class CalibratePanel(QWidget):
                 item_to.setToolTip(tooltip)
             else:
                 item_to = QTableWidgetItem("-")
-            self.metrics_table.setItem(row, 12, item_to)
+            self.metrics_table.setItem(row, 13, item_to)
 
-            # Col 13: Pics en zona ±4 min
+            # Col 14: Pics en zona ±4 min
             n_pics = self._count_peaks_in_zone(khp, zone_min=4.0)
             item_pics = QTableWidgetItem(str(n_pics))
             if n_pics > 1:
@@ -1295,12 +1474,12 @@ class CalibratePanel(QWidget):
                 item_pics.setToolTip(f"Múltiples pics ({n_pics}) en zona ±4min - INVALID")
             else:
                 item_pics.setBackground(QColor(150, 255, 150))
-            self.metrics_table.setItem(row, 13, item_pics)
+            self.metrics_table.setItem(row, 14, item_pics)
 
             # Calcular Quality Score amb nova lògica
             quality, issues = self._calculate_quality_score(khp, signal)
 
-            # Col 14: Quality Score
+            # Col 15: Quality Score
             item_q = QTableWidgetItem(str(int(quality)))
             if quality >= 100:
                 item_q.setBackground(QColor(255, 150, 150))
@@ -1310,9 +1489,9 @@ class CalibratePanel(QWidget):
                 item_q.setBackground(QColor(255, 255, 150))
             else:
                 item_q.setBackground(QColor(150, 255, 150))
-            self.metrics_table.setItem(row, 14, item_q)
+            self.metrics_table.setItem(row, 15, item_q)
 
-            # Col 15: Estat
+            # Col 16: Estat
             valid_for_cal = khp.get('valid_for_calibration', True)
             if not valid_for_cal or quality >= 100:
                 status = "INVALID"
@@ -1330,7 +1509,7 @@ class CalibratePanel(QWidget):
             item_status.setBackground(color)
             if issues:
                 item_status.setToolTip("\n".join(issues))
-            self.metrics_table.setItem(row, 15, item_status)
+            self.metrics_table.setItem(row, 16, item_status)
 
     def _update_replica_selection(self, result):
         """Actualitza la secció de selecció de rèpliques."""
@@ -1497,24 +1676,33 @@ class CalibratePanel(QWidget):
             is_outlier = rep.get('is_outlier', False)
             status_combo = QComboBox()
             status_combo.addItems(["✓ Vàlida", "✗ Outlier"])
-            status_combo.setStyleSheet("""
-                QComboBox {
-                    border: none;
-                    background: transparent;
-                    padding: 2px;
-                    min-width: 80px;
-                }
-                QComboBox:drop-down { border: none; }
-            """)
 
             if is_outlier:
-                status_combo.setCurrentIndex(1)  # Outlier
-                status_combo.setStyleSheet(status_combo.styleSheet() + "QComboBox { color: #C0392B; background: #FADBD8; }")
+                status_combo.setCurrentIndex(1)
+                status_combo.setStyleSheet("""
+                    QComboBox {
+                        color: #C0392B; background: #FADBD8; font-weight: bold;
+                        border: 1px solid #E74C3C; border-radius: 3px;
+                        padding: 2px 4px; min-width: 90px;
+                    }
+                """)
             elif is_selected:
-                status_combo.setCurrentIndex(0)  # Vàlida
-                status_combo.setStyleSheet(status_combo.styleSheet() + "QComboBox { color: #27AE60; background: #D5F5E3; }")
+                status_combo.setCurrentIndex(0)
+                status_combo.setStyleSheet("""
+                    QComboBox {
+                        color: #27AE60; background: #D5F5E3; font-weight: bold;
+                        border: 1px solid #27AE60; border-radius: 3px;
+                        padding: 2px 4px; min-width: 90px;
+                    }
+                """)
             else:
                 status_combo.setCurrentIndex(0)
+                status_combo.setStyleSheet("""
+                    QComboBox {
+                        border: 1px solid #BDC3C7; border-radius: 3px;
+                        padding: 2px 4px; min-width: 90px;
+                    }
+                """)
 
             # Guardar referència a la rèplica per poder-la actualitzar
             status_combo.setProperty("replica_num", rep.get('replica_num', row + 1))
@@ -1907,6 +2095,14 @@ class CalibratePanel(QWidget):
 
                 filtered_history.append(cal)
 
+            # Deduplicar: si hi ha múltiples entrades per la mateixa SEQ+condició,
+            # mantenir només la més recent (última de la llista)
+            seen_seqs = {}
+            for cal in filtered_history:
+                key = cal.get('seq_name', '') + '_' + cal.get('condition_key', '')
+                seen_seqs[key] = cal  # L'última sobreescriu
+            filtered_history = list(seen_seqs.values())
+
             if not filtered_history:
                 self.history_graph.clear()
                 self.calibration_line_graph.clear()
@@ -2147,18 +2343,22 @@ class CalibratePanel(QWidget):
         from PySide6.QtWidgets import QMessageBox
 
         legend_html = """
-<h3>Llegenda del Gràfic d'Històric</h3>
+<h3>Llegenda del Gràfic QA/QC Històric</h3>
+
+<p><b>Què fa el QA/QC KHP:</b></p>
+<p>Verifica la mesura del KHP respecte la calibració global (rf_mass_cal)
+i determina el time shift necessari per a la quantificació.</p>
 
 <p><b>Colors de les barres:</b></p>
 <ul>
-<li><span style='color:#27AE60'>■ Verd</span> - Calibració actual (seqüència oberta)</li>
-<li><span style='color:#5DADE2'>■ Blau</span> - Calibracions vàlides</li>
+<li><span style='color:#27AE60'>■ Verd</span> - SEQ actual (oberta)</li>
+<li><span style='color:#5DADE2'>■ Blau</span> - Verificacions vàlides</li>
 <li><span style='color:#E74C3C'>■ Vermell</span> - Outliers (exclosos de la mitjana)</li>
 </ul>
 
 <p><b>Línies horitzontals:</b></p>
 <ul>
-<li><span style='color:#27AE60'>━━━</span> Mitjana de calibracions vàlides</li>
+<li><span style='color:#27AE60'>━━━</span> Mitjana de verificacions vàlides</li>
 <li><span style='color:#27AE60'>- - -</span> Desviació estàndard (±1σ)</li>
 </ul>
 
@@ -2167,13 +2367,6 @@ class CalibratePanel(QWidget):
 <li>Àrea fora del rang mitjana ± 2σ</li>
 <li>Qualitat (Q) > 100 punts</li>
 <li>SNR < 50</li>
-</ul>
-
-<p><b>Columna "Motiu" a la taula:</b></p>
-<ul>
-<li>Desv. X% - Desviació respecte la mitjana</li>
-<li>Outlier - Marcat manualment o automàtic</li>
-<li>Invalid - Dades incompletes</li>
 </ul>
 
 <p><i>Nota: Pots marcar/desmarcar outliers manualment amb el botó "Marcar Outlier"</i></p>

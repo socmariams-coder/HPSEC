@@ -202,6 +202,29 @@ def is_control_injection(sample_name, config=None):
     return False
 
 
+def is_blank_injection(sample_name, config=None):
+    """
+    Verifica si una mostra és un blanc (MQ, H2O, etc.).
+
+    Args:
+        sample_name: Nom de la mostra
+        config: Configuració (si None, es llegeix de get_config())
+
+    Returns:
+        True si és una injecció blanc
+    """
+    if config is None:
+        config = get_config()
+
+    blank_patterns = config.get("blank_injections", "patterns", default=[])
+    sample_upper = sample_name.upper()
+
+    for pattern in blank_patterns:
+        if pattern.upper() in sample_upper:
+            return True
+    return False
+
+
 def is_reference_standard(sample_name, config=None):
     """
     Verifica si una mostra és un Patró de Referència (PR).
@@ -1694,7 +1717,7 @@ def parse_injections_from_masterfile(master_data, config=None):
     control_counts = {}  # base_name -> total count
     control_sets = {}    # base_name -> current set number
     control_last_inj = {} # base_name -> last inj_num (per detectar nou set)
-    control_patterns = ["naoh", "mq", "blank", "buffer", "wash"]
+    control_patterns = ["naoh", "mq", "blank", "buffer", "wash", "h2o", "milli", "blk", "blanc"]
 
     # Pre-calcular tots els noms de mostra per detectar duplicats exactes
     all_sample_names = [
@@ -1821,6 +1844,8 @@ def parse_injections_from_masterfile(master_data, config=None):
                     sample_type = "KHP"
                 elif is_reference_standard(sample_name, config):
                     sample_type = "PR"
+                elif is_blank_injection(sample_name, config):
+                    sample_type = "BLANK"
                 elif is_control_injection(sample_name, config):
                     sample_type = "CONTROL"
                 elif "test" in sample_lower:
@@ -1835,6 +1860,8 @@ def parse_injections_from_masterfile(master_data, config=None):
                     sample_type = "KHP"
                 elif is_reference_standard(sample_name, config):
                     sample_type = "PR"
+                elif is_blank_injection(sample_name, config):
+                    sample_type = "BLANK"
                 elif is_control_injection(sample_name, config):
                     sample_type = "CONTROL"
                 elif "test" in sample_lower:
@@ -1872,7 +1899,11 @@ def parse_injections_from_masterfile(master_data, config=None):
                     unique_name = generate_agilent_control_name(base_name, current_set)
                 else:
                     unique_name = sample_name
-                sample_type = "CONTROL"
+                # Diferenciar BLANK de CONTROL
+                if is_blank_injection(sample_name, config):
+                    sample_type = "BLANK"
+                else:
+                    sample_type = "CONTROL"
                 effective_inj_num = inj_num
             else:
                 unique_name = sample_name
@@ -1881,6 +1912,8 @@ def parse_injections_from_masterfile(master_data, config=None):
                     sample_type = "KHP"
                 elif is_reference_standard(sample_name, config):
                     sample_type = "PR"
+                elif is_blank_injection(sample_name, config):
+                    sample_type = "BLANK"
                 elif is_control_injection(sample_name, config):
                     sample_type = "CONTROL"
                 elif "test" in sample_lower:
@@ -3314,10 +3347,11 @@ def generate_import_manifest(imported_data, include_injection_details=True):
                     "t_min": float(min(t_arr)),
                     "t_max": float(max(t_arr)),
                     "baseline": direct.get("baseline"),
-                    "has_timeout": direct.get("timeout_info", {}).get("has_timeout", False),
+                    "has_timeout": direct.get("timeout_info", {}).get("n_timeouts", 0) > 0,
+                    "timeout_severity": direct.get("timeout_info", {}).get("severity", "OK"),
                 }
-                if direct.get("timeout_info", {}).get("has_timeout"):
-                    replica_entry["direct"]["timeout_ranges"] = direct["timeout_info"].get("timeout_ranges", [])
+                if direct.get("timeout_info", {}).get("n_timeouts", 0) > 0:
+                    replica_entry["direct"]["timeout_ranges"] = direct["timeout_info"].get("timeouts", [])
             elif direct.get("row_start") is not None or direct.get("n_points"):
                 # Preservar metadades encara que no hi hagi dades reals
                 replica_entry["direct"] = {
@@ -3978,6 +4012,7 @@ __all__ = [
     "normalize_key",
     "normalize_rep",
     "is_khp",
+    "is_blank_injection",
     "is_control_injection",
     "obtenir_seq",
     "seq_tag",

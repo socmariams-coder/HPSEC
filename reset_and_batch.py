@@ -119,7 +119,8 @@ def batch_import(data_folder: str, dev_notes: bool = True):
         from hpsec_dev_notes import start_session, end_session, add_note
         start_session("Batch import")
 
-    from hpsec_import import import_sequence
+    from hpsec_import import import_sequence, save_import_manifest
+    from hpsec_reports import generate_import_plots
 
     data_path = Path(data_folder)
     seq_dirs = sorted([d for d in data_path.glob("*_SEQ*") if d.is_dir()])
@@ -141,13 +142,23 @@ def batch_import(data_folder: str, dev_notes: bool = True):
             print(f"  [IMP] {seq_dir.name}...", end=" ", flush=True)
             result = import_sequence(str(seq_dir))
             if result.get("success"):
+                # IMPORTANT: Guardar manifest!
+                save_import_manifest(result)
+                # Generar grafics
+                try:
+                    generate_import_plots(str(seq_dir), result)
+                except Exception:
+                    pass
                 print("OK")
                 results["ok"] += 1
             else:
-                print(f"FAIL: {result.get('error', '?')}")
+                # Extreure missatge d'error (errors és una llista)
+                errors = result.get('errors', [])
+                error_msg = errors[0] if errors else "Error desconegut"
+                print(f"FAIL: {error_msg}")
                 results["fail"] += 1
                 if dev_notes:
-                    add_note(seq_dir.name, "import", f"Import failed: {result.get('error', '?')}", "error")
+                    add_note(seq_dir.name, "import", f"Import failed: {error_msg}", "error")
         except Exception as e:
             print(f"ERROR: {e}")
             results["fail"] += 1
@@ -157,6 +168,85 @@ def batch_import(data_folder: str, dev_notes: bool = True):
 
     if dev_notes:
         end_session(f"Import: {results['ok']} OK, {results['fail']} fail")
+
+
+def batch_calibrate(data_folder: str, dev_notes: bool = True, force: bool = False):
+    """Fa calibracio de totes les SEQs importades."""
+    if dev_notes:
+        os.environ["HPSEC_DEV_NOTES"] = "1"
+        from hpsec_dev_notes import start_session, end_session, add_note
+        start_session("Batch calibrate")
+
+    from hpsec_import import import_from_manifest
+    from hpsec_calibrate import calibrate_from_import
+    from hpsec_reports import generate_calibration_plots
+
+    data_path = Path(data_folder)
+    seq_dirs = sorted([d for d in data_path.glob("*_SEQ*") if d.is_dir()])
+
+    print(f"\nBatch calibrate: {len(seq_dirs)} SEQs")
+    print("=" * 50)
+
+    results = {"ok": 0, "fail": 0, "skip": 0, "no_import": 0}
+
+    for seq_dir in seq_dirs:
+        manifest_path = seq_dir / "CHECK" / "data" / "import_manifest.json"
+        cal_path = seq_dir / "CHECK" / "data" / "calibration_result.json"
+
+        # Verificar que hi ha import
+        if not manifest_path.exists():
+            print(f"  [SKIP] {seq_dir.name} (no importat)")
+            results["no_import"] += 1
+            continue
+
+        # Saltar si ja calibrat (excepte force)
+        if cal_path.exists() and not force:
+            print(f"  [SKIP] {seq_dir.name} (ja calibrat)")
+            results["skip"] += 1
+            continue
+
+        try:
+            print(f"  [CAL] {seq_dir.name}...", end=" ", flush=True)
+
+            # Carregar dades des de manifest
+            imported = import_from_manifest(str(seq_dir))
+            if not imported or not imported.get("success"):
+                errors = imported.get("errors", []) if imported else []
+                error_msg = errors[0] if errors else "manifest invalid"
+                print(f"FAIL: {error_msg}")
+                results["fail"] += 1
+                continue
+
+            # Calibrar
+            result = calibrate_from_import(imported)
+
+            if result and result.get("success"):
+                # Generar grafics
+                try:
+                    generate_calibration_plots(str(seq_dir), result, imported)
+                except Exception:
+                    pass
+                source = result.get("khp_source", "?")
+                mode = result.get("mode", "?")
+                print(f"OK ({source}, {mode})")
+                results["ok"] += 1
+            else:
+                errors = result.get("errors", []) if result else []
+                error_msg = errors[0] if errors else "Error desconegut"
+                print(f"FAIL: {error_msg}")
+                results["fail"] += 1
+                if dev_notes:
+                    add_note(seq_dir.name, "calibrate", f"Calibration failed: {error_msg}", "error")
+
+        except Exception as e:
+            print(f"ERROR: {e}")
+            results["fail"] += 1
+
+    print("=" * 50)
+    print(f"OK: {results['ok']} | FAIL: {results['fail']} | SKIP: {results['skip']} | NO_IMP: {results['no_import']}")
+
+    if dev_notes:
+        end_session(f"Calibrate: {results['ok']} OK, {results['fail']} fail")
 
 
 def main():
@@ -170,7 +260,8 @@ def main():
     parser.add_argument("--reset-all", action="store_true", help="Reset tot CHECK/data/")
     parser.add_argument("--reset-history", action="store_true", help="Reset històric global")
     parser.add_argument("--import", dest="do_import", action="store_true", help="Batch import")
-    parser.add_argument("--force", action="store_true", help="Reimportar tot (ignorar existents)")
+    parser.add_argument("--calibrate", action="store_true", help="Batch calibrate")
+    parser.add_argument("--force", action="store_true", help="Forcar recalibrar/reimportar")
     args = parser.parse_args()
 
     print(f"\n{'='*60}")
@@ -198,6 +289,10 @@ def main():
     if args.do_import:
         print("\n[5] BATCH IMPORT")
         batch_import(args.folder)
+
+    if args.calibrate:
+        print("\n[6] BATCH CALIBRATE")
+        batch_calibrate(args.folder, force=args.force)
 
     print("\n[DONE]")
 

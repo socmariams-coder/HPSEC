@@ -1397,8 +1397,11 @@ def analyze_sample(sample_data, calibration_data=None, config=None):
     """
     config = config or DEFAULT_PROCESS_CONFIG
 
+    sample_name = sample_data.get("name", "UNKNOWN")
+    seq_name = sample_data.get("seq_name", "")
+
     result = {
-        "name": sample_data.get("name", "UNKNOWN"),
+        "name": sample_name,
         "replica": sample_data.get("replica", "1"),
         "inj_volume": sample_data.get("inj_volume"),  # Preservar per quantificació
         "processed": False,
@@ -2062,9 +2065,9 @@ def _generate_analysis_warnings(result: dict) -> list:
                 ))
 
         # Comparació rèpliques
-        comparison = sample_group.get("comparison", {})
-        doc_comparison = comparison.get("doc", {})
-        dad_comparison = comparison.get("dad", {})
+        comparison = sample_group.get("comparison") or {}
+        doc_comparison = comparison.get("doc") or {}
+        dad_comparison = comparison.get("dad") or {}
 
         # Correlació baixa DOC
         if doc_comparison.get("warnings"):

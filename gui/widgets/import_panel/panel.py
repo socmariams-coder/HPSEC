@@ -433,6 +433,17 @@ class ImportPanel(QWidget):
         except Exception as e:
             print(f"Warning: No s'ha pogut guardar manifest: {e}")
 
+        # Auto-generar PDF d'importació
+        try:
+            from generate_import_report import generate_import_report
+            seq_path = result.get("seq_path") or self.main_window.seq_path
+            if seq_path:
+                pdf = generate_import_report(seq_path)
+                if pdf:
+                    print(f"[INFO] Report importació: {pdf}")
+        except Exception as e:
+            print(f"[WARNING] No s'ha pogut generar report d'importació: {e}")
+
         self._update_next_button_state()
         self.save_btn.setEnabled(True)
         self.main_window.enable_tab(1)

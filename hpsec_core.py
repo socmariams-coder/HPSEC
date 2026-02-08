@@ -147,8 +147,8 @@ def fit_bigaussian(t, y, peak_idx, left_idx, right_idx, r2_top_pct=0):
             bigaussian, t_fit, y_fit,
             p0=[peak_height, t_peak, sigma_left_guess, sigma_right_guess, baseline_val],
             bounds=(
-                [peak_height * 0.5, t_fit[0], 0.01, 0.01, 0],
-                [peak_height * 1.5, t_fit[-1], 10.0, 10.0, baseline_val + peak_height * 0.3]
+                [peak_height * 0.5, t_fit[0], 0.01, 0.01, min(0, baseline_val - abs(baseline_val) * 0.5)],
+                [peak_height * 1.5, t_fit[-1], 10.0, 10.0, max(0, baseline_val + peak_height * 0.3)]
             ),
             maxfev=5000
         )
