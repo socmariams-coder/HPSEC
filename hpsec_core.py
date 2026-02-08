@@ -1738,6 +1738,22 @@ def baseline_stats_windowed(t, y, method="column", timeout_positions=None, confi
     return result
 
 
+def _sigma_clip(data, n_sigma=3):
+    """Elimina outliers de la zona baseline usant mediana + MAD."""
+    data = np.asarray(data, dtype=float)
+    data = data[np.isfinite(data)]
+    if len(data) < 10:
+        return data
+    med = np.median(data)
+    mad = np.median(np.abs(data - med))
+    if mad < 1e-10:
+        return data
+    sigma_est = 1.4826 * mad  # MAD → desviació estàndard equivalent
+    mask = np.abs(data - med) <= n_sigma * sigma_est
+    clipped = data[mask]
+    return clipped if len(clipped) >= 5 else data
+
+
 def get_baseline_value(t, y, mode="COLUMN", config=None):
     """
     Calcula el valor de baseline per restar del senyal.
@@ -1785,6 +1801,9 @@ def get_baseline_value(t, y, mode="COLUMN", config=None):
     if method == "median":
         return float(np.median(baseline_data))
     else:
+        # Sigma-clip: eliminar outliers (pics espuris, artefactes injecció)
+        # abans del histograma per evitar que expandeixin el rang de bins
+        baseline_data = _sigma_clip(baseline_data)
         return mode_robust(baseline_data)
 
 
