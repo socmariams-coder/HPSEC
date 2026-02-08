@@ -67,6 +67,7 @@ from hpsec_core import (
     THRESH_R2_VALID,
     THRESH_R2_CHECK,
     # Funcions baseline (migrades de utils 2026-02-03)
+    get_baseline_value,
     baseline_stats,
     baseline_stats_windowed,
     # Funcions alineació (migrades 2026-02-03)
@@ -252,7 +253,7 @@ def analyze_dad(df_dad, config=None):
 # =============================================================================
 # FUNCIONS CÀLCUL ÀREES
 # =============================================================================
-def calcular_fraccions_temps(t, y, config=None):
+def calcular_fraccions_temps(t, y, config=None, exclude_from_total=None):
     """
     Calcula àrees per fraccions de temps (integració parcial).
 
@@ -260,21 +261,28 @@ def calcular_fraccions_temps(t, y, config=None):
         t: Array de temps (minuts)
         y: Array de senyal (mAU, ja amb baseline restada)
         config: Configuració amb time_fractions
+        exclude_from_total: Llista de noms de fraccions a excloure del total
+            (ex: ["LMW"] per COLUMN mostres reals). Les fraccions excloses
+            segueixen reportant-se individualment però no compten al total.
 
     Returns:
-        Dict amb àrees per fracció: {BioP, HS, BB, SB, LMW, total, *_pct}
+        Dict amb àrees per fracció: {BioP, HS, BB, SB, LMW, total, total_all, *_pct}
+        - total: àrea integrada (exclou fraccions de exclude_from_total si aplicable)
+        - total_all: àrea total sense exclusions (sempre el cromatograma complet)
     """
     t = np.asarray(t, dtype=float)
     y = np.asarray(y, dtype=float)
 
     if len(t) < 2 or len(y) < 2:
-        return {"total": 0.0}
+        return {"total": 0.0, "total_all": 0.0}
+
+    exclude_from_total = set(exclude_from_total or [])
 
     # Assegurar que y no té valors negatius (baseline ja restada)
     y_clean = np.maximum(y, 0)
 
-    # Àrea total del cromatograma
-    kpis = {"total": float(trapezoid(y_clean, t))}
+    # Àrea total del cromatograma (sense cap exclusió)
+    total_all = float(trapezoid(y_clean, t))
 
     # Obtenir fraccions de la config
     if config is None:
@@ -282,6 +290,7 @@ def calcular_fraccions_temps(t, y, config=None):
     fractions = config.get("time_fractions", DEFAULT_PROCESS_CONFIG["time_fractions"])
 
     # Calcular àrea per cada fracció
+    kpis = {}
     for nom, (t_ini, t_fi) in fractions.items():
         mask = (t >= t_ini) & (t < t_fi)
         if np.sum(mask) > 1:
@@ -289,10 +298,20 @@ def calcular_fraccions_temps(t, y, config=None):
         else:
             kpis[nom] = 0.0
 
-    # Calcular percentatges
-    if kpis["total"] > 0:
+    # Total operatiu: exclou fraccions indicades
+    kpis["total_all"] = total_all
+    if exclude_from_total:
+        excluded_area = sum(kpis.get(nom, 0.0) for nom in exclude_from_total)
+        kpis["total"] = total_all - excluded_area
+        kpis["excluded_fractions"] = sorted(exclude_from_total)
+    else:
+        kpis["total"] = total_all
+
+    # Calcular percentatges (sobre total operatiu, NO total_all)
+    ref_total = kpis["total"]
+    if ref_total > 0:
         for nom in fractions.keys():
-            kpis[f"{nom}_pct"] = 100.0 * kpis[nom] / kpis["total"]
+            kpis[f"{nom}_pct"] = 100.0 * kpis[nom] / ref_total
     else:
         for nom in fractions.keys():
             kpis[f"{nom}_pct"] = 0.0
@@ -300,7 +319,7 @@ def calcular_fraccions_temps(t, y, config=None):
     return kpis
 
 
-def detectar_tmax_senyals(t_doc, y_doc, df_dad, config=None):
+def detectar_tmax_senyals(t_doc, y_doc, df_dad, config=None, mode="COLUMN"):
     """
     Detecta el temps de retenció (tmax) per DOC i cada longitud d'ona DAD.
 
@@ -309,6 +328,7 @@ def detectar_tmax_senyals(t_doc, y_doc, df_dad, config=None):
         y_doc: Array senyal DOC (net, amb baseline restada)
         df_dad: DataFrame DAD amb columnes 'time (min)' i wavelengths
         config: Configuració
+        mode: "BP" o "COLUMN" - per baseline DAD
 
     Returns:
         Dict amb tmax per cada senyal: {DOC: x, A220: y, A254: z, ...}
@@ -337,8 +357,8 @@ def detectar_tmax_senyals(t_doc, y_doc, df_dad, config=None):
             if wl_str in df_dad.columns:
                 y_wl = pd.to_numeric(df_dad[wl_str], errors='coerce').to_numpy()
                 if len(y_wl) > 10 and not np.all(np.isnan(y_wl)):
-                    # Restar baseline (percentil 5)
-                    baseline = np.nanpercentile(y_wl, 5)
+                    # Baseline unificada
+                    baseline = get_baseline_value(t_dad, y_wl, mode=mode)
                     y_wl_net = y_wl - baseline
                     idx_max = np.nanargmax(y_wl_net)
                     result[f"A{wl}"] = float(t_dad[idx_max])
@@ -346,7 +366,8 @@ def detectar_tmax_senyals(t_doc, y_doc, df_dad, config=None):
     return result
 
 
-def calcular_arees_fraccions_complet(t_doc, y_doc, df_dad, config=None):
+def calcular_arees_fraccions_complet(t_doc, y_doc, df_dad, config=None,
+                                     mode="COLUMN", exclude_from_total=None):
     """
     Calcula àrees per fraccions de temps per DOC i totes les wavelengths DAD.
 
@@ -355,12 +376,14 @@ def calcular_arees_fraccions_complet(t_doc, y_doc, df_dad, config=None):
         y_doc: Array senyal DOC (net)
         df_dad: DataFrame DAD
         config: Configuració
+        mode: "BP" o "COLUMN" - per càlcul de baseline DAD coherent
+        exclude_from_total: Fraccions a excloure del total (ex: ["LMW"])
 
     Returns:
         Dict amb estructura:
         {
-            "DOC": {BioP: x, HS: y, ..., total: z},
-            "A220": {BioP: x, HS: y, ..., total: z},
+            "DOC": {BioP: x, HS: y, ..., total: z, total_all: w},
+            "A220": {BioP: x, HS: y, ..., total: z, total_all: w},
             ...
         }
     """
@@ -372,9 +395,10 @@ def calcular_arees_fraccions_complet(t_doc, y_doc, df_dad, config=None):
 
     # Fraccions DOC
     if t_doc is not None and y_doc is not None and len(t_doc) > 10:
-        result["DOC"] = calcular_fraccions_temps(t_doc, y_doc, config)
+        result["DOC"] = calcular_fraccions_temps(t_doc, y_doc, config,
+                                                  exclude_from_total=exclude_from_total)
     else:
-        result["DOC"] = {"total": 0.0}
+        result["DOC"] = {"total": 0.0, "total_all": 0.0}
 
     # Fraccions per cada wavelength DAD
     if df_dad is not None and not df_dad.empty and 'time (min)' in df_dad.columns:
@@ -385,17 +409,19 @@ def calcular_arees_fraccions_complet(t_doc, y_doc, df_dad, config=None):
             if wl_str in df_dad.columns:
                 y_wl = pd.to_numeric(df_dad[wl_str], errors='coerce').to_numpy()
                 if len(y_wl) > 10 and not np.all(np.isnan(y_wl)):
-                    # Restar baseline
-                    baseline = np.nanpercentile(y_wl, 5)
+                    # Baseline unificada: usar get_baseline_value() del core
+                    baseline = get_baseline_value(t_dad, y_wl, mode=mode)
                     y_wl_net = np.maximum(y_wl - baseline, 0)
-                    result[f"A{wl}"] = calcular_fraccions_temps(t_dad, y_wl_net, config)
+                    result[f"A{wl}"] = calcular_fraccions_temps(
+                        t_dad, y_wl_net, config,
+                        exclude_from_total=exclude_from_total)
                 else:
-                    result[f"A{wl}"] = {"total": 0.0}
+                    result[f"A{wl}"] = {"total": 0.0, "total_all": 0.0}
             else:
-                result[f"A{wl}"] = {"total": 0.0}
+                result[f"A{wl}"] = {"total": 0.0, "total_all": 0.0}
     else:
         for wl in target_wls:
-            result[f"A{wl}"] = {"total": 0.0}
+            result[f"A{wl}"] = {"total": 0.0, "total_all": 0.0}
 
     return result
 
@@ -1646,8 +1672,8 @@ def analyze_sample(sample_data, calibration_data=None, config=None):
                 t_dad = pd.to_numeric(df_dad['time (min)'], errors='coerce').to_numpy()
                 y_254 = pd.to_numeric(df_dad['254'], errors='coerce').to_numpy()
                 if len(y_254) > 10:
-                    # Baseline i suavitzat
-                    baseline_254 = float(np.nanpercentile(y_254, 10))
+                    # Baseline unificada
+                    baseline_254 = get_baseline_value(t_dad, y_254, mode="BP")
                     y_254_net = y_254 - baseline_254
                     y_254_smooth = apply_smoothing(y_254_net)
                     # Detectar pic
@@ -1691,13 +1717,20 @@ def analyze_sample(sample_data, calibration_data=None, config=None):
                 pass
 
     # Calcular àrees per fraccions (inclou DAD si disponible)
-    # Usar funció completa per tots els modes - les fraccions s'adapten al temps
-    areas = calcular_arees_fraccions_complet(t_doc, y_doc_net, df_dad, config)
+    # COLUMN mostres reals: excloure LMW del total (artefactes finals)
+    # BP: integrar tot (cromatograma curt, ~10 min)
+    mode_type = "BP" if is_bp else "COLUMN"
+    exclude_lmw = ["LMW"] if not is_bp else None
+    areas = calcular_arees_fraccions_complet(
+        t_doc, y_doc_net, df_dad, config,
+        mode=mode_type, exclude_from_total=exclude_lmw)
 
     result["areas"] = areas
+    result["mode"] = mode_type
 
     # Detectar tmax senyals
-    tmax_signals = detectar_tmax_senyals(t_doc, y_doc_net, df_dad, config)
+    tmax_signals = detectar_tmax_senyals(t_doc, y_doc_net, df_dad, config,
+                                         mode=mode_type)
     result["tmax_signals"] = tmax_signals
 
     # Calcular SNR info (DOC Direct i UIB)
@@ -1725,7 +1758,8 @@ def analyze_sample(sample_data, calibration_data=None, config=None):
     is_uib_only = sample_data.get("is_uib_only", False)
 
     if is_dual and "DOC" in areas and y_doc_uib_net is not None:
-        areas_uib = calcular_fraccions_temps(t_doc, y_doc_uib_net, config)
+        areas_uib = calcular_fraccions_temps(t_doc, y_doc_uib_net, config,
+                                              exclude_from_total=exclude_lmw)
         result["areas_uib"] = areas_uib
     elif is_uib_only and "DOC" in areas:
         # Només UIB: les àrees DOC ja són d'UIB, copiar a areas_uib
@@ -2692,16 +2726,22 @@ def write_consolidated_excel(out_path, mostra, rep, seq_out, date_master,
     df_id = pd.DataFrame(id_rows, columns=["Field", "Value"])
 
     # === TMAX SHEET ===
-    tmax_data = detectar_tmax_senyals(t_doc, y_doc_net, df_dad)
+    _is_bp = float(np.max(t_doc)) < 20 if t_doc is not None and len(t_doc) > 0 else False
+    _mode = "BP" if _is_bp else "COLUMN"
+    _excl_lmw = ["LMW"] if not _is_bp else None
+    tmax_data = detectar_tmax_senyals(t_doc, y_doc_net, df_dad, mode=_mode)
     tmax_rows = []
     for signal, tmax_val in tmax_data.items():
         tmax_rows.append((signal, round(tmax_val, 3) if tmax_val > 0 else "-"))
     df_tmax = pd.DataFrame(tmax_rows, columns=["Signal", "tmax (min)"])
 
     # === AREAS SHEET ===
-    fraccions_data = calcular_arees_fraccions_complet(t_doc, y_doc_net, df_dad)
+    fraccions_data = calcular_arees_fraccions_complet(
+        t_doc, y_doc_net, df_dad, mode=_mode, exclude_from_total=_excl_lmw)
     fractions_config = DEFAULT_PROCESS_CONFIG.get("time_fractions", {})
     fraction_names = list(fractions_config.keys()) + ["total"]
+    if not _is_bp:
+        fraction_names.append("total_all")
 
     header = ["Fraction", "Range (min)", "DOC"]
     target_wls = DEFAULT_PROCESS_CONFIG.get("target_wavelengths", [220, 254, 280])
@@ -2711,6 +2751,8 @@ def write_consolidated_excel(out_path, mostra, rep, seq_out, date_master,
     areas_rows = []
     for frac_name in fraction_names:
         if frac_name == "total":
+            rang = "excl. LMW" if not _is_bp else "0-70"
+        elif frac_name == "total_all":
             rang = "0-70"
         else:
             t_ini, t_fi = fractions_config.get(frac_name, [0, 0])
