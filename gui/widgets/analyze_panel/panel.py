@@ -190,10 +190,10 @@ class AnalyzePanel(QWidget):
 
         # === UNIFIED TABLE ===
         self.results_table = QTableWidget()
-        self.results_table.setColumnCount(11)
+        self.results_table.setColumnCount(12)
         self.results_table.setHorizontalHeaderLabels([
             "Mostra", "Rep", "A_DOC", "ppm", "A_UIB", "ppm_U",
-            "A_254", "tmax_254", "Pics_HS", "R²_rep", "Estat"
+            "SNR", "A_254", "SNR_254", "R²_DOC", "R²_DAD", "Estat"
         ])
         configure_table_style(self.results_table)
         self._configure_unified_columns()
@@ -710,37 +710,63 @@ class AnalyzePanel(QWidget):
             self.results_table.setItem(row, 5, QTableWidgetItem(
                 f"{ppm_uib:.2f}" if ppm_uib else "-"))
 
-            # Col 6: A_254 (area total DAD 254nm)
+            # Col 6: SNR (DOC Direct)
+            snr_info = rep_data.get("snr_info") or {}
+            snr_direct = snr_info.get("snr_direct", 0)
+            snr_item = QTableWidgetItem(f"{snr_direct:.0f}" if snr_direct else "-")
+            if snr_direct and snr_direct < 10:
+                snr_item.setForeground(QBrush(QColor(COLOR_ERROR)))
+            elif snr_direct and snr_direct < 50:
+                snr_item.setForeground(QBrush(QColor(COLOR_WARNING)))
+            snr_uib = snr_info.get("snr_uib", 0)
+            if snr_uib:
+                snr_item.setToolTip(f"SNR UIB: {snr_uib:.0f}")
+            self.results_table.setItem(row, 6, snr_item)
+
+            # Col 7: A_254 (area total DAD 254nm)
             area_254 = areas.get("A254", {}).get("total", 0)
-            self.results_table.setItem(row, 6, QTableWidgetItem(
+            self.results_table.setItem(row, 7, QTableWidgetItem(
                 f"{area_254:.0f}" if area_254 else "-"))
 
-            # Col 7: tmax_254 (retention time of main peak at 254nm)
-            tmax_signals = rep_data.get("tmax_signals") or {}
-            tmax_254 = tmax_signals.get("A254", 0)
-            self.results_table.setItem(row, 7, QTableWidgetItem(
-                f"{tmax_254:.2f}" if tmax_254 else "-"))
+            # Col 8: SNR_254 (SNR DAD 254nm)
+            snr_info_dad = rep_data.get("snr_info_dad") or {}
+            snr_254 = snr_info_dad.get("A254", {}).get("snr", 0)
+            snr_254_item = QTableWidgetItem(f"{snr_254:.0f}" if snr_254 else "-")
+            if snr_254 and snr_254 < 10:
+                snr_254_item.setForeground(QBrush(QColor(COLOR_ERROR)))
+            elif snr_254 and snr_254 < 50:
+                snr_254_item.setForeground(QBrush(QColor(COLOR_WARNING)))
+            self.results_table.setItem(row, 8, snr_254_item)
 
-            # Col 8: Pics_HS (number of peaks at 254nm in HS zone, COLUMN only)
-            n_peaks_hs = rep_data.get("n_peaks_254_HS", 0)
-            self.results_table.setItem(row, 8, QTableWidgetItem(
-                str(n_peaks_hs) if n_peaks_hs else "-"))
-
-            # Col 9: R²_rep (Pearson DOC between replicas)
+            # Col 9: R²_DOC (Pearson DOC between replicas)
             r2_doc = comparison.get("doc", {}).get("pearson", 0) if comparison else 0
-            r2_item = QTableWidgetItem(f"{r2_doc:.3f}" if r2_doc > 0 else "-")
-            if 0 < r2_doc < 0.995:
-                r2_item.setForeground(QBrush(QColor(COLOR_WARNING)))
-            self.results_table.setItem(row, 9, r2_item)
+            r2_doc_item = QTableWidgetItem(f"{r2_doc:.4f}" if r2_doc > 0 else "-")
+            if 0 < r2_doc < 0.990:
+                r2_doc_item.setForeground(QBrush(QColor(COLOR_WARNING)))
+            self.results_table.setItem(row, 9, r2_doc_item)
 
-            # Col 10: Estat (with corrected severity logic)
+            # Col 10: R²_DAD (min across 6 wavelengths)
+            dad_comp = comparison.get("dad", {}) if comparison else {}
+            r2_dad_min = dad_comp.get("pearson_min", 0)
+            r2_dad_item = QTableWidgetItem(f"{r2_dad_min:.4f}" if r2_dad_min > 0 else "-")
+            if 0 < r2_dad_min < 0.990:
+                r2_dad_item.setForeground(QBrush(QColor(COLOR_WARNING)))
+            pearson_per_wl = dad_comp.get("pearson_per_wavelength", {})
+            if pearson_per_wl:
+                wl_min = dad_comp.get("wavelength_min", "?")
+                tip_lines = [f"A{wl}: {val:.4f}" for wl, val in sorted(pearson_per_wl.items())]
+                tip_lines.append(f"Mínim: A{wl_min}")
+                r2_dad_item.setToolTip("\n".join(tip_lines))
+            self.results_table.setItem(row, 10, r2_dad_item)
+
+            # Col 11: Estat (with corrected severity logic)
             status_color, status_text, tooltip = self._classify_sample_status(
                 rep_data, comparison)
             status_item = QTableWidgetItem(status_text)
             status_item.setForeground(QBrush(QColor(status_color)))
             status_item.setTextAlignment(Qt.AlignCenter)
             status_item.setToolTip(tooltip)
-            self.results_table.setItem(row, 10, status_item)
+            self.results_table.setItem(row, 11, status_item)
 
             # Count stats
             if status_color == COLOR_ERROR:
@@ -878,34 +904,74 @@ class AnalyzePanel(QWidget):
         ppm_uib = quantification.get("concentration_ppm_uib")
         self.results_table.item(row, 5).setText(f"{ppm_uib:.2f}" if ppm_uib else "-")
 
-        # Col 6: A_254
+        # Col 6: SNR (DOC Direct)
+        snr_info = rep_data.get("snr_info") or {}
+        snr_direct = snr_info.get("snr_direct", 0)
+        snr_item = self.results_table.item(row, 6)
+        if snr_item:
+            snr_item.setText(f"{snr_direct:.0f}" if snr_direct else "-")
+            if snr_direct and snr_direct < 10:
+                snr_item.setForeground(QBrush(QColor(COLOR_ERROR)))
+            elif snr_direct and snr_direct < 50:
+                snr_item.setForeground(QBrush(QColor(COLOR_WARNING)))
+            else:
+                snr_item.setForeground(QBrush(QColor("#000000")))
+            snr_uib = snr_info.get("snr_uib", 0)
+            snr_item.setToolTip(f"SNR UIB: {snr_uib:.0f}" if snr_uib else "")
+
+        # Col 7: A_254
         area_254 = areas.get("A254", {}).get("total", 0)
-        self.results_table.item(row, 6).setText(f"{area_254:.0f}" if area_254 else "-")
+        item_7 = self.results_table.item(row, 7)
+        if item_7:
+            item_7.setText(f"{area_254:.0f}" if area_254 else "-")
 
-        # Col 7: tmax_254
-        tmax_signals = rep_data.get("tmax_signals") or {}
-        tmax_254 = tmax_signals.get("A254", 0)
-        self.results_table.item(row, 7).setText(f"{tmax_254:.2f}" if tmax_254 else "-")
+        # Col 8: SNR_254
+        snr_info_dad = rep_data.get("snr_info_dad") or {}
+        snr_254 = snr_info_dad.get("A254", {}).get("snr", 0)
+        snr_254_item = self.results_table.item(row, 8)
+        if snr_254_item:
+            snr_254_item.setText(f"{snr_254:.0f}" if snr_254 else "-")
+            if snr_254 and snr_254 < 10:
+                snr_254_item.setForeground(QBrush(QColor(COLOR_ERROR)))
+            elif snr_254 and snr_254 < 50:
+                snr_254_item.setForeground(QBrush(QColor(COLOR_WARNING)))
+            else:
+                snr_254_item.setForeground(QBrush(QColor("#000000")))
 
-        # Col 8: Pics_HS
-        n_peaks_hs = rep_data.get("n_peaks_254_HS", 0)
-        self.results_table.item(row, 8).setText(str(n_peaks_hs) if n_peaks_hs else "-")
-
-        # Col 9: R²_rep (doesn't change with replica, but refresh for consistency)
+        # Col 9: R²_DOC
         comparison = sample_data.get("comparison") or {}
         r2_doc = comparison.get("doc", {}).get("pearson", 0) if comparison else 0
-        r2_item = self.results_table.item(row, 9)
-        if r2_item:
-            r2_item.setText(f"{r2_doc:.3f}" if r2_doc > 0 else "-")
-            if 0 < r2_doc < 0.995:
-                r2_item.setForeground(QBrush(QColor(COLOR_WARNING)))
+        r2_doc_item = self.results_table.item(row, 9)
+        if r2_doc_item:
+            r2_doc_item.setText(f"{r2_doc:.4f}" if r2_doc > 0 else "-")
+            if 0 < r2_doc < 0.990:
+                r2_doc_item.setForeground(QBrush(QColor(COLOR_WARNING)))
             else:
-                r2_item.setForeground(QBrush(QColor("#000000")))
+                r2_doc_item.setForeground(QBrush(QColor("#000000")))
 
-        # Col 10: Estat (B2: must update — different replicas have different anomalies)
+        # Col 10: R²_DAD (min across 6 wavelengths)
+        dad_comp = comparison.get("dad", {}) if comparison else {}
+        r2_dad_min = dad_comp.get("pearson_min", 0)
+        r2_dad_item = self.results_table.item(row, 10)
+        if r2_dad_item:
+            r2_dad_item.setText(f"{r2_dad_min:.4f}" if r2_dad_min > 0 else "-")
+            if 0 < r2_dad_min < 0.990:
+                r2_dad_item.setForeground(QBrush(QColor(COLOR_WARNING)))
+            else:
+                r2_dad_item.setForeground(QBrush(QColor("#000000")))
+            pearson_per_wl = dad_comp.get("pearson_per_wavelength", {})
+            if pearson_per_wl:
+                wl_min = dad_comp.get("wavelength_min", "?")
+                tip_lines = [f"A{wl}: {val:.4f}" for wl, val in sorted(pearson_per_wl.items())]
+                tip_lines.append(f"Mínim: A{wl_min}")
+                r2_dad_item.setToolTip("\n".join(tip_lines))
+            else:
+                r2_dad_item.setToolTip("")
+
+        # Col 11: Estat (must update — different replicas have different anomalies)
         status_color, status_text, tooltip = self._classify_sample_status(
             rep_data, comparison)
-        status_item = self.results_table.item(row, 10)
+        status_item = self.results_table.item(row, 11)
         if status_item:
             status_item.setText(status_text)
             status_item.setForeground(QBrush(QColor(status_color)))

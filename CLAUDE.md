@@ -39,15 +39,30 @@ Mark features as DONE only when code is fully functional end-to-end, not when pl
 - [x] Consolidation panel (read .D, create Excel) — DONE
 - [x] Calibration: rf_mass_cal per-mode (direct/uib x column/bp) — DONE
 - [x] Calibration: intercept per-mode (nested dict, quantify, plot) — DONE (4f2d245)
+- [x] Calibration: RF per-mode applied (COLUMN rf=628+intercept=81, BP rf=915 origin) — DONE (JSON updated)
 - [x] Calibration: QC history + KHP validation — DONE
 - [x] Calibration: plot recta with tolerance bands — DONE
 - [x] Process wizard: batch anomaly detection — DONE
 - [x] Analyze panel: chromatogram view + anomaly flags — DONE
+- [x] Analyze backend: areas_uib in BP DUAL mode — DONE (v1.6.0)
+- [x] Analyze backend: quantify_sample with rf_direct/rf_uib separate — DONE (v1.6.0)
+- [x] Analyze backend: R² DAD per 6 wavelengths (pearson_per_wavelength) — DONE (v1.6.0)
 - [x] Dashboard panel — DONE
+- [x] Analyze panel: taula unificada DOC+DAD (12 cols: SNR, SNR_254, R²_DOC, R²_DAD) — DONE
+- [ ] Analyze panel: dropdowns rèplica independents DOC vs DAD — PENDING (backend suporta, GUI no)
+- [ ] Analyze panel: mostrar bigaussian (R², asym, quality) per BP — PENDING
+- [ ] Analyze panel: mostrar timeouts amb icones/tooltip — PENDING
+- [ ] Analyze backend: detecció deriva baseline DAD per replica selection — PENDING (TODO a hpsec_analyze.py L1210)
+- [ ] Calibration: revisar flux de renovació/regeneració de calibració (add_calibration, UI panel) — PENDING
 - [ ] Calibration: UI to edit intercept values from panel — PENDING
 - [ ] Calibration: auto-fit intercept from KHP data (regression) — PENDING
 - [ ] Export: PDF batch reports — PARTIAL (template exists)
 - [ ] Architecture refactor: unify detection functions in hpsec_core.py — PENDING
+
+## Design decisions
+
+- **Analyze table**: ONE unified table with all DOC+DAD columns. NO DOC/DAD toggle selector (not practical).
+  PLAN_TAULA_ANALITZAR.md proposed a selector but it was rejected.
 
 ## Instructions for Claude
 
