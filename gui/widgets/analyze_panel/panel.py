@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
     QFrame, QAbstractItemView, QProgressBar, QMessageBox
 )
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor, QBrush
+from PySide6.QtGui import QColor, QBrush, QFont
 
 from pathlib import Path
 
