@@ -47,6 +47,7 @@ from hpsec_core import (
     calculate_fwhm,
     calculate_symmetry,
     fit_bigaussian,
+    repair_with_parabola,
     TIMEOUT_CONFIG
 )
 
@@ -366,15 +367,20 @@ def get_all_rf_mass_cal(seq_date=None):
     return cal.get('rf_mass_cal')
 
 
-def get_calibration_intercept(seq_date=None):
+def get_calibration_intercept(signal='direct', mode='column', seq_date=None):
     """
-    Obté l'intercept de la calibració (0 si forçada a origen).
+    Obté l'intercept de la calibració per signal/mode (0 si forçada a origen).
+
+    Suporta intercept escalar (retrocompatible) o dict nested per-mode:
+        {"direct": {"column": 81, "bp": 0}, "uib": {"column": 0, "bp": 0}}
 
     Args:
+        signal: 'direct' o 'uib'
+        mode: 'column' o 'bp'
         seq_date: Data SEQ (None = calibració activa)
 
     Returns:
-        float: intercept (0 si model origin)
+        float: intercept (0 si model origin o no trobat)
     """
     if seq_date:
         cal = get_calibration_for_date(seq_date)
@@ -384,7 +390,13 @@ def get_calibration_intercept(seq_date=None):
     if not cal:
         return 0
 
-    return cal.get('intercept', 0)
+    intercept = cal.get('intercept', 0)
+    if isinstance(intercept, dict):
+        signal_data = intercept.get(signal.lower(), {})
+        if isinstance(signal_data, dict):
+            return signal_data.get(mode.lower(), 0)
+        return 0
+    return float(intercept) if intercept else 0
 
 
 def quantify_with_global_calibration(area, volume_uL, signal='direct', mode='column', seq_date=None):
@@ -447,8 +459,8 @@ def quantify_with_global_calibration(area, volume_uL, signal='direct', mode='col
             'error': 'Volum invàlid'
         }
 
-    # Obtenir intercept (0 si origin)
-    intercept = cal.get('intercept', 0)
+    # Obtenir intercept per-mode (0 si origin)
+    intercept = get_calibration_intercept(signal, mode, seq_date)
 
     # Fórmula única: ppm = (Area - intercept) × 1000 / (rf_mass_cal × volume)
     # Si intercept = 0 (origin), queda: ppm = Area × 1000 / (rf_mass_cal × volume)
@@ -610,7 +622,7 @@ def register_qc_result(seq_name, seq_date, qc_result, khp_data):
 
 
 def add_calibration(rf_mass_cal_values, source, valid_from, r2=None, n_points=None,
-                    conditions=None, reason=""):
+                    conditions=None, reason="", intercept_values=None):
     """
     Afegeix una nova calibració i tanca l'anterior.
 
@@ -661,7 +673,8 @@ def add_calibration(rf_mass_cal_values, source, valid_from, r2=None, n_points=No
     new_cal = {
         'id': cal_id,
         'rf_mass_cal': rf_mass_cal_values,
-        'model': 'origin',
+        'model': 'intercept' if intercept_values else 'origin',
+        'intercept': intercept_values if intercept_values is not None else 0,
         'r2': r2,
         'n_points': n_points,
         'valid_from': valid_from_date,
@@ -1796,7 +1809,6 @@ def validate_khp_for_alignment(t_doc, y_doc, t_dad, y_a254, t_uib=None, y_uib=No
 
             if repair_batman:
                 try:
-                    from hpsec_core import repair_with_parabola
                     y_repaired, repair_info, was_repaired = repair_with_parabola(t_peak_zone, y_peak_zone)
                     if was_repaired:
                         y_doc_working[peak_zone] = y_repaired
@@ -2374,8 +2386,8 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
         # Intentar extreure de nom
         conc = extract_khp_conc(name)
 
-    if conc == 0:
-        return None
+    # conc=0 és acceptable: shift, àrees i detecció d'anomalies no necessiten concentració.
+    # Només RF (response factor) no es pot calcular sense conc (ja protegit amb if conc > 0).
 
     # Netejar NaN
     t_doc = np.asarray(t_doc)
@@ -2463,6 +2475,28 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
     has_irregular = anomaly_info.get('is_irregular', False)
     smoothness = anomaly_info.get('smoothness', 100.0)
 
+    # Batman repair: intentar reparar amb paràbola si detectat
+    batman_repaired = False
+    repair_info = None
+    area_original = peak_info['area']
+    if has_batman:
+        try:
+            y_repaired_seg, repair_info, was_repaired = repair_with_parabola(
+                t_peak_seg, y_peak_seg
+            )
+            if was_repaired:
+                batman_repaired = True
+                # Recalcular àrea amb senyal reparat
+                area_repaired = float(trapezoid(y_repaired_seg, t_peak_seg))
+                peak_info['area_original'] = area_original
+                peak_info['area'] = area_repaired
+                peak_info['area_repaired'] = area_repaired
+                # Actualitzar senyal al segment
+                y_doc_net_repaired = y_doc_net.copy()
+                y_doc_net_repaired[left_idx:right_idx+1] = y_repaired_seg
+        except Exception:
+            batman_repaired = False
+
     # DAD 254nm
     shift_khp = 0.0
     has_dad = df_dad is not None and not df_dad.empty
@@ -2537,6 +2571,15 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
     area_total = total_integration['area']
     concentration_ratio = area_main_peak / area_total if area_total > 0 else 1.0
 
+    # Baseline drift local
+    dt = np.median(np.diff(t_doc)) if len(t_doc) > 1 else 1.0
+    n_bl = max(3, int(1.0 / dt))
+    bl_left = float(np.median(y_doc_net[max(0, left_idx - n_bl):left_idx])) if left_idx > 0 else 0.0
+    bl_right_slice = y_doc_net[right_idx + 1:min(len(y_doc_net), right_idx + n_bl + 1)]
+    bl_right = float(np.median(bl_right_slice)) if len(bl_right_slice) > 0 else 0.0
+    bl_mean = (bl_left + bl_right) / 2
+    bl_drift_pct = abs(bl_mean / float(y_doc_net[peak_idx]) * 100) if y_doc_net[peak_idx] > 0 else 0.0
+
     # Volum injecció (prioritza metadata, després calcula)
     if volume_uL_meta is not None:
         volume_uL = volume_uL_meta
@@ -2563,7 +2606,7 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
         quality_score += 20
         quality_issues.append(f"SNR baix ({snr:.1f})")
     if has_batman:
-        quality_score += 50
+        quality_score += 100
         quality_issues.append("Doble pic (Batman)")
     # Timeout: només penalitza si afecta l'interval d'integració del pic
     if has_timeout:
@@ -2585,6 +2628,9 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
         quality_issues.append(f"Múltiples pics ({len(all_peaks)})")
     if limits_expanded:
         quality_issues.append("Límits expandits")
+    if bl_drift_pct > 8:
+        quality_score += 10
+        quality_issues.append(f"Baseline drift alt ({bl_drift_pct:.0f}%)")
 
     # =========================================================================
     # NOVES MÈTRIQUES: FWHM, RF, RF_MASS, CR per tots els senyals
@@ -2674,6 +2720,7 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
         't_dad_max': t_dad_max,
         't_doc': t_doc,
         'y_doc': y_doc_net,
+        'y_doc_repaired': y_doc_net_repaired if batman_repaired else None,
         't_dad': t_dad,
         'y_dad_254': dad_254,
         'symmetry': symmetry,
@@ -2684,6 +2731,9 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
         'quality_score': quality_score,
         'quality_issues': quality_issues,
         'has_batman': has_batman,
+        'batman_repaired': batman_repaired,
+        'repair_info': repair_info,
+        'area_original': area_original if batman_repaired else None,
         'has_timeout': has_timeout,
         'timeout_info': timeout_info,
         'timeout_severity': timeout_severity,
@@ -2720,6 +2770,10 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
         # Bigaussian fit (C05 - per BP mode)
         'bigaussian_doc': bigaussian_doc,
         'bigaussian_254': bigaussian_254,
+        # Baseline drift
+        'bl_left': bl_left,
+        'bl_right': bl_right,
+        'bl_drift_pct': bl_drift_pct,
     }
 
 
@@ -4043,7 +4097,7 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
             for rep_num, rep_data in replicas.items():
                 direct = rep_data.get("direct") if rep_data else None
                 uib = rep_data.get("uib") if rep_data else None
-                if (direct and direct.get("t")) or (uib and uib.get("t")):
+                if (direct and direct.get("t") is not None) or (uib and uib.get("t") is not None):
                     has_any_doc = True
                     break
             if not has_any_doc:
@@ -4193,6 +4247,11 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
                         cal['rf_mass_uib'] = cal['rf_mass']
                     else:
                         cal['rf_mass_doc'] = cal['rf_mass']
+                else:
+                    # Sense concentració: shift i àrees sí, RF no
+                    cal['rf'] = 0.0
+                    cal['rf_mass'] = 0.0
+                    cal['no_conc'] = True
                 calibrations.append(cal)
 
         # Ordenar per concentració (desc) i volum (desc)
@@ -4246,6 +4305,20 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
         volume_uL = int(volumes[0]) if volumes else 100
         t_dad_maxs = [(r.get('t_dad_max') or 0) for r in replicas if (r.get('t_dad_max') or 0) > 0]
         mean_t_dad_max = float(np.mean(t_dad_maxs)) if t_dad_maxs else 0.0
+
+        # Anomalies i qualitat (propagar de rèpliques: pitjor cas)
+        quality_scores = [r.get('quality_score', 0) for r in replicas]
+        max_quality_score = max(quality_scores) if quality_scores else 0
+        all_quality_issues = []
+        for r in replicas:
+            for issue in r.get('quality_issues', []):
+                if issue not in all_quality_issues:
+                    all_quality_issues.append(issue)
+        group_has_batman = any(r.get('has_batman', False) for r in replicas)
+        group_has_irregular = any(r.get('has_irregular', False) for r in replicas)
+        group_has_timeout = any(r.get('has_timeout', False) for r in replicas)
+        group_smoothness = min((r.get('smoothness', 100.0) for r in replicas), default=100.0)
+        group_batman_repaired = any(r.get('batman_repaired', False) for r in replicas)
 
         # Determinar mètode de selecció
         if manual_selection:
@@ -4343,6 +4416,15 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
             # Comparació entre rèpliques
             'replica_comparison': comparison,
 
+            # Anomalies i qualitat (pitjor cas de totes les rèpliques)
+            'quality_score': max_quality_score,
+            'quality_issues': all_quality_issues,
+            'has_batman': group_has_batman,
+            'has_irregular': group_has_irregular,
+            'has_timeout': group_has_timeout,
+            'smoothness': group_smoothness,
+            'batman_repaired': group_batman_repaired,
+
             # Estadístiques globals
             'n_replicas': len(replicas),
             'rsd': rsd,
@@ -4413,7 +4495,12 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
         result["rf"] = primary.get('rf', 0)
         result["rf_mass"] = primary.get('rf_mass', 0)
 
-    if result["rf"] == 0:
+    # Comprovar si conc desconeguda
+    has_unknown_conc = result.get("khp_conc", 0) == 0
+    if has_unknown_conc:
+        result["warnings"].append("KHP sense concentració coneguda: no es pot calcular RF ni comparar amb recta global")
+        result["no_conc"] = True
+    elif result["rf"] == 0:
         result["errors"].append("WARN: RF és zero (àrea o concentració invàlides)")
 
     # Afegir comparació històrica

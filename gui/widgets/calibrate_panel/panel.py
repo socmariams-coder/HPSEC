@@ -22,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 from hpsec_calibrate import (
     calibrate_from_import, load_khp_history, load_local_calibrations,
     get_all_active_calibrations, load_qc_history, get_rf_mass_cal,
-    get_active_global_calibration
+    get_active_global_calibration, get_calibration_intercept
 )
 from hpsec_config import get_config
 
@@ -84,8 +84,6 @@ class CalibratePanel(QWidget):
             self.calibration_line_graph.clear()
         if hasattr(self, 'cal_line_group'):
             self.cal_line_group.setVisible(False)
-        if hasattr(self, 'shift_banner'):
-            self.shift_banner.setVisible(False)
 
     def showEvent(self, event):
         """Quan el panel es mostra, comprovar si hi ha calibració existent."""
@@ -356,13 +354,14 @@ class CalibratePanel(QWidget):
                     break
 
         # Mostrar resultats (TOTS els mètodes, igual que _on_finished)
-        self._update_summary(result)
-        self._update_shift_banner(result)
-        self._update_graphs(result)
-        self._update_metrics_table(result)
-        self._update_replica_selection(result)
-        self._update_validation(result)
-        self._update_history(result)
+        for fn in [self._update_summary, self._update_graphs,
+                   self._update_metrics_table, self._update_replica_selection,
+                   self._update_validation, self._update_history]:
+            try:
+                fn(result)
+            except Exception as e:
+                print(f"[WARNING] Error a {fn.__name__}: {e}")
+                import traceback; traceback.print_exc()
 
         self.main_window.enable_tab(2)
 
@@ -430,9 +429,9 @@ class CalibratePanel(QWidget):
         self.summary_group.setVisible(False)
         summary_main_layout = QVBoxLayout(self.summary_group)
 
-        # --- Secció: Informació General ---
-        general_group = QGroupBox("Informació General")
-        general_group.setStyleSheet(STYLE_GROUPBOX)
+        # --- Secció: Informació General (sense subtítol) ---
+        general_group = QFrame()
+        general_group.setStyleSheet("QFrame { padding: 4px; }")
         general_layout = QGridLayout(general_group)
         general_layout.setSpacing(8)
 
@@ -440,13 +439,12 @@ class CalibratePanel(QWidget):
         general_items = [
             ("seq_name", "SEQ:", 0, 0),
             ("mode", "Mode:", 0, 2),
-            ("khp_source", "Font KHP:", 1, 0),
-            ("khp_conc", "Concentració:", 1, 2),
-            ("volume", "Volum injecció:", 2, 0),
-            ("n_replicas", "Rèpliques:", 2, 2),
-            ("uib_sensitivity", "Sensibilitat UIB:", 3, 0),
-            ("qc_status", "QC Status:", 3, 2),
-            ("cal_global", "Cal Global:", 4, 0),
+            ("khp_conc", "KHP:", 1, 0),
+            ("volume", "Volum injecció:", 1, 2),
+            ("n_replicas", "Rèpliques:", 2, 0),
+            ("uib_sensitivity", "Sensibilitat UIB:", 2, 2),
+            ("qc_rf", "QC RF:", 3, 0),
+            ("qc_shift", "QC Shift:", 3, 2),
         ]
 
         for key, label_text, row, col in general_items:
@@ -455,11 +453,7 @@ class CalibratePanel(QWidget):
             general_layout.addWidget(lbl, row, col)
             val = QLabel("-")
             self.result_labels[key] = val
-            # Cal Global spans 3 cols for longer text
-            if key == "cal_global":
-                general_layout.addWidget(val, row, col + 1, 1, 3)
-            else:
-                general_layout.addWidget(val, row, col + 1)
+            general_layout.addWidget(val, row, col + 1)
 
         summary_main_layout.addWidget(general_group)
 
@@ -516,7 +510,7 @@ class CalibratePanel(QWidget):
         content_layout.addWidget(self.summary_group)
 
         # === SECCIÓN: Gràfic recta calibració global (PROMINENT) ===
-        self.cal_line_group = QGroupBox("Calibració Global")
+        self.cal_line_group = QGroupBox("Recta de calibració")
         self.cal_line_group.setVisible(False)
         self.cal_line_group.setStyleSheet(
             "QGroupBox { font-weight: bold; color: #1A5276; border: 2px solid #2E86AB; "
@@ -528,29 +522,7 @@ class CalibratePanel(QWidget):
         cal_line_layout.addWidget(self.prominent_cal_line_graph)
         content_layout.addWidget(self.cal_line_group)
 
-        # === SECCIÓN: Shift determinat (PROMINENT) ===
-        self.shift_banner = QFrame()
-        self.shift_banner.setVisible(False)
-        self.shift_banner.setMinimumHeight(60)
-        shift_banner_layout = QVBoxLayout(self.shift_banner)
-        shift_banner_layout.setContentsMargins(12, 8, 12, 8)
-        shift_banner_layout.setSpacing(4)
-
-        self.shift_banner_title = QLabel("SHIFT DETERMINAT")
-        self.shift_banner_title.setStyleSheet(
-            "font-weight: bold; font-size: 13px; color: #2C3E50;"
-        )
-        shift_banner_layout.addWidget(self.shift_banner_title)
-
-        self.shift_banner_values = QLabel("")
-        self.shift_banner_values.setStyleSheet("font-size: 12px; font-family: monospace;")
-        shift_banner_layout.addWidget(self.shift_banner_values)
-
-        self.shift_banner_source = QLabel("")
-        self.shift_banner_source.setStyleSheet("font-size: 11px; color: #555;")
-        shift_banner_layout.addWidget(self.shift_banner_source)
-
-        content_layout.addWidget(self.shift_banner)
+        # (Shift info integrada al resum QC Shift i a les taules)
 
         # === SECCIÓN: Gráficos de KHP (per rèplica) ===
         self.graphs_group = QGroupBox("Gràfics KHP (DOC + DAD 254nm)")
@@ -733,35 +705,16 @@ class CalibratePanel(QWidget):
         history_header.addWidget(self.history_info_btn)
         history_layout.addLayout(history_header)
 
-        # Layout horitzontal: taula a l'esquerra, gràfic a la dreta
+        # Dos gràfics: Àrea i DOC/254
         history_content = QHBoxLayout()
 
-        # Taula d'històric (esquerra)
-        self.history_table = QTableWidget()
-        self.history_table.setColumnCount(12)
-        self.history_table.setHorizontalHeaderLabels([
-            "SEQ", "Mode", "Àrea", "t_max", "SNR", "DOC/254", "CR", "Sym", "Shift", "Q", "Estat", "Motiu"
-        ])
-        # Tooltips per les capçaleres
-        self.history_table.horizontalHeaderItem(3).setToolTip("Temps del pic màxim (min)")
-        self.history_table.horizontalHeaderItem(4).setToolTip("Signal-to-Noise Ratio")
-        self.history_table.horizontalHeaderItem(5).setToolTip("Ratio DOC/254nm")
-        self.history_table.horizontalHeaderItem(6).setToolTip("Concentration Ratio (pic/total)")
-        self.history_table.horizontalHeaderItem(7).setToolTip("Simetria del pic")
-        self.history_table.horizontalHeaderItem(9).setToolTip("Quality Score v2 (0=perfecte, >=100=invalid)")
-        self.history_table.horizontalHeaderItem(11).setToolTip("Motiu d'exclusió si aplica")
-        self.history_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
-        self.history_table.setAlternatingRowColors(False)
-        self.history_table.setSelectionBehavior(QTableWidget.SelectRows)
-        self.history_table.setMaximumHeight(180)
-        self.history_table.verticalHeader().setVisible(False)
-        self.history_table.setEditTriggers(QTableWidget.NoEditTriggers)
-        self.history_table.setStyleSheet("QTableWidget { font-size: 11px; }")
-        history_content.addWidget(self.history_table, 3)
+        self.history_graph = HistoryBarWidget(ylabel="Àrea", value_key="area")
+        self.history_graph.bar_selected.connect(self._on_history_bar_selected)
+        history_content.addWidget(self.history_graph)
 
-        # Gràfic de barres compacte (dreta)
-        self.history_graph = HistoryBarWidget()
-        history_content.addWidget(self.history_graph, 2)
+        self.history_doc254_graph = HistoryBarWidget(ylabel="DOC/254", value_key="a254_doc_ratio")
+        self.history_doc254_graph.bar_selected.connect(self._on_history_bar_selected)
+        history_content.addWidget(self.history_doc254_graph)
 
         # Alias per backward compat (recta ara és prominent, a dalt)
         self.calibration_line_graph = self.prominent_cal_line_graph
@@ -778,30 +731,12 @@ class CalibratePanel(QWidget):
         # Botó per marcar/desmarcar outlier
         self.toggle_outlier_btn = QPushButton("Marcar Outlier")
         self.toggle_outlier_btn.setEnabled(False)
-        self.toggle_outlier_btn.setToolTip("Marcar/desmarcar la calibració seleccionada com a outlier")
+        self.toggle_outlier_btn.setToolTip("Clicar una barra per seleccionar, després marcar/desmarcar outlier")
         self.toggle_outlier_btn.clicked.connect(self._toggle_outlier)
         self.toggle_outlier_btn.setStyleSheet("QPushButton { padding: 4px 8px; }")
         history_footer.addWidget(self.toggle_outlier_btn)
 
-        # Botó per usar mitjana històrica
-        self.use_average_btn = QPushButton("Usar Mitjana")
-        self.use_average_btn.setEnabled(False)
-        self.use_average_btn.setToolTip("Calibrar usant la mitjana de les calibracions vàlides")
-        self.use_average_btn.clicked.connect(self._use_historical_average)
-        self.use_average_btn.setStyleSheet("QPushButton { padding: 4px 8px; }")
-        history_footer.addWidget(self.use_average_btn)
-
-        # Botó per aplicar seleccionada
-        self.select_cal_btn = QPushButton("Aplicar Seleccionada")
-        self.select_cal_btn.setEnabled(False)
-        self.select_cal_btn.clicked.connect(self._apply_selected_calibration)
-        self.select_cal_btn.setStyleSheet("QPushButton { padding: 4px 8px; }")
-        history_footer.addWidget(self.select_cal_btn)
-
         history_layout.addLayout(history_footer)
-
-        # Connectar selecció de taula
-        self.history_table.itemSelectionChanged.connect(self._on_history_selection_changed)
 
         content_layout.addWidget(self.history_group)
 
@@ -846,7 +781,6 @@ class CalibratePanel(QWidget):
         # Limpiar resultados anteriores
         self.summary_group.setVisible(False)
         self.cal_line_group.setVisible(False)
-        self.shift_banner.setVisible(False)
         self.graphs_group.setVisible(False)
         self.metrics_group.setVisible(False)
         self.validation_group.setVisible(False)
@@ -881,13 +815,14 @@ class CalibratePanel(QWidget):
         self.main_window.calibration_data = result
 
         # Mostrar resultados
-        self._update_summary(result)
-        self._update_shift_banner(result)
-        self._update_graphs(result)
-        self._update_metrics_table(result)
-        self._update_replica_selection(result)
-        self._update_validation(result)
-        self._update_history(result)
+        for fn in [self._update_summary, self._update_graphs,
+                   self._update_metrics_table, self._update_replica_selection,
+                   self._update_validation, self._update_history]:
+            try:
+                fn(result)
+            except Exception as e:
+                print(f"[WARNING] Error a {fn.__name__}: {e}")
+                import traceback; traceback.print_exc()
 
         # Auto-generar PDF de QA/QC
         try:
@@ -993,12 +928,14 @@ class CalibratePanel(QWidget):
         # Reset all labels
         self.result_labels["seq_name"].setText("-")
         self.result_labels["mode"].setText("Defaults (sense KHP)")
-        self.result_labels["khp_source"].setText(khp_source)
         self.result_labels["khp_conc"].setText("-")
         self.result_labels["volume"].setText("-")
         self.result_labels["n_replicas"].setText("-")
         self.result_labels["uib_sensitivity"].setText("-")
-        self.result_labels["cal_global"].setText("-")
+        self.result_labels["qc_rf"].setText("-")
+        self.result_labels["qc_shift"].setText(
+            f"D:{shift_direct * 60:+.1f}s" if shift_direct != 0 else "0s"
+        )
         # Direct
         self.result_labels["rf_direct"].setText("-")
         self.result_labels["rf_mass_direct"].setText("-")
@@ -1017,13 +954,9 @@ class CalibratePanel(QWidget):
         )
         self.result_labels["snr_uib"].setText("-")
         self.result_labels["tmax_uib"].setText("-")
-        self.result_labels["qc_status"].setText("-")
         # Hide signal sections
         self.direct_group.setVisible(False)
         self.uib_group.setVisible(False)
-
-        # Mostrar shift banner si s'ha determinat
-        self._update_shift_banner(self.calibration_data)
 
         # Guardar avisos estructurats perquè el wizard els llegeixi
         # (validation_group ja no es mostra, avisos van al header)
@@ -1143,16 +1076,15 @@ class CalibratePanel(QWidget):
         self.result_labels["seq_name"].setText(seq_name)
 
         mode = result.get("mode", "-")
-        self.result_labels["mode"].setText(mode)
-        self.result_labels["khp_source"].setText(result.get("khp_source", "LOCAL"))
+        self.result_labels["mode"].setText(mode if mode else "-")
 
         # Concentració KHP
         khp_conc = result.get("khp_conc", 0)
         self.result_labels["khp_conc"].setText(f"{khp_conc:.0f} ppm" if khp_conc > 0 else "-")
 
         # Volum injecció
-        volume = None
         khp_data_main = result.get("khp_data_direct") or result.get("khp_data_uib")
+        volume = None
         if khp_data_main:
             volume = khp_data_main.get('volume_uL')
             if not volume:
@@ -1161,9 +1093,19 @@ class CalibratePanel(QWidget):
                     volume = replicas[0].get('volume_uL')
         self.result_labels["volume"].setText(f"{int(volume)} µL" if volume else "-")
 
-        # Nombre de rèpliques
-        n_replicas = khp_data_main.get("n_replicas", 1) if khp_data_main else 0
-        self.result_labels["n_replicas"].setText(str(n_replicas) if n_replicas > 0 else "-")
+        # Nombre de rèpliques: "N (M vàlides)"
+        n_replicas = 0
+        n_valid = 0
+        if khp_data_main:
+            replicas = khp_data_main.get('replicas') or []
+            n_replicas = len(replicas) if replicas else khp_data_main.get("n_replicas", 0)
+            n_valid = sum(1 for r in replicas if r.get('quality_score', 0) < 100)
+            if n_valid == 0:
+                n_valid = n_replicas  # Si no hi ha quality_score, totes vàlides
+        if n_replicas > 0:
+            self.result_labels["n_replicas"].setText(f"{n_replicas} ({n_valid} vàlides)")
+        else:
+            self.result_labels["n_replicas"].setText("-")
 
         # Sensibilitat UIB (700 ppb o 1000 ppb)
         uib_sensitivity = None
@@ -1259,18 +1201,18 @@ class CalibratePanel(QWidget):
         else:
             self.uib_group.setVisible(False)
 
-        # === QC: Comparació rf_mass vs rf_mass_cal (global) ===
+        # === QC RF: Comparació rf_mass vs rf_mass_cal (global) ===
         try:
-            khp_data_main = result.get("khp_data_direct") or result.get("khp_data_uib")
+            khp_data_qc = result.get("khp_data_direct") or result.get("khp_data_uib")
             rf_mass_measured = 0
-            if khp_data_main:
-                replicas_main = khp_data_main.get('replicas') or [khp_data_main]
-                rf_vals = [r.get('rf_mass_doc', 0) or r.get('rf_mass', 0) for r in replicas_main]
+            if khp_data_qc:
+                replicas_qc = khp_data_qc.get('replicas') or [khp_data_qc]
+                rf_vals = [r.get('rf_mass_doc', 0) or r.get('rf_mass', 0) for r in replicas_qc]
                 rf_vals = [v for v in rf_vals if v > 0]
                 if rf_vals:
                     rf_mass_measured = np.mean(rf_vals)
-                elif khp_data_main.get('rf_mass', 0) > 0:
-                    rf_mass_measured = khp_data_main['rf_mass']
+                elif khp_data_qc.get('rf_mass', 0) > 0:
+                    rf_mass_measured = khp_data_qc['rf_mass']
 
             if rf_mass_measured > 0:
                 mode_str = result.get('mode', 'COLUMN').lower()
@@ -1282,116 +1224,64 @@ class CalibratePanel(QWidget):
                     fail_pct = config.get('calibration', 'qc_thresholds', 'fail_pct', default=10.0)
 
                     if deviation_pct <= warn_pct:
-                        qc_text = f"PASS ({deviation_pct:.1f}% vs cal={rf_mass_cal:.0f})"
+                        qc_text = f"PASS ({deviation_pct:.1f}%)"
                         qc_style = "color: #27AE60; font-weight: bold;"
                     elif deviation_pct <= fail_pct:
-                        qc_text = f"WARNING ({deviation_pct:.1f}% vs cal={rf_mass_cal:.0f})"
+                        qc_text = f"WARNING ({deviation_pct:.1f}%)"
                         qc_style = "color: #F39C12; font-weight: bold;"
                     else:
-                        qc_text = f"FAIL ({deviation_pct:.1f}% vs cal={rf_mass_cal:.0f})"
+                        qc_text = f"FAIL ({deviation_pct:.1f}%)"
                         qc_style = "color: #E74C3C; font-weight: bold;"
 
-                    self.result_labels["qc_status"].setText(qc_text)
-                    self.result_labels["qc_status"].setStyleSheet(qc_style)
+                    self.result_labels["qc_rf"].setText(qc_text)
+                    self.result_labels["qc_rf"].setStyleSheet(qc_style)
+                    self.result_labels["qc_rf"].setToolTip(
+                        f"RF_MASS mesurat: {rf_mass_measured:.0f}\n"
+                        f"RF_MASS cal global: {rf_mass_cal:.0f}\n"
+                        f"Desviació: {deviation_pct:.1f}%"
+                    )
                 else:
-                    self.result_labels["qc_status"].setText("N/A (sense cal global)")
+                    self.result_labels["qc_rf"].setText("N/A")
+                    self.result_labels["qc_rf"].setToolTip("Sense calibració global disponible")
             else:
-                self.result_labels["qc_status"].setText("-")
+                self.result_labels["qc_rf"].setText("-")
         except Exception as e:
-            print(f"[DEBUG] Error calculant QC: {e}")
-            self.result_labels["qc_status"].setText("-")
+            print(f"[DEBUG] Error calculant QC RF: {e}")
+            self.result_labels["qc_rf"].setText("-")
 
-        # === INFO CALIBRACIÓ GLOBAL ===
+        # === QC SHIFT: Desplaçament temporal ===
         try:
-            global_cal = get_active_global_calibration()
-            if global_cal:
-                rf_mass_cal_info = global_cal.get('rf_mass_cal', {})
-                # Obtenir valor principal (direct/column)
-                if isinstance(rf_mass_cal_info, dict):
-                    direct_vals = rf_mass_cal_info.get('direct', {})
-                    if isinstance(direct_vals, dict):
-                        rf_val = direct_vals.get('column') or direct_vals.get('bp')
-                    else:
-                        rf_val = direct_vals
-                else:
-                    rf_val = rf_mass_cal_info
-                valid_from = global_cal.get('valid_from', '')
-                source_desc = global_cal.get('source', {}).get('description', '') if isinstance(global_cal.get('source'), dict) else ''
-                if rf_val:
-                    cal_text = f"rf_mass_cal={rf_val:.0f}"
-                    if valid_from:
-                        cal_text += f" (des de {valid_from})"
-                    if source_desc:
-                        cal_text += f" — {source_desc}"
-                    self.result_labels["cal_global"].setText(cal_text)
-                    self.result_labels["cal_global"].setStyleSheet("color: #2E86AB; font-weight: bold;")
-                else:
-                    self.result_labels["cal_global"].setText("N/A — sense rf_mass_cal definit")
-                    self.result_labels["cal_global"].setStyleSheet("color: #E74C3C; font-weight: bold;")
+            shift_d = result.get("shift_direct", 0)
+            shift_u = result.get("shift_uib", 0)
+            shift_d_sec = shift_d * 60
+            shift_u_sec = shift_u * 60
+            mode_val = result.get("mode", "")
+
+            parts = []
+            if "DIRECT" in str(mode_val).upper() or "DUAL" in str(mode_val).upper() or "COLUMN" in str(mode_val).upper():
+                parts.append(f"D:{shift_d_sec:+.1f}s")
+            if "UIB" in str(mode_val).upper() or "DUAL" in str(mode_val).upper() or "BP" in str(mode_val).upper():
+                parts.append(f"U:{shift_u_sec:+.1f}s")
+            if not parts:
+                parts.append(f"D:{shift_d_sec:+.1f}s")
+
+            shift_text = "  ".join(parts)
+            max_shift = max(abs(shift_d_sec), abs(shift_u_sec))
+            if max_shift < 0.1:
+                qc_style = "color: #888;"
+                shift_text = "0s"
+            elif max_shift <= 10:
+                qc_style = "color: #27AE60; font-weight: bold;"
+            elif max_shift <= 30:
+                qc_style = "color: #F39C12; font-weight: bold;"
             else:
-                self.result_labels["cal_global"].setText("N/A — sense cal global")
-                self.result_labels["cal_global"].setStyleSheet("color: #E74C3C; font-weight: bold;")
+                qc_style = "color: #E74C3C; font-weight: bold;"
+
+            self.result_labels["qc_shift"].setText(shift_text)
+            self.result_labels["qc_shift"].setStyleSheet(qc_style)
         except Exception as e:
-            print(f"[DEBUG] Error obtenint cal global: {e}")
-            self.result_labels["cal_global"].setText("-")
-
-    def _update_shift_banner(self, result):
-        """Actualitza el banner prominent amb els valors de shift determinats."""
-        shift_direct = result.get("shift_direct", 0)
-        shift_uib = result.get("shift_uib", 0)
-        shift_direct_sec = shift_direct * 60
-        shift_uib_sec = shift_uib * 60
-        khp_source = result.get("khp_source", "")
-        mode = result.get("mode", "")
-
-        has_shift = abs(shift_direct_sec) > 0.01 or abs(shift_uib_sec) > 0.01
-
-        # Determinar font i color
-        is_local = "LOCAL" in str(khp_source).upper() or "HISTÒRIC" not in str(khp_source).upper()
-        is_historic = "HISTÒRIC" in str(khp_source).upper() or "HISTORY" in str(khp_source).upper()
-        is_manual = "MANUAL" in str(khp_source).upper()
-
-        if not has_shift and not is_manual:
-            # shift=0 sense determinació explícita → vermell
-            bg_color = "#FADBD8"
-            border_color = "#E74C3C"
-            text_color = "#922B21"
-        elif is_historic:
-            # shift ve d'històric → taronja
-            bg_color = "#FDEBD0"
-            border_color = "#F39C12"
-            text_color = "#7E5109"
-        else:
-            # shift determinat localment → verd
-            bg_color = "#D5F5E3"
-            border_color = "#27AE60"
-            text_color = "#1E8449"
-
-        self.shift_banner.setStyleSheet(
-            f"QFrame {{ background-color: {bg_color}; border: 2px solid {border_color}; "
-            f"border-radius: 6px; }}"
-        )
-        self.shift_banner_title.setStyleSheet(
-            f"font-weight: bold; font-size: 13px; color: {text_color};"
-        )
-
-        # Valors
-        parts = []
-        if mode in ("DUAL", "DIRECT", "") or result.get("khp_data_direct"):
-            parts.append(f"Direct: {shift_direct_sec:+.1f}s (vs 254nm)")
-        if mode == "DUAL" or result.get("khp_data_uib"):
-            parts.append(f"UIB: {shift_uib_sec:+.1f}s (vs 254nm)")
-
-        self.shift_banner_values.setText("    ".join(parts) if parts else "Shift: 0s")
-        self.shift_banner_values.setStyleSheet(
-            f"font-size: 12px; font-family: monospace; color: {text_color};"
-        )
-
-        # Font
-        source_text = f"Font: {khp_source}" if khp_source else "Font: LOCAL"
-        self.shift_banner_source.setText(source_text)
-
-        self.shift_banner.setVisible(True)
+            print(f"[DEBUG] Error calculant QC Shift: {e}")
+            self.result_labels["qc_shift"].setText("-")
 
     def _extract_all_replicas(self, khp_data):
         """
@@ -2340,8 +2230,8 @@ class CalibratePanel(QWidget):
 
         # Inicialitzar
         self._history_data = []
-        self.history_table.setRowCount(0)
-        self.select_cal_btn.setEnabled(False)
+        self._selected_history_idx = -1
+        self.toggle_outlier_btn.setEnabled(False)
 
         try:
             history = load_khp_history(seq_path)
@@ -2411,45 +2301,15 @@ class CalibratePanel(QWidget):
                 return int(match.group(1)) if match else 0
             filtered_history.sort(key=get_seq_num)
 
-            # Identificar índexs vàlids (per gràfic)
+            # Identificar índexs vàlids (per gràfics)
             valid_indices = set()
-
-            # Omplir taula
             for idx, cal in enumerate(filtered_history):
-                row = self.history_table.rowCount()
-                self.history_table.insertRow(row)
-
-                # Dades
                 cal_seq_raw = cal.get('seq_name', 'N/A').replace('_SEQ', '').replace('_BP', '')
-                # Mostrar nom SEQ simplificat (ja filtrat per condicions iguals)
-                cal_seq = cal_seq_raw
-
-                area = cal.get('area', 0)
-                conc = cal.get('conc_ppm', 0)
-                rf = area / conc if conc > 0 else 0  # RF = Response Factor (Àrea/ppm)
-
-                # t_max (t_retention és l'equivalent guardat)
-                t_max = cal.get('t_retention', 0) or cal.get('t_max', 0)
-                if not t_max:
-                    peak_info = cal.get('peak_info', {})
-                    t_max = peak_info.get('t_max', 0)
-
-                shift_sec = cal.get('shift_sec', 0)
-                snr = cal.get('snr', 0)
-                symmetry = cal.get('symmetry', 0)
-                doc_254_ratio = cal.get('a254_doc_ratio', 0)
-                cr = cal.get('concentration_ratio', 0)
-
-                # Usar quality_score_v2 si disponible (nova lògica)
                 quality_score = cal.get('quality_score_v2', cal.get('quality_score', 0))
-                quality_issues = cal.get('quality_issues_v2', cal.get('quality_issues', []))
                 status_v2 = cal.get('status_v2', '')
-
-                # Determinar si és vàlid amb nova lògica
                 stored_valid = cal.get('valid_for_calibration', True)
                 stored_outlier = cal.get('is_outlier', False)
 
-                # Usar status_v2 si disponible, sinó calcular
                 if status_v2:
                     is_valid = status_v2 not in ['INVALID', 'CHECK']
                 elif quality_score >= 100:
@@ -2458,106 +2318,23 @@ class CalibratePanel(QWidget):
                     is_valid = stored_valid and not stored_outlier
 
                 is_current = (cal_seq_raw == current_seq)
-
                 if is_valid and not is_current:
                     valid_indices.add(idx)
 
-                # Estat
-                if is_current:
-                    status_text = "ACTUAL"
-                elif status_v2 == 'INVALID':
-                    status_text = "INVALID"
-                elif not is_valid:
-                    status_text = "EXCLÒS"
-                elif status_v2:
-                    status_text = status_v2
-                else:
-                    status_text = "OK"
-
-                # Motiu d'exclusió
-                motiu = ""
-                if quality_issues:
-                    motiu = ", ".join(quality_issues) if isinstance(quality_issues, list) else str(quality_issues)
-                elif not is_valid:
-                    motiu = "Outlier" if stored_outlier else "Invalid"
-
-                # Mode display
-                mode_display = "BP" if cal_mode == "BP" else "COL"
-
-                # Cel·les: SEQ, Mode, Àrea, t_max, SNR, DOC/254, CR, Sym, Shift, Q, Estat, Motiu
-                items = [
-                    cal_seq,
-                    mode_display,
-                    f"{area:.0f}",
-                    f"{t_max:.2f}" if t_max and t_max > 0 else "-",
-                    f"{snr:.0f}" if snr and snr > 0 else "-",
-                    f"{doc_254_ratio:.2f}" if doc_254_ratio and doc_254_ratio > 0 else "-",
-                    f"{cr:.2f}" if cr and cr > 0 else "-",
-                    f"{symmetry:.2f}" if symmetry and symmetry > 0 else "-",
-                    f"{shift_sec:.1f}" if shift_sec else "-",
-                    f"{quality_score:.0f}" if quality_score else "0",
-                    status_text,
-                    motiu
-                ]
-
-                for col, text in enumerate(items):
-                    item = QTableWidgetItem(text)
-                    item.setTextAlignment(Qt.AlignCenter)
-
-                    # Tooltip amb detalls
-                    if col == 0:
-                        item.setToolTip(
-                            f"SEQ: {cal_seq_raw}\n"
-                            f"Mode: {cal_mode}\n"
-                            f"KHP: {cal_conc:.0f} ppm\n"
-                            f"Volum: {cal_vol} µL"
-                        )
-
-                    # Fons segons estat
-                    if is_current:
-                        item.setBackground(QColor("#D5F5E3"))  # Verd clar = actual
-                        item.setFont(QFont("Segoe UI", 9, QFont.Bold))
-                    elif status_text == "INVALID":
-                        item.setBackground(QColor("#F5B7B1"))  # Vermell clar
-                        item.setForeground(QColor("#666666"))
-                    elif not is_valid:
-                        item.setBackground(QColor("#FADBD8"))  # Vermell clar = exclòs
-                        item.setForeground(QColor("#888888"))
-
-                    # Quality score amb colors (col 9)
-                    if col == 9:
-                        if quality_score >= 100:
-                            item.setBackground(QColor("#F5B7B1"))  # Vermell
-                        elif quality_score >= 50:
-                            item.setBackground(QColor("#FCF3CF"))  # Groc
-                        elif quality_score > 20:
-                            item.setBackground(QColor("#FEF9E7"))  # Groc clar
-                        else:
-                            item.setBackground(QColor("#D5F5E3"))  # Verd clar
-
-                    # Columna Estat amb colors (col 10)
-                    if col == 10:
-                        if status_text == "ACTUAL":
-                            item.setBackground(QColor("#85C1E9"))  # Blau
-                        elif status_text == "OK":
-                            item.setBackground(QColor("#D5F5E3"))  # Verd
-                        elif status_text == "INVALID":
-                            item.setBackground(QColor("#F5B7B1"))  # Vermell
-                        elif status_text == "EXCLÒS":
-                            item.setBackground(QColor("#EBEDEF"))  # Gris
-
-                    self.history_table.setItem(row, col, item)
-
-            # Gràfic de barres (passar valid_indices per colors correctes)
+            # Gràfics de barres: Àrea i DOC/254
             self.history_graph.plot_history(filtered_history, current_seq, valid_indices)
+            self.history_doc254_graph.plot_history(filtered_history, current_seq, valid_indices)
 
             # Gràfic de recta de calibració (PROMINENT, a dalt)
             try:
                 qc_history = load_qc_history()
                 config = get_config()
-                rf_mass_cal = get_rf_mass_cal(signal='direct', mode=method.lower())
-                rf_mass_val = rf_mass_cal or 682
-                self.cal_line_group.setTitle(f"Calibració Global — rf_mass_cal={rf_mass_val:.0f}")
+                rf_mass_col = get_rf_mass_cal(signal='direct', mode='column')
+                rf_mass_bp = get_rf_mass_cal(signal='direct', mode='bp')
+                rf_mass_val = rf_mass_col or rf_mass_bp or 682
+                intercept_col = get_calibration_intercept(signal='direct', mode='column')
+                intercept_bp = get_calibration_intercept(signal='direct', mode='bp')
+                self.cal_line_group.setTitle("Recta de calibració")
                 self.cal_line_group.setVisible(True)
                 self.calibration_line_graph.plot_calibration(
                     qc_history=qc_history,
@@ -2565,7 +2342,11 @@ class CalibratePanel(QWidget):
                     rf_mass_cal=rf_mass_val,
                     warning_pct=config.get('calibration', 'qc_thresholds', 'warning_pct', default=5.0),
                     fail_pct=config.get('calibration', 'qc_thresholds', 'fail_pct', default=10.0),
-                    n_context=config.get('calibration', 'qc_thresholds', 'n_seqs_context', default=2)
+                    n_context=config.get('calibration', 'qc_thresholds', 'n_seqs_context', default=2),
+                    rf_mass_cal_bp=rf_mass_bp if rf_mass_col else None,
+                    current_mode=method.lower(),
+                    intercept_col=intercept_col,
+                    intercept_bp=intercept_bp,
                 )
             except Exception as e:
                 print(f"Error plotant gràfic calibració: {e}")
@@ -2582,50 +2363,35 @@ class CalibratePanel(QWidget):
                 std_area = np.std(valid_areas) if len(valid_areas) > 1 else 0
                 self.history_summary.setText(
                     f"{n_valid} vàlides · {n_excluded} excloses · "
-                    f"Mitjana: {mean_area:.0f} ± {std_area:.0f}"
+                    f"Mitjana àrea: {mean_area:.0f} ± {std_area:.0f}"
                 )
-                # Habilitar botó de mitjana si hi ha més d'una calibració vàlida
-                self.use_average_btn.setEnabled(n_valid >= 2)
             else:
                 self.history_summary.setText(
-                    f"{n_excluded} calibracions (totes excloses de la mitjana)"
+                    f"{n_excluded} calibracions (totes excloses)"
                 )
-                self.use_average_btn.setEnabled(False)
 
         except Exception as e:
             import traceback
             print(f"[WARNING] Error carregant històric: {e}")
             traceback.print_exc()
             self.history_graph.clear()
+            self.history_doc254_graph.clear()
             self.calibration_line_graph.clear()
             self.cal_line_group.setVisible(False)
             self.history_group.setVisible(False)
 
-    def _on_history_selection_changed(self):
-        """Handler quan es selecciona una fila de l'històric."""
-        row = self.history_table.currentRow()
-        has_selection = row >= 0
+    def _on_history_bar_selected(self, real_idx):
+        """Handler quan es clica una barra del gràfic històric."""
+        self._selected_history_idx = real_idx
+        self.toggle_outlier_btn.setEnabled(True)
 
-        self.select_cal_btn.setEnabled(has_selection)
-        self.toggle_outlier_btn.setEnabled(has_selection)
-
-        # Actualitzar text del botó outlier segons l'estat actual de la fila seleccionada
-        if has_selection and hasattr(self, '_history_data') and row < len(self._history_data):
-            cal = self._history_data[row]
-            # Comprovar si és outlier (manual o automàtic)
-            is_manual_outlier = cal.get('manual_outlier', False)
-            is_auto_outlier = cal.get('is_outlier', False)
-            snr = cal.get('snr', 0)
-            quality_score = cal.get('quality_score', 0)
-
-            # Re-avaluar com a _update_history: SNR=0 i quality_score<=40 es considera vàlid
-            if snr == 0 and quality_score <= 40:
-                is_valid = not is_manual_outlier  # Només manual pot fer-lo outlier
-            else:
-                is_valid = not is_manual_outlier and not is_auto_outlier
-
-            is_outlier = not is_valid
-            self.toggle_outlier_btn.setText("Desmarcar Outlier" if is_outlier else "Marcar Outlier")
+        if hasattr(self, '_history_data') and 0 <= real_idx < len(self._history_data):
+            cal = self._history_data[real_idx]
+            is_outlier = cal.get('is_outlier', False) or cal.get('manual_outlier', False)
+            seq_name = cal.get('seq_name', '').replace('_SEQ', '').replace('_BP', '')
+            self.toggle_outlier_btn.setText(
+                f"Desmarcar Outlier ({seq_name})" if is_outlier else f"Marcar Outlier ({seq_name})"
+            )
         else:
             self.toggle_outlier_btn.setText("Marcar Outlier")
 
@@ -2675,11 +2441,11 @@ i determina el time shift necessari per a la quantificació.</p>
             self._update_history(self.calibration_data)
 
     def _apply_selected_calibration(self):
-        """Aplica la calibració seleccionada de la taula i mostra el report complet."""
+        """Aplica la calibració seleccionada i mostra el report complet."""
         from PySide6.QtWidgets import QMessageBox
         import os
 
-        row = self.history_table.currentRow()
+        row = getattr(self, '_selected_history_idx', -1)
         if row < 0 or not hasattr(self, '_history_data') or row >= len(self._history_data):
             return
 
@@ -2699,10 +2465,10 @@ i determina el time shift necessari per a la quantificació.</p>
         current_seq = os.path.basename(seq_path) if seq_path else "-"
         self.result_labels["seq_name"].setText(current_seq)
         self.result_labels["mode"].setText(cal.get('doc_mode', cal.get('mode', 'N/A')))
-        self.result_labels["khp_source"].setText(f"ALTERNATIU: {seq_name}")
         self.result_labels["khp_conc"].setText(f"{conc:.0f} ppm")
         self.result_labels["volume"].setText(f"{cal.get('volume_uL', '-')} µL" if cal.get('volume_uL') else "-")
-        self.result_labels["n_replicas"].setText(str(cal.get('n_replicas', 1)))
+        n_rep = cal.get('n_replicas', 1)
+        self.result_labels["n_replicas"].setText(f"{n_rep} (alternatiu)")
 
         # === ACTUALITZAR SECCIÓ DIRECT (amb dades de l'històric) ===
         # Nota: l'històric pot no tenir separació Direct/UIB, mostrem el que tenim
@@ -2789,7 +2555,7 @@ i determina el time shift necessari per a la quantificació.</p>
         import json
         from datetime import datetime
 
-        row = self.history_table.currentRow()
+        row = getattr(self, '_selected_history_idx', -1)
         if row < 0 or not hasattr(self, '_history_data') or row >= len(self._history_data):
             return
 
@@ -2971,7 +2737,6 @@ i determina el time shift necessari per a la quantificació.</p>
             return
 
         # Aplicar als nous labels
-        self.result_labels["khp_source"].setText(f"MITJANA ({len(valid_cals)} cals)")
         self.result_labels["rf_direct"].setText(f"{rf:.0f}")
         self.result_labels["shift_direct"].setText(f"{mean_shift:.1f} s ({mean_shift/60:.3f} min)")
         self.direct_group.setVisible(True)
