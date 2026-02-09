@@ -265,8 +265,8 @@ class CalibrationLineWidget(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.canvas)
 
-        self.setMinimumHeight(180)
-        self.setMaximumHeight(220)
+        self.setMinimumHeight(200)
+        self.setMaximumHeight(280)
 
     def plot_calibration(self, qc_history, current_seq_name, rf_mass_cal=682,
                          warning_pct=5.0, fail_pct=10.0, n_context=2):
