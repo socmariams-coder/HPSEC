@@ -137,14 +137,8 @@ DEFAULT_PROCESS_CONFIG = {
     "peak_min_prominence_pct": 5.0,  # Prominència mínima (% del màxim)
     # Límit temporal
     "max_time_min": 70.0,            # Temps màxim per truncar cromatogrames
-    # Fraccions de temps per integració parcial (Column mode)
-    "time_fractions": {
-        "BioP": [0, 18],
-        "HS": [18, 23],
-        "BB": [23, 30],
-        "SB": [30, 40],
-        "LMW": [40, 70],
-    },
+    # Fraccions de temps: definides a hpsec_config.json, es carreguen dinàmicament
+    "time_fractions": {},
 }
 
 
@@ -284,10 +278,18 @@ def calcular_fraccions_temps(t, y, config=None, exclude_from_total=None):
     # Àrea total del cromatograma (sense cap exclusió)
     total_all = float(trapezoid(y_clean, t))
 
-    # Obtenir fraccions de la config
+    # Obtenir fraccions de la config (centralitzada a hpsec_config.json)
     if config is None:
         config = DEFAULT_PROCESS_CONFIG
-    fractions = config.get("time_fractions", DEFAULT_PROCESS_CONFIG["time_fractions"])
+    fractions = config.get("time_fractions", {})
+    if not fractions:
+        try:
+            from hpsec_config import get_config
+            cfg = get_config()
+            for fname, finfo in cfg.get_all_fractions():
+                fractions[fname] = [finfo["start"], finfo["end"]]
+        except Exception:
+            pass
 
     # Calcular àrea per cada fracció
     kpis = {}
@@ -1171,11 +1173,66 @@ def recommend_replica(r1_result, r2_result, comparison, mode="COLUMN"):
     elif has_critical2 and not has_critical1:
         result["doc"] = {"replica": "1", "score": 0.95, "reason": "R2 té anomalies crítiques"}
     elif has_critical1 and has_critical2:
-        # Ambdues tenen anomalies, triar per SNR
-        if snr2 > snr1:
-            result["doc"] = {"replica": "2", "score": 0.3, "reason": "Ambdues amb anomalies, R2 millor SNR"}
+        # Ambdues tenen anomalies crítiques
+        # Identificar si són Batman (reparables) o NO_PEAK/TIMEOUT (no reparables)
+        batman_anoms = ["BATMAN_DIRECT", "BATMAN_UIB"]
+        irreparable_anoms = ["NO_PEAK", "TIMEOUT_IN_PEAK"]
+
+        has_irreparable1 = any(a in anom1 for a in irreparable_anoms)
+        has_irreparable2 = any(a in anom2 for a in irreparable_anoms)
+        has_batman1 = any(a in anom1 for a in batman_anoms)
+        has_batman2 = any(a in anom2 for a in batman_anoms)
+
+        if has_irreparable1 and has_irreparable2:
+            # Ambdues amb anomalies no reparables → mostra no vàlida
+            if snr2 > snr1:
+                result["doc"] = {"replica": "2", "score": 0.3,
+                                 "reason": "Ambdues amb anomalies no reparables",
+                                 "valid": False}
+            else:
+                result["doc"] = {"replica": "1", "score": 0.3,
+                                 "reason": "Ambdues amb anomalies no reparables",
+                                 "valid": False}
+        elif has_batman1 or has_batman2:
+            # Almenys una té Batman (reparable) → triar la millor, suggerir reparació
+            repairable = []
+            if has_batman1 and not has_irreparable1:
+                repairable.append("1")
+            if has_batman2 and not has_irreparable2:
+                repairable.append("2")
+
+            if len(repairable) == 2:
+                # Ambdues reparables, triar per SNR
+                chosen = "2" if snr2 > snr1 else "1"
+                result["doc"] = {"replica": chosen, "score": 0.4,
+                                 "reason": "Ambdues amb Batman (reparable), triar per SNR",
+                                 "repairable": True,
+                                 "repairable_replicas": repairable}
+            elif len(repairable) == 1:
+                result["doc"] = {"replica": repairable[0], "score": 0.4,
+                                 "reason": f"R{repairable[0]} amb Batman (reparable)",
+                                 "repairable": True,
+                                 "repairable_replicas": repairable}
+            else:
+                # Cap reparable (p.ex. ambdues amb irreparable + batman)
+                if snr2 > snr1:
+                    result["doc"] = {"replica": "2", "score": 0.3,
+                                     "reason": "Ambdues amb anomalies crítiques",
+                                     "valid": False}
+                else:
+                    result["doc"] = {"replica": "1", "score": 0.3,
+                                     "reason": "Ambdues amb anomalies crítiques",
+                                     "valid": False}
         else:
-            result["doc"] = {"replica": "1", "score": 0.3, "reason": "Ambdues amb anomalies, R1 millor SNR"}
+            # Anomalies crítiques sense Batman → no vàlida
+            if snr2 > snr1:
+                result["doc"] = {"replica": "2", "score": 0.3,
+                                 "reason": "Ambdues amb anomalies crítiques",
+                                 "valid": False}
+            else:
+                result["doc"] = {"replica": "1", "score": 0.3,
+                                 "reason": "Ambdues amb anomalies crítiques",
+                                 "valid": False}
     else:
         # Cap anomalia crítica, triar per SNR
         if snr2 > snr1 * 1.1:  # R2 ha de ser >10% millor
@@ -1216,6 +1273,102 @@ def recommend_replica(r1_result, r2_result, comparison, mode="COLUMN"):
             result["dad"] = {"replica": "1", "score": 0.75, "reason": "SNR similar, preferència R1"}
 
     return result
+
+
+def repair_batman_in_replica(sample_result, signal="direct"):
+    """
+    Repara Batman en una rèplica usant repair_with_parabola().
+
+    Modifica in-place el sample_result: actualitza y_doc_net (o y_doc_uib_net),
+    recalcula àrees, i guarda traçabilitat de la reparació.
+
+    Args:
+        sample_result: Dict retornat per analyze_sample()
+        signal: "direct" o "uib"
+
+    Returns:
+        dict amb info de reparació:
+            - repaired: True/False
+            - signal: "direct"/"uib"
+            - repair_info: detalls de la reparació
+            - original_y: array original (backup)
+            - original_areas: àrees originals (backup)
+    """
+    from hpsec_core import repair_with_parabola
+
+    t = np.asarray(sample_result.get("t_doc", []))
+    if len(t) == 0:
+        return {"repaired": False, "reason": "No time data"}
+
+    repair_result = {"repaired": False, "signal": signal}
+
+    if signal == "direct":
+        y_key = "y_doc_net"
+        anom_key = "BATMAN_DIRECT"
+        batman_key = "batman_direct"
+        batman_info_key = "batman_direct_info"
+        areas_key = "areas"
+    else:
+        y_key = "y_doc_uib_net"
+        anom_key = "BATMAN_UIB"
+        batman_key = "batman_uib"
+        batman_info_key = "batman_uib_info"
+        areas_key = "areas_uib"
+
+    y_original = np.asarray(sample_result.get(y_key, []))
+    if len(y_original) == 0:
+        return {"repaired": False, "reason": f"No {signal} data"}
+
+    # Guardar dades originals per traçabilitat
+    repair_result["original_y"] = y_original.copy().tolist()
+    repair_result["original_areas"] = sample_result.get(areas_key, {}).copy()
+
+    # Aplicar reparació
+    y_repaired, repair_info, was_repaired = repair_with_parabola(t, y_original)
+
+    if not was_repaired:
+        return {"repaired": False, "reason": "repair_with_parabola failed",
+                "repair_info": repair_info}
+
+    # Actualitzar senyal reparat
+    sample_result[y_key] = y_repaired.tolist()
+    sample_result[f"{y_key}_original"] = y_original.tolist()  # Backup
+
+    # Treure anomalia Batman de la llista
+    anomalies = sample_result.get("anomalies", [])
+    if anom_key in anomalies:
+        anomalies.remove(anom_key)
+        # Afegir marca de reparació
+        anomalies.append(f"{anom_key}_REPAIRED")
+    sample_result[batman_key] = False
+    sample_result[f"{batman_key}_repaired"] = True
+    sample_result[f"{batman_key}_repair_info"] = {
+        "t_max": repair_info.get("t_max"),
+        "y_max_original": repair_info.get("y_max_original"),
+        "y_max_theoretical": repair_info.get("y_max_theoretical"),
+        "coeffs": repair_info.get("coeffs"),
+    }
+
+    # Recalcular àrees amb senyal reparat
+    try:
+        new_areas = calcular_fraccions_temps(t, y_repaired)
+        if signal == "direct":
+            if "areas" not in sample_result:
+                sample_result["areas"] = {}
+            sample_result["areas"]["DOC"] = new_areas
+        else:
+            sample_result["areas_uib"] = new_areas
+    except Exception as e:
+        repair_result["areas_recalc_error"] = str(e)
+
+    repair_result["repaired"] = True
+    repair_result["repair_info"] = {
+        "t_max": repair_info.get("t_max"),
+        "y_max_original": repair_info.get("y_max_original"),
+        "y_max_theoretical": repair_info.get("y_max_theoretical"),
+    }
+
+    return repair_result
 
 
 def quantify_sample(sample_result, calibration_data, mode="COLUMN", seq_date=None):
@@ -1573,7 +1726,7 @@ def analyze_sample(sample_data, calibration_data=None, config=None):
             return result
 
     # Detectar timeouts
-    timeout_info = detect_timeout(t_doc)
+    timeout_info = detect_timeout(t_doc, is_bp=is_bp)
     timeout_positions = timeout_info.get("t_positions", [])
 
     if timeout_info.get("n_timeouts", 0) > 0:
@@ -1611,6 +1764,22 @@ def analyze_sample(sample_data, calibration_data=None, config=None):
             result["batman_uib"] = False
 
     result["peak_info"] = peak_info
+
+    # Check TIMEOUT_IN_PEAK: timeout que afecta el pic principal DOC
+    if timeout_positions and peak_info.get("valid"):
+        t_start_peak = peak_info.get("t_start", t_doc[peak_info.get("left_idx", 0)])
+        t_end_peak = peak_info.get("t_end", t_doc[peak_info.get("right_idx", len(t_doc) - 1)])
+        # Comprovar si qualsevol timeout (inici o fi del gap) cau dins del pic
+        timeout_details = timeout_info.get("timeouts", [])
+        timeout_in_peak = any(
+            (t_start_peak <= to.get("t_start_min", 0) <= t_end_peak) or
+            (t_start_peak <= to.get("t_end_min", 0) <= t_end_peak) or
+            (to.get("t_start_min", 0) <= t_start_peak and to.get("t_end_min", 0) >= t_end_peak)
+            for to in timeout_details
+        )
+        if timeout_in_peak:
+            result["anomalies"].append("TIMEOUT_IN_PEAK")
+            result["timeout_in_peak"] = True
 
     # Calcular FWHM i simetria del pic principal
     if peak_info.get("valid"):
@@ -2361,18 +2530,39 @@ def analyze_sequence(imported_data, calibration_data=None, config=None, progress
                     "dad": recommendation["dad"]["replica"]
                 }
 
-                # Quantificació (usar rèplica seleccionada per DOC)
-                selected_replica = sample_group["selected"]["doc"]
-                selected_sample = replicas.get(selected_replica, r1)
-                # Usar calibració específica segons volum d'injecció
-                sample_cal = get_sample_calibration(selected_sample)
-                quantification = quantify_sample(selected_sample, sample_cal, mode=mode)
-                sample_group["quantification"] = quantification
+                # Propagare flags de validesa i reparabilitat
+                doc_rec = recommendation.get("doc", {})
+                sample_group["sample_valid"] = doc_rec.get("valid", True)
+                sample_group["repairable"] = doc_rec.get("repairable", False)
+                sample_group["repairable_replicas"] = doc_rec.get("repairable_replicas", [])
+                sample_group["repaired"] = False  # Es posarà True si l'usuari repara
+
+                # Quantificació (saltar si mostra no vàlida)
+                if sample_group["sample_valid"] is False:
+                    sample_group["quantification"] = {
+                        "concentration_ppm": None,
+                        "concentration_ppm_direct": None,
+                        "concentration_ppm_uib": None,
+                        "area_total": None,
+                        "valid": False,
+                        "reason": doc_rec.get("reason", "Mostra no vàlida")
+                    }
+                else:
+                    selected_replica = sample_group["selected"]["doc"]
+                    selected_sample = replicas.get(selected_replica, r1)
+                    # Usar calibració específica segons volum d'injecció
+                    sample_cal = get_sample_calibration(selected_sample)
+                    quantification = quantify_sample(selected_sample, sample_cal, mode=mode)
+                    sample_group["quantification"] = quantification
 
         elif len(replica_keys) == 1:
             # Només una rèplica
             r1 = replicas.get(replica_keys[0])
             sample_group["selected"] = {"doc": replica_keys[0], "dad": replica_keys[0]}
+            sample_group["sample_valid"] = True
+            sample_group["repairable"] = False
+            sample_group["repairable_replicas"] = []
+            sample_group["repaired"] = False
 
             # Quantificació
             if r1:
@@ -2572,6 +2762,10 @@ def save_analysis_result(analysis_data, output_path=None):
                 "recommendation": sample_data.get("recommendation"),
                 "selected": sample_data.get("selected"),
                 "quantification": sample_data.get("quantification"),
+                "sample_valid": sample_data.get("sample_valid", True),
+                "repairable": sample_data.get("repairable", False),
+                "repaired": sample_data.get("repaired", False),
+                "repair_history": sample_data.get("repair_history", []),
             }
             for rep_key, rep_data in sample_data.get("replicas", {}).items():
                 grouped_entry["replicas"][rep_key] = summarize_sample(rep_data)
@@ -2835,6 +3029,14 @@ def write_consolidated_excel(out_path, mostra, rep, seq_out, date_master,
     fraccions_data = calcular_arees_fraccions_complet(
         t_doc, y_doc_net, df_dad, mode=_mode)
     fractions_config = DEFAULT_PROCESS_CONFIG.get("time_fractions", {})
+    if not fractions_config:
+        try:
+            from hpsec_config import get_config
+            _cfg = get_config()
+            for _fn, _fi in _cfg.get_all_fractions():
+                fractions_config[_fn] = [_fi["start"], _fi["end"]]
+        except Exception:
+            pass
     fraction_names = list(fractions_config.keys()) + ["total"]
 
     header = ["Fraction", "Range (min)", "DOC"]

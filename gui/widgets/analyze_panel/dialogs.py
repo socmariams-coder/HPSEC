@@ -8,7 +8,7 @@ SampleDetailDialog amb gràfics, taula fraccions completa i resum senyals.
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTableWidget, QDialog, QGroupBox, QGridLayout, QSplitter,
-    QScrollArea
+    QScrollArea, QMessageBox
 )
 from PySide6.QtCore import Qt
 
@@ -104,6 +104,11 @@ class SampleDetailDialog(QDialog):
         # Info general
         stats_layout.addWidget(self._create_info_group())
 
+        # Batman repair button (si la mostra té Batman reparable)
+        repair_group = self._create_repair_group()
+        if repair_group:
+            stats_layout.addWidget(repair_group)
+
         # Comparació rèpliques
         if len(self.sample_data.get("replicas", {})) > 1:
             stats_layout.addWidget(self._create_comparison_group())
@@ -195,6 +200,152 @@ class SampleDetailDialog(QDialog):
             layout.addWidget(QLabel(f"{cal_source}"), row, 1)
 
         return group
+
+    # ------------------------------------------------------------------
+    # Batman repair group
+    # ------------------------------------------------------------------
+
+    def _create_repair_group(self):
+        """Crea grup amb botó de reparació Batman si la mostra té anomalies reparables."""
+        replicas = self.sample_data.get("replicas", {})
+        # Comprovar si alguna rèplica té Batman
+        has_batman = False
+        batman_signals = []
+        for rep_key, rep_data in replicas.items():
+            anomalies = rep_data.get("anomalies", [])
+            if "BATMAN_DIRECT" in anomalies:
+                has_batman = True
+                batman_signals.append(f"R{rep_key} Direct")
+            if "BATMAN_UIB" in anomalies:
+                has_batman = True
+                batman_signals.append(f"R{rep_key} UIB")
+            # Ja reparats?
+            if any("_REPAIRED" in a for a in anomalies):
+                has_batman = True
+                batman_signals.append(f"R{rep_key} (ja reparat)")
+
+        if not has_batman:
+            return None
+
+        group = QGroupBox("Reparació Batman")
+        layout = QVBoxLayout(group)
+        group.setStyleSheet("""
+            QGroupBox {
+                border: 2px solid #F39C12;
+                border-radius: 6px;
+                padding-top: 10px;
+            }
+            QGroupBox::title {
+                color: #F39C12;
+                font-weight: bold;
+            }
+        """)
+
+        info = QLabel(f"Batman detectat a: {', '.join(batman_signals)}")
+        info.setWordWrap(True)
+        info.setStyleSheet("color: #E65100; font-size: 11px;")
+        layout.addWidget(info)
+
+        already_repaired = self.sample_data.get("repaired", False)
+        if already_repaired:
+            repaired_label = QLabel("Reparació aplicada — Àrees recalculades")
+            repaired_label.setStyleSheet("color: #27AE60; font-weight: bold;")
+            layout.addWidget(repaired_label)
+        else:
+            desc = QLabel(
+                "La reparació aplica interpolació parabòlica sobre la zona\n"
+                "deformada del pic. Es guarda l'original per traçabilitat."
+            )
+            desc.setStyleSheet("color: #666; font-size: 10px;")
+            desc.setWordWrap(True)
+            layout.addWidget(desc)
+
+            btn_layout = QHBoxLayout()
+            # Botó per cada rèplica amb Batman
+            for rep_key, rep_data in replicas.items():
+                anomalies = rep_data.get("anomalies", [])
+                for signal_type, anom_key in [("direct", "BATMAN_DIRECT"), ("uib", "BATMAN_UIB")]:
+                    if anom_key in anomalies:
+                        btn = QPushButton(f"Reparar R{rep_key} {signal_type.upper()}")
+                        btn.setStyleSheet(
+                            "QPushButton { background-color: #F39C12; color: white; "
+                            "font-weight: bold; padding: 6px 16px; border-radius: 4px; }"
+                            "QPushButton:hover { background-color: #E67E22; }"
+                        )
+                        btn.clicked.connect(
+                            lambda checked, rk=rep_key, st=signal_type:
+                            self._repair_batman(rk, st)
+                        )
+                        btn_layout.addWidget(btn)
+
+            btn_layout.addStretch()
+            layout.addLayout(btn_layout)
+
+        return group
+
+    def _repair_batman(self, replica_key, signal_type):
+        """Executa reparació Batman per una rèplica/senyal específic."""
+        try:
+            from hpsec_analyze import repair_batman_in_replica
+
+            replicas = self.sample_data.get("replicas", {})
+            replica_data = replicas.get(replica_key)
+            if not replica_data:
+                QMessageBox.warning(self, "Error", f"No s'ha trobat la rèplica R{replica_key}")
+                return
+
+            result = repair_batman_in_replica(replica_data, signal=signal_type)
+
+            if result.get("repaired"):
+                # Marcar com reparat
+                self.sample_data["repaired"] = True
+                if "repair_history" not in self.sample_data:
+                    self.sample_data["repair_history"] = []
+                self.sample_data["repair_history"].append({
+                    "replica": replica_key,
+                    "signal": signal_type,
+                    "repair_info": result.get("repair_info", {}),
+                    "original_areas": result.get("original_areas", {}),
+                })
+
+                # Comprovar si la mostra és vàlida després de la reparació
+                # (pot quedar no vàlida si l'altre senyal té anomalies no reparables)
+                irreparable = ["NO_PEAK", "TIMEOUT_IN_PEAK"]
+                remaining_anomalies = replica_data.get("anomalies", [])
+                still_has_irreparable = any(a in remaining_anomalies for a in irreparable)
+                # Comprovar també Batman no reparat
+                still_has_batman = any(
+                    a in remaining_anomalies
+                    for a in ["BATMAN_DIRECT", "BATMAN_UIB"]
+                )
+                if not still_has_irreparable and not still_has_batman:
+                    self.sample_data["sample_valid"] = True
+                    # Actualitzar recomanació
+                    rec = self.sample_data.get("recommendation", {})
+                    if rec.get("doc"):
+                        rec["doc"]["valid"] = True
+                        rec["doc"]["reason"] = "Batman reparat amb paràbola"
+
+                QMessageBox.information(
+                    self, "Reparació completada",
+                    f"Batman reparat a R{replica_key} {signal_type.upper()}\n\n"
+                    f"Les àrees s'han recalculat.\n"
+                    f"L'original es conserva per traçabilitat."
+                )
+
+                # Re-dibuixar gràfics
+                if HAS_MATPLOTLIB:
+                    self._plot_signals()
+                    self.canvas.draw()
+            else:
+                reason = result.get("reason", "Error desconegut")
+                QMessageBox.warning(
+                    self, "Reparació no possible",
+                    f"No s'ha pogut reparar: {reason}"
+                )
+
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Error durant la reparació:\n{str(e)}")
 
     # ------------------------------------------------------------------
     # Comparison group

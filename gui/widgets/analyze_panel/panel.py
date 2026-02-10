@@ -150,6 +150,17 @@ class AnalyzePanel(QWidget):
         legend.setStyleSheet("color: #666;")
         legend_layout.addWidget(legend)
         legend_layout.addStretch()
+
+        # Botó Generar Report PDF
+        self.report_btn = QPushButton("Generar Report PDF")
+        self.report_btn.setStyleSheet(
+            "QPushButton { background-color: #2E86AB; color: white; "
+            "font-weight: bold; padding: 4px 14px; border-radius: 4px; }"
+            "QPushButton:hover { background-color: #1A5276; }"
+        )
+        self.report_btn.clicked.connect(self._generate_report)
+        legend_layout.addWidget(self.report_btn)
+
         results_layout.addWidget(legend_frame)
 
         # === UNIFIED TABLE ===
@@ -539,7 +550,7 @@ class AnalyzePanel(QWidget):
             item_name.setData(Qt.UserRole, sample_name)
             self.results_table.setItem(row, 0, item_name)
 
-            # Col 1: Sel DOC — replica selector with (s) for suggested
+            # Col 1: Sel DOC — replica selector with (s) for suggested + "Cap" option
             doc_combo = QComboBox()
             doc_combo.setStyleSheet("QComboBox { border: none; background: transparent; padding: 2px; }")
             for rep_num in sorted(replicas.keys()):
@@ -547,12 +558,15 @@ class AnalyzePanel(QWidget):
                 doc_combo.addItem(label, rep_num)
                 if rep_num == doc_sel:
                     doc_combo.setCurrentIndex(doc_combo.count() - 1)
+            doc_combo.addItem("Cap", "none")
+            if doc_sel == "none":
+                doc_combo.setCurrentIndex(doc_combo.count() - 1)
             doc_combo.currentIndexChanged.connect(
                 lambda idx, name=sample_name: self._on_doc_replica_changed(name)
             )
             self.results_table.setCellWidget(row, 1, doc_combo)
 
-            # Col 2: Sel DAD — replica selector with (s) for suggested
+            # Col 2: Sel DAD — replica selector with (s) for suggested + "Cap" option
             dad_combo = QComboBox()
             dad_combo.setStyleSheet("QComboBox { border: none; background: transparent; padding: 2px; }")
             for rep_num in sorted(replicas.keys()):
@@ -560,6 +574,9 @@ class AnalyzePanel(QWidget):
                 dad_combo.addItem(label, rep_num)
                 if rep_num == dad_sel:
                     dad_combo.setCurrentIndex(dad_combo.count() - 1)
+            dad_combo.addItem("Cap", "none")
+            if dad_sel == "none":
+                dad_combo.setCurrentIndex(dad_combo.count() - 1)
             dad_combo.currentIndexChanged.connect(
                 lambda idx, name=sample_name: self._on_dad_replica_changed(name)
             )
@@ -655,7 +672,7 @@ class AnalyzePanel(QWidget):
 
             # Col 12: Estat (considers both DOC and DAD replicas)
             status_color, status_text, tooltip = self._classify_sample_status(
-                doc_rep, dad_rep, comparison)
+                doc_rep, dad_rep, comparison, sample_data=sample_data)
             status_item = QTableWidgetItem(status_text)
             status_item.setForeground(QBrush(QColor(status_color)))
             status_item.setToolTip(tooltip)
@@ -682,11 +699,29 @@ class AnalyzePanel(QWidget):
     # Anomaly severity classification
     # ------------------------------------------------------------------
 
-    def _classify_sample_status(self, doc_rep_data, dad_rep_data, comparison):
+    def _classify_sample_status(self, doc_rep_data, dad_rep_data, comparison,
+                                sample_data=None):
         """Classifica l'estat d'una mostra considerant ambdues rèpliques (DOC + DAD).
+
+        Args:
+            doc_rep_data: Dades de la rèplica DOC seleccionada
+            dad_rep_data: Dades de la rèplica DAD seleccionada
+            comparison: Comparació entre rèpliques
+            sample_data: Dict complet del sample_group (per accedir a sample_valid, repaired)
 
         Returns (color, status_text, tooltip).
         """
+        # Comprovar si l'usuari ha seleccionat "Cap"
+        if sample_data:
+            selected = sample_data.get("selected", {})
+            if selected.get("doc") == "none":
+                return COLOR_ERROR, "NO VÀL", "Usuari ha seleccionat 'Cap' — No es quantificarà ni exportarà"
+            # Comprovar mostra no vàlida (ambdues rèpliques amb anomalies no reparables)
+            if sample_data.get("sample_valid") is False and not sample_data.get("repaired"):
+                reason = (sample_data.get("recommendation", {})
+                          .get("doc", {}).get("reason", "Ambdues rèpliques amb anomalies crítiques"))
+                return COLOR_ERROR, "NO VÀL", f"Mostra no vàlida — {reason}\nSeleccionar 'Cap' o generar noves dades"
+
         # Merge anomalies from both replicas (deduplicate)
         doc_anomalies = doc_rep_data.get("anomalies", [])
         dad_anomalies = dad_rep_data.get("anomalies", [])
@@ -700,6 +735,7 @@ class AnalyzePanel(QWidget):
         # Classify anomalies by severity
         has_critical = any(a in CRITICAL_ANOMALIES for a in anomalies)
         has_warning = any(a in WARNING_ANOMALIES for a in anomalies)
+        has_repaired = any("_REPAIRED" in a for a in anomalies)
 
         # Timeout severity (already calculated per zone)
         timeout_severity = timeout_info.get("severity", "OK")
@@ -714,14 +750,19 @@ class AnalyzePanel(QWidget):
             status_parts.append("<LOQ")
         if n_timeouts > 0:
             status_parts.append(f"T({n_timeouts})")
-        if any("BATMAN" in a for a in anomalies):
+        if any(a in anomalies for a in ["BATMAN_DIRECT", "BATMAN_UIB"]):
             status_parts.append("B")
+        elif has_repaired:
+            status_parts.append("B*")  # Batman reparat
         if "NO_PEAK" in anomalies:
             status_parts.append("!")
 
         # Determine color
         if has_critical:
             status_color = COLOR_ERROR
+        elif has_repaired:
+            # Reparat: warning (no error, però cal informar)
+            status_color = COLOR_WARNING
         elif has_warning or has_timeout_warning or replica_warnings:
             status_color = COLOR_WARNING
         else:
@@ -734,10 +775,17 @@ class AnalyzePanel(QWidget):
         # Critical/warning anomalies
         critical_found = [a for a in anomalies if a in CRITICAL_ANOMALIES]
         warning_found = [a for a in anomalies if a in WARNING_ANOMALIES]
-        info_found = [a for a in anomalies if a not in CRITICAL_ANOMALIES and a not in WARNING_ANOMALIES]
+        repaired_found = [a for a in anomalies if "_REPAIRED" in a]
+        info_found = [a for a in anomalies
+                      if a not in CRITICAL_ANOMALIES
+                      and a not in WARNING_ANOMALIES
+                      and "_REPAIRED" not in a]
 
         if critical_found:
             tooltip_parts.append(f"CRÍTIC: {', '.join(critical_found)}")
+        if repaired_found:
+            tooltip_parts.append(f"REPARAT: {', '.join(a.replace('_REPAIRED', '') for a in repaired_found)}")
+            tooltip_parts.append("Pic Batman reparat amb interpolació parabòlica")
         if warning_found:
             tooltip_parts.append(f"Avís: {', '.join(warning_found)}")
         # LOD/LOQ detail in tooltip
@@ -759,6 +807,10 @@ class AnalyzePanel(QWidget):
         if replica_warnings:
             tooltip_parts.extend(replica_warnings)
 
+        # Repairable hint
+        if sample_data and sample_data.get("repairable") and not sample_data.get("repaired"):
+            tooltip_parts.append("ℹ Batman reparable — Doble-clic per opcions de reparació")
+
         tooltip = "\n".join(tooltip_parts) if tooltip_parts else "OK"
         return status_color, status_text, tooltip
 
@@ -767,7 +819,7 @@ class AnalyzePanel(QWidget):
     # ------------------------------------------------------------------
 
     def _on_doc_replica_changed(self, sample_name):
-        """Gestiona el canvi de rèplica DOC."""
+        """Gestiona el canvi de rèplica DOC (inclou opció 'Cap')."""
         if sample_name not in self.samples_grouped:
             return
         row = self._sample_row_map.get(sample_name)
@@ -777,12 +829,26 @@ class AnalyzePanel(QWidget):
         if combo:
             new_replica = combo.currentData()
             self.samples_grouped[sample_name]["selected"]["doc"] = new_replica
-            self._update_quantification(sample_name)
+            if new_replica == "none":
+                # Marcar mostra com no vàlida per DOC
+                self.samples_grouped[sample_name]["sample_valid"] = False
+                self.samples_grouped[sample_name]["quantification"] = {
+                    "concentration_ppm": None,
+                    "concentration_ppm_direct": None,
+                    "concentration_ppm_uib": None,
+                    "area_total": None,
+                    "valid": False,
+                    "reason": "Usuari ha seleccionat 'Cap' per DOC"
+                }
+            else:
+                # Restaurar validesa si era "none" abans
+                self.samples_grouped[sample_name]["sample_valid"] = True
+                self._update_quantification(sample_name)
             self._update_doc_columns(row, sample_name)
             self._update_estat_column(row, sample_name)
 
     def _on_dad_replica_changed(self, sample_name):
-        """Gestiona el canvi de rèplica DAD."""
+        """Gestiona el canvi de rèplica DAD (inclou opció 'Cap')."""
         if sample_name not in self.samples_grouped:
             return
         row = self._sample_row_map.get(sample_name)
@@ -801,6 +867,15 @@ class AnalyzePanel(QWidget):
         selected = sample_data.get("selected", {})
         doc_sel = selected.get("doc", "1")
         replicas = sample_data.get("replicas", {})
+
+        # "Cap" seleccionat → buidar columnes
+        if doc_sel == "none":
+            for col in (3, 4, 5, 6, 7):
+                item = self.results_table.item(row, col)
+                if item:
+                    item.setText("-")
+            return
+
         doc_rep = replicas.get(doc_sel, {})
         quantification = sample_data.get("quantification", {})
 
@@ -877,7 +952,7 @@ class AnalyzePanel(QWidget):
         dad_rep = replicas.get(selected.get("dad", "1"), {})
 
         status_color, status_text, tooltip = self._classify_sample_status(
-            doc_rep, dad_rep, comparison)
+            doc_rep, dad_rep, comparison, sample_data=sample_data)
         status_item = self.results_table.item(row, 12)
         if status_item:
             status_item.setText(status_text)
@@ -964,4 +1039,66 @@ class AnalyzePanel(QWidget):
             parent=self
         )
         dialog.exec()
+        # Actualitzar taula si hi ha hagut reparació
+        row = self._sample_row_map.get(sample_name)
+        if row is not None:
+            sample_data = self.samples_grouped[sample_name]
+            if sample_data.get("repaired"):
+                self._update_quantification(sample_name)
+                self._update_doc_columns(row, sample_name)
+                self._update_estat_column(row, sample_name)
+
+    # ------------------------------------------------------------------
+    # Report PDF generation
+    # ------------------------------------------------------------------
+
+    def _generate_report(self):
+        """Genera el report PDF d'anàlisi."""
+        processed_data = self.main_window.processed_data
+        if not processed_data:
+            QMessageBox.warning(self, "Avís", "No hi ha dades processades.")
+            return
+
+        seq_path = processed_data.get("seq_path", "")
+        if not seq_path:
+            QMessageBox.warning(self, "Avís", "No s'ha trobat el path de la seqüència.")
+            return
+
+        try:
+            self.report_btn.setEnabled(False)
+            self.report_btn.setText("Generant...")
+
+            from generate_analysis_report import generate_analysis_report
+
+            # Passar dades en memòria (inclou seleccions actuals de l'usuari)
+            report_data = dict(processed_data)
+            report_data["samples_grouped"] = self.samples_grouped
+
+            result = generate_analysis_report(
+                seq_path, analysis_data=report_data
+            )
+
+            self.report_btn.setEnabled(True)
+            self.report_btn.setText("Generar Report PDF")
+
+            if result:
+                QMessageBox.information(
+                    self, "Report generat",
+                    f"PDF generat correctament:\n{result}"
+                )
+                import os
+                os.startfile(str(Path(result).parent))
+            else:
+                QMessageBox.warning(
+                    self, "Error",
+                    "No s'ha pogut generar el report PDF."
+                )
+
+        except Exception as e:
+            self.report_btn.setEnabled(True)
+            self.report_btn.setText("Generar Report PDF")
+            QMessageBox.critical(
+                self, "Error",
+                f"Error generant el report:\n{str(e)}"
+            )
 

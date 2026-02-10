@@ -2406,7 +2406,7 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
     snr = float((y_doc_net[peak_idx] - bl_stats["mean"]) / noise)
 
     # Timeout detection
-    timeout_info = detect_timeout(t_doc)
+    timeout_info = detect_timeout(t_doc, is_bp=is_bp_chromato)
     has_timeout = timeout_info['n_timeouts'] > 0
     timeout_severity = timeout_info.get('severity', 'OK')
 

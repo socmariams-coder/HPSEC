@@ -6,7 +6,7 @@
   },
   "time_fractions": {
     "BioP": {
-      "start": 0.0,
+      "start": 10.8,
       "end": 18.0,
       "name": "Biopolímers"
     },
@@ -204,26 +204,49 @@
     "PATRÓ_CAL": {
       "label": "PATRÓ_CAL",
       "description": "Patró de calibració (KHP)",
-      "patterns": ["KHP"],
+      "patterns": [
+        "KHP"
+      ],
       "color": "#2A9D8F"
     },
     "PATRÓ_REF": {
       "label": "PATRÓ_REF",
       "description": "Patró de referència per QC",
-      "patterns": ["Br", "NO3", "CaCO3", "SUWANNEE", "SRNOM"],
-      "suffixes": ["HA", "FA"],
+      "patterns": [
+        "Br",
+        "NO3",
+        "CaCO3",
+        "SUWANNEE",
+        "SRNOM"
+      ],
+      "suffixes": [
+        "HA",
+        "FA"
+      ],
       "color": "#9B59B6"
     },
     "CONTROL": {
       "label": "CONTROL",
       "description": "Control de neteja o verificació",
-      "patterns": ["CONTROL", "NaOH", "NAOH"],
+      "patterns": [
+        "CONTROL",
+        "NaOH",
+        "NAOH"
+      ],
       "color": "#F6AE2D"
     },
     "BLANC": {
       "label": "BLANC",
       "description": "Blanc o aigua MQ",
-      "patterns": ["BLANC", "BLANK", "BLK", "MQ", "H2O", "WATER", "MILLI"],
+      "patterns": [
+        "BLANC",
+        "BLANK",
+        "BLK",
+        "MQ",
+        "H2O",
+        "WATER",
+        "MILLI"
+      ],
       "color": "#888888"
     }
   },
@@ -257,8 +280,8 @@
         "description": "Desviació % vs històric"
       },
       "concentration_ratio": {
-        "warning": 0.70,
-        "blocker": 0.50,
+        "warning": 0.7,
+        "blocker": 0.5,
         "description": "Ratio concentració pic principal vs total"
       }
     },

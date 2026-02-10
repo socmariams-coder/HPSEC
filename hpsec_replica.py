@@ -242,7 +242,8 @@ def evaluate_replica(t, y, method="COLUMN", humic_zone=None):
     # === DETECCIÓ ANOMALIES ===
 
     # Timeout (via dt intervals - hpsec_core)
-    timeout_info = detect_timeout(t)
+    is_bp = method.upper() == "BP" if method else False
+    timeout_info = detect_timeout(t, is_bp=is_bp)
     has_timeout = timeout_info.get("n_timeouts", 0) > 0
 
     # Batman i Irregularitat (via detect_peak_anomaly)

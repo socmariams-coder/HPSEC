@@ -818,11 +818,19 @@ TIMEOUT_CONFIG = {
         "SB": "WARNING",          # Pèrdua de small building blocks
         "LMW": "INFO",            # Zona de baix pes molecular, acceptable
         "POST_RUN": "OK",         # Zona ideal, sense impacte
+        "BP_PEAK": "CRITICAL",    # BP: timeout a zona del pic principal (0-5 min)
+        "BP_TAIL": "WARNING",     # BP: timeout a la cua (5-10 min)
+    },
+    # Zones específiques per BP (pic a ~1 min, cromatograma fins ~10 min)
+    "bp_zones": {
+        "BP_PEAK": [0, 5],        # Zona del pic principal → CRÍTIC
+        "BP_TAIL": [5, 10],       # Zona de la cua → WARNING
+        "POST_RUN": [10, 100],    # Post-run → OK
     },
 }
 
 
-def detect_timeout(t_min, threshold_sec=None, major_threshold_sec=None):
+def detect_timeout(t_min, threshold_sec=None, major_threshold_sec=None, is_bp=False):
     """
     Detecta timeouts en dades DOC basant-se en la cadència temporal.
 
@@ -833,6 +841,7 @@ def detect_timeout(t_min, threshold_sec=None, major_threshold_sec=None):
         t_min: Array de temps en minuts
         threshold_sec: Llindar per considerar timeout (defecte: 60s)
         major_threshold_sec: Llindar per timeout major/recàrrega (defecte: 70s)
+        is_bp: Si és mode BP (pic a ~1 min, RUN_START no aplica)
 
     Returns:
         dict amb:
@@ -875,7 +884,9 @@ def detect_timeout(t_min, threshold_sec=None, major_threshold_sec=None):
     # Detectar timeouts
     timeout_indices = np.where(dt_sec > threshold_sec)[0]
     timeouts = []
-    zone_counts = {zone: 0 for zone in TIMEOUT_CONFIG["zones"].keys()}
+    # Seleccionar zones segons mode (BP vs COLUMN)
+    active_zones = TIMEOUT_CONFIG["bp_zones"] if is_bp else TIMEOUT_CONFIG["zones"]
+    zone_counts = {zone: 0 for zone in active_zones.keys()}
     max_severity = "OK"
     severity_order = ["OK", "INFO", "WARNING", "CRITICAL"]
 
@@ -895,15 +906,16 @@ def detect_timeout(t_min, threshold_sec=None, major_threshold_sec=None):
 
         # Determinar zona
         zone = "POST_RUN"  # Per defecte
-        for zone_name, (t_ini, t_fi) in TIMEOUT_CONFIG["zones"].items():
+        for zone_name, (t_ini, t_fi) in active_zones.items():
             if zone_name == "RUN_START":
-                continue  # Tractem apart
+                continue  # Tractem apart (només COLUMN)
             if t_ini <= t_start < t_fi:
                 zone = zone_name
                 break
 
-        # Cas especial: timeout a l'inici del run (t < 1 min)
-        if t_start < 1.0:
+        # Cas especial COLUMN: timeout a l'inici del run (t < 1 min)
+        # En BP NO s'aplica perquè el pic principal és a ~1 min
+        if t_start < 1.0 and not is_bp:
             zone = "RUN_START"
 
         zone_counts[zone] += 1
@@ -957,10 +969,14 @@ def detect_timeout(t_min, threshold_sec=None, major_threshold_sec=None):
 
     warning_message = "; ".join(warning_parts) if warning_parts else ""
 
+    # Llista de posicions temporals (t_start) per facilitar check TIMEOUT_IN_PEAK
+    t_positions = [to["t_start_min"] for to in timeouts]
+
     return {
         "n_timeouts": len(timeouts),
         "n_major_timeouts": n_major,
         "timeouts": timeouts,
+        "t_positions": t_positions,
         "dt_median_sec": round(dt_median, 2),
         "dt_max_sec": round(dt_max, 2),
         "zone_summary": {k: v for k, v in zone_counts.items() if v > 0},

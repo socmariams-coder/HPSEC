@@ -48,15 +48,21 @@ Mark features as DONE only when code is fully functional end-to-end, not when pl
 - [x] Analyze backend: quantify_sample with rf_direct/rf_uib separate — DONE (v1.6.0)
 - [x] Analyze backend: R² DAD per 6 wavelengths (pearson_per_wavelength) — DONE (v1.6.0)
 - [x] Dashboard panel — DONE
-- [x] Analyze panel: taula unificada DOC+DAD (12 cols: SNR, SNR_254, R²_DOC, R²_DAD) — DONE
-- [ ] Analyze panel: dropdowns rèplica independents DOC vs DAD — PENDING (backend suporta, GUI no)
+- [x] Analyze panel: taula unificada DOC+DAD (13 cols: Sel DOC, Sel DAD, SNR, SNR_254, R²_DOC, R²_DAD) — DONE (851f0b1)
+- [x] Analyze panel: dropdowns rèplica independents DOC vs DAD + opció "Cap" — DONE
+- [x] Analyze panel: detail dialog grid layout (DOC|UIB + DAD pairs + fraction table) — DONE (851f0b1)
+- [x] Analyze panel: Batman repair button in detail dialog (repair_with_parabola) — DONE
+- [x] Analyze panel: sample_valid flag (ambdues rèpliques amb anomalies no reparables) — DONE
 - [ ] Analyze panel: mostrar bigaussian (R², asym, quality) per BP — PENDING
 - [ ] Analyze panel: mostrar timeouts amb icones/tooltip — PENDING
 - [ ] Analyze backend: detecció deriva baseline DAD per replica selection — PENDING (TODO a hpsec_analyze.py L1210)
 - [x] Calibration: flux renovació calibració global (UI panel + regression) — DONE (GlobalCalibrationPanel)
 - [x] Calibration: auto-fit rf_mass_cal + intercept from KHP history (regression) — DONE (fit_calibration_from_history)
 - [ ] Calibration: UI to edit intercept values directly from panel — PENDING
-- [ ] Export: PDF batch reports — PARTIAL (template exists)
+- [x] Export: PDF analysis report (generate_analysis_report.py) — DONE
+- [x] Export: SUMMARY.xlsx ampliat (A_UIB, ppm_UIB, A_254, SNR_254, R²_DOC, R²_DAD, Anomalies) — DONE
+- [x] Export: ID sheet with full traceability (RF, intercept, anomalies, batman repair, timeouts) — DONE
+- [x] Export: skip invalid samples (sample_valid=False or "Cap") — DONE
 - [ ] Architecture refactor: unify detection functions in hpsec_core.py — PENDING
 
 ## Design decisions

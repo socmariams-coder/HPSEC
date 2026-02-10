@@ -178,12 +178,30 @@ def _build_id_sheet(sample_name, sample_data, calibration_data, mode, is_dual):
                 rows.append(("LOD_UIB_mAU", round(snr_info["lod_uib"], 3)))
         rows.append(("---", "---"))
 
+    # Injecció i mode
+    inj_volume = sample_data.get("inj_volume")
+    data_mode = sample_data.get("data_mode", "")
+    seq_date = sample_data.get("seq_date", "")
+    if seq_date:
+        rows.append(("Date", seq_date))
+    if inj_volume:
+        rows.append(("INJ_Volume_uL", inj_volume))
+    if data_mode:
+        rows.append(("Data_Mode", data_mode))
+    rows.append(("---", "---"))
+
     # Quantificació (si hi ha calibració)
     quantification = sample_data.get("quantification", {})
     if quantification:
         conc = quantification.get("concentration_ppm")
         if conc is not None:
             rows.append(("Concentration_ppm", round(conc, 3)))
+        conc_d = quantification.get("concentration_ppm_direct")
+        if conc_d is not None and conc_d != conc:
+            rows.append(("Concentration_ppm_Direct", round(conc_d, 3)))
+        conc_u = quantification.get("concentration_ppm_uib")
+        if conc_u is not None:
+            rows.append(("Concentration_ppm_UIB", round(conc_u, 3)))
         cr = quantification.get("calibration_ratio")
         if cr is not None:
             rows.append(("Calibration_Ratio", round(cr, 4)))
@@ -198,6 +216,60 @@ def _build_id_sheet(sample_name, sample_data, calibration_data, mode, is_dual):
         cal_khp = calibration_data.get("khp_conc_ppm", "")
         rows.append(("Calibration_Date", cal_date))
         rows.append(("Calibration_KHP_ppm", cal_khp))
+        # RF i Intercept usats
+        rf_obj = calibration_data.get("rf_mass_cal", {})
+        if isinstance(rf_obj, dict):
+            for sig_type in ("direct", "uib"):
+                sig_rf = rf_obj.get(sig_type, {})
+                if isinstance(sig_rf, dict):
+                    for mode_key, val in sig_rf.items():
+                        rows.append((f"RF_mass_cal_{sig_type}_{mode_key}", val))
+        elif rf_obj:
+            rows.append(("RF_mass_cal", rf_obj))
+        intercept_obj = calibration_data.get("intercept", {})
+        if isinstance(intercept_obj, dict):
+            for sig_type in ("direct", "uib"):
+                sig_int = intercept_obj.get(sig_type, {})
+                if isinstance(sig_int, dict):
+                    for mode_key, val in sig_int.items():
+                        rows.append((f"Intercept_{sig_type}_{mode_key}", val))
+        elif intercept_obj:
+            rows.append(("Intercept", intercept_obj))
+        cal_seq = calibration_data.get("seq_name", "")
+        if cal_seq:
+            rows.append(("Calibration_SEQ", cal_seq))
+        rows.append(("---", "---"))
+
+    # Anomalies detectades
+    anomalies = sample_data.get("anomalies", [])
+    if anomalies:
+        rows.append(("Anomalies", "; ".join(anomalies)))
+
+    # Bi-Gaussian info (BP mode)
+    bigaussian = sample_data.get("bigaussian_doc")
+    if bigaussian and isinstance(bigaussian, dict):
+        r2_bg = bigaussian.get("r2") or bigaussian.get("r_squared")
+        if r2_bg is not None:
+            rows.append(("Bigaussian_R2", round(r2_bg, 4)))
+        asym = bigaussian.get("asymmetry")
+        if asym is not None:
+            rows.append(("Bigaussian_Asymmetry", round(asym, 3)))
+
+    # Timeout info
+    timeout_info = sample_data.get("timeout_info", {})
+    if timeout_info.get("n_timeouts", 0) > 0:
+        rows.append(("Timeout_Severity", timeout_info.get("severity", "")))
+        zones = timeout_info.get("zones", [])
+        if zones:
+            rows.append(("Timeout_Zones", "; ".join(zones)))
+
+    # Batman repair info
+    if sample_data.get("batman_direct_repaired"):
+        rows.append(("Batman_Direct_Repaired", "YES"))
+        repair_info = sample_data.get("batman_direct_repair_info", {})
+        if repair_info:
+            rows.append(("Batman_Y_Max_Original", repair_info.get("y_max_original", "")))
+            rows.append(("Batman_Y_Max_Theoretical", repair_info.get("y_max_theoretical", "")))
 
     return rows
 
@@ -404,16 +476,21 @@ def export_sequence(
     }
 
     total = len(samples_grouped)
+    n_skipped = 0
     for i, (sample_name, sample_info) in enumerate(samples_grouped.items()):
         if progress_callback:
             pct = int((i / total) * 100)
             progress_callback(pct, f"Exportant {sample_name}...")
 
         try:
-            # Obtenir rèplica seleccionada per DOC
+            # Saltar mostres no vàlides o amb selecció "cap"
             selected = sample_info.get("selected", {})
             doc_replica = selected.get("doc", "1")
             dad_replica = selected.get("dad", doc_replica)
+
+            if doc_replica == "none" or sample_info.get("sample_valid") is False:
+                n_skipped += 1
+                continue
 
             replicas = sample_info.get("replicas", {})
             doc_data = replicas.get(doc_replica, {})
@@ -464,6 +541,7 @@ def export_sequence(
     if progress_callback:
         progress_callback(100, "Exportació completada")
 
+    results["n_skipped"] = n_skipped
     results["success"] = results["n_errors"] == 0
     return results
 
@@ -510,6 +588,9 @@ def generate_summary_excel(
         doc_replica = selected.get("doc", "1")
         dad_replica = selected.get("dad", "1")
 
+        is_invalid = (doc_replica == "none"
+                      or sample_info.get("sample_valid") is False)
+
         doc_data = sample_info.get("replicas", {}).get(doc_replica, {})
         snr_info = doc_data.get("snr_info", {})
 
@@ -517,17 +598,47 @@ def generate_summary_excel(
         doc_warnings = comparison.get("doc", {}).get("warnings", []) if comparison else []
         dad_warnings = comparison.get("dad", {}).get("warnings", []) if comparison else []
         all_warnings = doc_warnings + dad_warnings
+        # Anomalies de la rèplica seleccionada
+        anomalies = doc_data.get("anomalies", [])
+
+        # Dades DAD (pot ser diferent rèplica)
+        dad_data = sample_info.get("replicas", {}).get(dad_replica, {}) if dad_replica != "none" else {}
+        dad_areas = (dad_data.get("areas") or {})
+        area_254 = dad_areas.get("A254", {}).get("total", 0)
+        snr_info_dad = dad_data.get("snr_info_dad") or {}
+        snr_254 = snr_info_dad.get("A254", {}).get("snr", 0)
+
+        # R² values
+        r2_doc = comparison.get("doc", {}).get("pearson", 0) if comparison else 0
+        r2_dad = comparison.get("dad", {}).get("pearson_min", 0) if comparison else 0
+
+        # Àrees UIB
+        areas_uib = doc_data.get("areas_uib") or {}
+        area_uib = areas_uib.get("total", 0)
+        ppm_uib = quantification.get("concentration_ppm_uib")
 
         row = {
             "Sample": sample_name,
-            "DOC_Replica": f"R{doc_replica}",
-            "DAD_Replica": f"R{dad_replica}",
-            "Conc_ppm": quantification.get("concentration_ppm"),
+            "DOC_Replica": "Cap" if doc_replica == "none" else f"R{doc_replica}",
+            "DAD_Replica": "Cap" if dad_replica == "none" else f"R{dad_replica}",
+            "Conc_ppm": "NO VÀLIDA" if is_invalid else quantification.get("concentration_ppm"),
             "Area_total": quantification.get("area_total"),
+            "A_UIB": area_uib if area_uib else None,
+            "ppm_UIB": ppm_uib,
+            "A_254": area_254 if area_254 else None,
             "SNR_Direct": snr_info.get("snr_direct"),
             "SNR_UIB": snr_info.get("snr_uib"),
+            "SNR_254": snr_254 if snr_254 else None,
+            "R2_DOC": round(r2_doc, 4) if r2_doc > 0 else None,
+            "R2_DAD": round(r2_dad, 4) if r2_dad > 0 else None,
+            "Anomalies": "; ".join(anomalies) if anomalies else "",
             "Warnings": "; ".join(all_warnings) if all_warnings else "",
         }
+
+        # BP linked info (si consolidat)
+        bp_info = sample_info.get("bp_linked", {})
+        if bp_info:
+            row["BP_ppm"] = bp_info.get("concentration_ppm")
 
         summary_rows.append(row)
 

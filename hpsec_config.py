@@ -27,13 +27,8 @@ DEFAULT_CONFIG = {
     },
 
     # --- FRACCIONS TEMPORALS (min) ---
-    "time_fractions": {
-        "BioP": {"start": 10.8, "end": 18.0, "name": "Biopolímers"},
-        "HS": {"start": 18.0, "end": 23.0, "name": "Àcids Húmics"},
-        "BB": {"start": 23.0, "end": 30.0, "name": "Building Blocks"},
-        "SB": {"start": 30.0, "end": 40.0, "name": "Small Building Blocks"},
-        "LMW": {"start": 40.0, "end": 70.0, "name": "Low Molecular Weight"},
-    },
+    # Definides NOMÉS a hpsec_config.json (no hardcoded aquí)
+    "time_fractions": {},
 
     # --- CROMATOGRAMA ---
     "chromatogram": {

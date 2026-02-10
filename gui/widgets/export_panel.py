@@ -68,7 +68,7 @@ class ExportWorker(QThread):
 
             # Generar Excel resum
             if self.options.get("summary_excel", True):
-                self.progress.emit(90, "Generant resum...")
+                self.progress.emit(85, "Generant resum...")
                 summary_path = str(Path(self.output_path) / "SUMMARY.xlsx")
                 summary_result = generate_summary_excel(
                     self.samples_grouped,
@@ -78,6 +78,27 @@ class ExportWorker(QThread):
                     DEFAULT_EXPORT_CONFIG,
                 )
                 results["summary"] = summary_result
+
+            # Generar PDF d'anàlisi
+            if self.options.get("pdf_report", False):
+                self.progress.emit(92, "Generant report PDF...")
+                try:
+                    from generate_analysis_report import generate_analysis_report
+                    # Necessitem les dades processades completes
+                    analysis_data = self.options.get("processed_data")
+                    seq_path = self.options.get("seq_path", "")
+                    if analysis_data and seq_path:
+                        # Actualitzar amb seleccions actuals
+                        analysis_data_copy = dict(analysis_data)
+                        analysis_data_copy["samples_grouped"] = self.samples_grouped
+                        pdf_result = generate_analysis_report(
+                            seq_path,
+                            output_path=self.output_path,
+                            analysis_data=analysis_data_copy,
+                        )
+                        results["pdf_report"] = pdf_result
+                except Exception as e:
+                    results["errors"].append(f"PDF report: {str(e)}")
 
             self.progress.emit(100, "Completat")
             self.finished.emit(results)
@@ -140,10 +161,16 @@ class ExportPanel(QWidget):
         )
         options_layout.addWidget(self.summary_check)
 
-        self.pdf_check = QCheckBox("Generar informe PDF")
-        self.pdf_check.setChecked(False)
-        self.pdf_check.setEnabled(False)
-        self.pdf_check.setToolTip("Pendent d'implementar")
+        self.pdf_check = QCheckBox("Generar informe PDF d'anàlisi")
+        self.pdf_check.setChecked(True)
+        self.pdf_check.setEnabled(True)
+        self.pdf_check.setToolTip(
+            "Genera REPORT_Analysis_*.pdf amb:\n"
+            "• Resum seqüència i estadístiques SNR\n"
+            "• Taula de resultats (13 columnes)\n"
+            "• Cromatogrames per mostra (DOC + DAD)\n"
+            "• Detall d'anomalies i warnings"
+        )
         options_layout.addWidget(self.pdf_check)
 
         layout.addWidget(options_group)
@@ -225,7 +252,7 @@ class ExportPanel(QWidget):
         self.output_path_input.clear()
         self.individual_check.setChecked(True)
         self.summary_check.setChecked(True)
-        self.pdf_check.setChecked(False)
+        self.pdf_check.setChecked(True)
         self.n_samples_label.setText("Mostres: -")
         self.method_label.setText("Mètode: -")
         self.calibration_label.setText("Calibració: -")
@@ -310,6 +337,9 @@ class ExportPanel(QWidget):
         options = {
             "individual_excels": self.individual_check.isChecked(),
             "summary_excel": self.summary_check.isChecked(),
+            "pdf_report": self.pdf_check.isChecked(),
+            "processed_data": processed_data,
+            "seq_path": processed_data.get("seq_path", ""),
         }
 
         # Deshabilitar botó i mostrar progrés
@@ -350,12 +380,20 @@ class ExportPanel(QWidget):
         errors = results.get("errors", [])
 
         n_exported = excel_result.get("n_exported", 0) if excel_result else 0
+        n_skipped = excel_result.get("n_skipped", 0) if excel_result else 0
+        pdf_result = results.get("pdf_report")
 
         msg = f"Exportació completada!\n\n"
         msg += f"Fitxers Excel generats: {n_exported}\n"
+        if n_skipped > 0:
+            msg += f"Mostres omeses (no vàlides): {n_skipped}\n"
 
         if summary_result:
             msg += f"Excel resum: SUMMARY.xlsx ({summary_result.get('n_samples', 0)} mostres)\n"
+
+        if pdf_result:
+            pdf_name = Path(pdf_result).name
+            msg += f"Report PDF: {pdf_name}\n"
 
         if errors:
             msg += f"\nErrors ({len(errors)}):\n"
