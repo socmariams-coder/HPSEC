@@ -12,7 +12,7 @@ from hpsec_config import get_config
 # Anomaly severity classification (not configurable)
 # ---------------------------------------------------------------------------
 CRITICAL_ANOMALIES = {"BATMAN_DIRECT", "BATMAN_UIB", "TIMEOUT_IN_PEAK", "NO_PEAK"}
-WARNING_ANOMALIES = {"LOW_SNR", "BASELINE_MISSING", "ASYMMETRIC_PEAK"}
+WARNING_ANOMALIES = {"LOW_SNR", "BASELINE_MISSING", "ASYMMETRIC_PEAK", "BELOW_LOD", "BELOW_LOQ"}
 # Everything else (UIB_NO_BASELINE, EARS_DETECTED, etc.) → INFO
 
 

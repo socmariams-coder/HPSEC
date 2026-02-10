@@ -1040,11 +1040,14 @@ class DashboardPanel(QWidget):
                 with open(json_file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
 
-                # 1. WARNINGS pendents
+                # 1. WARNINGS pendents (filtrar trivials)
+                _skip_warnings = {"Importat des de manifest existent"}
                 warnings = data.get("warnings", [])
                 if isinstance(warnings, list):
                     for w in warnings[:3]:  # Màxim 3 per etapa
                         if isinstance(w, str) and w.strip():
+                            if w.strip() in _skip_warnings:
+                                continue
                             notes.append({
                                 "stage": stage_name,
                                 "type": "WARN",
@@ -1052,7 +1055,7 @@ class DashboardPanel(QWidget):
                             })
                         elif isinstance(w, dict):
                             msg = w.get("message", w.get("code", ""))
-                            if msg:
+                            if msg and msg.strip() not in _skip_warnings:
                                 notes.append({
                                     "stage": stage_name,
                                     "type": "WARN",
@@ -1487,18 +1490,54 @@ class DashboardPanel(QWidget):
 
             self.table.setItem(row, col, item)
 
-        # Actualitzar notes (col 12) - preview
-        notes_text = seq.notes if seq.notes else ""
-        if notes_text:
-            preview = notes_text.split('\n')[0][:50]
-            if len(notes_text) > 50 or '\n' in notes_text:
-                preview += "..."
+        # Actualitzar notes (col 12) - JSON + manuals (igual que taula inicial)
+        try:
+            json_notes = self._load_json_notes(seq.seq_path) if seq.seq_path else []
+        except Exception:
+            json_notes = []
+        manual_notes = seq.notes if seq.notes else ""
+
+        preview_parts = []
+        tooltip_parts = []
+        has_anomaly = False
+        has_warning = False
+
+        for jn in json_notes[:4]:
+            stage = jn.get("stage", "?")
+            ntype = jn.get("type", "")
+            content = jn.get("content", "")[:35]
+            if ntype == "ANOM":
+                prefix = "!"
+                has_anomaly = True
+            elif ntype == "WARN":
+                prefix = "W"
+                has_warning = True
+            elif ntype == "QUAL":
+                prefix = "Q"
+            elif ntype == "NOTE":
+                prefix = "N"
+            else:
+                prefix = ""
+            preview_parts.append(f"[{stage}:{prefix}] {content}")
+            tooltip_parts.append(f"[{stage}] ({ntype}) {jn.get('content', '')}")
+
+        if manual_notes:
+            preview_parts.append(f"[MAN] {manual_notes[:25]}")
+            tooltip_parts.append(f"[Manual] {manual_notes}")
+
+        if preview_parts:
+            preview = " | ".join(preview_parts)
+            if len(preview) > 80:
+                preview = preview[:77] + "..."
+            tooltip = "\n".join(tooltip_parts)
         else:
             preview = ""
+            tooltip = "Doble-clic per afegir notes"
+
         current_notes = self.table.item(row, 12)
         if current_notes:
             current_notes.setText(preview)
-            current_notes.setToolTip(notes_text if notes_text else "Doble-clic per afegir notes")
+            current_notes.setToolTip(tooltip)
 
     def _on_batch_finished(self, success, fail):
         self.main_window.show_progress(-1)

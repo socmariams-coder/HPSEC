@@ -346,27 +346,6 @@ def get_rf_mass_cal(signal='direct', mode='column', seq_date=None):
     return None
 
 
-def get_all_rf_mass_cal(seq_date=None):
-    """
-    Obté tots els rf_mass_cal per una data.
-
-    Args:
-        seq_date: Data SEQ (None = calibració activa)
-
-    Returns:
-        dict amb estructura {"direct": {"column": X, "bp": Y}, "uib": {...}}
-    """
-    if seq_date:
-        cal = get_calibration_for_date(seq_date)
-    else:
-        cal = get_active_global_calibration()
-
-    if not cal:
-        return None
-
-    return cal.get('rf_mass_cal')
-
-
 def get_calibration_intercept(signal='direct', mode='column', seq_date=None):
     """
     Obté l'intercept de la calibració per signal/mode (0 si forçada a origen).
@@ -698,32 +677,111 @@ def add_calibration(rf_mass_cal_values, source, valid_from, r2=None, n_points=No
     return None
 
 
-def list_calibrations():
+def fit_calibration_from_history(calibrations, mode="COLUMN", signal="direct",
+                                  model="intercept"):
     """
-    Llista totes les calibracions ordenades per data.
+    Regressió lineal sobre dades KHP: Area = rf_mass_cal * ug_DOC + intercept.
+
+    Args:
+        calibrations: llista d'entrades KHP_History (dicts amb area, conc_ppm, volume_uL, etc.)
+        mode: "COLUMN" o "BP"
+        signal: "direct" o "uib"
+        model: "intercept" (lliure) o "origin" (intercept=0)
 
     Returns:
-        list de dicts amb info de cada calibració
+        dict: rf_mass_cal, intercept, r2, n_points, points[], residuals_rms, success
     """
-    ref = load_calibration_reference()
-    if not ref:
-        return []
+    from scipy.stats import linregress
 
-    result = []
-    for cal in ref.get('calibrations', []):
-        result.append({
-            'id': cal.get('id'),
-            'rf_mass_cal': cal.get('rf_mass_cal'),
-            'r2': cal.get('r2'),
-            'n_points': cal.get('n_points'),
-            'valid_from': cal.get('valid_from'),
-            'valid_to': cal.get('valid_to'),
-            'is_active': cal.get('is_active', False),
-            'source_type': cal.get('source', {}).get('type'),
-            'reason': cal.get('metadata', {}).get('reason')
+    # Filtrar per mode, descartar outliers i no vàlids
+    filtered = []
+    for cal in calibrations:
+        if cal.get('mode', '').upper() != mode.upper():
+            continue
+        if cal.get('is_outlier', False):
+            continue
+        if not cal.get('valid_for_calibration', True):
+            continue
+
+        conc = cal.get('conc_ppm', 0)
+        vol = cal.get('volume_uL', 0)
+        if conc <= 0 or vol <= 0:
+            continue
+
+        # Àrea segons senyal
+        if signal.lower() == 'uib':
+            area = cal.get('area_u', 0)
+        else:
+            area = cal.get('area', 0)
+
+        if area <= 0:
+            continue
+
+        ug_doc = conc * vol / 1000.0  # µg DOC injectat
+        filtered.append({
+            'seq_name': cal.get('seq_name', ''),
+            'date': cal.get('date', ''),
+            'conc_ppm': conc,
+            'volume_uL': vol,
+            'ug_doc': ug_doc,
+            'area': area,
+            'rf_mass': area / ug_doc if ug_doc > 0 else 0,
+            'is_outlier': cal.get('is_outlier', False),
         })
 
-    return result
+    if len(filtered) < 2:
+        return {
+            'rf_mass_cal': None, 'intercept': 0, 'r2': None,
+            'n_points': len(filtered), 'points': filtered,
+            'residuals_rms': None, 'success': False,
+            'error': f'Insuficients punts ({len(filtered)}), mínim 2'
+        }
+
+    X = np.array([p['ug_doc'] for p in filtered])
+    Y = np.array([p['area'] for p in filtered])
+
+    if model == "origin":
+        # Regressió per l'origen: slope = Σ(XY)/Σ(X²)
+        slope = np.sum(X * Y) / np.sum(X ** 2)
+        intercept_val = 0.0
+        Y_pred = slope * X
+        ss_res = np.sum((Y - Y_pred) ** 2)
+        ss_tot = np.sum((Y - np.mean(Y)) ** 2)
+        r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else 0.0
+    else:
+        # Regressió lliure amb intercept
+        # Si tots els X són iguals, linregress falla → fallback a origin
+        if np.all(X == X[0]):
+            slope = np.sum(X * Y) / np.sum(X ** 2)
+            intercept_val = 0.0
+            Y_pred = slope * X
+            ss_res = np.sum((Y - Y_pred) ** 2)
+            ss_tot = np.sum((Y - np.mean(Y)) ** 2)
+            r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else 0.0
+        else:
+            lr = linregress(X, Y)
+            slope = lr.slope
+            intercept_val = lr.intercept
+            r2 = lr.rvalue ** 2
+        Y_pred = slope * X + intercept_val
+
+    residuals = Y - Y_pred
+    rms = float(np.sqrt(np.mean(residuals ** 2)))
+
+    # Afegir residual a cada punt
+    for i, p in enumerate(filtered):
+        p['residual'] = float(residuals[i])
+        p['y_pred'] = float(Y_pred[i])
+
+    return {
+        'rf_mass_cal': float(slope),
+        'intercept': float(intercept_val),
+        'r2': float(r2),
+        'n_points': len(filtered),
+        'points': filtered,
+        'residuals_rms': rms,
+        'success': True,
+    }
 
 
 # =============================================================================
@@ -1210,40 +1268,6 @@ def quantify_sample(area, volume_uL, calibration_data, signal="direct"):
     if rf_mass <= 0 or volume_uL <= 0:
         return 0.0
     return area * 1000 / (rf_mass * volume_uL)
-
-
-def get_all_calibrations(calibration_data, signal="direct"):
-    """
-    Retorna totes les calibracions disponibles per un senyal.
-
-    Cada calibració correspon a una combinació de condicions (nom, volum, conc).
-
-    Args:
-        calibration_data: Resultat de calibrate_sequence()
-        signal: "direct", "uib", o "primary"
-
-    Returns:
-        list of dict: Llista de calibracions amb estructura idèntica
-    """
-    if not calibration_data:
-        return []
-
-    # Seleccionar llista segons senyal
-    if signal == "uib":
-        calibrations = calibration_data.get("calibrations_uib", [])
-    elif signal == "direct":
-        calibrations = calibration_data.get("calibrations_direct", [])
-    else:
-        calibrations = calibration_data.get("calibrations", [])
-
-    # Si no hi ha llista, intentar compatibilitat amb format antic
-    if not calibrations:
-        khp_data = calibration_data.get("khp_data", {})
-        if khp_data:
-            return [khp_data]
-        return []
-
-    return calibrations
 
 
 # =============================================================================
@@ -2263,87 +2287,6 @@ def get_best_khp_from_history(seq_path, mode="COLUMN", exclude_current=True):
         return cal
 
     return None
-
-
-def migrate_history_to_v2(seq_path, dry_run=False):
-    """
-    Migra calibracions de KHP_History.json al format v2:
-    1. factor (obsolet) → RF (Response Factor)
-    2. Afegeix camps de traçabilitat de selecció de rèpliques
-
-    factor = conc / area (obsolet)
-    RF = area / conc (nou format)
-
-    Args:
-        seq_path: Path de la seqüència (per localitzar Dades3)
-        dry_run: Si True, només mostra què faria sense modificar
-
-    Returns:
-        dict amb:
-            - migrated_rf: llista de seq_names on s'ha migrat factor→RF
-            - migrated_selection: llista de seq_names on s'han afegit camps de selecció
-            - skipped: llista de seq_names ja actualitzades
-            - errors: llista d'errors
-    """
-    result = {'migrated_rf': [], 'migrated_selection': [], 'skipped': [], 'errors': []}
-
-    history = load_khp_history(seq_path)
-    if not history:
-        return result
-
-    modified = False
-    for cal in history:
-        seq_name = cal.get('seq_name', 'unknown')
-        was_modified = False
-
-        # 1. Migrar factor → RF
-        if cal.get('rf', 0) == 0:
-            old_factor = cal.get('factor', 0)
-            area = cal.get('area', 0)
-            conc = cal.get('conc_ppm', 0)
-
-            rf = 0
-            if old_factor > 0:
-                rf = 1.0 / old_factor
-            elif area > 0 and conc > 0:
-                rf = area / conc
-
-            if rf > 0:
-                if not dry_run:
-                    cal['rf'] = rf
-                    if 'rf_doc' not in cal:
-                        cal['rf_doc'] = rf
-                    if 'rf_direct' not in cal:
-                        cal['rf_direct'] = rf
-                    if 'factor' in cal:
-                        del cal['factor']
-                result['migrated_rf'].append(seq_name)
-                was_modified = True
-
-        # 2. Afegir camps de selecció si no existeixen
-        if 'selection' not in cal:
-            n_replicas = cal.get('n_replicas', 1)
-            if not dry_run:
-                cal['selection'] = {
-                    'method': 'average' if n_replicas > 1 else 'single',
-                    'reason': 'migrated_from_legacy',
-                    'selected_replicas': list(range(1, n_replicas + 1)),
-                    'n_replicas_available': n_replicas,
-                    'is_manual': False,
-                }
-            result['migrated_selection'].append(seq_name)
-            was_modified = True
-
-        if was_modified:
-            modified = True
-        elif seq_name not in result['migrated_rf'] and seq_name not in result['migrated_selection']:
-            result['skipped'].append(seq_name)
-
-    # Guardar canvis
-    if modified and not dry_run:
-        save_khp_history(seq_path, history)
-
-    return result
 
 
 # =============================================================================
@@ -3450,189 +3393,6 @@ def mark_calibration_as_outlier(seq_path, seq_name, mode="COLUMN", is_outlier=Tr
             break
 
     save_khp_history(seq_path, global_cals)
-
-
-def update_calibration_validation(seq_path=None, update_global=True):
-    """
-    Actualitza les calibracions existents amb els nous camps de validació.
-
-    Llegeix cada calibració del JSON, executa validate_khp_quality() i
-    actualitza els camps:
-    - valid_for_shift
-    - valid_for_calibration
-    - calibration_issues
-    - calibration_warnings
-    - quality_score
-    - shift_issues
-    - reference_comparison
-
-    Args:
-        seq_path: Path d'una SEQ específica, o None per actualitzar global
-        update_global: Si True, actualitza KHP_History.json global
-
-    Returns:
-        dict amb resum: {"updated": int, "errors": list, "details": list}
-    """
-    result = {"updated": 0, "errors": [], "details": []}
-
-    if seq_path:
-        # Actualitzar només una SEQ
-        paths_to_update = [seq_path]
-    else:
-        # Actualitzar totes les SEQ del global
-        paths_to_update = []
-
-    if update_global:
-        # Carregar històric global
-        # Necessitem un seq_path vàlid per trobar el JSON
-        base_path = r"C:\Users\Lequia\Desktop\Dades2"
-
-        # Trobar una SEQ vàlida per obtenir el path correcte
-        sample_seq = None
-        for item in os.listdir(base_path):
-            if "_SEQ" in item:
-                sample_seq = os.path.join(base_path, item)
-                break
-
-        if not sample_seq:
-            result['errors'].append("No s'ha trobat cap SEQ a Dades2")
-            return result
-
-        global_cals = load_khp_history(sample_seq)
-
-        for cal in global_cals:
-            cal_seq_path = cal.get('seq_path', '')
-            if cal_seq_path and os.path.isdir(cal_seq_path):
-                if cal_seq_path not in paths_to_update:
-                    paths_to_update.append(cal_seq_path)
-
-        # Revalidar cada calibració
-        updated_cals = []
-        for cal in global_cals:
-            try:
-                # Crear khp_data simulat des de la calibració existent
-                khp_data = {
-                    'area': cal.get('area', 0),
-                    'conc_ppm': cal.get('conc_ppm', 0),
-                    'volume_uL': cal.get('volume_uL', 0),
-                    'doc_mode': cal.get('doc_mode', 'N/A'),
-                    'is_bp': cal.get('is_bp', False),
-                    'symmetry': cal.get('symmetry', 1.0),
-                    'snr': cal.get('snr', 0),
-                    'concentration_ratio': cal.get('concentration_ratio', 1.0),
-                    'has_batman': cal.get('has_batman', False),
-                    'limits_expanded': cal.get('limits_expanded', False),
-                    'uib_sensitivity': cal.get('uib_sensitivity'),
-                    't_retention': cal.get('t_retention', 0),
-                }
-
-                # Timeout i anomaly info (reconstruir si possible)
-                timeout_info = {'severity': 'CRITICAL' if cal.get('has_timeout') else 'OK'}
-                anomaly_info = {'is_batman': cal.get('has_batman', False), 'is_irregular': False}
-
-                # Buscar quality_issues existents per detectar irregular
-                existing_issues = cal.get('quality_issues', [])
-                for issue in existing_issues:
-                    if 'irregular' in issue.lower() or 'smoothness' in issue.lower():
-                        anomaly_info['is_irregular'] = True
-                        # Intentar extreure smoothness
-                        import re
-                        match = re.search(r'smoothness[=:\s]*(\d+)', issue, re.I)
-                        if match:
-                            anomaly_info['smoothness'] = int(match.group(1))
-
-                all_peaks = []
-
-                # Executar validació
-                validation = validate_khp_quality(
-                    khp_data=khp_data,
-                    all_peaks=all_peaks,
-                    timeout_info=timeout_info,
-                    anomaly_info=anomaly_info,
-                    seq_path=cal.get('seq_path', base_path)
-                )
-
-                # Actualitzar camps
-                cal['valid_for_calibration'] = validation.get('is_valid', True)
-                cal['calibration_issues'] = validation.get('issues', [])
-                cal['calibration_warnings'] = validation.get('warnings', [])
-                cal['quality_score'] = validation.get('quality_score', 0)
-
-                # C12/C17: Actualitzar quality_issues (issues + warnings + historical)
-                all_issues = validation.get('issues', []) + validation.get('warnings', [])
-                hist_comp = validation.get('historical_comparison', {})
-                if hist_comp:
-                    all_issues.extend(hist_comp.get('issues', []))
-                    all_issues.extend(hist_comp.get('warnings', []))
-                cal['quality_issues'] = all_issues
-
-                # Validació shift
-                t_retention = cal.get('t_retention', 0)
-                valid_for_shift = True
-                shift_issues = []
-
-                if not t_retention or t_retention <= 0:
-                    valid_for_shift = False
-                    shift_issues.append("No s'ha detectat pic")
-
-                if cal.get('has_timeout') and timeout_info.get('severity') == 'CRITICAL':
-                    valid_for_shift = False
-                    shift_issues.append("Timeout crític")
-
-                if cal.get('has_batman', False):
-                    shift_issues.append("Batman detectat")
-
-                cal['valid_for_shift'] = valid_for_shift
-                cal['shift_issues'] = shift_issues
-
-                # Camps d'override manual (inicialitzar si no existeixen)
-                if 'manual_override' not in cal:
-                    cal['manual_override'] = None
-                if 'manual_override_reason' not in cal:
-                    cal['manual_override_reason'] = ""
-                if 'manual_override_by' not in cal:
-                    cal['manual_override_by'] = ""
-                if 'manual_override_date' not in cal:
-                    cal['manual_override_date'] = None
-
-                # Actualitzar is_outlier i is_active segons validació
-                if cal['manual_override'] is None:
-                    cal['is_outlier'] = not cal['valid_for_calibration']
-                    cal['is_active'] = cal['valid_for_calibration']
-
-                # Actualitzar status
-                if cal['manual_override'] is True:
-                    cal['status'] = "MANUAL_VALID"
-                elif cal['manual_override'] is False:
-                    cal['status'] = "MANUAL_INVALID"
-                elif not cal['valid_for_calibration']:
-                    cal['status'] = "INVALID_CAL"
-                elif not cal['valid_for_shift']:
-                    cal['status'] = "INVALID_SHIFT"
-                else:
-                    cal['status'] = "OK"
-
-                # Reference comparison
-                if validation.get('reference_comparison'):
-                    cal['reference_comparison'] = validation['reference_comparison']
-
-                result['details'].append({
-                    'seq_name': cal.get('seq_name'),
-                    'valid_for_cal': cal['valid_for_calibration'],
-                    'valid_for_shift': cal['valid_for_shift'],
-                    'issues': cal['calibration_issues']
-                })
-                result['updated'] += 1
-
-            except Exception as e:
-                result['errors'].append(f"{cal.get('seq_name', 'unknown')}: {e}")
-
-            updated_cals.append(cal)
-
-        # Guardar JSON actualitzat
-        save_khp_history(sample_seq, updated_cals)
-
-    return result
 
 
 # =============================================================================

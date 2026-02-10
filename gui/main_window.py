@@ -33,6 +33,7 @@ from gui.widgets.samples_db_panel import SamplesDBPanel
 from gui.widgets.maintenance_panel import MaintenancePanel
 from gui.widgets.history_panel import HistoryPanel
 from gui.widgets.config_panel import ConfigPanel
+from gui.widgets.global_calibration_panel import GlobalCalibrationPanel
 
 
 class HPSECSuiteWindow(QMainWindow):
@@ -56,7 +57,6 @@ class HPSECSuiteWindow(QMainWindow):
 
         # Configurar UI
         self._setup_ui()
-        self._setup_menubar()
         self._setup_statusbar()
 
         # Aplicar estil
@@ -106,7 +106,11 @@ class HPSECSuiteWindow(QMainWindow):
         self.history_panel = HistoryPanel(self)
         self.tab_widget.addTab(self.history_panel, "📊 Històric")
 
-        # Tab 5: Manteniment
+        # Tab 5: Calibració Global
+        self.global_cal_panel = GlobalCalibrationPanel(self)
+        self.tab_widget.addTab(self.global_cal_panel, "📐 Calibració Global")
+
+        # Tab 6: Manteniment
         self.maintenance_panel = MaintenancePanel(self)
         self.tab_widget.addTab(self.maintenance_panel, "🔧 Manteniment")
 

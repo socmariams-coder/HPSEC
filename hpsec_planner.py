@@ -371,26 +371,6 @@ def optimize_sequence(n_samples: int, sample_duration: float = SAMPLE_DURATION_C
     return result
 
 
-def format_prediction_table(predictions: List[Dict], max_rows: int = 20) -> str:
-    """Formata les prediccions com a taula de text."""
-    lines = []
-    lines.append("=" * 60)
-    lines.append(f"{'Mostra':>6} | {'Timeout (min)':>13} | {'Zona':>10} | {'Severitat':>10}")
-    lines.append("-" * 60)
-
-    for i, p in enumerate(predictions[:max_rows]):
-        pos_str = f"{p['timeout_pos']:.1f}" if p['timeout_pos'] is not None else "-"
-        sev_mark = "⚠️" if p['severity'] == "CRITICAL" else ("⚡" if p['severity'] == "WARNING" else "✓")
-        lines.append(f"{p['sample']:>6} | {pos_str:>13} | {p['zone']:>10} | {sev_mark} {p['severity']:>8}")
-
-    if len(predictions) > max_rows:
-        lines.append(f"... i {len(predictions) - max_rows} mostres més")
-
-    lines.append("=" * 60)
-
-    return "\n".join(lines)
-
-
 # =============================================================================
 # TEST
 # =============================================================================

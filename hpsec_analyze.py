@@ -1278,8 +1278,8 @@ def quantify_sample(sample_result, calibration_data, mode="COLUMN", seq_date=Non
     rf_mass_direct = get_rf_mass_cal(signal='direct', mode=mode_key, seq_date=seq_date)
     rf_mass_uib = get_rf_mass_cal(signal='uib', mode=mode_key, seq_date=seq_date)
 
-    # Obtenir intercept (0 si origin)
-    intercept = get_calibration_intercept(seq_date=seq_date)
+    # Obtenir intercept per signal/mode (0 si origin, ex: BP)
+    intercept = get_calibration_intercept(signal='direct', mode=mode_key, seq_date=seq_date)
 
     use_global = rf_mass_direct is not None and rf_mass_direct > 0
 
@@ -1442,6 +1442,10 @@ def analyze_sample(sample_data, calibration_data=None, config=None):
     y_doc = sample_data.get("y_doc")  # Mode simple
     df_dad = sample_data.get("df_dad")
 
+    # Filtrar DAD a les 6 λ seleccionades + submostreig (reduir matriu)
+    if df_dad is not None and hasattr(df_dad, 'columns') and len(df_dad.columns) > 8:
+        df_dad = analyze_dad(df_dad, config)
+
     # Obtenir dades NET (si disponibles, calculades per import)
     y_doc_direct_net_precomp = sample_data.get("y_doc_direct_net")
     y_doc_uib_net_precomp = sample_data.get("y_doc_uib_net")
@@ -1479,8 +1483,8 @@ def analyze_sample(sample_data, calibration_data=None, config=None):
     # El shift és translació temporal - NO invalida la correcció de baseline.
     # S'aplica shift a TOTS els senyals (raw i net) per mantenir coherència.
     if calibration_data:
-        shift_uib = calibration_data.get("shift_uib", 0.0)
-        shift_direct = calibration_data.get("shift_direct", 0.0)
+        shift_uib = calibration_data.get("shift_uib") or calibration_data.get("shift_min_u") or 0.0
+        shift_direct = calibration_data.get("shift_direct") or calibration_data.get("shift_min") or 0.0
 
         if is_dual:
             # UIB: interpolar a escala t_doc (referencia Direct)
@@ -1499,6 +1503,8 @@ def analyze_sample(sample_data, calibration_data=None, config=None):
                             y_doc_uib_net_precomp = apply_shift(t_doc, t_uib_arr, y_doc_uib_net_precomp, shift_uib)
                         elif len(t_uib_arr) != len(t_doc):
                             y_doc_uib_net_precomp = np.interp(t_doc, t_uib_arr, y_doc_uib_net_precomp, left=0, right=0)
+                    # Marcar UIB com a ja alineat amb t_doc
+                    t_doc_uib = t_doc
                 else:
                     # Longitud no coincideix - invalidar UIB
                     y_doc_uib = None
@@ -1742,6 +1748,13 @@ def analyze_sample(sample_data, calibration_data=None, config=None):
     )
     result["snr_info"] = snr_info
 
+    # --- LOD/LOQ flags basats en SNR ---
+    snr_direct = snr_info.get("snr_direct", 0)
+    if snr_direct and 0 < snr_direct < 3:
+        result["anomalies"].append("BELOW_LOD")
+    elif snr_direct and 3 <= snr_direct < 10:
+        result["anomalies"].append("BELOW_LOQ")
+
     # Calcular SNR info per DAD (totes les wavelengths)
     dad_snr_info = calculate_dad_snr_info(df_dad, config.get("target_wavelengths"))
     if dad_snr_info:
@@ -1818,27 +1831,52 @@ def analyze_sample(sample_data, calibration_data=None, config=None):
                     doc_254_ratio[frac] = np.nan
             result["doc_254_ratio"] = doc_254_ratio
 
-        # --- Nombre de pics a 254nm dins zona HS (18-23 min) ---
-        if df_dad is not None and not df_dad.empty and '254' in df_dad.columns:
+        # --- Nombre de pics per senyal dins totes les zones ---
+        # n_peaks_per_wl: {"DOC": {"BioP": 1, "HS": 2, ...}, "A254": {...}, ...}
+        from hpsec_config import get_config as _get_cfg
+        _cfg = _get_cfg()
+        _fracs = _cfg.get_all_fractions("BP" if is_bp else "COLUMN")
+        zones_detect = [(fn, fi["start"], fi["end"]) for fn, fi in _fracs]
+
+        n_peaks_per_wl = {}
+
+        def _count_peaks_in_zones(t_arr, y_arr, signal_key):
+            sig_peaks = {}
             try:
-                t_dad = df_dad['time (min)'].to_numpy()
-                y_254 = df_dad['254'].to_numpy()
-
-                # Filtrar zona HS
-                hs_start, hs_end = 18.0, 23.0
-                mask_hs = (t_dad >= hs_start) & (t_dad <= hs_end)
-
-                if np.sum(mask_hs) > 10:
-                    y_254_hs = y_254[mask_hs]
-                    # Detectar pics amb prominència mínima (5% del rang)
-                    y_range = np.max(y_254_hs) - np.min(y_254_hs)
-                    min_prom = y_range * 0.05
-                    peaks, _ = find_peaks(y_254_hs, prominence=min_prom, distance=3)
-                    result["n_peaks_254_HS"] = len(peaks)
-                else:
-                    result["n_peaks_254_HS"] = 0
+                for zone_name, z_start, z_end in zones_detect:
+                    mask = (t_arr >= z_start) & (t_arr <= z_end)
+                    if np.sum(mask) > 10:
+                        y_zone = y_arr[mask]
+                        y_range = np.max(y_zone) - np.min(y_zone)
+                        min_prom = max(y_range * 0.05, 0.01)
+                        peaks, _ = find_peaks(y_zone, prominence=min_prom, distance=3)
+                        sig_peaks[zone_name] = len(peaks)
+                    else:
+                        sig_peaks[zone_name] = 0
             except Exception:
-                result["n_peaks_254_HS"] = None
+                pass
+            if sig_peaks:
+                n_peaks_per_wl[signal_key] = sig_peaks
+
+        # DOC
+        if t_doc is not None and y_doc_net is not None and len(t_doc) > 0:
+            _count_peaks_in_zones(np.asarray(t_doc), np.asarray(y_doc_net), "DOC")
+
+        # UIB
+        if is_dual and y_doc_uib_net is not None and len(y_doc_uib_net) > 0:
+            _count_peaks_in_zones(np.asarray(t_doc), np.asarray(y_doc_uib_net), "UIB")
+
+        # DAD wavelengths
+        if df_dad is not None and not df_dad.empty and 'time (min)' in df_dad.columns:
+            t_dad = df_dad['time (min)'].to_numpy()
+            wl_cols_detect = [c for c in df_dad.columns if c != 'time (min)']
+            for wl_col in wl_cols_detect:
+                wl_key = f"A{wl_col}" if not str(wl_col).startswith('A') else wl_col
+                _count_peaks_in_zones(t_dad, df_dad[wl_col].to_numpy(), wl_key)
+
+        result["n_peaks_per_wl"] = n_peaks_per_wl
+        # Backwards compat
+        result["n_peaks_254_HS"] = n_peaks_per_wl.get("A254", {}).get("HS")
 
     # Guardar dades processades
     result["t_doc"] = t_doc
@@ -1969,10 +2007,13 @@ def _flatten_samples_for_processing(imported_data, data_mode="DUAL"):
                     if "baseline" in uib:
                         flat_sample["baseline"] = uib["baseline"]
 
-            # Extreure dades DAD
+            # Extreure dades DAD — filtrar a λ seleccionades des del principi
             dad = rep_data.get("dad", {})
             if dad and "df" in dad:
-                flat_sample["df_dad"] = dad["df"]
+                df_dad_raw = dad["df"]
+                if hasattr(df_dad_raw, 'columns') and len(df_dad_raw.columns) > 8:
+                    df_dad_raw = analyze_dad(df_dad_raw)
+                flat_sample["df_dad"] = df_dad_raw
 
             # Classificar segons tipus
             if sample_type == "KHP":
@@ -2400,7 +2441,7 @@ def get_data_folder(seq_path, create=False):
 
 
 class NumpyEncoder(json.JSONEncoder):
-    """Encoder JSON per tipus numpy."""
+    """Encoder JSON per tipus numpy i pandas."""
     def default(self, obj):
         if isinstance(obj, np.ndarray):
             return obj.tolist()
@@ -2410,6 +2451,8 @@ class NumpyEncoder(json.JSONEncoder):
             return float(obj)
         if isinstance(obj, np.bool_):
             return bool(obj)
+        if isinstance(obj, pd.DataFrame):
+            return obj.to_dict(orient="list")
         if pd.isna(obj):
             return None
         return super().default(obj)
@@ -2460,27 +2503,53 @@ def save_analysis_result(analysis_data, output_path=None):
     }
 
     def summarize_sample(sample):
-        """Extreu info resumida d'una mostra (sense arrays grans)."""
+        """Extreu info d'una mostra per serialitzar a JSON."""
+        # Convertir df_dad (DataFrame) a dict serialitzable
+        # El df_dad ja arriba filtrat a 6 λ per analyze_dad()
+        df_dad = sample.get("df_dad")
+        df_dad_serializable = None
+        if df_dad is not None and hasattr(df_dad, 'to_dict'):
+            try:
+                if not df_dad.empty:
+                    df_dad_serializable = df_dad.to_dict(orient="list")
+            except Exception:
+                pass
+
         return {
+            # --- Camps existents ---
             "name": sample.get("name", ""),
             "replica": sample.get("replica", ""),
             "processed": sample.get("processed", False),
             "error": sample.get("error"),
-            # Peak info
             "peak_info": sample.get("peak_info", {}),
-            # Àrees
             "areas": sample.get("areas", {}),
             "areas_uib": sample.get("areas_uib", {}),
-            # Anomalies
             "anomalies": sample.get("anomalies", []),
             "timeout_info": sample.get("timeout_info", {}),
-            # SNR
             "snr_info": sample.get("snr_info", {}),
             "snr_info_dad": sample.get("snr_info_dad", {}),
-            # Mètriques DUAL
             "batman_uib": sample.get("batman_uib"),
             "pearson_direct_uib": sample.get("pearson_direct_uib"),
             "area_diff_pct": sample.get("area_diff_pct"),
+            # --- Camps escalars nous ---
+            "tmax_signals": sample.get("tmax_signals", {}),
+            "n_peaks_254_HS": sample.get("n_peaks_254_HS"),
+            "n_peaks_per_wl": sample.get("n_peaks_per_wl", {}),
+            "is_bp": sample.get("is_bp", False),
+            "is_dual": sample.get("is_dual", False),
+            "batman_direct": sample.get("batman_direct"),
+            "batman_direct_info": sample.get("batman_direct_info"),
+            "bigaussian_doc": sample.get("bigaussian_doc"),
+            "bigaussian_254": sample.get("bigaussian_254"),
+            "fwhm_doc": sample.get("fwhm_doc"),
+            "symmetry_doc": sample.get("symmetry_doc"),
+            "inj_volume": sample.get("inj_volume"),
+            # --- Camps cromatograma (arrays) ---
+            "t_doc": sample.get("t_doc"),
+            "y_doc_net": sample.get("y_doc_net"),
+            "y_doc_uib_net": sample.get("y_doc_uib_net"),
+            "y_doc_direct_net": sample.get("y_doc_direct_net"),
+            "df_dad": df_dad_serializable,
         }
 
     # Resumir mostres
@@ -2519,6 +2588,35 @@ def save_analysis_result(analysis_data, output_path=None):
         return None
 
 
+def _restore_dataframes(data):
+    """Converteix df_dad dicts a DataFrames i llistes a numpy arrays en dades carregades de JSON."""
+    _ARRAY_KEYS = ("t_doc", "y_doc_net", "y_doc_uib_net", "y_doc_direct_net")
+
+    def _restore_sample(sample):
+        # Restaurar df_dad: dict → DataFrame
+        df_dad_dict = sample.get("df_dad")
+        if df_dad_dict and isinstance(df_dad_dict, dict):
+            try:
+                sample["df_dad"] = pd.DataFrame(df_dad_dict)
+            except Exception:
+                sample["df_dad"] = None
+        # Restaurar arrays numèrics: list → numpy array
+        for key in _ARRAY_KEYS:
+            val = sample.get(key)
+            if val is not None and isinstance(val, list):
+                sample[key] = np.array(val)
+
+    for sample in data.get("samples", []):
+        _restore_sample(sample)
+    for sample in data.get("khp_samples", []):
+        _restore_sample(sample)
+    for sample in data.get("control_samples", []):
+        _restore_sample(sample)
+    for sample_data in data.get("samples_grouped", {}).values():
+        for rep_data in sample_data.get("replicas", {}).values():
+            _restore_sample(rep_data)
+
+
 def load_analysis_result(seq_path):
     """
     Carrega el resultat d'anàlisi si existeix.
@@ -2539,7 +2637,9 @@ def load_analysis_result(seq_path):
 
     try:
         with open(filepath, "r", encoding="utf-8") as f:
-            return json.load(f)
+            data = json.load(f)
+        _restore_dataframes(data)
+        return data
     except Exception as e:
         print(f"Error carregant analysis_result.json: {e}")
         return None

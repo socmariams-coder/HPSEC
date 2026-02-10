@@ -28,7 +28,7 @@ DEFAULT_CONFIG = {
 
     # --- FRACCIONS TEMPORALS (min) ---
     "time_fractions": {
-        "BioP": {"start": 0.0, "end": 18.0, "name": "Biopolímers"},
+        "BioP": {"start": 10.8, "end": 18.0, "name": "Biopolímers"},
         "HS": {"start": 18.0, "end": 23.0, "name": "Àcids Húmics"},
         "BB": {"start": 23.0, "end": 30.0, "name": "Building Blocks"},
         "SB": {"start": 30.0, "end": 40.0, "name": "Small Building Blocks"},
@@ -283,8 +283,15 @@ class ConfigManager:
             return fractions[name]["start"], fractions[name]["end"]
         return None, None
 
-    def get_all_fractions(self):
-        """Retorna totes les fraccions temporals ordenades."""
+    def get_all_fractions(self, mode=None):
+        """Retorna totes les fraccions temporals ordenades.
+
+        Args:
+            mode: "COLUMN", "BP" o None (default COLUMN).
+              BP no té fraccions definides, retorna llista buida.
+        """
+        if mode and mode.upper() == "BP":
+            return []
         fractions = self.get("time_fractions", default={})
         return sorted(fractions.items(), key=lambda x: x[1]["start"])
 
@@ -355,21 +362,6 @@ def get_config():
 # =============================================================================
 # FUNCIONS HELPER
 # =============================================================================
-
-def get_threshold(name):
-    """Obté un threshold de qualitat."""
-    cfg = get_config()
-    return cfg.get("quality", name)
-
-def get_detection_param(name):
-    """Obté un paràmetre de detecció."""
-    cfg = get_config()
-    return cfg.get("detection", name)
-
-def get_ui_param(name):
-    """Obté un paràmetre d'interfície."""
-    cfg = get_config()
-    return cfg.get("ui", name)
 
 def get_data_folder():
     """Obté la carpeta base de dades."""

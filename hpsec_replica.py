@@ -158,21 +158,6 @@ def _find_main_peak(t, y):
     }
 
 
-def _calc_roughness(y):
-    """Calcula rugositat del senyal (suma de |diffs| / àrea)."""
-    y = np.asarray(y, dtype=float)
-    if len(y) < 2:
-        return 999999.0
-
-    diffs = np.abs(np.diff(y))
-    total = np.sum(np.abs(y))
-
-    if total < 1e-6:
-        return 999999.0
-
-    return float(np.sum(diffs) / total)
-
-
 # =============================================================================
 # AVALUACIÓ DE RÈPLICA
 # =============================================================================

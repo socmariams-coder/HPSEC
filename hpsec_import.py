@@ -2985,53 +2985,6 @@ def import_sequence(seq_path, config=None, progress_callback=None):
 # IMPORT PACK (SIBLINGS)
 # =============================================================================
 
-def extract_seq_num(seq_name):
-    """Extreu el número de SEQ del nom (ex: '282B_SEQ' → 282)."""
-    import re
-    match = re.search(r'^(\d+)', os.path.basename(seq_name).replace('_SEQ', '').replace('_BP', ''))
-    return int(match.group(1)) if match else 0
-
-
-def detect_sibling_packs(seq_paths):
-    """
-    Agrupa carpetes per número de SEQ (siblings).
-
-    Args:
-        seq_paths: Llista de paths a carpetes SEQ
-
-    Returns:
-        dict: {seq_num: [paths]} on seq_num és el número base
-
-    Example:
-        Input: ['282_SEQ', '282B_SEQ', '283_SEQ']
-        Output: {282: ['282_SEQ', '282B_SEQ'], 283: ['283_SEQ']}
-    """
-    packs = {}
-    for path in seq_paths:
-        seq_num = extract_seq_num(path)
-        if seq_num not in packs:
-            packs[seq_num] = []
-        packs[seq_num].append(path)
-
-    # Ordenar cada pack: base primer (282_SEQ), després amb lletra (282B_SEQ, 282C_SEQ)
-    def sort_key(path):
-        name = os.path.basename(path).replace('_SEQ', '').replace('_BP', '')
-        # Extreure número i lletra (282 vs 282B)
-        import re
-        match = re.match(r'^(\d+)([A-Z]?)$', name, re.IGNORECASE)
-        if match:
-            num = int(match.group(1))
-            letter = match.group(2).upper() if match.group(2) else ''
-            # '' < 'A' < 'B' < 'C' ...
-            return (num, letter)
-        return (0, name)
-
-    for seq_num in packs:
-        packs[seq_num].sort(key=sort_key)
-
-    return packs
-
-
 def import_sequence_pack(seq_paths, config=None, progress_callback=None):
     """
     Importa múltiples carpetes siblings com un pack unificat.
@@ -3401,8 +3354,8 @@ def generate_import_manifest(imported_data, include_injection_details=True):
                     "file": os.path.basename(dad.get("path", "") or dad.get("file", "")),
                     "n_points": len(df),
                     "n_wavelengths": len(df.columns) - 1,  # -1 per columna temps
-                    "t_min": float(df[t_col].min()),
-                    "t_max": float(df[t_col].max()),
+                    "t_min": float(pd.to_numeric(df[t_col], errors='coerce').min()),
+                    "t_max": float(pd.to_numeric(df[t_col], errors='coerce').max()),
                     "wavelengths_range": f"{df.columns[1]}-{df.columns[-1]}",
                 }
                 # Afegir info d'assignació manual si existeix

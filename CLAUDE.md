@@ -53,9 +53,9 @@ Mark features as DONE only when code is fully functional end-to-end, not when pl
 - [ ] Analyze panel: mostrar bigaussian (R², asym, quality) per BP — PENDING
 - [ ] Analyze panel: mostrar timeouts amb icones/tooltip — PENDING
 - [ ] Analyze backend: detecció deriva baseline DAD per replica selection — PENDING (TODO a hpsec_analyze.py L1210)
-- [ ] Calibration: revisar flux de renovació/regeneració de calibració (add_calibration, UI panel) — PENDING
-- [ ] Calibration: UI to edit intercept values from panel — PENDING
-- [ ] Calibration: auto-fit intercept from KHP data (regression) — PENDING
+- [x] Calibration: flux renovació calibració global (UI panel + regression) — DONE (GlobalCalibrationPanel)
+- [x] Calibration: auto-fit rf_mass_cal + intercept from KHP history (regression) — DONE (fit_calibration_from_history)
+- [ ] Calibration: UI to edit intercept values directly from panel — PENDING
 - [ ] Export: PDF batch reports — PARTIAL (template exists)
 - [ ] Architecture refactor: unify detection functions in hpsec_core.py — PENDING
 

@@ -17,7 +17,7 @@ Estructura visual optimitzada:
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QTabWidget, QFrame, QMessageBox, QSizePolicy,
+    QTabWidget, QFrame, QMessageBox, QSizePolicy, QScrollArea,
     QDialog, QLineEdit, QTextEdit, QCheckBox, QDialogButtonBox
 )
 from PySide6.QtCore import Qt, Signal
@@ -635,6 +635,8 @@ class ProcessWizardPanel(QWidget):
         elif stage_idx == 2:  # Analitzar
             if hasattr(self.analyze_panel, '_run_analyze'):
                 self.analyze_panel._run_analyze()
+            else:
+                pass
         elif stage_idx == 3:  # Consolidar
             # Consolidar té flux diferent - per ara només navega
             self._update_header_for_tab(stage_idx)
@@ -752,60 +754,197 @@ class ProcessWizardPanel(QWidget):
             self._set_tab_state(current_idx, "warning")
             self.main_window.set_status("Confirmació revertida - revisar avisos", 2000)
 
-    def _on_add_note(self):
-        """Obre diàleg per afegir una nota a l'etapa actual.
+    def _load_existing_notes(self, stage_idx=None):
+        """Carrega totes les notes existents de totes les etapes."""
+        import json
 
-        SEMPRE disponible, independentment de l'estat de l'etapa.
+        seq_path = self.main_window.seq_path
+        if not seq_path:
+            return []
+
+        data_path = Path(seq_path) / "CHECK" / "data"
+
+        notes = []
+        seen = set()  # Evitar duplicats (per timestamp+reviewer)
+
+        # Buscar notes als JSONs de cada etapa
+        json_files = {
+            "import": "import_manifest.json",
+            "calibrate": "calibration_result.json",
+            "analyze": "analysis_result.json",
+            "consolidate": "consolidation.json",
+        }
+        for stage, filename in json_files.items():
+            json_file = data_path / filename
+            if json_file.exists():
+                try:
+                    with open(json_file, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                    for n in data.get("user_notes", []):
+                        key = (n.get("timestamp", ""), n.get("reviewer", ""))
+                        if key not in seen:
+                            if "stage" not in n:
+                                n["stage"] = stage
+                            notes.append(n)
+                            seen.add(key)
+                except Exception:
+                    pass
+
+        # Buscar notes al fitxer general
+        notes_file = data_path / "user_notes.json"
+        if notes_file.exists():
+            try:
+                with open(notes_file, 'r', encoding='utf-8') as f:
+                    notes_data = json.load(f)
+                for n in notes_data.get("notes", []):
+                    key = (n.get("timestamp", ""), n.get("reviewer", ""))
+                    if key not in seen:
+                        notes.append(n)
+                        seen.add(key)
+            except Exception:
+                pass
+
+        # Ordenar per timestamp
+        notes.sort(key=lambda n: n.get("timestamp", ""))
+        return notes
+
+    def _on_add_note(self):
+        """Obre diàleg NO MODAL per veure notes existents i afegir-ne de noves.
+
+        No-modal: permet fer scroll al panell de darrere mentre el diàleg és obert.
         """
+        # Tancar diàleg anterior si existeix
+        if hasattr(self, '_notes_dialog') and self._notes_dialog is not None:
+            try:
+                self._notes_dialog.close()
+            except RuntimeError:
+                pass
+            self._notes_dialog = None
+
         current_idx = self.tab_widget.currentIndex()
-        current_state = self.tab_states[current_idx]
         stage_names = {0: "Importar", 1: "Calibrar", 2: "Analitzar", 3: "Consolidar"}
         stage_name = stage_names.get(current_idx, "Etapa")
 
-        # Diàleg per afegir nota
+        # Carregar totes les notes
+        existing_notes = self._load_existing_notes()
+        stage_labels = {"import": "Importar", "calibrate": "Calibrar",
+                       "analyze": "Analitzar", "consolidate": "Consolidar"}
+
         dialog = QDialog(self)
-        dialog.setWindowTitle("Afegir Nota")
-        dialog.setMinimumWidth(400)
+        dialog.setWindowTitle("Notes")
+        dialog.setMinimumWidth(550)
+        dialog.setMinimumHeight(450)
+        # No-modal: permet interactuar amb la finestra principal
+        dialog.setModal(False)
+        dialog.setAttribute(Qt.WA_DeleteOnClose)
+        self._notes_dialog = dialog
 
         layout = QVBoxLayout(dialog)
-        layout.setSpacing(12)
+        layout.setSpacing(8)
+
+        # === Notes existents (totes les etapes) ===
+        if existing_notes:
+            layout.addWidget(QLabel(f"<b>Notes ({len(existing_notes)}):</b>"))
+
+            notes_scroll = QScrollArea()
+            notes_scroll.setWidgetResizable(True)
+            notes_scroll.setMaximumHeight(250)
+            notes_widget = QWidget()
+            notes_layout = QVBoxLayout(notes_widget)
+            notes_layout.setSpacing(6)
+
+            for note in existing_notes:
+                ts = note.get("timestamp", "")[:16].replace("T", " ")
+                reviewer = note.get("reviewer", "?")
+                text = note.get("note", "")
+                stage = note.get("stage", "")
+                stage_display = stage_labels.get(stage, stage)
+
+                note_frame = QFrame()
+                note_frame.setStyleSheet(
+                    "QFrame { background: #F8F9FA; border: 1px solid #DEE2E6; "
+                    "border-radius: 4px; padding: 6px; }"
+                )
+                note_fl = QVBoxLayout(note_frame)
+                note_fl.setContentsMargins(6, 4, 6, 4)
+                note_fl.setSpacing(2)
+
+                header = QLabel(
+                    f"<b>{reviewer}</b> · "
+                    f"<span style='color:#2E86AB'>[{stage_display}]</span> · "
+                    f"<span style='color:#888'>{ts}</span>"
+                )
+                header.setTextFormat(Qt.RichText)
+                note_fl.addWidget(header)
+
+                body = QLabel(text)
+                body.setWordWrap(True)
+                body.setTextInteractionFlags(Qt.TextSelectableByMouse)
+                note_fl.addWidget(body)
+
+                notes_layout.addWidget(note_frame)
+
+            notes_layout.addStretch()
+            notes_scroll.setWidget(notes_widget)
+            layout.addWidget(notes_scroll)
+
+            # Separador
+            sep = QFrame()
+            sep.setFrameShape(QFrame.HLine)
+            sep.setStyleSheet("color: #DEE2E6;")
+            layout.addWidget(sep)
+        else:
+            layout.addWidget(QLabel("<i>No hi ha notes anteriors.</i>"))
+
+        # === Afegir nova nota ===
+        layout.addWidget(QLabel(f"<b>Afegir nota a [{stage_name}]:</b>"))
 
         # Qui afegeix la nota
-        layout.addWidget(QLabel("Nom o inicials:"))
+        reviewer_layout = QHBoxLayout()
+        reviewer_layout.addWidget(QLabel("Revisor:"))
         reviewer_input = QLineEdit(getattr(self, '_last_reviewer', ""))
         reviewer_input.setPlaceholderText("Ex: MGA, Joan, etc.")
-        layout.addWidget(reviewer_input)
+        reviewer_layout.addWidget(reviewer_input)
+        layout.addLayout(reviewer_layout)
 
         # Nota
-        layout.addWidget(QLabel("Nota:"))
         note_input = QTextEdit()
         note_input.setPlaceholderText("Escriu el teu comentari...")
-        note_input.setMaximumHeight(100)
-        layout.addWidget(note_input)
+        note_input.setMinimumHeight(80)
+        layout.addWidget(note_input, 1)
 
         # Botons
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(dialog.accept)
-        buttons.rejected.connect(dialog.reject)
-        layout.addWidget(buttons)
+        btn_layout = QHBoxLayout()
+        btn_close = QPushButton("Tancar")
+        btn_close.clicked.connect(dialog.close)
+        btn_layout.addWidget(btn_close)
+        btn_layout.addStretch()
+        btn_save = QPushButton("Guardar nota")
+        btn_save.setStyleSheet(
+            "QPushButton { background: #3498DB; color: white; border: none; "
+            "border-radius: 4px; padding: 6px 16px; font-weight: bold; }"
+            "QPushButton:hover { background: #2980B9; }"
+        )
+        btn_layout.addWidget(btn_save)
+        layout.addLayout(btn_layout)
 
-        if dialog.exec():
+        def _save_and_close():
             reviewer = reviewer_input.text().strip()
             note = note_input.toPlainText().strip()
-
             if not reviewer:
-                QMessageBox.warning(self, "Falta informació", "Cal indicar qui afegeix la nota.")
+                QMessageBox.warning(dialog, "Falta informació", "Cal indicar qui afegeix la nota.")
                 return
-
             if not note:
-                QMessageBox.warning(self, "Falta informació", "Cal escriure una nota.")
+                dialog.close()
                 return
-
             self._last_reviewer = reviewer
-
-            # Guardar la nota (sense marcar com a warning)
             self._save_note(current_idx, reviewer, note)
             self.main_window.set_status(f"Nota afegida per {reviewer}", 2000)
+            dialog.close()
+
+        btn_save.clicked.connect(_save_and_close)
+
+        dialog.show()
 
     def _save_note(self, stage_idx: int, reviewer: str, note: str):
         """Guarda una nota al JSON corresponent.
@@ -1018,16 +1157,28 @@ class ProcessWizardPanel(QWidget):
         base_name = tab_names.get(index, "Executar")
         state = self.tab_states[index]
 
-        # === BOTÓ ACCIÓ (només per re-executar) ===
-        # Visible només si l'etapa ja està feta (ok/warning/error)
-        # L'execució normal es fa automàticament o amb "Següent"
+        # === BOTÓ ACCIÓ ===
+        # - ok/warning/error: "↻ Refer" (re-executar)
+        # - pending: "▶ Executar" (si dependències completes)
         if state in ("ok", "warning", "error"):
             self.action_btn.setVisible(True)
             self.action_btn.setText(f"↻ Refer")
             self.action_btn.setToolTip(f"Tornar a executar {base_name.lower()}")
             self.action_btn.setEnabled(True)
+        elif state in ("pending", "current") and index > 0:
+            # Mostrar botó "Executar" si les dependències estan completes
+            deps_ok = all(
+                self.tab_states[i] in ("ok", "warning")
+                for i in range(index)
+            )
+            if deps_ok:
+                self.action_btn.setVisible(True)
+                self.action_btn.setText(f"▶ Executar")
+                self.action_btn.setToolTip(f"Executar {base_name.lower()}")
+                self.action_btn.setEnabled(True)
+            else:
+                self.action_btn.setVisible(False)
         else:
-            # Pendent/current: l'execució és automàtica
             self.action_btn.setVisible(False)
 
         # === INDICADOR D'ESTAT ===
@@ -1410,6 +1561,9 @@ class ProcessWizardPanel(QWidget):
         self.tab_states = self._detect_completed_stages(seq_path)
         self._update_tab_titles()
 
+        # Pre-carregar dades des de JSON si etapes anteriors ja estan completades
+        self._preload_completed_stages(seq_path)
+
         # Anar a primera etapa que necessita atenció (warning o pending)
         first_needs_attention = next(
             (i for i, s in enumerate(self.tab_states) if s in ("warning", "pending", "current")),
@@ -1418,8 +1572,13 @@ class ProcessWizardPanel(QWidget):
         self.tab_widget.setCurrentIndex(first_needs_attention)
         self._update_header_for_tab(first_needs_attention)
 
-        # Carregar al panel d'import
-        self.import_panel.load_from_dashboard(seq_path)
+        # Carregar al panel d'import (només si import és pendent/warning,
+        # sinó ja tenim les dades via _preload_completed_stages)
+        if self.tab_states[0] in ("pending", "current"):
+            self.import_panel.load_from_dashboard(seq_path)
+        else:
+            # Import ja completat: configurar panel sense re-importar
+            self.import_panel.set_sequence_path(seq_path)
 
         self.sequence_loaded.emit(seq_path)
 
@@ -1465,6 +1624,67 @@ class ProcessWizardPanel(QWidget):
 
         if hasattr(self.consolidate_panel, 'reset'):
             self.consolidate_panel.reset()
+
+    def _preload_completed_stages(self, seq_path: str):
+        """Pre-carrega dades des de JSON per etapes ja completades (evita reimportar)."""
+        from pathlib import Path
+        import json
+
+        data_path = Path(seq_path) / "CHECK" / "data"
+        if not data_path.exists():
+            return
+
+        # Import: carregar des del manifest (ràpid, sense generar reports)
+        if self.tab_states[0] in ("ok", "warning") and not self.main_window.imported_data:
+            manifest_path = data_path / "import_manifest.json"
+            if manifest_path.exists():
+                try:
+                    from hpsec_import import import_from_manifest
+                    imported = import_from_manifest(seq_path)
+                    if imported and imported.get("success"):
+                        self.main_window.imported_data = imported
+                except Exception as e:
+                    print(f"[WARNING] Error pre-carregant import: {e}")
+
+        # Calibració: carregar des de calibration_result.json
+        if self.tab_states[1] in ("ok", "warning") and not self.main_window.calibration_data:
+            cal_path = data_path / "calibration_result.json"
+            if cal_path.exists():
+                try:
+                    with open(cal_path, 'r', encoding='utf-8') as f:
+                        cal_file = json.load(f)
+                    calibrations = cal_file.get("calibrations", [])
+                    if calibrations:
+                        active_cal = next(
+                            (c for c in calibrations if c.get("is_active")),
+                            calibrations[0]
+                        )
+                        area = active_cal.get("area", 0)
+                        conc = active_cal.get("conc_ppm", 5)
+                        rf = active_cal.get("rf", 0)
+                        if rf == 0 and conc > 0 and area > 0:
+                            rf = area / conc
+                        self.main_window.calibration_data = {
+                            "success": True,
+                            "mode": active_cal.get("mode", "DUAL"),
+                            "rf_direct": active_cal.get("rf_direct", rf),
+                            "rf_uib": active_cal.get("rf_uib", 0),
+                            "rf": rf,
+                            "rf_mass": active_cal.get("rf_mass", 0),
+                            "shift_direct": active_cal.get("shift_direct") or active_cal.get("shift_min", 0),
+                            "shift_uib": active_cal.get("shift_uib") or active_cal.get("shift_min_u", 0),
+                            "khp_area_direct": area,
+                            "khp_area_uib": active_cal.get("area_u", 0),
+                            "khp_area": area,
+                            "khp_conc": conc,
+                            "volume_uL": active_cal.get("volume_uL", 0),
+                            "khp_source": active_cal.get("khp_source", "LOCAL"),
+                            "calibration": active_cal,
+                            "errors": [],
+                            "loaded_from_json": True,
+                        }
+                except Exception as e:
+                    print(f"[WARNING] Error pre-carregant calibració: {e}")
 
     def _detect_completed_stages(self, seq_path: str) -> list:
         """Detecta quines etapes estan completades basant-se en fitxers existents."""

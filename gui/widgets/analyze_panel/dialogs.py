@@ -39,10 +39,23 @@ class SampleDetailDialog(QDialog):
         self.is_bp = method.upper() == "BP"
 
         self.setWindowTitle(f"Detall: {sample_name}")
-        self.setMinimumSize(1100, 750)
+        self.setMinimumSize(1200, 850)
+        self.resize(1400, 1000)
         self.setModal(True)
 
         self._setup_ui()
+
+    def _count_graph_rows(self):
+        """Compte files de gràfics: DOC/UIB + parells DAD."""
+        replicas = self.sample_data.get("replicas", {})
+        n_wl = 0
+        if replicas:
+            r1 = replicas.get(sorted(replicas.keys())[0], {})
+            df_dad = r1.get("df_dad")
+            if df_dad is not None and hasattr(df_dad, 'columns'):
+                n_wl = sum(1 for c in df_dad.columns if c != 'time (min)')
+        n_dad_rows = max((n_wl + 1) // 2, 1)  # parells de λ
+        return 1 + n_dad_rows  # DOC/UIB row + DAD rows
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
@@ -52,23 +65,30 @@ class SampleDetailDialog(QDialog):
         # Splitter principal
         splitter = QSplitter(Qt.Horizontal)
 
-        # === LEFT: GRAPHS ===
-        graph_widget = QWidget()
-        graph_layout = QVBoxLayout(graph_widget)
-        graph_layout.setContentsMargins(0, 0, 0, 0)
-
+        # === LEFT: GRAPHS (scrollable) ===
         if HAS_MATPLOTLIB:
-            self.figure = Figure(figsize=(8, 9), dpi=100)
+            n_graph_rows = self._count_graph_rows()
+            n_total_rows = n_graph_rows + 1  # + table row
+            fig_h = max(6, n_graph_rows * 1.1 + 2.8)
+            self.figure = Figure(figsize=(7.5, fig_h), dpi=100)
             self.canvas = FigureCanvas(self.figure)
-            graph_layout.addWidget(self.canvas)
+            self.canvas.setMinimumHeight(int(fig_h * 100))
+
+            graph_scroll = QScrollArea()
+            graph_scroll.setWidgetResizable(True)
+            graph_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            graph_scroll.setWidget(self.canvas)
+            splitter.addWidget(graph_scroll)
             self._plot_signals()
         else:
+            graph_widget = QWidget()
+            graph_layout = QVBoxLayout(graph_widget)
+            graph_layout.setContentsMargins(0, 0, 0, 0)
             no_plot = QLabel("Matplotlib no disponible.\nInstal·la matplotlib per veure gràfics.")
             no_plot.setAlignment(Qt.AlignCenter)
             no_plot.setStyleSheet("color: #666; font-style: italic;")
             graph_layout.addWidget(no_plot)
-
-        splitter.addWidget(graph_widget)
+            splitter.addWidget(graph_widget)
 
         # === RIGHT: STATS ===
         stats_scroll = QScrollArea()
@@ -352,8 +372,11 @@ class SampleDetailDialog(QDialog):
     # ------------------------------------------------------------------
 
     def _plot_signals(self):
+        """Gràfics grid 2 columnes (Proposta D): DOC|UIB + parells DAD + taula."""
         if not HAS_MATPLOTLIB:
             return
+
+        from matplotlib.lines import Line2D
 
         self.figure.clear()
         replicas = self.sample_data.get("replicas", {})
@@ -361,109 +384,276 @@ class SampleDetailDialog(QDialog):
             return
 
         rep_keys = sorted(replicas.keys())
-        colors = {'r1': '#2196F3', 'r2': '#FF5722'}
+        r1 = replicas.get(rep_keys[0], {})
+        r2 = replicas.get(rep_keys[1], {}) if len(rep_keys) > 1 else None
+        comparison = self.sample_data.get("comparison", {})
+        doc_comp = comparison.get("doc", {})
+        dad_comp = comparison.get("dad", {})
 
-        r1_data = replicas.get(rep_keys[0], {})
-        r2_data = replicas.get(rep_keys[1], {}) if len(rep_keys) > 1 else None
+        # DAD wavelength columns
+        df_dad1 = r1.get("df_dad")
+        wl_cols = []
+        if df_dad1 is not None and hasattr(df_dad1, 'columns'):
+            wl_cols = [c for c in df_dad1.columns if c != 'time (min)']
+            wl_cols.sort(key=lambda x: int(x) if str(x).isdigit() else 0)
 
-        n_plots = 3
-        axes = self.figure.subplots(n_plots, 1, sharex=True)
+        # Colors
+        C1 = '#1565C0'
+        C2 = '#E65100'
+        C_UIB = '#2E7D32'
+        C_UIB2 = '#66BB6A'
+        LW = 0.7
 
-        # === Plot 1: DOC Direct ===
-        ax1 = axes[0]
-        t1 = r1_data.get("t_doc")
-        y1 = r1_data.get("y_doc_net")
+        # X-axis limits
+        x_min, x_max = (0, 15) if self.is_bp else (0, 70)
 
-        if t1 is not None and y1 is not None:
+        # Selected replica data
+        selected = self.sample_data.get("selected", {})
+        rep_sel = selected.get("doc", rep_keys[0])
+        sel_data = (replicas or {}).get(rep_sel, r1)
+        sel_areas = sel_data.get("areas") or {}
+        areas_uib = sel_data.get("areas_uib", {})
+        n_peaks_per_wl = sel_data.get("n_peaks_per_wl", {})
+
+        # Quantification
+        quant = self.sample_data.get("quantification", {})
+        ppm_direct = quant.get("concentration_ppm_direct") or quant.get("concentration_ppm", 0)
+        ppm_uib = quant.get("concentration_ppm_uib", 0)
+
+        # Fraccions from config
+        from hpsec_config import get_config
+        cfg = get_config()
+        mode = "BP" if self.is_bp else "COLUMN"
+        fracs = cfg.get_all_fractions(mode)
+
+        # R² values
+        pearson_doc = doc_comp.get("pearson", 0)
+        pearson_per_wl = dad_comp.get("pearson_per_wavelength", {})
+
+        # ── Annotation helper ──
+        def _annotate(ax, r2v=None, ppm=None, sig_key=None):
+            line1 = []
+            if r2v and r2v > 0:
+                line1.append(f"R\u00b2={r2v:.4f}")
+            if ppm:
+                line1.append(f"{ppm:.2f} ppm")
+            # Pics nomes HS
+            n_hs = n_peaks_per_wl.get(sig_key, {}).get("HS", 0)
+            line2 = f"{n_hs}p HS" if n_hs else ""
+            lines = []
+            if line1:
+                lines.append("  ".join(line1))
+            if line2:
+                lines.append(line2)
+            if lines:
+                clr = '#C62828' if (r2v and r2v < 0.990) else '#555'
+                ax.text(0.99, 0.92, "\n".join(lines),
+                        transform=ax.transAxes, fontsize=4.5,
+                        color=clr, ha='right', va='top', linespacing=1.3)
+
+        # ── Fraction vlines helper ──
+        def _add_vlines(ax):
+            for fname, finfo in fracs:
+                s = finfo['start']
+                if s > 0 and s <= x_max:
+                    ax.axvline(s, color='#999', ls=':', lw=0.5, zorder=0)
+
+        # ── GridSpec: 2 columns ──
+        pairs = []
+        for i in range(0, len(wl_cols), 2):
+            if i + 1 < len(wl_cols):
+                pairs.append((wl_cols[i], wl_cols[i + 1]))
+            else:
+                pairs.append((wl_cols[i], None))
+
+        n_graph_rows = 1 + len(pairs)  # DOC/UIB + DAD pairs
+        n_total_rows = n_graph_rows + 1  # + table
+        h_graphs = [1.0] * n_graph_rows
+        h_table = [2.5]
+        heights = h_graphs + h_table
+
+        gs = self.figure.add_gridspec(
+            n_total_rows, 2,
+            height_ratios=heights,
+            hspace=0.30, wspace=0.22,
+            top=0.94, bottom=0.03, left=0.08, right=0.97
+        )
+
+        all_graph_axes = []
+
+        # ── Row 0: DOC Direct | DOC UIB ──
+        ax_doc = self.figure.add_subplot(gs[0, 0])
+        ax_uib = self.figure.add_subplot(gs[0, 1])
+        all_graph_axes.extend([ax_doc, ax_uib])
+
+        # DOC Direct
+        t1 = r1.get("t_doc")
+        y1_d = r1.get("y_doc_net")
+        y1_u = r1.get("y_doc_uib_net")
+        t2_arr, y2_d_arr, y2_u_arr = None, None, None
+
+        if t1 is not None and y1_d is not None:
             t1 = np.asarray(t1)
-            y1 = np.asarray(y1)
-            ax1.plot(t1, y1, color=colors['r1'], label=f'R{rep_keys[0]}', linewidth=1)
+            y1_d = np.asarray(y1_d)
+            ax_doc.plot(t1, y1_d, color=C1, lw=LW, label=f'R{rep_keys[0]}')
+            if r2:
+                t2_arr = r2.get("t_doc")
+                y2_d_arr = r2.get("y_doc_net")
+                if t2_arr is not None and y2_d_arr is not None:
+                    t2_arr = np.asarray(t2_arr)
+                    y2_d_arr = np.asarray(y2_d_arr)
+                    ax_doc.plot(t2_arr, y2_d_arr, color=C2, lw=LW, alpha=0.7,
+                                label=f'R{rep_keys[1]}')
 
-            if r2_data:
-                t2 = r2_data.get("t_doc")
-                y2 = r2_data.get("y_doc_net")
-                if t2 is not None and y2 is not None:
-                    t2 = np.asarray(t2)
-                    y2 = np.asarray(y2)
-                    ax1.plot(t2, y2, color=colors['r2'], label=f'R{rep_keys[1]}',
-                            linewidth=1, linestyle='--', alpha=0.8)
+        ax_doc.set_ylabel("DOC", fontsize=6.5, labelpad=2)
+        ax_doc.tick_params(labelsize=5.5, length=2, pad=1)
+        ax_doc.grid(True, alpha=0.2, lw=0.3)
+        ax_doc.set_xlim(x_min, x_max)
+        _add_vlines(ax_doc)
+        ax_doc.legend(loc='upper left', fontsize=5, ncol=2,
+                      framealpha=0.7, handlelength=1.2)
+        _annotate(ax_doc, r2v=pearson_doc, ppm=ppm_direct, sig_key="DOC")
 
-        ax1.set_ylabel("DOC Direct (mAU)", fontsize=9)
-        ax1.legend(loc='upper right', fontsize=8)
-        ax1.grid(True, alpha=0.3)
-        ax1.set_title("DOC Direct", fontsize=10, fontweight='bold', loc='left')
+        # DOC UIB
+        has_uib = y1_u is not None
+        if has_uib:
+            y1_u = np.asarray(y1_u)
+            if len(y1_u) == len(t1):
+                ax_uib.plot(t1, y1_u, color=C_UIB, lw=LW, label=f'R{rep_keys[0]}')
+                if r2:
+                    y2_u_arr = r2.get("y_doc_uib_net")
+                    if y2_u_arr is not None and t2_arr is not None:
+                        y2_u_arr = np.asarray(y2_u_arr)
+                        if len(y2_u_arr) == len(t2_arr):
+                            ax_uib.plot(t2_arr, y2_u_arr, color=C_UIB2, lw=LW,
+                                        alpha=0.7, label=f'R{rep_keys[1]}')
+                ax_uib.legend(loc='upper left', fontsize=5, ncol=2,
+                              framealpha=0.7, handlelength=1.2)
+                _annotate(ax_uib, ppm=ppm_uib, sig_key="UIB")
+            else:
+                has_uib = False
 
-        # === Plot 2: DOC UIB ===
-        ax2 = axes[1]
-        y1_uib = r1_data.get("y_doc_uib_net")
+        if not has_uib:
+            ax_uib.text(0.5, 0.5, "UIB no disponible",
+                        ha='center', va='center',
+                        transform=ax_uib.transAxes, fontsize=8, color='#aaa')
 
-        if y1_uib is not None and t1 is not None:
-            y1_uib = np.asarray(y1_uib)
-            ax2.plot(t1, y1_uib, color=colors['r1'], label=f'R{rep_keys[0]}', linewidth=1)
+        ax_uib.set_ylabel("UIB", fontsize=6.5, labelpad=2)
+        ax_uib.tick_params(labelsize=5.5, length=2, pad=1)
+        ax_uib.grid(True, alpha=0.2, lw=0.3)
+        ax_uib.set_xlim(x_min, x_max)
+        _add_vlines(ax_uib)
 
-            if r2_data:
-                y2_uib = r2_data.get("y_doc_uib_net")
-                if y2_uib is not None:
-                    y2_uib = np.asarray(y2_uib)
-                    t2 = r2_data.get("t_doc")
-                    if t2 is not None:
-                        t2 = np.asarray(t2)
-                        ax2.plot(t2, y2_uib, color=colors['r2'], label=f'R{rep_keys[1]}',
-                                linewidth=1, linestyle='--', alpha=0.8)
+        # ── DAD rows (parells) ──
+        for row_i, (wl_left, wl_right) in enumerate(pairs):
+            for col_j, wl in enumerate([wl_left, wl_right]):
+                if wl is None:
+                    ax = self.figure.add_subplot(gs[row_i + 1, col_j])
+                    ax.axis('off')
+                    all_graph_axes.append(ax)
+                    continue
 
-            ax2.set_title("DOC UIB", fontsize=10, fontweight='bold', loc='left')
-        else:
-            ax2.text(0.5, 0.5, "UIB no disponible", ha='center', va='center',
-                    transform=ax2.transAxes, fontsize=10, color='#666')
-            ax2.set_title("DOC UIB", fontsize=10, fontweight='bold', loc='left')
+                ax = self.figure.add_subplot(gs[row_i + 1, col_j])
+                all_graph_axes.append(ax)
 
-        ax2.set_ylabel("DOC UIB (mAU)", fontsize=9)
-        ax2.legend(loc='upper right', fontsize=8)
-        ax2.grid(True, alpha=0.3)
+                if (df_dad1 is not None and 'time (min)' in df_dad1.columns
+                        and wl in df_dad1.columns):
+                    ax.plot(df_dad1['time (min)'].values,
+                            df_dad1[wl].values, color=C1, lw=LW)
+                    if r2:
+                        df_dad2 = r2.get("df_dad")
+                        if (df_dad2 is not None
+                                and hasattr(df_dad2, 'columns')
+                                and wl in df_dad2.columns):
+                            ax.plot(df_dad2['time (min)'].values,
+                                    df_dad2[wl].values,
+                                    color=C2, lw=LW, alpha=0.7)
 
-        # === Plot 3: DAD 254 ===
-        ax3 = axes[2]
-        df_dad1 = r1_data.get("df_dad")
+                wl_label = f"A{wl}" if not str(wl).startswith('A') else wl
+                ax.set_ylabel(wl_label, fontsize=6.5, labelpad=2)
+                ax.grid(True, alpha=0.2, lw=0.3)
+                ax.tick_params(labelsize=5.5, length=2, pad=1)
+                ax.set_xlim(x_min, x_max)
+                _add_vlines(ax)
 
-        if df_dad1 is not None and not df_dad1.empty:
-            wl_col = None
-            for col in ['254', 'A254']:
-                if col in df_dad1.columns:
-                    wl_col = col
-                    break
+                # R² (clau pot ser "A254" o "254")
+                wl_key = f"A{wl}" if not str(wl).startswith('A') else wl
+                r2v = pearson_per_wl.get(wl_key, 0) or pearson_per_wl.get(str(wl), 0)
+                _annotate(ax, r2v=r2v, sig_key=wl_key)
 
-            if wl_col and 'time (min)' in df_dad1.columns:
-                t_dad1 = df_dad1['time (min)'].values
-                y_254_1 = df_dad1[wl_col].values
-                ax3.plot(t_dad1, y_254_1, color=colors['r1'], label=f'R{rep_keys[0]}', linewidth=1)
+        # X label on bottom row
+        bottom_row = n_graph_rows - 1
+        for col_j in range(2):
+            idx = 2 + bottom_row * 2 + col_j
+            if idx < len(all_graph_axes):
+                ax = all_graph_axes[idx]
+                if ax.axison:
+                    ax.set_xlabel("Temps (min)", fontsize=6.5)
 
-                if r2_data:
-                    df_dad2 = r2_data.get("df_dad")
-                    if df_dad2 is not None and not df_dad2.empty and wl_col in df_dad2.columns:
-                        t_dad2 = df_dad2['time (min)'].values
-                        y_254_2 = df_dad2[wl_col].values
-                        ax3.plot(t_dad2, y_254_2, color=colors['r2'], label=f'R{rep_keys[1]}',
-                                linewidth=1, linestyle='--', alpha=0.8)
+        # ── Fraction table (bottom, spans 2 columns) ──
+        if not self.is_bp and fracs:
+            ax_tbl = self.figure.add_subplot(gs[n_graph_rows, :])
+            ax_tbl.axis('off')
 
-        ax3.set_ylabel("DAD 254nm (mAU)", fontsize=9)
-        ax3.set_xlabel("Temps (min)", fontsize=9)
-        ax3.legend(loc='upper right', fontsize=8)
-        ax3.grid(True, alpha=0.3)
-        ax3.set_title("DAD 254nm", fontsize=10, fontweight='bold', loc='left')
+            doc_areas = sel_areas.get("DOC", {})
+            doc_total = doc_areas.get("total", 0)
+            uib_total = areas_uib.get("total", 0)
 
-        # Fraction zones (COLUMN)
-        if not self.is_bp:
-            zones = [
-                (0, 18, "BioP", "#E3F2FD"),
-                (18, 23, "HS", "#FFF3E0"),
-                (23, 30, "BB", "#F3E5F5"),
-                (30, 40, "SB", "#E8F5E9"),
-                (40, 70, "LMW", "#FCE4EC"),
-            ]
-            for ax in axes:
-                for start, end, name, color in zones:
-                    ax.axvspan(start, end, alpha=0.15, color=color, zorder=0)
+            # Header: Senyal | BioP (10.8-18) | HS (18-23) | ... | TOTAL (0-70)
+            col_labels = ["Senyal"]
+            for fname, finfo in fracs:
+                col_labels.append(f"{fname} ({finfo['start']:g}\u2013{finfo['end']:g})")
+            col_labels.append(f"TOTAL (0\u2013{x_max:g})")
 
-        self.figure.tight_layout()
+            # Signal rows
+            signal_names = ["DOC"]
+            if has_uib:
+                signal_names.append("UIB")
+            for wl in wl_cols:
+                wl_lbl = f"A{wl}" if not str(wl).startswith('A') else wl
+                signal_names.append(wl_lbl)
+
+            rows = []
+            for sig in signal_names:
+                row = [sig]
+                if sig == "DOC":
+                    sig_areas, sig_total = doc_areas, doc_total
+                elif sig == "UIB":
+                    sig_areas, sig_total = areas_uib, uib_total
+                else:
+                    sig_areas = sel_areas.get(sig, {})
+                    sig_total = sig_areas.get("total", 0)
+                for fname, _finfo in fracs:
+                    fval = sig_areas.get(fname, 0)
+                    pct = (fval / sig_total * 100) if sig_total > 0 else 0
+                    row.append(f"{pct:.1f}")
+                row.append("100" if sig_total > 0 else "\u2013")
+                rows.append(row)
+
+            tbl = ax_tbl.table(cellText=rows, colLabels=col_labels,
+                               loc='upper center', cellLoc='center')
+            tbl.auto_set_font_size(False)
+            tbl.set_fontsize(6)
+            tbl.scale(1, 1.2)
+            for key, cell in tbl.get_celld().items():
+                cell.set_linewidth(0.3)
+                cell.set_height(0.08)
+                if key[0] == 0:
+                    cell.set_facecolor('#E0E0E0')
+                    cell.set_text_props(fontweight='bold', fontsize=5.5)
+                elif key[1] == 0:
+                    cell.set_facecolor('#F5F5F5')
+                    cell.set_text_props(fontweight='bold', fontsize=6)
+                else:
+                    cell.set_facecolor('white')
+
+        # ── Title ──
+        rep_label = f"R{rep_keys[0]}"
+        if r2:
+            rep_label += f"+R{rep_keys[1]}"
+        self.figure.suptitle(
+            f"{self.sample_name}  |  {self.method}  |  {rep_label}",
+            fontsize=9, fontweight='bold', y=0.98)
+
         self.canvas.draw()
 
