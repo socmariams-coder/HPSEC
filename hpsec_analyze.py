@@ -2348,14 +2348,14 @@ def _analyze_light_sample(sample):
     """
     Anàlisi lightweight per BLANK (MQ) i CONTROL (NaOH).
 
-    Només calcula àrea total DOC i SNR — sense fraccions, quantificació ni DAD.
+    Calcula àrea total DOC, SNR i àrea A254 — sense fraccions ni quantificació.
 
     Args:
         sample: Dict amb dades de la mostra (flat_sample de _flatten_samples_for_processing)
 
     Returns:
         dict amb: name, replica, sample_type, processed, analysis_type="light",
-                  area_total, snr, t_doc, y_doc_net, inj_volume
+                  area_total, snr, area_254, t_doc, y_doc_net, inj_volume
     """
     name = sample.get("name", "UNKNOWN")
     replica = sample.get("replica", "1")
@@ -2404,6 +2404,31 @@ def _analyze_light_sample(sample):
     result["t_doc"] = t_doc
     result["y_doc_net"] = y_doc_net
     result["processed"] = True
+
+    # Extreure àrea A254 del DAD si disponible
+    df_dad = sample.get("df_dad")
+    if df_dad is not None and hasattr(df_dad, 'columns'):
+        try:
+            # Buscar columna 254 (pot ser "A254", "254", 254, etc.)
+            col_254 = None
+            for col in df_dad.columns:
+                col_str = str(col).replace("A", "").strip()
+                if col_str == "254":
+                    col_254 = col
+                    break
+            if col_254 is not None:
+                t_col = None
+                for tc in df_dad.columns:
+                    tc_str = str(tc).lower()
+                    if "time" in tc_str or "min" in tc_str or tc_str == "t":
+                        t_col = tc
+                        break
+                if t_col is not None:
+                    t_dad = np.asarray(df_dad[t_col], dtype=float)
+                    y_254 = np.asarray(df_dad[col_254], dtype=float)
+                    result["area_254"] = float(np.trapz(y_254, x=t_dad))
+        except Exception:
+            pass
 
     return result
 
@@ -2811,6 +2836,7 @@ def save_analysis_result(analysis_data, output_path=None):
             "analysis_type": "light",
             "area_total": sample.get("area_total", 0),
             "snr": sample.get("snr", 0),
+            "area_254": sample.get("area_254", 0),
             "inj_volume": sample.get("inj_volume"),
             "t_doc": t_doc,
             "y_doc_net": y_doc_net,
