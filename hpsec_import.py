@@ -1619,71 +1619,74 @@ def parse_injections_from_masterfile(master_data, config=None):
         return [], ["ERROR: No s'ha trobat fulla 1-HPLC-SEQ al MasterFile"], 0
 
     # ==========================================================================
-    # VALIDACIÓ MASTERFILE: Columnes A-F (0-5) + N (13) han de tenir dades
+    # DETECCIÓ ROBUST: Trobar la columna Line# AMB DADES
+    # Si les cols A-F estan buides (paste a columna errònia), buscar la
+    # primera columna "Line#" que tingui valors reals.
     # ==========================================================================
     errors = []
     col_list = list(df_seq.columns)
-    required_indices = [0, 1, 2, 3, 4, 5]  # A-F
-    if len(col_list) > 13:
-        required_indices.append(13)  # N (volum)
 
-    # Noms de columnes per missatges
-    col_letters = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N']
+    # Buscar TOTES les columnes amb "line#" al nom i trobar la que té dades
+    line_col_candidates = []
+    for i, col in enumerate(col_list):
+        col_base = str(col).lower().replace('.1', '').replace('.2', '').strip()
+        if col_base in ("line#", "line"):
+            n_valid = df_seq[col].notna().sum()
+            line_col_candidates.append((i, col, n_valid))
 
-    # Trobar files amb dades (Line# no buit)
-    line_col_idx = 0  # Columna A = Line#
-    if len(col_list) > line_col_idx:
-        line_col_name = col_list[line_col_idx]
-        # Files amb Line# vàlid
+    # Triar la primera columna Line# amb dades
+    line_col_idx = 0  # fallback: columna A
+    line_col_name = col_list[0] if col_list else None
+    col_offset = 0  # offset entre la posició real i la posició esperada (A=0)
+
+    for idx, col, n_valid in line_col_candidates:
+        if n_valid > 0:
+            line_col_idx = idx
+            line_col_name = col
+            col_offset = idx  # les altres cols (Inj#, Sample Name...) estan a +1, +2, +3
+            if col_offset > 0:
+                warnings.append(f"MasterFile: dades trobades a columna {idx+1} (esperat A). Possiblement paste desplaçat.")
+            break
+
+    # Files amb Line# vàlid
+    if line_col_name is not None:
         valid_rows = df_seq[line_col_name].notna() & (df_seq[line_col_name].astype(str).str.strip() != '')
         n_data_rows = valid_rows.sum()
+    else:
+        n_data_rows = 0
 
-        if n_data_rows == 0:
-            return [], ["ERROR: Fulla 1-HPLC-SEQ buida - no hi ha cap injecció"], 0
+    if n_data_rows == 0:
+        return [], ["ERROR: Fulla 1-HPLC-SEQ buida - no hi ha cap injecció"], 0
 
-        # Verificar cel·les buides en les files amb dades
-        empty_cells = []
-        for idx in df_seq[valid_rows].index:
-            row_num = idx + 2  # +2 perquè Excel comença a 1 i té header
-            line_val = df_seq.loc[idx, line_col_name]
-            try:
-                line_num = int(line_val)
-            except (ValueError, TypeError):
-                line_num = row_num
+    total_rows_with_line = n_data_rows
 
-            for col_idx in required_indices:
-                if col_idx < len(col_list):
-                    col_name = col_list[col_idx]
-                    val = df_seq.loc[idx, col_name]
-                    if pd.isna(val) or str(val).strip() in ['', 'nan', 'NaN']:
-                        col_letter = col_letters[col_idx] if col_idx < len(col_letters) else f'Col{col_idx}'
-                        empty_cells.append(f"Line {line_num}: {col_letter}")
-
-        if empty_cells:
-            # Agrupar per mostrar màxim 5 exemples
-            examples = empty_cells[:5]
-            more = f" (+{len(empty_cells)-5} més)" if len(empty_cells) > 5 else ""
-            errors.append(f"ERROR: Cel·les buides al MasterFile 1-HPLC-SEQ: {', '.join(examples)}{more}")
-
-    # Identificar columnes
+    # Identificar columnes: buscar per nom, preferint les que tenen dades
     sample_col = None
     inj_col = None
     line_col = None
     volume_col = None
     sample_rep_col = None  # Columna Sample_Rep del migrate (si existeix)
 
+    # Primer pass: buscar per nom les columnes amb dades
     for col in df_seq.columns:
         col_lower = str(col).lower().strip()
-        if col_lower == "sample_rep":
+        col_base = col_lower.replace('.1', '').replace('.2', '')
+        has_data = df_seq[col].notna().any()
+
+        if col_base == "sample_rep" and has_data:
             sample_rep_col = col
-        elif "sample" in col_lower and "name" in col_lower:
-            sample_col = col
-        elif col_lower == "inj#" or col_lower == "inj":
-            inj_col = col
-        elif col_lower == "line#" or col_lower == "line":
-            line_col = col
-        elif "volume" in col_lower or "vol" in col_lower:
-            volume_col = col
+        elif ("sample" in col_base and "name" in col_base) and has_data:
+            if sample_col is None:
+                sample_col = col
+        elif (col_base == "inj#" or col_base == "inj") and has_data:
+            if inj_col is None:
+                inj_col = col
+        elif (col_base == "line#" or col_base == "line") and has_data:
+            if line_col is None:
+                line_col = col
+        elif ("volume" in col_base or "vol" in col_base) and has_data:
+            if volume_col is None:
+                volume_col = col
 
     # Columna N (índex 13) per volum si no té etiqueta
     # En Excel v11/v12, el volum està a la columna N sense etiqueta
@@ -1736,14 +1739,21 @@ def parse_injections_from_masterfile(master_data, config=None):
         elif col_lower == "area":
             area_col = col
 
-    # Columnes crítiques que NO haurien d'estar buides: A-F + N
-    # A=Line#, B=Inj#, C=Location, D=Sample Name, E=Method, F=Date, N=Volume
-    col_list = list(df_seq.columns)
-
-    # Identificar columnes per índex (A=0, B=1, ..., F=5, N=13)
-    location_col = col_list[2] if len(col_list) > 2 else None  # C
-    method_col = col_list[4] if len(col_list) > 4 else None    # E
-    date_col = col_list[5] if len(col_list) > 5 else None      # F
+    # Columnes crítiques que NO haurien d'estar buides: Line#, Inj#, Location, Sample Name, Method, Date, Volume
+    # Buscar per nom (robust: funciona encara que les columnes estiguin desplaçades)
+    location_col = None
+    method_col = None
+    date_col = None
+    for col in df_seq.columns:
+        col_lower = str(col).lower().strip()
+        col_base = col_lower.replace('.1', '').replace('.2', '')
+        has_data = df_seq[col].notna().any()
+        if col_base == "location" and has_data and location_col is None:
+            location_col = col
+        elif ("method" in col_base or "acq" in col_base) and has_data and method_col is None:
+            method_col = col
+        elif ("date" in col_base or "acquired" in col_base) and has_data and date_col is None:
+            date_col = col
 
     critical_cols = {
         'Line#': line_col,           # A
