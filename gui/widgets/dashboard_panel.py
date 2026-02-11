@@ -541,6 +541,7 @@ class DashboardPanel(QWidget):
 
     def refresh_sequences(self):
         cfg = get_config()
+        cfg.reload()
         data_folder = cfg.get("paths", "data_folder")
         self.sequences = get_all_sequences(data_folder)
 

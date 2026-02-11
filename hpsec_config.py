@@ -223,6 +223,10 @@ class ConfigManager:
             print(f"Error guardant configuració: {e}")
             return False
 
+    def reload(self):
+        """Rellegeix la configuració des del fitxer."""
+        self.config = self._load_config()
+
     def reset_to_defaults(self):
         """Restaura la configuració per defecte."""
         self.config = DEFAULT_CONFIG.copy()
