@@ -185,7 +185,7 @@ class WarningSkipDialog(QDialog):
 
         # Botons
         buttons = QDialogButtonBox()
-        self.continue_btn = buttons.addButton("Continuar →", QDialogButtonBox.AcceptRole)
+        self.continue_btn = buttons.addButton("Continuar \u2192", QDialogButtonBox.AcceptRole)
         self.continue_btn.setStyleSheet("""
             QPushButton {
                 background-color: #F39C12; color: white; border: none;
@@ -193,7 +193,7 @@ class WarningSkipDialog(QDialog):
             }
             QPushButton:hover { background-color: #E67E22; }
         """)
-        cancel_btn = buttons.addButton("Cancel·lar", QDialogButtonBox.RejectRole)
+        cancel_btn = buttons.addButton("Cancel\u00b7lar", QDialogButtonBox.RejectRole)
         buttons.accepted.connect(self._validate_and_accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
@@ -305,14 +305,16 @@ class ProcessWizardPanel(QWidget):
         layout.addWidget(self.tab_widget)
 
     def _create_minimal_header(self) -> QFrame:
-        """Crea header ESTABLE amb layout fix.
+        """Crea header simplificat amb layout fix.
 
         Estructura:
-        [←] SEQ_286_BP (info)  [indicator]  [📝 Nota]  [⚠ Avisos]  [Acció]  [→]
+        [←] SEQ_286_BP (info)  [status_indicator]  [📝 N]  [Acció]  [Següent →]
 
-        IMPORTANT: Tots els elements són SEMPRE visibles.
-        Només canvia: enabled/disabled, text, color.
-        Això evita salts visuals i facilita la familiarització.
+        Elements:
+        - status_indicator: fusió de task_indicator + warnings_btn en un sol botó clicable
+        - note_btn: sempre actiu, mostra comptador de notes si n'hi ha
+        - action_btn: sempre visible (disabled quan no aplicable)
+        - next_step_btn: amb tooltips contextuals
         """
         frame = QFrame()
         frame.setFixedHeight(48)
@@ -323,8 +325,7 @@ class ProcessWizardPanel(QWidget):
         layout.setSpacing(12)
 
         # === SECCIÓ CONTEXT ===
-        # Botó tornar al Dashboard
-        self.back_btn = QPushButton("←")
+        self.back_btn = QPushButton("\u2190")
         self.back_btn.setFixedSize(32, 32)
         self.back_btn.setToolTip("Tornar al Dashboard")
         self.back_btn.setStyleSheet("""
@@ -338,59 +339,42 @@ class ProcessWizardPanel(QWidget):
         self.back_btn.clicked.connect(self._go_to_dashboard)
         layout.addWidget(self.back_btn)
 
-        # Nom SEQ
         self.seq_label = QLabel("")
         self.seq_label.setFont(QFont("Segoe UI", 11, QFont.Bold))
         self.seq_label.setStyleSheet("color: #2E86AB;")
         layout.addWidget(self.seq_label)
 
-        # Info addicional (method/mode)
         self.seq_info = QLabel()
         self.seq_info.setStyleSheet("color: #666; font-size: 10px;")
         layout.addWidget(self.seq_info)
 
         layout.addStretch()
 
-        # === SECCIÓ ESTAT ===
-        self.task_indicator = QLabel("○ Pendent")
-        self.task_indicator.setMinimumWidth(100)
-        self.task_indicator.setAlignment(Qt.AlignCenter)
-        self.task_indicator.setStyleSheet("""
-            QLabel {
-                background-color: #e2e3e5; color: #383d41;
-                padding: 4px 12px; border-radius: 12px;
-                font-size: 11px; font-weight: bold;
-            }
-        """)
-        layout.addWidget(self.task_indicator)
+        # === STATUS INDICATOR (fusió task_indicator + warnings_btn) ===
+        self.status_indicator = QPushButton("\u25CB Pendent")
+        self.status_indicator.setMinimumWidth(120)
+        self.status_indicator.setCursor(Qt.PointingHandCursor)
+        self.status_indicator.clicked.connect(self._on_status_indicator_clicked)
+        self._set_status_indicator_style("pending")
+        layout.addWidget(self.status_indicator)
 
         layout.addSpacing(8)
 
-        # === SECCIÓ EINES (sempre visibles) ===
-        # Botó Nota - SEMPRE actiu
-        self.note_btn = QPushButton("📝 Nota")
-        self.note_btn.setFixedWidth(80)
+        # === BOTÓ NOTES (sempre actiu, amb comptador) ===
+        self.note_btn = QPushButton("\U0001f4dd")
+        self.note_btn.setFixedWidth(40)
         self.note_btn.setStyleSheet("""
             QPushButton {
                 background-color: #6C757D; color: white; border: none;
-                border-radius: 4px; padding: 6px 10px; font-weight: bold;
+                border-radius: 4px; padding: 6px; font-size: 14px;
             }
             QPushButton:hover { background-color: #5A6268; }
         """)
-        self.note_btn.setToolTip("Afegir nota o comentari (sempre disponible)")
+        self.note_btn.setToolTip("Notes i comentaris")
         self.note_btn.clicked.connect(self._on_add_note)
         layout.addWidget(self.note_btn)
 
-        # Botó Avisos - canvia text/color segons estat
-        self.warnings_btn = QPushButton("✓ OK")
-        self.warnings_btn.setFixedWidth(100)
-        self.warnings_btn.setStyleSheet(self._get_warnings_btn_style("ok"))
-        self.warnings_btn.setToolTip("No hi ha avisos pendents")
-        self.warnings_btn.clicked.connect(self._on_warnings_btn_clicked)
-        self.warnings_btn.setEnabled(False)  # Disabled quan no hi ha avisos
-        layout.addWidget(self.warnings_btn)
-
-        layout.addSpacing(12)
+        layout.addSpacing(8)
 
         # === SECCIÓ NAVEGACIÓ ===
         self.action_btn = QPushButton("Executar")
@@ -406,7 +390,7 @@ class ProcessWizardPanel(QWidget):
         self.action_btn.clicked.connect(self._on_action_clicked)
         layout.addWidget(self.action_btn)
 
-        self.next_step_btn = QPushButton("Següent →")
+        self.next_step_btn = QPushButton("Seg\u00fcent \u2192")
         self.next_step_btn.setFixedWidth(100)
         self.next_step_btn.setStyleSheet("""
             QPushButton {
@@ -420,52 +404,86 @@ class ProcessWizardPanel(QWidget):
         self.next_step_btn.clicked.connect(self._go_next_step)
         layout.addWidget(self.next_step_btn)
 
-        # Estat intern per gestió d'avisos
-        self._current_warning_level = "none"  # none, info, warning, blocker
+        # Backward compat aliases (used internally by some methods)
+        self.task_indicator = self.status_indicator
+        self.warnings_btn = self.status_indicator
+
+        # Estat intern
+        self._current_warning_level = "none"
         self._warnings_confirmed_by = None
 
         return frame
 
-    def _get_warnings_btn_style(self, level: str) -> str:
-        """Retorna l'estil CSS pel botó d'avisos segons el nivell."""
+    def _set_status_indicator_style(self, level: str):
+        """Aplica estil al status_indicator segons el nivell."""
         styles = {
+            "pending": """
+                QPushButton {
+                    background-color: #e2e3e5; color: #383d41; border: none;
+                    border-radius: 12px; padding: 4px 14px;
+                    font-size: 11px; font-weight: bold;
+                }
+                QPushButton:hover { background-color: #d6d8db; }
+                QPushButton:disabled { background-color: #e2e3e5; color: #383d41; }
+            """,
+            "executing": """
+                QPushButton {
+                    background-color: #cce5ff; color: #004085; border: none;
+                    border-radius: 12px; padding: 4px 14px;
+                    font-size: 11px; font-weight: bold;
+                }
+                QPushButton:disabled { background-color: #cce5ff; color: #004085; }
+            """,
             "ok": """
                 QPushButton {
                     background-color: #d4edda; color: #155724; border: none;
-                    border-radius: 4px; padding: 6px 10px; font-weight: bold;
+                    border-radius: 12px; padding: 4px 14px;
+                    font-size: 11px; font-weight: bold;
                 }
-                QPushButton:disabled { background-color: #e9ecef; color: #6c757d; }
+                QPushButton:hover { background-color: #c3e6cb; }
+            """,
+            "confirmed": """
+                QPushButton {
+                    background-color: #27AE60; color: white; border: none;
+                    border-radius: 12px; padding: 4px 14px;
+                    font-size: 11px; font-weight: bold;
+                }
+                QPushButton:hover { background-color: #1E8449; }
             """,
             "info": """
                 QPushButton {
                     background-color: #cce5ff; color: #004085; border: none;
-                    border-radius: 4px; padding: 6px 10px; font-weight: bold;
+                    border-radius: 12px; padding: 4px 14px;
+                    font-size: 11px; font-weight: bold;
                 }
                 QPushButton:hover { background-color: #b8daff; }
             """,
             "warning": """
                 QPushButton {
                     background-color: #F39C12; color: white; border: none;
-                    border-radius: 4px; padding: 6px 10px; font-weight: bold;
+                    border-radius: 12px; padding: 4px 14px;
+                    font-size: 11px; font-weight: bold;
                 }
                 QPushButton:hover { background-color: #E67E22; }
             """,
             "blocker": """
                 QPushButton {
                     background-color: #E74C3C; color: white; border: none;
-                    border-radius: 4px; padding: 6px 10px; font-weight: bold;
+                    border-radius: 12px; padding: 4px 14px;
+                    font-size: 11px; font-weight: bold;
                 }
                 QPushButton:hover { background-color: #C0392B; }
             """,
-            "confirmed": """
+            "error": """
                 QPushButton {
-                    background-color: #27AE60; color: white; border: none;
-                    border-radius: 4px; padding: 6px 10px; font-weight: bold;
+                    background-color: #f8d7da; color: #721c24; border: none;
+                    border-radius: 12px; padding: 4px 14px;
+                    font-size: 11px; font-weight: bold;
                 }
-                QPushButton:hover { background-color: #1E8449; }
+                QPushButton:hover { background-color: #f5c6cb; }
             """,
         }
-        return styles.get(level, styles["ok"])
+        self.status_indicator.setStyleSheet(styles.get(level, styles["pending"]))
 
     def _on_action_clicked(self):
         """Executa l'acció del panell actual."""
@@ -617,34 +635,31 @@ class ProcessWizardPanel(QWidget):
         QTimer.singleShot(100, lambda: self._execute_stage(next_idx))
 
     def _execute_stage(self, stage_idx: int):
-        """Executa l'operació de l'etapa indicada."""
-        stage_names = {1: "Calibrant", 2: "Analitzant", 3: "Exportant"}
+        """Executa l'operaci\u00f3 de l'etapa indicada."""
+        stage_names = {1: "Calibrant", 2: "Analitzant", 3: "Revisant"}
         stage_name = stage_names.get(stage_idx, "Executant")
 
-        # Mostrar estat "Executant..."
         self._show_executing_state(stage_name)
 
-        if stage_idx == 1:  # Calibrar
-            if hasattr(self.calibrate_panel, '_run_calibrate'):
-                self.calibrate_panel._run_calibrate()
-        elif stage_idx == 2:  # Analitzar
-            if hasattr(self.analyze_panel, '_run_analyze'):
-                self.analyze_panel._run_analyze()
-        elif stage_idx == 3:  # Revisar
-            # Revisar: el panel s'omple automàticament via showEvent
+        try:
+            if stage_idx == 1:  # Calibrar
+                if hasattr(self.calibrate_panel, '_run_calibrate'):
+                    self.calibrate_panel._run_calibrate()
+            elif stage_idx == 2:  # Analitzar
+                if hasattr(self.analyze_panel, '_run_analyze'):
+                    self.analyze_panel._run_analyze()
+            elif stage_idx == 3:  # Revisar
+                self._update_header_for_tab(stage_idx)
+        except Exception as e:
+            print(f"[ERROR] _execute_stage({stage_idx}): {e}")
+            self._set_tab_state(stage_idx, "error")
             self._update_header_for_tab(stage_idx)
 
     def _show_executing_state(self, stage_name: str):
-        """Mostra l'estat d'execució en curs."""
-        self.task_indicator.setText(f"● {stage_name}...")
-        self.task_indicator.setStyleSheet("""
-            QLabel {
-                background-color: #cce5ff; color: #004085;
-                padding: 4px 12px; border-radius: 12px;
-                font-size: 11px; font-weight: bold;
-            }
-        """)
-        # Deshabilitar botons mentre s'executa
+        """Mostra l'estat d'execuci\u00f3 en curs."""
+        self.status_indicator.setText(f"\u25CF {stage_name}...")
+        self.status_indicator.setEnabled(False)
+        self._set_status_indicator_style("executing")
         self.action_btn.setEnabled(False)
         self.next_step_btn.setEnabled(False)
 
@@ -1000,6 +1015,7 @@ class ProcessWizardPanel(QWidget):
                     json.dump(notes_data, f, indent=2, ensure_ascii=False, default=str)
 
             self.main_window.set_status(f"Nota guardada: {stage_name}", 2000)
+            self._update_note_btn()
 
         except Exception as e:
             QMessageBox.warning(self, "Error", f"No s'ha pogut guardar la nota: {e}")
@@ -1138,143 +1154,142 @@ class ProcessWizardPanel(QWidget):
     def _update_header_for_tab(self, index):
         """Actualitza el header segons la pestanya activa.
 
-        IMPORTANT: Layout ESTABLE - tots els elements són sempre visibles.
-        Només canvien: enabled/disabled, text, color/estil.
+        Layout ESTABLE: status_indicator + note_btn + action_btn + next_step_btn.
+        Tots sempre visibles. Només canvien: enabled/disabled, text, color/estil, tooltip.
         """
         tab_names = {0: "Importar", 1: "Calibrar", 2: "Analitzar", 3: "Revisar"}
         base_name = tab_names.get(index, "Executar")
         state = self.tab_states[index]
+        has_confirmed = self._has_confirmed_warnings(index)
+        warning_level = self._get_warning_level(index)
 
-        # === BOTÓ ACCIÓ ===
-        # - ok/warning/error: "↻ Refer" (re-executar)
-        # - pending: "▶ Executar" (si dependències completes)
+        # === STATUS INDICATOR (un sol botó per estat + avisos) ===
+        if state in ("pending", "current"):
+            self.status_indicator.setText("\u25CB Pendent")
+            self.status_indicator.setEnabled(False)
+            self.status_indicator.setToolTip("Executa primer l'etapa")
+            self._set_status_indicator_style("pending")
+
+        elif state == "ok":
+            if has_confirmed:
+                self.status_indicator.setText("\u2713 Revisat")
+                self.status_indicator.setEnabled(True)
+                self.status_indicator.setToolTip("Avisos revisats. Clic per revertir.")
+                self._set_status_indicator_style("confirmed")
+            else:
+                self.status_indicator.setText("\u2713 OK")
+                self.status_indicator.setEnabled(False)
+                self.status_indicator.setToolTip("Tot correcte")
+                self._set_status_indicator_style("ok")
+
+        elif state == "warning":
+            if warning_level == "blocker":
+                self.status_indicator.setText("\u26D4 Errors")
+                self.status_indicator.setEnabled(True)
+                self.status_indicator.setToolTip("Hi ha errors que bloquegen. Clic per veure.")
+                self._set_status_indicator_style("blocker")
+            elif warning_level == "warning":
+                self.status_indicator.setText("\u26A0 Revisar")
+                self.status_indicator.setEnabled(True)
+                self.status_indicator.setToolTip("Hi ha avisos pendents. Clic per revisar.")
+                self._set_status_indicator_style("warning")
+            else:  # info
+                self.status_indicator.setText("\u2139 Info")
+                self.status_indicator.setEnabled(True)
+                self.status_indicator.setToolTip("Hi ha informaci\u00f3 disponible. Clic per veure.")
+                self._set_status_indicator_style("info")
+
+        elif state == "error":
+            self.status_indicator.setText("\u2717 Error")
+            self.status_indicator.setEnabled(True)
+            self.status_indicator.setToolTip("Clic per veure detalls de l'error")
+            self._set_status_indicator_style("error")
+
+        # === BOTÓ ACCIÓ (sempre visible, disabled quan no aplicable) ===
         if state in ("ok", "warning", "error"):
-            self.action_btn.setVisible(True)
-            self.action_btn.setText(f"↻ Refer")
+            self.action_btn.setText("\u21BB Refer")
             self.action_btn.setToolTip(f"Tornar a executar {base_name.lower()}")
             self.action_btn.setEnabled(True)
         elif state in ("pending", "current") and index > 0:
-            # Mostrar botó "Executar" si les dependències estan completes
             deps_ok = all(
                 self.tab_states[i] in ("ok", "warning")
                 for i in range(index)
             )
-            if deps_ok:
-                self.action_btn.setVisible(True)
-                self.action_btn.setText(f"▶ Executar")
-                self.action_btn.setToolTip(f"Executar {base_name.lower()}")
-                self.action_btn.setEnabled(True)
-            else:
-                self.action_btn.setVisible(False)
+            self.action_btn.setText("\u25B6 Executar")
+            self.action_btn.setToolTip(f"Executar {base_name.lower()}")
+            self.action_btn.setEnabled(deps_ok)
+        elif state in ("pending", "current") and index == 0:
+            self.action_btn.setText("\u25B6 Executar")
+            self.action_btn.setToolTip(f"Executar {base_name.lower()}")
+            self.action_btn.setEnabled(False)
         else:
-            self.action_btn.setVisible(False)
+            self.action_btn.setText("Executar")
+            self.action_btn.setEnabled(False)
 
-        # === INDICADOR D'ESTAT ===
-        has_confirmed = self._has_confirmed_warnings(index)
-        warning_level = self._get_warning_level(index)
+        # === BOTÓ NOTES (comptador) ===
+        self._update_note_btn()
 
-        if state == "ok":
-            if has_confirmed:
-                reviewer = self._get_warnings_reviewer(index)
-                self.task_indicator.setText(f"✓ Revisat ({reviewer})")
-            else:
-                self.task_indicator.setText("✓ OK")
-            self.task_indicator.setStyleSheet("""
-                QLabel {
-                    background-color: #d4edda; color: #155724;
-                    padding: 4px 12px; border-radius: 12px;
-                    font-size: 11px; font-weight: bold;
-                }
-            """)
-        elif state == "warning":
-            self.task_indicator.setText("⚠ Revisar")
-            self.task_indicator.setStyleSheet("""
-                QLabel {
-                    background-color: #fff3cd; color: #856404;
-                    padding: 4px 12px; border-radius: 12px;
-                    font-size: 11px; font-weight: bold;
-                }
-            """)
-        elif state == "error":
-            self.task_indicator.setText("✗ Error")
-            self.task_indicator.setStyleSheet("""
-                QLabel {
-                    background-color: #f8d7da; color: #721c24;
-                    padding: 4px 12px; border-radius: 12px;
-                    font-size: 11px; font-weight: bold;
-                }
-            """)
-        else:  # pending/current
-            self.task_indicator.setText("○ Pendent")
-            self.task_indicator.setStyleSheet("""
-                QLabel {
-                    background-color: #e2e3e5; color: #383d41;
-                    padding: 4px 12px; border-radius: 12px;
-                    font-size: 11px; font-weight: bold;
-                }
-            """)
-
-        # === BOTÓ AVISOS (sempre visible, canvia estat) ===
-        self._update_warnings_button(index, state, warning_level, has_confirmed)
-
-        # === BOTÓ SEGÜENT ===
-        # Enabled si:
-        # - state == "ok" (tot correcte)
-        # - state == "warning" amb warning_level != "blocker" (pot saltar amb nota)
+        # === BOTÓ SEG\u00dcENT (amb tooltips contextuals) ===
         can_proceed = False
-        if state == "ok" and index < 3:
+        tooltip = ""
+        if index >= 3:
+            tooltip = "\u00daltima etapa"
+        elif state == "ok":
             can_proceed = True
-        elif state == "warning" and warning_level != "blocker" and index < 3:
-            # Pot avançar amb avisos WARNING/INFO (demanarà nota)
+            next_name = tab_names.get(index + 1, "")
+            tooltip = f"Avan\u00e7ar a {next_name}"
+        elif state == "warning" and warning_level != "blocker":
             can_proceed = True
+            tooltip = "Avan\u00e7ar (es demanar\u00e0 nota)"
+        elif state == "warning" and warning_level == "blocker":
+            tooltip = "Cal resoldre els errors primer"
+        elif state == "error":
+            tooltip = "Cal corregir l'error primer"
+        else:
+            tooltip = "Cal executar l'etapa primer"
 
         self.next_step_btn.setEnabled(can_proceed)
+        self.next_step_btn.setToolTip(tooltip)
 
-    def _update_warnings_button(self, index: int, state: str, warning_level: str, has_confirmed: bool):
-        """Actualitza el botó d'avisos segons l'estat."""
-        if state in ("pending", "current"):
-            # Encara no executat
-            self.warnings_btn.setText("–")
-            self.warnings_btn.setEnabled(False)
-            self.warnings_btn.setStyleSheet(self._get_warnings_btn_style("ok"))
-            self.warnings_btn.setToolTip("Executa primer l'etapa")
+    def _on_status_indicator_clicked(self):
+        """Handler pel status_indicator unificat."""
+        current_idx = self.tab_widget.currentIndex()
+        state = self.tab_states[current_idx]
+        has_confirmed = self._has_confirmed_warnings(current_idx)
 
-        elif state == "error":
-            # Error
-            self.warnings_btn.setText("✗ Error")
-            self.warnings_btn.setEnabled(True)
-            self.warnings_btn.setStyleSheet(self._get_warnings_btn_style("blocker"))
-            self.warnings_btn.setToolTip("Clic per veure detalls de l'error")
-
-        elif state == "ok":
-            if has_confirmed:
-                reviewer = self._get_warnings_reviewer(index)
-                self.warnings_btn.setText(f"✓ {reviewer}")
-                self.warnings_btn.setEnabled(True)
-                self.warnings_btn.setStyleSheet(self._get_warnings_btn_style("confirmed"))
-                self.warnings_btn.setToolTip("Clic per revertir la confirmació")
-            else:
-                self.warnings_btn.setText("✓ OK")
-                self.warnings_btn.setEnabled(False)
-                self.warnings_btn.setStyleSheet(self._get_warnings_btn_style("ok"))
-                self.warnings_btn.setToolTip("No hi ha avisos")
-
+        if state == "ok" and has_confirmed:
+            self._on_revert_warnings()
         elif state == "warning":
-            if warning_level == "blocker":
-                self.warnings_btn.setText("🛑 Errors")
-                self.warnings_btn.setEnabled(True)
-                self.warnings_btn.setStyleSheet(self._get_warnings_btn_style("blocker"))
-                self.warnings_btn.setToolTip("Hi ha errors que bloquegen. Clic per veure.")
-            elif warning_level == "warning":
-                self.warnings_btn.setText("⚠ Revisar")
-                self.warnings_btn.setEnabled(True)
-                self.warnings_btn.setStyleSheet(self._get_warnings_btn_style("warning"))
-                self.warnings_btn.setToolTip("Hi ha avisos pendents. Clic per revisar.")
-            else:  # info
-                self.warnings_btn.setText("ℹ Info")
-                self.warnings_btn.setEnabled(True)
-                self.warnings_btn.setStyleSheet(self._get_warnings_btn_style("info"))
-                self.warnings_btn.setToolTip("Hi ha informació disponible. Clic per veure.")
+            self._on_confirm_warnings()
+        elif state == "error":
+            self._show_error_details(current_idx)
+
+    def _update_note_btn(self):
+        """Actualitza el bot\u00f3 de notes amb comptador."""
+        notes = self._load_existing_notes()
+        n = len(notes)
+        if n > 0:
+            self.note_btn.setText(f"\U0001f4dd {n}")
+            self.note_btn.setFixedWidth(55)
+            self.note_btn.setToolTip(f"{n} nota{'s' if n > 1 else ''} - Clic per veure")
+            self.note_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #2E86AB; color: white; border: none;
+                    border-radius: 4px; padding: 6px; font-size: 13px; font-weight: bold;
+                }
+                QPushButton:hover { background-color: #236B8E; }
+            """)
+        else:
+            self.note_btn.setText("\U0001f4dd")
+            self.note_btn.setFixedWidth(40)
+            self.note_btn.setToolTip("Afegir nota o comentari")
+            self.note_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #6C757D; color: white; border: none;
+                    border-radius: 4px; padding: 6px; font-size: 14px;
+                }
+                QPushButton:hover { background-color: #5A6268; }
+            """)
 
     def _get_warning_level(self, stage_idx: int) -> str:
         """Determina el nivell màxim d'avisos per l'etapa.
@@ -1371,55 +1386,6 @@ class ProcessWizardPanel(QWidget):
 
         except Exception:
             return []
-
-    def _get_warnings_reviewer(self, stage_idx: int) -> str:
-        """Obté el nom del revisor dels avisos."""
-        import json
-        try:
-            seq_path = self.main_window.seq_path
-            if not seq_path:
-                return "OK"
-
-            data_path = Path(seq_path) / "CHECK" / "data"
-            json_files = {
-                0: "import_manifest.json",
-                1: "calibration_result.json",
-                2: "analysis_result.json",
-            }
-
-            filename = json_files.get(stage_idx)
-            if not filename:
-                return "OK"
-
-            json_file = data_path / filename
-            if not json_file.exists():
-                return "OK"
-
-            with open(json_file, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-
-            confirmed = data.get("warnings_confirmed", {})
-            if isinstance(confirmed, dict):
-                return confirmed.get("reviewer", "OK")
-            return "OK"
-        except:
-            return "OK"
-
-    def _on_warnings_btn_clicked(self):
-        """Handler pel botó d'avisos unificat."""
-        current_idx = self.tab_widget.currentIndex()
-        state = self.tab_states[current_idx]
-        has_confirmed = self._has_confirmed_warnings(current_idx)
-
-        if state == "ok" and has_confirmed:
-            # Revertir confirmació
-            self._on_revert_warnings()
-        elif state == "warning":
-            # Mostrar diàleg de revisió
-            self._on_confirm_warnings()
-        elif state == "error":
-            # Mostrar detalls de l'error
-            self._show_error_details(current_idx)
 
     def _show_error_details(self, stage_idx: int):
         """Mostra els detalls d'un error en un diàleg."""
