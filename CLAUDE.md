@@ -63,6 +63,14 @@ Mark features as DONE only when code is fully functional end-to-end, not when pl
 - [x] Export: SUMMARY.xlsx ampliat (A_UIB, ppm_UIB, A_254, SNR_254, R²_DOC, R²_DAD, Anomalies) — DONE
 - [x] Export: ID sheet with full traceability (RF, intercept, anomalies, batman repair, timeouts) — DONE
 - [x] Export: skip invalid samples (sample_valid=False or "Cap") — DONE
+- [x] Export: BP integration in COLUMN mode (ID_BP sheet, BP rows in RESULTS, BP cols in SUMMARY) — DONE
+- [x] Export: fractions loaded from hpsec_config.json (not hardcoded) — DONE
+- [x] Export: timeout zone_summary fix (dict format) — DONE
+- [x] Wizard: Consolidar replaced by Exportar as step 4 — DONE
+- [x] Analyze backend: light analysis for BLANK/CONTROL (area_total + SNR only, no fractions/quantification) — DONE
+- [x] Analyze panel: BLANC/CONTROL rows at bottom with separator + grey background — DONE
+- [x] Export: lightweight Excel for BLANK/CONTROL (ID + DOC sheets only) — DONE
+- [x] Export: SUMMARY.xlsx Type column (SAMPLE/PR/BLANK/CONTROL) — DONE
 - [ ] Architecture refactor: unify detection functions in hpsec_core.py — PENDING
 
 ## Design decisions

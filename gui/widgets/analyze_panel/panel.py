@@ -523,9 +523,19 @@ class AnalyzePanel(QWidget):
         """Omple la taula unificada amb els resultats (13 cols, selectors DOC/DAD independents)."""
         self.results_table.setRowCount(0)
         self._sample_row_map = {}
-        n_ok, n_warning, n_error = 0, 0, 0
+        n_ok, n_warning, n_error, n_light = 0, 0, 0, 0
 
-        for sample_name in sorted(self.samples_grouped.keys()):
+        # Separar mostres regulars i light
+        regular_names = []
+        light_names = []
+        for name in sorted(self.samples_grouped.keys()):
+            if self.samples_grouped[name].get("analysis_type") == "light":
+                light_names.append(name)
+            else:
+                regular_names.append(name)
+
+        # --- Regular samples ---
+        for sample_name in regular_names:
             sample_data = self.samples_grouped[sample_name]
             row = self.results_table.rowCount()
             self.results_table.insertRow(row)
@@ -686,14 +696,95 @@ class AnalyzePanel(QWidget):
             else:
                 n_ok += 1
 
+        # --- Separator + Light samples (BLANC / CONTROL) ---
+        if light_names:
+            n_cols = self.results_table.columnCount()
+            sep_row = self.results_table.rowCount()
+            self.results_table.insertRow(sep_row)
+            sep_item = QTableWidgetItem("--- BLANCS / CONTROLS ---")
+            sep_item.setFlags(Qt.ItemIsEnabled)  # Non-selectable
+            sep_font = QFont()
+            sep_font.setBold(True)
+            sep_item.setFont(sep_font)
+            sep_item.setForeground(QBrush(QColor("#888888")))
+            self.results_table.setItem(sep_row, 0, sep_item)
+            self.results_table.setSpan(sep_row, 0, 1, n_cols)
+            sep_bg = QBrush(QColor("#E8E8E8"))
+            for c in range(n_cols):
+                item = self.results_table.item(sep_row, c)
+                if item is None:
+                    item = QTableWidgetItem("")
+                    self.results_table.setItem(sep_row, c, item)
+                item.setBackground(sep_bg)
+
+            for sample_name in light_names:
+                sample_data = self.samples_grouped[sample_name]
+                row = self.results_table.rowCount()
+                self.results_table.insertRow(row)
+                self._sample_row_map[sample_name] = row
+
+                replicas = sample_data.get("replicas") or {}
+                selected = sample_data.get("selected") or {}
+                doc_sel = selected.get("doc", sorted(replicas.keys())[0] if replicas else "1")
+                doc_rep = replicas.get(doc_sel, {})
+                sample_type = sample_data.get("sample_type", "BLANK")
+
+                # Col 0: Sample name
+                item_name = QTableWidgetItem(sample_name)
+                item_name.setData(Qt.UserRole, sample_name)
+                self.results_table.setItem(row, 0, item_name)
+
+                # Col 1-2: No selectors for light samples
+                self.results_table.setItem(row, 1, QTableWidgetItem("-"))
+                self.results_table.setItem(row, 2, QTableWidgetItem("-"))
+
+                # Col 3: A_DOC (area_total from light analysis)
+                area_total = doc_rep.get("area_total", 0)
+                self.results_table.setItem(row, 3, QTableWidgetItem(
+                    f"{area_total:.0f}" if area_total else "-"))
+
+                # Col 4-6: No ppm, no UIB
+                for c in (4, 5, 6):
+                    self.results_table.setItem(row, c, QTableWidgetItem("-"))
+
+                # Col 7: SNR (color-coded same as regular)
+                snr = doc_rep.get("snr", 0)
+                snr_item = QTableWidgetItem(f"{snr:.0f}" if snr else "-")
+                if snr and snr < 10:
+                    snr_item.setForeground(QBrush(QColor(COLOR_ERROR)))
+                elif snr and snr < 50:
+                    snr_item.setForeground(QBrush(QColor(COLOR_WARNING)))
+                self.results_table.setItem(row, 7, snr_item)
+
+                # Col 8-11: No DAD, no R²
+                for c in (8, 9, 10, 11):
+                    self.results_table.setItem(row, c, QTableWidgetItem("-"))
+
+                # Col 12: sample_type text
+                type_item = QTableWidgetItem(sample_type)
+                type_item.setForeground(QBrush(QColor("#888888")))
+                self.results_table.setItem(row, 12, type_item)
+
+                # Light grey background
+                light_bg = QBrush(QColor("#F0F0F0"))
+                for c in range(n_cols):
+                    item = self.results_table.item(row, c)
+                    if item:
+                        item.setBackground(light_bg)
+
+                n_light += 1
+
         # Update stats bar
         total = n_ok + n_warning + n_error
-        self.stats_label.setText(
+        stats_text = (
             f"<b>Total:</b> {total} mostres &nbsp;&nbsp;|&nbsp;&nbsp; "
             f"<span style='color:#27AE60'>●</span> OK: {n_ok} &nbsp;&nbsp;"
             f"<span style='color:#F39C12'>●</span> Warning: {n_warning} &nbsp;&nbsp;"
             f"<span style='color:#E74C3C'>●</span> Error: {n_error}"
         )
+        if n_light > 0:
+            stats_text += f" &nbsp;&nbsp;|&nbsp;&nbsp; <span style='color:#888888'>●</span> Blancs/Controls: {n_light}"
+        self.stats_label.setText(stats_text)
 
     # ------------------------------------------------------------------
     # Anomaly severity classification
@@ -1018,11 +1109,19 @@ class AnalyzePanel(QWidget):
     # ------------------------------------------------------------------
 
     def _on_table_double_click(self, index):
-        """Handler per doble clic — obre SampleDetailDialog."""
+        """Handler per doble clic — obre SampleDetailDialog (skip light samples)."""
         row = index.row()
         item = self.results_table.item(row, 0)
         if item:
-            sample_name = item.data(Qt.UserRole) or item.text()
+            sample_name = item.data(Qt.UserRole)
+            if not sample_name:
+                return  # Separator row
+            sample_data = self.samples_grouped.get(sample_name)
+            if not sample_data:
+                return
+            # Light samples: no detail dialog (no fractions to show)
+            if sample_data.get("analysis_type") == "light":
+                return
             self._show_detail(sample_name)
 
     def _show_detail(self, sample_name):

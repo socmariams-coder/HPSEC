@@ -2073,7 +2073,7 @@ def _flatten_samples_for_processing(imported_data, data_mode="DUAL"):
         data_mode: "DUAL", "UIB" o "DIRECT"
 
     Returns:
-        tuple de 3 llistes: (samples, khp_samples, control_samples)
+        tuple de 4 llistes: (samples, khp_samples, control_samples, light_samples)
         Cada element és un dict amb:
             - name: Nom de la mostra
             - replica: Número de rèplica
@@ -2088,7 +2088,8 @@ def _flatten_samples_for_processing(imported_data, data_mode="DUAL"):
     """
     samples = []
     khp_samples = []
-    control_samples = []
+    control_samples = []  # Kept empty for backward compat (result dict still has the key)
+    light_samples = []    # BLANK + CONTROL → lightweight analysis
 
     all_samples = imported_data.get("samples", {})
 
@@ -2187,12 +2188,12 @@ def _flatten_samples_for_processing(imported_data, data_mode="DUAL"):
             # Classificar segons tipus
             if sample_type == "KHP":
                 khp_samples.append(flat_sample)
-            elif sample_type == "CONTROL":
-                control_samples.append(flat_sample)
+            elif sample_type in ("BLANK", "CONTROL"):
+                light_samples.append(flat_sample)
             else:
                 samples.append(flat_sample)
 
-    return samples, khp_samples, control_samples
+    return samples, khp_samples, control_samples, light_samples
 
 
 # =============================================================================
@@ -2341,6 +2342,73 @@ def _generate_analysis_warnings(result: dict) -> list:
 
 
 # =============================================================================
+# ANÀLISI LIGHTWEIGHT PER BLANCS / CONTROLS
+# =============================================================================
+def _analyze_light_sample(sample):
+    """
+    Anàlisi lightweight per BLANK (MQ) i CONTROL (NaOH).
+
+    Només calcula àrea total DOC i SNR — sense fraccions, quantificació ni DAD.
+
+    Args:
+        sample: Dict amb dades de la mostra (flat_sample de _flatten_samples_for_processing)
+
+    Returns:
+        dict amb: name, replica, sample_type, processed, analysis_type="light",
+                  area_total, snr, t_doc, y_doc_net, inj_volume
+    """
+    name = sample.get("name", "UNKNOWN")
+    replica = sample.get("replica", "1")
+    sample_type = sample.get("sample_type", "BLANK")
+
+    result = {
+        "name": name,
+        "replica": replica,
+        "sample_type": sample_type,
+        "processed": False,
+        "analysis_type": "light",
+        "area_total": 0,
+        "snr": 0,
+        "t_doc": sample.get("t_doc"),
+        "y_doc_net": None,
+        "inj_volume": sample.get("inj_volume"),
+    }
+
+    # Obtenir senyal DOC
+    y_doc_net = sample.get("y_doc_net")
+    if y_doc_net is None:
+        y_doc_net = sample.get("y_doc_direct_net")
+    if y_doc_net is None:
+        y_doc_net = sample.get("y_doc")
+    if y_doc_net is None:
+        y_doc_net = sample.get("y_doc_direct")
+
+    t_doc = sample.get("t_doc")
+
+    if y_doc_net is None or t_doc is None:
+        result["error"] = "No DOC signal available"
+        return result
+
+    y_doc_net = np.asarray(y_doc_net, dtype=float)
+    t_doc = np.asarray(t_doc, dtype=float)
+
+    # Àrea total DOC
+    area_total = float(np.trapz(y_doc_net, x=t_doc))
+
+    # SNR (simple: peak_height / noise)
+    peak_height = float(np.max(y_doc_net))
+    snr = calc_snr(y_doc_net, peak_height)
+
+    result["area_total"] = area_total
+    result["snr"] = snr
+    result["t_doc"] = t_doc
+    result["y_doc_net"] = y_doc_net
+    result["processed"] = True
+
+    return result
+
+
+# =============================================================================
 # FUNCIÓ PRINCIPAL: PROCESSAR SEQÜÈNCIA
 # =============================================================================
 def analyze_sequence(imported_data, calibration_data=None, config=None, progress_callback=None):
@@ -2378,6 +2446,7 @@ def analyze_sequence(imported_data, calibration_data=None, config=None, progress
         "samples": [],
         "khp_samples": [],
         "control_samples": [],
+        "light_samples": [],
         "errors": [],
         "warnings": [],
     }
@@ -2389,11 +2458,11 @@ def analyze_sequence(imported_data, calibration_data=None, config=None, progress
 
     # Aplanar l'estructura de mostres
     data_mode = imported_data.get("data_mode", "UIB")
-    all_samples, khp_samples, control_samples = _flatten_samples_for_processing(
+    all_samples, khp_samples, control_samples, light_samples = _flatten_samples_for_processing(
         imported_data, data_mode=data_mode
     )
 
-    total_samples = len(all_samples) + len(khp_samples) + len(control_samples)
+    total_samples = len(all_samples) + len(khp_samples) + len(control_samples) + len(light_samples)
     if total_samples == 0:
         result["errors"].append("No samples to process")
         return result
@@ -2466,7 +2535,7 @@ def analyze_sequence(imported_data, calibration_data=None, config=None, progress
 
         processed_count += 1
 
-    # Processar controls
+    # Processar controls (backward compat — control_samples queda buit, van a light)
     for i, ctrl in enumerate(control_samples):
         if progress_callback:
             progress_callback(f"Processing {ctrl.get('name', '')}...", (processed_count + i + 1) / total_samples * 100)
@@ -2477,6 +2546,20 @@ def analyze_sequence(imported_data, calibration_data=None, config=None, progress
             result["control_samples"].append(processed)
         except Exception as e:
             result["errors"].append(f"Control {ctrl.get('name')}: {str(e)}")
+
+    # Processar light samples (BLANK + CONTROL) — anàlisi lleugera
+    for i, light in enumerate(light_samples):
+        if progress_callback:
+            progress_callback(
+                f"Processing {light.get('name', '')} (light)...",
+                (processed_count + len(control_samples) + i + 1) / total_samples * 100
+            )
+
+        try:
+            processed = _analyze_light_sample(light)
+            result["light_samples"].append(processed)
+        except Exception as e:
+            result["errors"].append(f"Light {light.get('name')}: {str(e)}")
 
     # =========================================================================
     # AGRUPAR RÈPLIQUES, COMPARAR, RECOMANAR I QUANTIFICAR
@@ -2574,6 +2657,28 @@ def analyze_sequence(imported_data, calibration_data=None, config=None, progress
         result["samples_grouped"][sample_name] = sample_group
 
     # =========================================================================
+    # AGRUPAR LIGHT SAMPLES (BLANK + CONTROL) — després de regulars
+    # =========================================================================
+    light_by_name = {}
+    for ls in result["light_samples"]:
+        name = ls.get("name", "UNKNOWN")
+        replica = ls.get("replica", "1")
+        if name not in light_by_name:
+            light_by_name[name] = {}
+        light_by_name[name][replica] = ls
+
+    for sample_name in sorted(light_by_name.keys()):
+        replicas = light_by_name[sample_name]
+        first_rep = next(iter(replicas.values()))
+        result["samples_grouped"][sample_name] = {
+            "analysis_type": "light",
+            "sample_type": first_rep.get("sample_type", "BLANK"),
+            "replicas": replicas,
+            "selected": {"doc": sorted(replicas.keys())[0]},
+            "sample_valid": True,
+        }
+
+    # =========================================================================
     # GENERAR RESUM
     # =========================================================================
     n_valid = sum(1 for s in result["samples"] if s.get("processed") and s.get("peak_info", {}).get("valid"))
@@ -2581,7 +2686,7 @@ def analyze_sequence(imported_data, calibration_data=None, config=None, progress
     n_timeouts = sum(1 for s in result["samples"] if s.get("timeout_info", {}).get("n_timeouts", 0) > 0)
     n_with_warnings = sum(
         1 for sg in result["samples_grouped"].values()
-        if sg.get("comparison") and (
+        if sg.get("analysis_type") != "light" and sg.get("comparison") and (
             sg["comparison"].get("doc", {}).get("warnings") or
             sg["comparison"].get("dad", {}).get("warnings")
         )
@@ -2596,6 +2701,7 @@ def analyze_sequence(imported_data, calibration_data=None, config=None, progress
         "with_replica_warnings": n_with_warnings,
         "n_khp": len(result["khp_samples"]),
         "n_controls": len(result["control_samples"]),
+        "n_light": len(result["light_samples"]),
     }
 
     result["success"] = len(result["errors"]) == 0
@@ -2688,9 +2794,27 @@ def save_analysis_result(analysis_data, output_path=None):
         "samples": [],
         "khp_samples": [],
         "control_samples": [],
+        "light_samples": [],
         # Mostres agrupades per nom (per GUI)
         "samples_grouped": {},
     }
+
+    def summarize_light_sample(sample):
+        """Extreu info d'una mostra light per serialitzar a JSON."""
+        t_doc = sample.get("t_doc")
+        y_doc_net = sample.get("y_doc_net")
+        return {
+            "name": sample.get("name", ""),
+            "replica": sample.get("replica", ""),
+            "sample_type": sample.get("sample_type", "BLANK"),
+            "processed": sample.get("processed", False),
+            "analysis_type": "light",
+            "area_total": sample.get("area_total", 0),
+            "snr": sample.get("snr", 0),
+            "inj_volume": sample.get("inj_volume"),
+            "t_doc": t_doc,
+            "y_doc_net": y_doc_net,
+        }
 
     def summarize_sample(sample):
         """Extreu info d'una mostra per serialitzar a JSON."""
@@ -2752,23 +2876,38 @@ def save_analysis_result(analysis_data, output_path=None):
     for ctrl in analysis_data.get("control_samples", []):
         result["control_samples"].append(summarize_sample(ctrl))
 
+    for light in analysis_data.get("light_samples", []):
+        result["light_samples"].append(summarize_light_sample(light))
+
     # Guardar samples_grouped (estructura agrupada per GUI)
     samples_grouped = analysis_data.get("samples_grouped", {})
     if samples_grouped:
         for sample_name, sample_data in samples_grouped.items():
-            grouped_entry = {
-                "replicas": {},
-                "comparison": sample_data.get("comparison"),
-                "recommendation": sample_data.get("recommendation"),
-                "selected": sample_data.get("selected"),
-                "quantification": sample_data.get("quantification"),
-                "sample_valid": sample_data.get("sample_valid", True),
-                "repairable": sample_data.get("repairable", False),
-                "repaired": sample_data.get("repaired", False),
-                "repair_history": sample_data.get("repair_history", []),
-            }
-            for rep_key, rep_data in sample_data.get("replicas", {}).items():
-                grouped_entry["replicas"][rep_key] = summarize_sample(rep_data)
+            is_light = sample_data.get("analysis_type") == "light"
+            if is_light:
+                grouped_entry = {
+                    "analysis_type": "light",
+                    "sample_type": sample_data.get("sample_type", "BLANK"),
+                    "replicas": {},
+                    "selected": sample_data.get("selected"),
+                    "sample_valid": sample_data.get("sample_valid", True),
+                }
+                for rep_key, rep_data in sample_data.get("replicas", {}).items():
+                    grouped_entry["replicas"][rep_key] = summarize_light_sample(rep_data)
+            else:
+                grouped_entry = {
+                    "replicas": {},
+                    "comparison": sample_data.get("comparison"),
+                    "recommendation": sample_data.get("recommendation"),
+                    "selected": sample_data.get("selected"),
+                    "quantification": sample_data.get("quantification"),
+                    "sample_valid": sample_data.get("sample_valid", True),
+                    "repairable": sample_data.get("repairable", False),
+                    "repaired": sample_data.get("repaired", False),
+                    "repair_history": sample_data.get("repair_history", []),
+                }
+                for rep_key, rep_data in sample_data.get("replicas", {}).items():
+                    grouped_entry["replicas"][rep_key] = summarize_sample(rep_data)
             result["samples_grouped"][sample_name] = grouped_entry
 
     # Guardar
@@ -2805,6 +2944,8 @@ def _restore_dataframes(data):
     for sample in data.get("khp_samples", []):
         _restore_sample(sample)
     for sample in data.get("control_samples", []):
+        _restore_sample(sample)
+    for sample in data.get("light_samples", []):
         _restore_sample(sample)
     for sample_data in data.get("samples_grouped", {}).values():
         for rep_data in sample_data.get("replicas", {}).values():
