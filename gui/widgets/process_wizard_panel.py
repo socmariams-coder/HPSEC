@@ -1734,11 +1734,26 @@ class ProcessWizardPanel(QWidget):
                         with open(json_path, 'r', encoding='utf-8') as f:
                             data = json.load(f)
 
+                        # Comprovar si hi ha ERRORS (prefixats amb "ERROR")
+                        has_errors = False
+                        for field in ["warnings", "errors"]:
+                            for msg in data.get(field, []):
+                                if str(msg).upper().startswith("ERROR"):
+                                    has_errors = True
+                                    break
+                            if has_errors:
+                                break
+
+                        if has_errors:
+                            # JSON amb errors = etapa NO completada
+                            states[idx] = "pending"
+                            continue
+
                         # Comprovar si hi ha warnings
                         has_warnings = self._check_has_warnings(data, warning_fields)
 
-                        # Comprovar si els warnings estan confirmats
-                        warnings_confirmed = data.get("warnings_confirmed") is not None
+                        # Comprovar si els warnings estan confirmats (ha de ser True explícit)
+                        warnings_confirmed = data.get("warnings_confirmed") is True
 
                         if has_warnings and not warnings_confirmed:
                             states[idx] = "warning"
