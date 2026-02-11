@@ -18,7 +18,7 @@ Estructura visual optimitzada:
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTabWidget, QFrame, QMessageBox, QSizePolicy, QScrollArea,
-    QDialog, QLineEdit, QTextEdit, QCheckBox, QDialogButtonBox
+    QDialog, QLineEdit, QTextEdit, QCheckBox, QDialogButtonBox, QMenu
 )
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
@@ -297,6 +297,10 @@ class ProcessWizardPanel(QWidget):
 
         # Amagar botons de navegació dels panels (innecessaris amb pestanyes)
         self._hide_panel_navigation()
+
+        # Context menu al tab bar (clic dret per reset)
+        self.tab_widget.tabBar().setContextMenuPolicy(Qt.CustomContextMenu)
+        self.tab_widget.tabBar().customContextMenuRequested.connect(self._on_tab_context_menu)
 
         # Connectar senyals
         self._connect_panel_signals()
@@ -581,6 +585,75 @@ class ProcessWizardPanel(QWidget):
         if from_idx < 3:  # Si reimportem, recalibrem o reanalitzem, netejar revisió
             if hasattr(self.review_panel, 'reset'):
                 self.review_panel.reset()
+
+    def _on_tab_context_menu(self, pos):
+        """Context menu al clicar dret sobre un tab: permet reset des d'aquí."""
+        tab_idx = self.tab_widget.tabBar().tabAt(pos)
+        if tab_idx < 0:
+            return
+
+        stage_names = {0: "Importar", 1: "Calibrar", 2: "Analitzar", 3: "Revisar"}
+        menu = QMenu(self)
+        action = menu.addAction(f"↺ Reset des de '{stage_names[tab_idx]}'")
+        action.triggered.connect(lambda: self._reset_from_stage(tab_idx))
+        menu.exec(self.tab_widget.tabBar().mapToGlobal(pos))
+
+    def _reset_from_stage(self, stage_idx):
+        """Reset des d'una etapa concreta (esborra JSONs + outputs cascade)."""
+        from hpsec_reset import reset_stage, STAGE_NAMES
+
+        seq_path = getattr(self.main_window, 'seq_path', None)
+        if not seq_path:
+            QMessageBox.warning(self, "Error", "Cap seqüència carregada.")
+            return
+
+        stages_affected = [STAGE_NAMES[s] for s in range(stage_idx, 4)]
+
+        reply = QMessageBox.warning(
+            self,
+            f"Reset des de '{STAGE_NAMES[stage_idx]}'",
+            f"Esborrarà dades de: {', '.join(stages_affected)}\n\n"
+            "Vols continuar?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        result = reset_stage(seq_path, stage_idx)
+
+        # Netejar dades al main_window
+        if stage_idx <= 0:
+            self.main_window.imported_data = None
+        if stage_idx <= 1:
+            self.main_window.calibration_data = None
+        if stage_idx <= 2:
+            self.main_window.processed_data = None
+        if stage_idx <= 3:
+            self.main_window.review_data = None
+            self.main_window.review_completed = False
+
+        # Reset panels UI (invalidar des d'una etapa abans per netejar tot)
+        self._invalidate_later_stages(max(0, stage_idx - 1))
+
+        # Marcar l'etapa reseteada com a pending
+        for i in range(stage_idx, 4):
+            self.tab_states[i] = "pending"
+
+        # Marcar primera pendent com a current
+        for i, state in enumerate(self.tab_states):
+            if state == "pending":
+                self.tab_states[i] = "current"
+                break
+
+        self._update_tab_titles()
+        self._update_header_for_tab(self.tab_widget.currentIndex())
+
+        n_deleted = len(result.get("deleted", []))
+        self.main_window.set_status(
+            f"Reset: {n_deleted} fitxers esborrats des de '{STAGE_NAMES[stage_idx]}'",
+            5000
+        )
 
     def _go_next_step(self):
         """Avança al següent pas del wizard i executa l'operació automàticament.

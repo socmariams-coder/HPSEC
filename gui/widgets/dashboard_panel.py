@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTableWidget, QTableWidgetItem, QHeaderView, QFrame,
     QProgressBar, QComboBox, QLineEdit, QMessageBox, QInputDialog,
-    QStyledItemDelegate
+    QStyledItemDelegate, QMenu
 )
 from PySide6.QtCore import Qt, Signal, QThread
 from PySide6.QtGui import QFont, QColor, QBrush
@@ -56,6 +56,23 @@ COLOR_WARNING = "#F39C12"  # Taronja
 COLOR_ERROR = "#E74C3C"    # Vermell
 COLOR_PENDING = "#BDC3C7"  # Gris
 COLOR_CURRENT = "#2E86AB"  # Blau (fase actual)
+
+# Constants de columna (amb checkbox a col 0)
+COL_CHECK = 0
+COL_NUM = 1
+COL_NAME = 2
+COL_DATE = 3
+COL_TYPE = 4
+COL_MODE = 5
+COL_M = 6
+COL_PC = 7
+COL_PR = 8
+COL_IMPORT = 9
+COL_CAL = 10
+COL_ANA = 11
+COL_REVIEW = 12
+COL_NOTES = 13
+NUM_COLS = 14
 
 
 # =============================================================================
@@ -354,15 +371,6 @@ class DashboardPanel(QWidget):
         self.refresh_btn.clicked.connect(self.refresh_sequences)
         stats_row.addWidget(self.refresh_btn)
 
-        self.btn_batch = QPushButton("Processar Batch")
-        self.btn_batch.clicked.connect(self._process_pending)
-        stats_row.addWidget(self.btn_batch)
-
-        self.btn_reset = QPushButton("Reset")
-        self.btn_reset.clicked.connect(self._reset_sequences)
-        self.btn_reset.setToolTip("Esborra dades processades (requereix contrasenya)")
-        stats_row.addWidget(self.btn_reset)
-
         layout.addLayout(stats_row)
 
         # === FILA 2: Filtres ===
@@ -406,19 +414,70 @@ class DashboardPanel(QWidget):
 
         layout.addLayout(filter_layout)
 
+        # === FILA 3: Barra d'accions batch ===
+        batch_bar = QHBoxLayout()
+        batch_bar.setSpacing(8)
+
+        self.btn_select_filtered = QPushButton("✓ Sel. filtrades")
+        self.btn_select_filtered.setFixedWidth(110)
+        self.btn_select_filtered.clicked.connect(self._select_filtered)
+        batch_bar.addWidget(self.btn_select_filtered)
+
+        self.btn_deselect_all = QPushButton("✗ Deseleccionar")
+        self.btn_deselect_all.setFixedWidth(110)
+        self.btn_deselect_all.clicked.connect(self._deselect_all)
+        batch_bar.addWidget(self.btn_deselect_all)
+
+        sep = QFrame()
+        sep.setFrameShape(QFrame.VLine)
+        sep.setStyleSheet("color: #ccc;")
+        batch_bar.addWidget(sep)
+
+        self.lbl_selected = QLabel("Seleccionades: 0")
+        self.lbl_selected.setFont(QFont("Segoe UI", 9))
+        self.lbl_selected.setStyleSheet("color: #555;")
+        batch_bar.addWidget(self.lbl_selected)
+
+        batch_bar.addStretch()
+
+        # Botó Processar amb menú per etapa
+        self.btn_batch_process = QPushButton("▶ Processar ▾")
+        self.btn_batch_process.setFixedWidth(120)
+        process_menu = QMenu(self)
+        process_menu.addAction("Importar seleccionades", lambda: self._batch_process_stage(Phase.IMPORT))
+        process_menu.addAction("Calibrar seleccionades", lambda: self._batch_process_stage(Phase.CALIBRATE))
+        process_menu.addAction("Analitzar seleccionades", lambda: self._batch_process_stage(Phase.ANALYZE))
+        process_menu.addSeparator()
+        process_menu.addAction("Pipeline complet", lambda: self._batch_process_stage(None))
+        self.btn_batch_process.setMenu(process_menu)
+        batch_bar.addWidget(self.btn_batch_process)
+
+        # Botó Reset amb menú per etapa
+        self.btn_batch_reset = QPushButton("↺ Reset ▾")
+        self.btn_batch_reset.setFixedWidth(100)
+        reset_menu = QMenu(self)
+        reset_menu.addAction("Reset des d'IMPORTAR", lambda: self._batch_reset_stage(0))
+        reset_menu.addAction("Reset des de CALIBRAR", lambda: self._batch_reset_stage(1))
+        reset_menu.addAction("Reset des d'ANALITZAR", lambda: self._batch_reset_stage(2))
+        reset_menu.addAction("Reset RESULTATS", lambda: self._batch_reset_stage(3))
+        self.btn_batch_reset.setMenu(reset_menu)
+        batch_bar.addWidget(self.btn_batch_reset)
+
+        layout.addLayout(batch_bar)
+
         # === TAULA DE SEQÜÈNCIES ===
         self.table = QTableWidget()
-        self.table.setColumnCount(13)
+        self.table.setColumnCount(NUM_COLS)
         self.table.setHorizontalHeaderLabels([
-            "#", "Seqüència", "Data", "Tipus", "Mode", "M", "PC", "PR",
+            "", "#", "Seqüència", "Data", "Tipus", "Mode", "M", "PC", "PR",
             "Importar", "Calibrar", "Analitzar", "Consolidar", "Notes"
         ])
 
         # Tooltips per capçaleres
-        self.table.horizontalHeaderItem(5).setToolTip("Mostres")
-        self.table.horizontalHeaderItem(6).setToolTip("Patrons de Calibració (KHP)")
-        self.table.horizontalHeaderItem(7).setToolTip("Patrons de Referència")
-        self.table.horizontalHeaderItem(12).setToolTip("Doble-clic per afegir notes")
+        self.table.horizontalHeaderItem(COL_M).setToolTip("Mostres")
+        self.table.horizontalHeaderItem(COL_PC).setToolTip("Patrons de Calibració (KHP)")
+        self.table.horizontalHeaderItem(COL_PR).setToolTip("Patrons de Referència")
+        self.table.horizontalHeaderItem(COL_NOTES).setToolTip("Doble-clic per afegir notes")
 
         # Configurar columnes - autoajust amb mínims per capçaleres
         h = self.table.horizontalHeader()
@@ -428,22 +487,26 @@ class DashboardPanel(QWidget):
             h.setSectionResizeMode(i, QHeaderView.ResizeToContents)
 
         # Notes expandeix per omplir espai restant
-        h.setSectionResizeMode(12, QHeaderView.Stretch)
+        h.setSectionResizeMode(COL_NOTES, QHeaderView.Stretch)
+
+        # Checkbox columna fixa
+        h.setSectionResizeMode(COL_CHECK, QHeaderView.Fixed)
+        h.resizeSection(COL_CHECK, 28)
 
         # Mínims per assegurar que capçaleres es veuen
         self._header_min_widths = {
-            0: 30,    # #
-            1: 100,   # Seqüència
-            2: 70,    # Data
-            3: 55,    # Tipus
-            4: 50,    # Mode
-            5: 30,    # M
-            6: 32,    # PC
-            7: 32,    # PR
-            8: 65,    # Importar
-            9: 62,    # Calibrar
-            10: 68,   # Analitzar
-            11: 78,   # Consolidar
+            COL_NUM: 30,    # #
+            COL_NAME: 100,  # Seqüència
+            COL_DATE: 70,   # Data
+            COL_TYPE: 55,   # Tipus
+            COL_MODE: 50,   # Mode
+            COL_M: 30,      # M
+            COL_PC: 32,     # PC
+            COL_PR: 32,     # PR
+            COL_IMPORT: 65, # Importar
+            COL_CAL: 62,    # Calibrar
+            COL_ANA: 68,    # Analitzar
+            COL_REVIEW: 78, # Consolidar
         }
 
         # Estil per mantenir colors dels punts en selecció
@@ -461,13 +524,14 @@ class DashboardPanel(QWidget):
 
         # Permetre ordenació
         self.table.setSortingEnabled(True)
-        self.table.sortByColumn(0, Qt.DescendingOrder)
+        self.table.sortByColumn(COL_NUM, Qt.DescendingOrder)
 
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.setSelectionMode(QTableWidget.SingleSelection)
         self.table.verticalHeader().setVisible(False)
         self.table.setAlternatingRowColors(False)  # Treure ombrejat alternatiu
         self.table.cellDoubleClicked.connect(self._on_double_click)
+        self.table.itemChanged.connect(self._on_item_changed)
 
         # Menú contextual (clic dret)
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -542,14 +606,20 @@ class DashboardPanel(QWidget):
             row = self.table.rowCount()
             self.table.insertRow(row)
 
-            # Col 0: # (per ordenar numèricament)
+            # Col CHECK: checkbox
+            item_check = QTableWidgetItem()
+            item_check.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
+            item_check.setCheckState(Qt.Unchecked)
+            self.table.setItem(row, COL_CHECK, item_check)
+
+            # Col NUM: # (per ordenar numèricament)
             item_num = SortableTableItem(str(idx))
             item_num.setData(Qt.UserRole, idx)
             item_num.setTextAlignment(Qt.AlignCenter)
             item_num.setFlags(item_num.flags() & ~Qt.ItemIsEditable)
-            self.table.setItem(row, 0, item_num)
+            self.table.setItem(row, COL_NUM, item_num)
 
-            # Col 1: Nom (amb indicador de siblings si n'hi ha)
+            # Col NAME: Nom (amb indicador de siblings si n'hi ha)
             display_name = seq.seq_name
             if seq.siblings:
                 display_name = f"{seq.seq_name} [+{len(seq.siblings)}]"
@@ -560,9 +630,9 @@ class DashboardPanel(QWidget):
             if seq.siblings:
                 sibling_names = [os.path.basename(s) for s in seq.siblings]
                 item_name.setToolTip(f"Pack amb {len(seq.siblings)} siblings:\n" + "\n".join(sibling_names))
-            self.table.setItem(row, 1, item_name)
+            self.table.setItem(row, COL_NAME, item_name)
 
-            # Col 2: Data (amb valor ordenable)
+            # Col DATE: Data (amb valor ordenable)
             date_display = seq.seq_date if seq.seq_date else "-"
             item_date = SortableTableItem(date_display)
             item_date.setTextAlignment(Qt.AlignCenter)
@@ -582,50 +652,50 @@ class DashboardPanel(QWidget):
                     item_date.setData(Qt.UserRole, 0)
             else:
                 item_date.setData(Qt.UserRole, 0)
-            self.table.setItem(row, 2, item_date)
+            self.table.setItem(row, COL_DATE, item_date)
 
-            # Col 3: Tipus
+            # Col TYPE: Tipus
             item_tipus = QTableWidgetItem(seq.method if seq.method else "-")
             item_tipus.setTextAlignment(Qt.AlignCenter)
             item_tipus.setForeground(QColor("#666"))
             item_tipus.setFlags(item_tipus.flags() & ~Qt.ItemIsEditable)
-            self.table.setItem(row, 3, item_tipus)
+            self.table.setItem(row, COL_TYPE, item_tipus)
 
-            # Col 4: Mode
+            # Col MODE: Mode
             item_mode = QTableWidgetItem(seq.data_mode if seq.data_mode else "-")
             item_mode.setTextAlignment(Qt.AlignCenter)
             item_mode.setForeground(QColor("#666"))
             item_mode.setFlags(item_mode.flags() & ~Qt.ItemIsEditable)
-            self.table.setItem(row, 4, item_mode)
+            self.table.setItem(row, COL_MODE, item_mode)
 
-            # Col 5: M (Mostres)
+            # Col M: Mostres
             n_samples = seq.n_samples if seq.n_samples else 0
             item_m = SortableTableItem(str(n_samples))
             item_m.setData(Qt.UserRole, n_samples)
             item_m.setTextAlignment(Qt.AlignCenter)
             item_m.setFlags(item_m.flags() & ~Qt.ItemIsEditable)
             item_m.setToolTip(f"Mostres: {n_samples}")
-            self.table.setItem(row, 5, item_m)
+            self.table.setItem(row, COL_M, item_m)
 
-            # Col 6: PC (Patrons Calibració)
+            # Col PC: Patrons Calibració
             n_khp = seq.n_khp if seq.n_khp else 0
             item_pc = SortableTableItem(str(n_khp))
             item_pc.setData(Qt.UserRole, n_khp)
             item_pc.setTextAlignment(Qt.AlignCenter)
             item_pc.setFlags(item_pc.flags() & ~Qt.ItemIsEditable)
             item_pc.setToolTip(f"Patrons de Calibració (KHP): {n_khp}")
-            self.table.setItem(row, 6, item_pc)
+            self.table.setItem(row, COL_PC, item_pc)
 
-            # Col 7: PR (Patrons Referència)
+            # Col PR: Patrons Referència
             n_pr = seq.n_pr if seq.n_pr else 0
             item_pr = SortableTableItem(str(n_pr))
             item_pr.setData(Qt.UserRole, n_pr)
             item_pr.setTextAlignment(Qt.AlignCenter)
             item_pr.setFlags(item_pr.flags() & ~Qt.ItemIsEditable)
             item_pr.setToolTip(f"Patrons de Referència: {n_pr}")
-            self.table.setItem(row, 7, item_pr)
+            self.table.setItem(row, COL_PR, item_pr)
 
-            # Col 8-11: Fases (Importar, Calibrar, Analitzar, Consolidar)
+            # Fases (Importar, Calibrar, Analitzar, Consolidar)
             phases_data = [
                 (seq.import_status, seq.import_state, "Importar", seq.import_warnings),
                 (seq.calibrate_status, seq.calibrate_state, "Calibrar", []),
@@ -639,8 +709,9 @@ class DashboardPanel(QWidget):
                     current_phase_idx = i
                     break
 
+            phase_cols = [COL_IMPORT, COL_CAL, COL_ANA, COL_REVIEW]
             for col_offset, (status, state, phase_name, phase_warnings) in enumerate(phases_data):
-                col = col_offset + 8
+                col = phase_cols[col_offset]
                 item = QTableWidgetItem()
                 item.setTextAlignment(Qt.AlignCenter)
                 item.setFlags(item.flags() & ~Qt.ItemIsEditable)
@@ -692,7 +763,7 @@ class DashboardPanel(QWidget):
                 item.setToolTip(tooltip)
                 self.table.setItem(row, col, item)
 
-            # Col 12: Notes (JSON + manuals, doble-clic per veure/editar)
+            # Col NOTES: Notes (JSON + manuals, doble-clic per veure/editar)
             # SEMPRE disponible, independentment de l'estat
             try:
                 json_notes = self._load_json_notes(seq.seq_path) if seq.seq_path else []
@@ -755,15 +826,16 @@ class DashboardPanel(QWidget):
             item_notes.setToolTip(tooltip)
             item_notes.setForeground(color)
             item_notes.setFlags(item_notes.flags() & ~Qt.ItemIsEditable)
-            self.table.setItem(row, 12, item_notes)
+            self.table.setItem(row, COL_NOTES, item_notes)
 
         # Reactivar sorting i signals
         self.table.setSortingEnabled(True)
-        self.table.sortByColumn(0, Qt.DescendingOrder)
+        self.table.sortByColumn(COL_NUM, Qt.DescendingOrder)
         self.table.blockSignals(False)
 
         # Aplicar mínims de capçalera
         self._apply_min_widths()
+        self._update_selection_count()
 
     def _apply_min_widths(self):
         """Aplica amplades mínimes per assegurar capçaleres visibles."""
@@ -805,13 +877,11 @@ class DashboardPanel(QWidget):
 
     def _show_context_menu(self, pos):
         """Mostra menú contextual amb opcions per la seqüència."""
-        from PySide6.QtWidgets import QMenu
-
         row = self.table.rowAt(pos.y())
         if row < 0:
             return
 
-        item_name = self.table.item(row, 1)
+        item_name = self.table.item(row, COL_NAME)
         if not item_name:
             return
 
@@ -889,7 +959,7 @@ class DashboardPanel(QWidget):
 
     def _on_double_click(self, row, col):
         """Doble-clic obre directament al wizard o edita notes."""
-        item_name = self.table.item(row, 1)
+        item_name = self.table.item(row, COL_NAME)
         if not item_name:
             return
 
@@ -904,7 +974,7 @@ class DashboardPanel(QWidget):
             return
 
         # Si és la columna Notes, obrir popup per editar
-        if col == 12:
+        if col == COL_NOTES:
             self._edit_notes_popup(row, seq)
             return
 
@@ -986,7 +1056,7 @@ class DashboardPanel(QWidget):
             if seq.save_notes(new_notes):
                 # Actualitzar la cel·la de la taula
                 self.table.blockSignals(True)
-                item_notes = self.table.item(row, 12)
+                item_notes = self.table.item(row, COL_NOTES)
                 if item_notes:
                     # Mostrar només primera línia o resum
                     preview = new_notes.split('\n')[0][:50]
@@ -1200,92 +1270,89 @@ class DashboardPanel(QWidget):
         )
         self.refresh_sequences()
 
-    def _process_pending(self):
-        """Processa seqüències en batch (requereix contrasenya)."""
-        password, ok = QInputDialog.getText(
-            self,
-            "Autenticació requerida",
-            "Processament batch.\n\nIntrodueix la contrasenya d'administrador:",
-            QLineEdit.Password
-        )
+    def _get_checked_sequences(self):
+        """Retorna les SequenceState de les files amb checkbox marcat."""
+        checked = []
+        for row in range(self.table.rowCount()):
+            item_check = self.table.item(row, COL_CHECK)
+            if item_check and item_check.checkState() == Qt.Checked:
+                item_name = self.table.item(row, COL_NAME)
+                if item_name:
+                    seq_path = item_name.data(Qt.UserRole)
+                    for seq in self.filtered_sequences:
+                        if seq.seq_path == seq_path:
+                            checked.append(seq)
+                            break
+        return checked
 
-        if not ok:
-            return
+    def _update_selection_count(self):
+        """Actualitza el comptador de seqüències seleccionades."""
+        count = len(self._get_checked_sequences())
+        self.lbl_selected.setText(f"Seleccionades: {count}")
 
-        if password != BATCH_PASSWORD:
-            QMessageBox.warning(
-                self, "Error",
-                "Contrasenya incorrecta.\n\n"
-                "El processament batch requereix permisos d'administrador."
-            )
-            return
+    def _on_item_changed(self, item):
+        """Actualitza comptador quan canvia un checkbox."""
+        if item and item.column() == COL_CHECK:
+            self._update_selection_count()
 
-        # Comptar seqüències per cada operació possible
-        need_import = [s for s in self.sequences if not s.import_status.completed]
-        need_calibrate = [s for s in self.sequences if s.import_status.completed and not s.calibrate_status.completed]
-        need_analyze = [s for s in self.sequences if s.calibrate_status.completed and not s.analyze_status.completed]
-        need_full = [s for s in self.sequences if s.progress_pct < 100]
+    def _select_filtered(self):
+        """Marca checkboxes de totes les files visibles."""
+        self.table.blockSignals(True)
+        for row in range(self.table.rowCount()):
+            item_check = self.table.item(row, COL_CHECK)
+            if item_check:
+                item_check.setCheckState(Qt.Checked)
+        self.table.blockSignals(False)
+        self._update_selection_count()
 
-        # Diàleg per triar operació
-        options = []
-        options.append(f"Només IMPORTAR ({len(need_import)} seqs)")
-        options.append(f"Només CALIBRAR ({len(need_calibrate)} seqs)")
-        options.append(f"Només ANALITZAR ({len(need_analyze)} seqs)")
-        options.append(f"PIPELINE COMPLET ({len(need_full)} seqs)")
+    def _deselect_all(self):
+        """Desmarca totes les checkboxes."""
+        self.table.blockSignals(True)
+        for row in range(self.table.rowCount()):
+            item_check = self.table.item(row, COL_CHECK)
+            if item_check:
+                item_check.setCheckState(Qt.Unchecked)
+        self.table.blockSignals(False)
+        self._update_selection_count()
 
-        choice, ok = QInputDialog.getItem(
-            self,
-            "Operació Batch",
-            "Quina operació vols executar?",
-            options,
-            current=3,
-            editable=False
-        )
+    def _batch_process_stage(self, phase):
+        """Processa les seqüències seleccionades per una etapa (o pipeline complet).
 
-        if not ok:
-            return
-
-        # Determinar fases i seqüències segons selecció
-        if "IMPORTAR" in choice:
-            phases = [Phase.IMPORT]
-            target_seqs = need_import
-            op_name = "Importar"
-        elif "CALIBRAR" in choice:
-            phases = [Phase.CALIBRATE]
-            target_seqs = need_calibrate
-            op_name = "Calibrar"
-        elif "ANALITZAR" in choice:
-            phases = [Phase.ANALYZE]
-            target_seqs = need_analyze
-            op_name = "Analitzar"
-        else:
-            phases = [Phase.IMPORT, Phase.CALIBRATE, Phase.ANALYZE]
-            target_seqs = need_full
-            op_name = "Pipeline complet"
-
+        Args:
+            phase: Phase enum (IMPORT, CALIBRATE, ANALYZE) o None per pipeline complet
+        """
+        target_seqs = self._get_checked_sequences()
         if not target_seqs:
-            QMessageBox.information(
-                self, "Info",
-                f"No hi ha seqüències pendents per: {op_name}"
-            )
+            QMessageBox.information(self, "Info", "Cap seqüència seleccionada.\n\nMarca les seqüències amb el checkbox.")
             return
+
+        if phase is None:
+            phases = [Phase.IMPORT, Phase.CALIBRATE, Phase.ANALYZE]
+            op_name = "Pipeline complet"
+        else:
+            phases = [phase]
+            op_name = {Phase.IMPORT: "Importar", Phase.CALIBRATE: "Calibrar", Phase.ANALYZE: "Analitzar"}.get(phase, str(phase))
+
+        # Confirmació
+        seq_names = [s.seq_name for s in target_seqs[:8]]
+        if len(target_seqs) > 8:
+            seq_names.append(f"... i {len(target_seqs) - 8} més")
 
         reply = QMessageBox.question(
-            self, "Confirmar Batch",
+            self, f"Processar: {op_name}",
             f"{op_name}: {len(target_seqs)} seqüències\n\n"
-            "Vols continuar?",
+            + "\n".join(f"  • {n}" for n in seq_names)
+            + "\n\nVols continuar?",
             QMessageBox.Yes | QMessageBox.No
         )
-
         if reply != QMessageBox.Yes:
             return
 
-        # Verificar si alguna seqüència necessita sensibilitat UIB
+        # Verificar sensibilitat UIB si importem
         default_uib_sensitivity = None
         if Phase.IMPORT in phases:
             seqs_need_uib = self._get_seqs_needing_uib_sensitivity(target_seqs)
             if seqs_need_uib:
-                from PySide6.QtWidgets import QInputDialog
                 sens, ok = QInputDialog.getText(
                     self,
                     "Sensibilitat UIB",
@@ -1306,100 +1373,44 @@ class DashboardPanel(QWidget):
         self.batch_worker.finished.connect(self._on_batch_finished)
         self.batch_worker.start()
 
-    def _reset_sequences(self):
-        """Reset de seqüències (esborra CHECK/data/)."""
-        password, ok = QInputDialog.getText(
-            self,
-            "Autenticació requerida",
-            "ATENCIÓ: Això esborrarà les dades processades.\n\n"
-            "Introdueix la contrasenya d'administrador:",
-            QLineEdit.Password
-        )
+    def _batch_reset_stage(self, from_stage):
+        """Reset per etapa de les seqüències seleccionades (cascade).
 
-        if not ok:
+        Args:
+            from_stage: 0=Import, 1=Calibrar, 2=Analitzar, 3=Revisar
+        """
+        from hpsec_reset import reset_batch, STAGE_NAMES
+
+        target_seqs = self._get_checked_sequences()
+        if not target_seqs:
+            QMessageBox.information(self, "Info", "Cap seqüència seleccionada.\n\nMarca les seqüències amb el checkbox.")
             return
 
-        if password != BATCH_PASSWORD:
-            QMessageBox.warning(
-                self, "Error",
-                "Contrasenya incorrecta."
-            )
-            return
+        stages_affected = [STAGE_NAMES[s] for s in range(from_stage, 4)]
 
-        # Triar tipus de reset
-        options = [
-            "Reset IMPORTACIÓ (només manifest.json)",
-            "Reset COMPLET (tot CHECK/data/)"
-        ]
-
-        choice, ok = QInputDialog.getItem(
-            self,
-            "Tipus de Reset",
-            "Quin tipus de reset vols fer?",
-            options,
-            current=0,
-            editable=False
-        )
-
-        if not ok:
-            return
-
-        # Triar seqüències afectades
-        seq_options = ["Totes les seqüències", "Només les filtrades"]
-        seq_choice, ok = QInputDialog.getItem(
-            self,
-            "Seqüències afectades",
-            "A quines seqüències?",
-            seq_options,
-            current=0,
-            editable=False
-        )
-
-        if not ok:
-            return
-
-        target_seqs = self.sequences if "Totes" in seq_choice else self.filtered_sequences
+        seq_names = [s.seq_name for s in target_seqs[:8]]
+        if len(target_seqs) > 8:
+            seq_names.append(f"... i {len(target_seqs) - 8} més")
 
         reply = QMessageBox.warning(
             self, "Confirmar Reset",
-            f"Estàs segur?\n\n"
-            f"Això afectarà {len(target_seqs)} seqüències.\n"
-            f"Operació: {choice}",
+            f"Reset des de '{STAGE_NAMES[from_stage]}'\n"
+            f"Cascade: {' → '.join(stages_affected)}\n\n"
+            f"{len(target_seqs)} seqüències:\n"
+            + "\n".join(f"  • {n}" for n in seq_names)
+            + "\n\nAixò esborrarà JSONs i outputs. Continuar?",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No
         )
-
         if reply != QMessageBox.Yes:
             return
 
-        # Executar reset
-        import shutil
-        reset_full = "COMPLET" in choice
-        count = 0
-
-        for seq in target_seqs:
-            check_data = os.path.join(seq.seq_path, "CHECK", "data")
-            if os.path.exists(check_data):
-                if reset_full:
-                    # Esborrar tot CHECK/data/
-                    try:
-                        shutil.rmtree(check_data)
-                        count += 1
-                    except Exception as e:
-                        print(f"Error esborrant {check_data}: {e}")
-                else:
-                    # Només esborrar manifest.json
-                    manifest = os.path.join(check_data, "import_manifest.json")
-                    if os.path.exists(manifest):
-                        try:
-                            os.remove(manifest)
-                            count += 1
-                        except Exception as e:
-                            print(f"Error esborrant {manifest}: {e}")
+        seq_paths = [s.seq_path for s in target_seqs]
+        result = reset_batch(seq_paths, from_stage)
 
         QMessageBox.information(
             self, "Reset completat",
-            f"S'han resetejat {count} seqüències."
+            f"Resetejades: {result['ok']}\nErrors: {result['fail']}"
         )
 
         self.refresh_sequences()
@@ -1412,7 +1423,7 @@ class DashboardPanel(QWidget):
     def _on_seq_completed(self, seq_name, success, message):
         """Actualitza la fila de la seqüència completada a la taula."""
         for row in range(self.table.rowCount()):
-            item = self.table.item(row, 1)
+            item = self.table.item(row, COL_NAME)
             if item and item.text() == seq_name:
                 seq_path = item.data(Qt.UserRole)
                 for seq in self.sequences:
@@ -1425,17 +1436,17 @@ class DashboardPanel(QWidget):
 
     def _update_table_row(self, row, seq: SequenceState):
         """Actualitza una sola fila de la taula amb l'estat actual de la seqüència."""
-        # Actualitzar comptadors M, PC, PR (cols 5, 6, 7)
+        # Actualitzar comptadors M, PC, PR
         n_samples = seq.n_samples if seq.n_samples else 0
         n_khp = seq.n_khp if seq.n_khp else 0
         n_pr = seq.n_pr if seq.n_pr else 0
 
-        self.table.item(row, 5).setText(str(n_samples))
-        self.table.item(row, 5).setData(Qt.UserRole, n_samples)
-        self.table.item(row, 6).setText(str(n_khp))
-        self.table.item(row, 6).setData(Qt.UserRole, n_khp)
-        self.table.item(row, 7).setText(str(n_pr))
-        self.table.item(row, 7).setData(Qt.UserRole, n_pr)
+        self.table.item(row, COL_M).setText(str(n_samples))
+        self.table.item(row, COL_M).setData(Qt.UserRole, n_samples)
+        self.table.item(row, COL_PC).setText(str(n_khp))
+        self.table.item(row, COL_PC).setData(Qt.UserRole, n_khp)
+        self.table.item(row, COL_PR).setText(str(n_pr))
+        self.table.item(row, COL_PR).setData(Qt.UserRole, n_pr)
 
         phases_data = [
             (seq.import_status, seq.import_state, "Importar", seq.import_warnings),
@@ -1450,8 +1461,9 @@ class DashboardPanel(QWidget):
                 current_phase_idx = i
                 break
 
+        phase_cols = [COL_IMPORT, COL_CAL, COL_ANA, COL_REVIEW]
         for col_offset, (status, state, phase_name, phase_warnings) in enumerate(phases_data):
-            col = col_offset + 8
+            col = phase_cols[col_offset]
             item = QTableWidgetItem()
             item.setTextAlignment(Qt.AlignCenter)
             item.setFlags(item.flags() & ~Qt.ItemIsEditable)
@@ -1490,7 +1502,7 @@ class DashboardPanel(QWidget):
 
             self.table.setItem(row, col, item)
 
-        # Actualitzar notes (col 12) - JSON + manuals (igual que taula inicial)
+        # Actualitzar notes
         try:
             json_notes = self._load_json_notes(seq.seq_path) if seq.seq_path else []
         except Exception:
@@ -1534,7 +1546,7 @@ class DashboardPanel(QWidget):
             preview = ""
             tooltip = "Doble-clic per afegir notes"
 
-        current_notes = self.table.item(row, 12)
+        current_notes = self.table.item(row, COL_NOTES)
         if current_notes:
             current_notes.setText(preview)
             current_notes.setToolTip(tooltip)
@@ -1592,8 +1604,10 @@ class DashboardPanel(QWidget):
 
     def _set_controls_enabled(self, enabled):
         self.refresh_btn.setEnabled(enabled)
-        self.btn_batch.setEnabled(enabled)
-        self.btn_reset.setEnabled(enabled)
+        self.btn_batch_process.setEnabled(enabled)
+        self.btn_batch_reset.setEnabled(enabled)
+        self.btn_select_filtered.setEnabled(enabled)
+        self.btn_deselect_all.setEnabled(enabled)
         self.filter_tipus.setEnabled(enabled)
         self.filter_mode.setEnabled(enabled)
         self.filter_estat.setEnabled(enabled)
