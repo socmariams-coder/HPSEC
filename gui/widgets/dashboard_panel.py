@@ -913,6 +913,9 @@ class DashboardPanel(QWidget):
         if not seq.import_status.completed:
             action_import = menu.addAction("  → Importar")
             action_import.triggered.connect(lambda: self._run_single_phase(seq, "import"))
+        else:
+            action_reimport = menu.addAction("  → Re-importar (des de MasterFile)")
+            action_reimport.triggered.connect(lambda: self._run_single_phase(seq, "import"))
 
         if seq.import_status.completed and not seq.calibrate_status.completed:
             action_cal = menu.addAction("  → Calibrar")

@@ -1619,102 +1619,83 @@ def parse_injections_from_masterfile(master_data, config=None):
         return [], ["ERROR: No s'ha trobat fulla 1-HPLC-SEQ al MasterFile"], 0
 
     # ==========================================================================
-    # DETECCIÓ ROBUST: Trobar la columna Line# AMB DADES
-    # Si les cols A-F estan buides (paste a columna errònia), buscar la
-    # primera columna "Line#" que tingui valors reals.
+    # IDENTIFICAR COLUMNES PER NOM (primer match)
+    # El MasterFile ha d'estar ben format: columnes A-F amb dades.
+    # Si falta alguna columna → error clar indicant quina fulla revisar.
     # ==========================================================================
     errors = []
-    col_list = list(df_seq.columns)
 
-    # Buscar TOTES les columnes amb "line#" al nom i trobar la que té dades
-    line_col_candidates = []
-    for i, col in enumerate(col_list):
-        col_base = str(col).lower().replace('.1', '').replace('.2', '').strip()
-        if col_base in ("line#", "line"):
-            n_valid = df_seq[col].notna().sum()
-            line_col_candidates.append((i, col, n_valid))
-
-    # Triar la primera columna Line# amb dades
-    line_col_idx = 0  # fallback: columna A
-    line_col_name = col_list[0] if col_list else None
-    col_offset = 0  # offset entre la posició real i la posició esperada (A=0)
-
-    for idx, col, n_valid in line_col_candidates:
-        if n_valid > 0:
-            line_col_idx = idx
-            line_col_name = col
-            col_offset = idx  # les altres cols (Inj#, Sample Name...) estan a +1, +2, +3
-            if col_offset > 0:
-                warnings.append(f"MasterFile: dades trobades a columna {idx+1} (esperat A). Possiblement paste desplaçat.")
-            break
-
-    # Files amb Line# vàlid
-    if line_col_name is not None:
-        valid_rows = df_seq[line_col_name].notna() & (df_seq[line_col_name].astype(str).str.strip() != '')
-        n_data_rows = valid_rows.sum()
-    else:
-        n_data_rows = 0
-
-    if n_data_rows == 0:
-        return [], ["ERROR: Fulla 1-HPLC-SEQ buida - no hi ha cap injecció"], 0
-
-    total_rows_with_line = n_data_rows
-
-    # Identificar columnes: buscar per nom, preferint les que tenen dades
     sample_col = None
     inj_col = None
     line_col = None
     volume_col = None
-    sample_rep_col = None  # Columna Sample_Rep del migrate (si existeix)
+    sample_rep_col = None
 
-    # Primer pass: buscar per nom les columnes amb dades
     for col in df_seq.columns:
         col_lower = str(col).lower().strip()
-        col_base = col_lower.replace('.1', '').replace('.2', '')
-        has_data = df_seq[col].notna().any()
-
-        if col_base == "sample_rep" and has_data:
+        if col_lower == "sample_rep":
             sample_rep_col = col
-        elif ("sample" in col_base and "name" in col_base) and has_data:
-            if sample_col is None:
-                sample_col = col
-        elif (col_base == "inj#" or col_base == "inj") and has_data:
-            if inj_col is None:
-                inj_col = col
-        elif (col_base == "line#" or col_base == "line") and has_data:
-            if line_col is None:
-                line_col = col
-        elif ("volume" in col_base or "vol" in col_base) and has_data:
-            if volume_col is None:
-                volume_col = col
+        elif ("sample" in col_lower and "name" in col_lower) and sample_col is None:
+            sample_col = col
+        elif (col_lower in ("inj#", "inj")) and inj_col is None:
+            inj_col = col
+        elif (col_lower in ("line#", "line")) and line_col is None:
+            line_col = col
+        elif ("volume" in col_lower or "vol" in col_lower) and volume_col is None:
+            volume_col = col
 
     # Columna N (índex 13) per volum si no té etiqueta
     # En Excel v11/v12, el volum està a la columna N sense etiqueta
     if volume_col is None:
         col_list = list(df_seq.columns)
-        # Columna N = índex 13 (A=0, B=1, ..., N=13)
         if len(col_list) > 13:
             potential_vol_col = col_list[13]
-            # Verificar que sembla una columna de volum (valors numèrics típics: 100, 400, etc.)
             try:
                 sample_vals = df_seq[potential_vol_col].dropna().head(5)
                 if len(sample_vals) > 0:
-                    # Verificar que són valors numèrics raonables per volum (50-1000 µL)
                     numeric_vals = pd.to_numeric(sample_vals, errors='coerce').dropna()
                     if len(numeric_vals) > 0 and all(50 <= v <= 1000 for v in numeric_vals):
                         volume_col = potential_vol_col
             except Exception:
                 pass
 
-    if sample_col is None:
-        # Fallback: buscar columna amb "sample"
-        for col in df_seq.columns:
-            if "sample" in str(col).lower():
-                sample_col = col
+    # Fallback volum: 0-INFO B4 (Inj_Volume)
+    info_volume = None
+    if volume_col is None:
+        info_data = master_data.get("info", {})
+        for key, val in info_data.items():
+            if "volume" in str(key).lower() or "vol" in str(key).lower():
+                try:
+                    info_volume = float(val)
+                except (ValueError, TypeError):
+                    pass
                 break
 
+    # --- VALIDACIÓ: columnes obligatòries han de tenir dades ---
+    # Detectar si les dades estan desplaçades (columnes .1 amb dades, originals buides)
+    def _detect_offset_hint():
+        for col in df_seq.columns:
+            if ".1" in str(col) and df_seq[col].notna().sum() > 0:
+                return (" Les dades semblen estar a columnes desplaçades (G-L en lloc de A-F)."
+                        " Obrir el MasterFile, moure les dades a les columnes A-F i prémer Re-importar.")
+        return ""
+
+    if line_col is None:
+        hint = _detect_offset_hint()
+        return [], [f"ERROR fulla 1-HPLC-SEQ: no s'ha trobat columna 'Line#'.{hint} Revisar el MasterFile."], 0
+
+    n_data_rows = df_seq[line_col].notna().sum()
+    if n_data_rows == 0:
+        hint = _detect_offset_hint()
+        return [], [f"ERROR fulla 1-HPLC-SEQ: columna 'Line#' (A) buida.{hint} Revisar el MasterFile."], 0
+
     if sample_col is None:
-        return [], ["No s'ha trobat columna 'Sample Name' al MasterFile"], 0
+        return [], ["ERROR fulla 1-HPLC-SEQ: no s'ha trobat columna 'Sample Name'. Revisar el MasterFile."], 0
+
+    sample_data_rows = df_seq[sample_col].notna().sum()
+    if sample_data_rows == 0:
+        hint = _detect_offset_hint()
+        return [], [f"ERROR fulla 1-HPLC-SEQ: columna 'Sample Name' (D) buida.{hint} Revisar el MasterFile."], 0
 
     # Comptador per controls repetits
     control_counts = {}  # base_name -> total count
@@ -1739,20 +1720,17 @@ def parse_injections_from_masterfile(master_data, config=None):
         elif col_lower == "area":
             area_col = col
 
-    # Columnes crítiques que NO haurien d'estar buides: Line#, Inj#, Location, Sample Name, Method, Date, Volume
-    # Buscar per nom (robust: funciona encara que les columnes estiguin desplaçades)
+    # Columnes addicionals: Location, Method, Date
     location_col = None
     method_col = None
     date_col = None
     for col in df_seq.columns:
         col_lower = str(col).lower().strip()
-        col_base = col_lower.replace('.1', '').replace('.2', '')
-        has_data = df_seq[col].notna().any()
-        if col_base == "location" and has_data and location_col is None:
+        if col_lower == "location" and location_col is None:
             location_col = col
-        elif ("method" in col_base or "acq" in col_base) and has_data and method_col is None:
+        elif ("method" in col_lower) and method_col is None:
             method_col = col
-        elif ("date" in col_base or "acquired" in col_base) and has_data and date_col is None:
+        elif ("date" in col_lower or "acquired" in col_lower) and date_col is None:
             date_col = col
 
     critical_cols = {
@@ -1940,6 +1918,9 @@ def parse_injections_from_masterfile(master_data, config=None):
                     inj_volume = float(vol_val)
             except (ValueError, TypeError):
                 pass
+        # Fallback: volum de 0-INFO (comú per tota la seqüència)
+        if inj_volume is None and info_volume is not None:
+            inj_volume = info_volume
 
         # Info de set per controls (per matching amb fitxers MQ1_R1, MQ2_R1, etc.)
         # NOMÉS usar set/rep si hi ha duplicats exactes - si els noms ja són únics, fer match directe
@@ -1951,6 +1932,25 @@ def parse_injections_from_masterfile(master_data, config=None):
             control_rep_in_set = None
 
 
+        # Extreure location/method/date usant els noms de columna detectats
+        inj_location = None
+        if location_col is not None:
+            val = row.get(location_col)
+            if val is not None and str(val).strip() not in ("", "nan"):
+                inj_location = str(val).strip()
+
+        inj_method = None
+        if method_col is not None:
+            val = row.get(method_col)
+            if val is not None and str(val).strip() not in ("", "nan"):
+                inj_method = str(val).strip()
+
+        inj_date = ""
+        if date_col is not None:
+            val = row.get(date_col)
+            if val is not None and str(val).strip() not in ("", "nan"):
+                inj_date = str(val).strip()
+
         injections.append({
             "line_num": line_num,
             "inj_num": effective_inj_num,  # Replica efectiva
@@ -1959,6 +1959,9 @@ def parse_injections_from_masterfile(master_data, config=None):
             "sample_name": unique_name,
             "sample_type": sample_type,
             "inj_volume": inj_volume,  # Volum d'injecció en µL (pot ser None)
+            "inj_location": inj_location,
+            "inj_method": inj_method,
+            "inj_date": inj_date,
             "control_set": control_set_num,  # Número de set per controls (MQ1, MQ2, ...)
             "control_rep": control_rep_in_set,  # Rèplica dins del set (R1, R2, ...)
             "row_data": row.to_dict(),
@@ -2713,7 +2716,10 @@ def import_sequence(seq_path, config=None, progress_callback=None):
                 "injection_info": {
                     "line_num": inj["line_num"],
                     "inj_num": inj_num,
-                    "inj_volume": inj.get("inj_volume"),  # Volum d'injecció en µL
+                    "inj_volume": inj.get("inj_volume"),
+                    "inj_location": inj.get("inj_location"),
+                    "inj_method": inj.get("inj_method"),
+                    "inj_date": inj.get("inj_date", ""),
                 },
             }
 
@@ -3408,10 +3414,10 @@ def generate_import_manifest(imported_data, include_injection_details=True):
                 replica_entry["injection"] = {
                     "line_num": inj_info.get("line_num"),
                     "inj_num": inj_info.get("inj_num"),
-                    "inj_volume": inj_info.get("inj_volume"),  # Volum d'injecció en µL
-                    "location": inj_info.get("row_data", {}).get("Location"),
-                    "acq_date": str(inj_info.get("row_data", {}).get("Injection Acquired Date", "")),
-                    "method": inj_info.get("row_data", {}).get("Injection Acq Method Name"),
+                    "inj_volume": inj_info.get("inj_volume"),
+                    "location": inj_info.get("inj_location"),
+                    "acq_date": inj_info.get("inj_date", ""),
+                    "method": inj_info.get("inj_method"),
                 }
 
             sample_entry["replicas"].append(replica_entry)
