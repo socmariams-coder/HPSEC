@@ -2570,7 +2570,12 @@ def import_sequence(seq_path, config=None, progress_callback=None):
         result["warnings"].extend(parse_warnings)
 
         if not injections:
-            result["errors"].append("No s'han trobat injeccions al MasterFile")
+            # Usar el missatge específic del parsing si existeix (ex: "ERROR fulla 1-HPLC-SEQ...")
+            specific_errors = [w for w in parse_warnings if w.upper().startswith("ERROR")]
+            if specific_errors:
+                result["errors"].extend(specific_errors)
+            else:
+                result["errors"].append("No s'han trobat injeccions al MasterFile")
             return result
 
         # Crear set de mostres vàlides
@@ -2606,9 +2611,7 @@ def import_sequence(seq_path, config=None, progress_callback=None):
             if "3-DAD_KHP" in xl.sheet_names:
                 master_khp_data = pd.read_excel(master_path, sheet_name="3-DAD_KHP")
                 has_3dad_khp_sheet = True
-                print(f"[DEBUG] Full 3-DAD_KHP trobat: {master_khp_data.shape if master_khp_data is not None else 'None'}")
-                if master_khp_data is not None:
-                    print(f"[DEBUG] Columnes 3-DAD_KHP: {list(master_khp_data.columns)}")
+                pass
             if "2-TOC" in xl.sheet_names:
                 toc_df = pd.read_excel(master_path, sheet_name="2-TOC", header=6)
             if "4-TOC_CALC" in xl.sheet_names:
@@ -2616,15 +2619,23 @@ def import_sequence(seq_path, config=None, progress_callback=None):
         except Exception as e:
             print(f"[WARNING] Error llegint fulls addicionals del MasterFile: {e}")
 
-        # Warning si no hi ha Export3D ni 3-DAD_KHP però hi ha KHP
+        # Warning si 4-TOC_CALC buit (COLUMN mode necessita DOC Direct)
+        if result["method"] == "COLUMN":
+            if toc_calc_df is None or (hasattr(toc_calc_df, 'empty') and toc_calc_df.empty):
+                result["warnings"].append(
+                    "ERROR fulla 4-TOC_CALC buida al MasterFile. "
+                    "No es poden obtenir dades DOC Direct. Revisar el MasterFile."
+                )
+
+        # Warning KHP DAD: només si NO hi ha cap de les 3 fonts (3-DAD_KHP, CSV DAD, Export3D)
         has_export3d = os.path.isdir(path_3d) and len(dad_files) > 0
+        has_dad_csv = len(dad_csv_files) > 0
+        has_3dad_khp_data = has_3dad_khp_sheet and master_khp_data is not None and not master_khp_data.empty
         has_khp = any(inj.get("sample_type") == "KHP" for inj in injections)
-        if has_khp and not has_export3d and not has_3dad_khp_sheet:
+        if has_khp and not has_export3d and not has_dad_csv and not has_3dad_khp_data:
             result["warnings"].append(
-                "⚠️ ATENCIÓ: No s'ha trobat Export3D ni full 3-DAD_KHP al MasterFile. "
-                "Les mostres KHP no tindran dades DAD 254nm."
+                "KHP sense dades DAD: no s'ha trobat Export3D, CSV DAD, ni full 3-DAD_KHP amb dades."
             )
-            print("[WARNING] KHP sense Export3D ni 3-DAD_KHP - DAD 254nm no disponible")
 
         report_progress(40, "Processant injeccions...")
 

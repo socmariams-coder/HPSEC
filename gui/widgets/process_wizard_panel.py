@@ -1587,20 +1587,18 @@ class ProcessWizardPanel(QWidget):
         self._preload_completed_stages(seq_path)
 
         # Anar a primera etapa que necessita atenció (warning o pending)
+        # Si tot és "ok", anar a l'última etapa (Revisar)
         first_needs_attention = next(
             (i for i, s in enumerate(self.tab_states) if s in ("warning", "pending", "current")),
-            0
+            3  # Tot completat → anar a Revisar
         )
         self.tab_widget.setCurrentIndex(first_needs_attention)
         self._update_header_for_tab(first_needs_attention)
 
-        # Carregar al panel d'import (només si import és pendent/warning,
-        # sinó ja tenim les dades via _preload_completed_stages)
-        if self.tab_states[0] in ("pending", "current"):
-            self.import_panel.load_from_dashboard(seq_path)
-        else:
-            # Import ja completat: configurar panel sense re-importar
-            self.import_panel.set_sequence_path(seq_path)
+        # Carregar sempre al panel d'import:
+        # - "pending"/"current": auto-import (no hi ha JSON)
+        # - "warning"/"ok": hi ha JSON → carregar des de manifest per mostrar taula
+        self.import_panel.load_from_dashboard(seq_path)
 
         self.sequence_loaded.emit(seq_path)
 
@@ -1614,6 +1612,9 @@ class ProcessWizardPanel(QWidget):
     def _auto_execute_pending(self, stage_idx: int):
         """Auto-executa l'etapa pendent indicada."""
         if stage_idx == 0:  # Importar
+            # Si l'import panel ja té un worker en marxa (carregant manifest), no executar
+            if self.import_panel.worker and self.import_panel.worker.isRunning():
+                return
             if hasattr(self.import_panel, '_run_import'):
                 self._show_executing_state("Importar")
                 self.import_panel._run_import()
@@ -1656,7 +1657,7 @@ class ProcessWizardPanel(QWidget):
         if not data_path.exists():
             return
 
-        # Import: carregar des del manifest (ràpid, sense generar reports)
+        # Import: carregar dades per a etapes posteriors (cal/ana necessiten imported_data)
         if self.tab_states[0] in ("ok", "warning") and not self.main_window.imported_data:
             manifest_path = data_path / "import_manifest.json"
             if manifest_path.exists():
@@ -1724,7 +1725,7 @@ class ProcessWizardPanel(QWidget):
                 0: ("import_manifest.json", ["warnings", "orphan_files"]),
                 1: ("calibration_result.json", ["warnings", "khp_warnings"]),
                 2: ("analysis_result.json", ["warnings", "anomalies"]),
-                # Tab 3 (Revisar) no té JSON d'estat — es detecta pels fitxers generats
+                3: ("review_result.json", []),
             }
 
             for idx, (filename, warning_fields) in json_files.items():
@@ -1752,8 +1753,10 @@ class ProcessWizardPanel(QWidget):
                         # Comprovar si hi ha warnings
                         has_warnings = self._check_has_warnings(data, warning_fields)
 
-                        # Comprovar si els warnings estan confirmats (ha de ser True explícit)
-                        warnings_confirmed = data.get("warnings_confirmed") is True
+                        # Comprovar si els warnings estan confirmats
+                        # Pot ser True (booleà) o dict amb marked_as_ok=True (des del wizard)
+                        wc = data.get("warnings_confirmed")
+                        warnings_confirmed = (wc is True) or (isinstance(wc, dict) and wc.get("marked_as_ok") is True)
 
                         if has_warnings and not warnings_confirmed:
                             states[idx] = "warning"
@@ -1882,12 +1885,14 @@ class ProcessWizardPanel(QWidget):
             else:
                 self._set_tab_state(0, "ok")
 
-            self._set_tab_state(1, "pending")
+            # Només marcar calibrar com pendent si no estava ja completada
+            if self.tab_states[1] not in ("ok", "warning"):
+                self._set_tab_state(1, "pending")
             # NO auto-navegar: l'usuari ha de revisar i clicar "Següent"
-            self._update_header_for_tab(0)
+            self._update_header_for_tab(self.tab_widget.currentIndex())
         else:
             self._set_tab_state(0, "error")
-            self._update_header_for_tab(0)
+            self._update_header_for_tab(self.tab_widget.currentIndex())
 
     def _on_import_warnings_dismissed(self):
         """Callback quan els warnings d'importació es descarten des del panel."""
@@ -1913,11 +1918,13 @@ class ProcessWizardPanel(QWidget):
             else:
                 self._set_tab_state(1, "error")
 
-            self._set_tab_state(2, "pending")
-            self._update_header_for_tab(1)
+            # Només marcar analitzar com pendent si no estava ja completada
+            if self.tab_states[2] not in ("ok", "warning"):
+                self._set_tab_state(2, "pending")
+            self._update_header_for_tab(self.tab_widget.currentIndex())
         else:
             self._set_tab_state(1, "error")
-            self._update_header_for_tab(1)
+            self._update_header_for_tab(self.tab_widget.currentIndex())
 
     def _on_analyze_completed(self, data):
         """Callback quan anàlisi completa."""
@@ -1934,11 +1941,13 @@ class ProcessWizardPanel(QWidget):
             else:
                 self._set_tab_state(2, "ok")
 
-            self._set_tab_state(3, "pending")
-            self._update_header_for_tab(2)
+            # Només marcar revisar com pendent si no estava ja completada
+            if self.tab_states[3] not in ("ok", "warning"):
+                self._set_tab_state(3, "pending")
+            self._update_header_for_tab(self.tab_widget.currentIndex())
         else:
             self._set_tab_state(2, "error")
-            self._update_header_for_tab(2)
+            self._update_header_for_tab(self.tab_widget.currentIndex())
 
     def _on_export_completed(self, data):
         """Callback quan l'exportació completa."""

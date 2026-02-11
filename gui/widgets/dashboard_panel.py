@@ -333,6 +333,7 @@ class DashboardPanel(QWidget):
         self.batch_worker = None
         self.single_worker = None
 
+        self._loading_overlay = None
         self._setup_ui()
         self.refresh_sequences()
 
@@ -1231,9 +1232,30 @@ class DashboardPanel(QWidget):
 
     def _open_in_wizard(self, seq: SequenceState):
         """Obre la seqüència al wizard per processar/revisar."""
-        # El senyal sequence_selected és captat per main_window._on_sequence_selected
-        # que ja fa load_sequence i navega al tab. No cal fer-ho aquí directament.
+        self._show_loading_overlay(seq.seq_name)
+        from PySide6.QtWidgets import QApplication
+        QApplication.processEvents()
         self.sequence_selected.emit(seq.seq_path, seq.current_phase.value)
+
+    def _show_loading_overlay(self, seq_name: str):
+        """Mostra overlay 'Carregant...' sobre la taula."""
+        if self._loading_overlay is None:
+            self._loading_overlay = QLabel(self.table)
+            self._loading_overlay.setAlignment(Qt.AlignCenter)
+            self._loading_overlay.setStyleSheet(
+                "background-color: rgba(255, 255, 255, 200);"
+                "color: #2E86AB; font-size: 16px; font-weight: bold;"
+                "border-radius: 8px;"
+            )
+        self._loading_overlay.setText(f"Carregant {seq_name}...")
+        self._loading_overlay.setGeometry(self.table.rect())
+        self._loading_overlay.raise_()
+        self._loading_overlay.show()
+
+    def hide_loading_overlay(self):
+        """Amaga l'overlay de càrrega."""
+        if self._loading_overlay is not None:
+            self._loading_overlay.hide()
 
     def _process_single(self, seq: SequenceState):
         # Construir missatge amb info de siblings

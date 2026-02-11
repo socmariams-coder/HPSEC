@@ -2,12 +2,14 @@
 HPSEC Suite - Export Panel
 ===========================
 
-Panel per la fase 5: Exportació de resultats.
+Panel per la fase 4: Exportació de resultats.
 
 Funcionalitats:
 - Generació d'Excels finals (un per mostra)
 - Excel resum amb totes les mostres
+- Integració automàtica de dades BP (quan COLUMN)
 - Opcions de format i contingut
+- Funciona dins el wizard o com a tab independent
 """
 
 from pathlib import Path
@@ -52,7 +54,8 @@ class ExportWorker(QThread):
             def progress_cb(pct, msg):
                 self.progress.emit(pct, msg)
 
-            # Exportar Excels individuals
+            # Exportar Excels individuals (amb integració BP automàtica)
+            seq_path = self.options.get("seq_path", "")
             if self.options.get("individual_excels", True):
                 self.progress.emit(0, "Exportant fitxers individuals...")
                 excel_result = export_sequence(
@@ -62,6 +65,7 @@ class ExportWorker(QThread):
                     self.mode,
                     DEFAULT_EXPORT_CONFIG,
                     progress_cb,
+                    seq_path=seq_path,
                 )
                 results["excel_files"] = excel_result
                 results["errors"].extend(excel_result.get("errors", []))
@@ -147,9 +151,10 @@ class ExportPanel(QWidget):
         self.individual_check.setToolTip(
             "Crea un fitxer Excel per cada mostra amb fulls:\n"
             "• ID: Traçabilitat (fitxers, shifts, quantificació)\n"
+            "• ID_BP: Traçabilitat BP (si COLUMN amb BP vinculat)\n"
             "• DOC: Cromatogrames DOC (final + raw)\n"
             "• DAD: 6 longituds d'ona\n"
-            "• RESULTS: Integracions per fraccions"
+            "• RESULTS: Integracions per fraccions (+ BP si disponible)"
         )
         options_layout.addWidget(self.individual_check)
 
@@ -297,10 +302,10 @@ class ExportPanel(QWidget):
         self.method_label.setText(f"Mètode: {method}")
         self.calibration_label.setText(f"Calibració: {cal_info}")
 
-        # Default output path
+        # Default output path: SEQ/CHECK/EXPORT/
         seq_path = self.main_window.seq_path
         if seq_path and not self.output_path_input.text():
-            default_output = str(Path(seq_path) / "Export")
+            default_output = str(Path(seq_path) / "CHECK" / "EXPORT")
             self.output_path_input.setText(default_output)
 
     def _browse_output(self):
@@ -334,12 +339,13 @@ class ExportPanel(QWidget):
         Path(output_path).mkdir(parents=True, exist_ok=True)
 
         # Opcions
+        seq_path = getattr(self.main_window, 'seq_path', '') or processed_data.get("seq_path", "")
         options = {
             "individual_excels": self.individual_check.isChecked(),
             "summary_excel": self.summary_check.isChecked(),
             "pdf_report": self.pdf_check.isChecked(),
             "processed_data": processed_data,
-            "seq_path": processed_data.get("seq_path", ""),
+            "seq_path": seq_path,
         }
 
         # Deshabilitar botó i mostrar progrés
@@ -387,6 +393,13 @@ class ExportPanel(QWidget):
         msg += f"Fitxers Excel generats: {n_exported}\n"
         if n_skipped > 0:
             msg += f"Mostres omeses (no vàlides): {n_skipped}\n"
+
+        # BP integration info
+        bp_info = excel_result.get("bp_info") if excel_result else None
+        if bp_info:
+            bp_name = bp_info.get("bp_seq_name", "?")
+            n_linked = bp_info.get("n_linked", 0)
+            msg += f"BP integrat: {bp_name} ({n_linked} mostres vinculades)\n"
 
         if summary_result:
             msg += f"Excel resum: SUMMARY.xlsx ({summary_result.get('n_samples', 0)} mostres)\n"

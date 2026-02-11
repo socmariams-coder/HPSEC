@@ -311,6 +311,7 @@ class HPSECSuiteWindow(QMainWindow):
         self.tab_widget.setCurrentIndex(1)
 
         self.set_status(f"{seq_name} carregat", 3000)
+        self.dashboard_panel.hide_loading_overlay()
 
     def _on_wizard_sequence_loaded(self, seq_path):
         """Callback quan el wizard carrega una seqüència."""

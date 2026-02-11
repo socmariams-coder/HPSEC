@@ -330,10 +330,8 @@ class ImportPanel(QWidget):
         """Carrega una seqüència des del Dashboard - auto-carrega si hi ha manifest."""
         self.set_sequence_path(seq_path)
 
-        # Si hi ha manifest existent, carregar automàticament
+        # Si hi ha manifest existent, carregar automàticament (async amb progrés)
         if self.existing_manifest:
-            # Amagar placeholder immediatament - es mostrarà la taula quan acabi
-            self.placeholder.setVisible(False)
             self._auto_load_from_manifest()
 
     def _go_to_dashboard(self):
@@ -367,6 +365,8 @@ class ImportPanel(QWidget):
         """Carrega automàticament des del manifest existent."""
         self._loaded_from_manifest = True
         self.main_window.show_progress(0)
+        self.placeholder.setText("Carregant dades importades...")
+        self.placeholder.setVisible(True)
 
         self.worker = ImportWorker(
             self.seq_path,
@@ -402,14 +402,19 @@ class ImportPanel(QWidget):
     def _on_progress(self, pct, msg):
         self.main_window.show_progress(pct)
         self.main_window.set_status(msg)
+        # Actualitzar placeholder amb el pas actual
+        if self.placeholder.isVisible():
+            self.placeholder.setText(msg)
 
     def _on_import_finished(self, result):
         self.main_window.show_progress(-1)
         self.import_btn.setEnabled(True)
+        self.placeholder.setVisible(False)
 
         if not result.get("success"):
             errors = result.get("errors", ["Error desconegut"])
-            QMessageBox.critical(self, "Error d'Importació", f"Error: {errors[0]}")
+            error_msg = "\n\n".join(errors)
+            QMessageBox.critical(self, "Error d'Importació", error_msg)
             self.import_completed.emit({'success': False, 'errors': errors})
             return
 

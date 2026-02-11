@@ -1,6 +1,6 @@
 {
   "paths": {
-    "data_folder": "C:/Users/Lequia/Desktop/Dades3",
+    "data_folder": "C:/Users/Lequia/OneDrive - Universitat de Girona/UdG365_HPLC-DAD - General/Dades",
     "registry_folder": "C:/Users/Lequia/Desktop/Dades3/REGISTRY",
     "maintenance_excel": "C:/Users/Lequia/Desktop/Manteniment/Registre manteniment HPLC-DAD-TOC.xlsx"
   },
@@ -37,6 +37,22 @@
     "baseline_window_column": 10.0,
     "smoothing_window": 11,
     "smoothing_order": 3
+  },
+  "baseline": {
+    "bp_end_pct": 20,
+    "column_start_pct": 15,
+    "method": "mode",
+    "stats_percentile_low": 5,
+    "stats_percentile_high": 40,
+    "min_noise_mau": 0.01
+  },
+  "sequence": {
+    "sample_duration_column": 78.65,
+    "sample_duration_bp": 12.0,
+    "flow_rate_column": 0.75,
+    "flow_rate_bp": 0.75,
+    "toc_cycle_min": 77.2,
+    "toc_timeout_sec": 74
   },
   "quality": {
     "r2_valid": 0.987,
@@ -95,7 +111,15 @@
     "timeout_major": 74.0,
     "ears_threshold": 0.1,
     "ears_max_sep_min": 0.5,
-    "irr_smoothness_threshold": 0.18
+    "irr_smoothness_threshold": 0.18,
+    "noise_threshold": 20.0,
+    "snr_threshold": 10.0,
+    "pearson_threshold": 0.995,
+    "timeout_threshold_sec": 60,
+    "pre_zone_min": 0.5,
+    "post_zone_min": 1.0,
+    "batman_max_sep": 0.5,
+    "repair_factor": 0.85
   },
   "calibration": {
     "khp_pattern": "KHP",
@@ -147,7 +171,33 @@
         "area_std": 50,
         "description": "KHP 2ppm, 100µL, BP mode (alta variabilitat)"
       }
-    }
+    },
+    "khp_conc_default": 5.0,
+    "rsd_max": 10.0,
+    "quality_max": 100,
+    "volume_column": 400,
+    "volume_bp": 100,
+    "min_cals_average": 2,
+    "use_historical_fallback": true
+  },
+  "blank_injections": {
+    "patterns": [
+      "MQ",
+      "BLANK",
+      "BLK",
+      "H2O",
+      "WATER",
+      "MILLI",
+      "BLANC"
+    ]
+  },
+  "control_injections": {
+    "patterns": [
+      "NAOH",
+      "WASH",
+      "CONTROL"
+    ],
+    "ignore_orphan": true
   },
   "timeout_zones": {
     "RUN_START": {
