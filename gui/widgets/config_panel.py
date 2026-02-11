@@ -3,6 +3,7 @@ HPSEC Suite - Configuration Panel
 ==================================
 
 Panel per gestionar la configuració del sistema.
+Usa exclusivament el ConfigManager principal (hpsec_config.json).
 """
 
 from PySide6.QtWidgets import (
@@ -14,8 +15,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont
 
-from pathlib import Path
-import json
+from hpsec_config import get_config
 
 
 class ConfigPanel(QWidget):
@@ -24,7 +24,6 @@ class ConfigPanel(QWidget):
     def __init__(self, main_window):
         super().__init__()
         self.main_window = main_window
-        self.config = {}
         self._setup_ui()
         self._load_config()
 
@@ -291,34 +290,29 @@ class ConfigPanel(QWidget):
         # Directori dades
         dirs_layout.addWidget(QLabel("Directori dades:"), 0, 0)
         self.data_dir_edit = QLineEdit()
-        self.data_dir_edit.setPlaceholderText("Per defecte: ~/HPSEC_Data")
+        self.data_dir_edit.setPlaceholderText("Carpeta amb les SEQs")
         dirs_layout.addWidget(self.data_dir_edit, 0, 1)
         data_browse = QPushButton("...")
         data_browse.setMaximumWidth(30)
         data_browse.clicked.connect(lambda: self._browse_dir(self.data_dir_edit))
         dirs_layout.addWidget(data_browse, 0, 2)
 
-        # Directori exportacions
-        dirs_layout.addWidget(QLabel("Directori exportacions:"), 1, 0)
-        self.export_dir_edit = QLineEdit()
-        self.export_dir_edit.setPlaceholderText("Per defecte: dins de cada SEQ")
-        dirs_layout.addWidget(self.export_dir_edit, 1, 1)
-        export_browse = QPushButton("...")
-        export_browse.setMaximumWidth(30)
-        export_browse.clicked.connect(lambda: self._browse_dir(self.export_dir_edit))
-        dirs_layout.addWidget(export_browse, 1, 2)
-
-        # Directori històric
-        dirs_layout.addWidget(QLabel("Fitxer històric KHP:"), 2, 0)
-        self.history_file_edit = QLineEdit()
-        self.history_file_edit.setPlaceholderText("Per defecte: khp_calibration_history.json")
-        dirs_layout.addWidget(self.history_file_edit, 2, 1)
+        # Directori registry
+        dirs_layout.addWidget(QLabel("Directori REGISTRY:"), 1, 0)
+        self.registry_dir_edit = QLineEdit()
+        self.registry_dir_edit.setPlaceholderText("Carpeta REGISTRY (KHP_History, etc.)")
+        dirs_layout.addWidget(self.registry_dir_edit, 1, 1)
+        registry_browse = QPushButton("...")
+        registry_browse.setMaximumWidth(30)
+        registry_browse.clicked.connect(lambda: self._browse_dir(self.registry_dir_edit))
+        dirs_layout.addWidget(registry_browse, 1, 2)
 
         layout.addWidget(dirs_group)
 
         # Info
         info = QLabel(
-            "Nota: Els paths relatius són relatius al directori de la SEQ actual."
+            "Nota: Canviar el directori de dades i clicar 'Guardar'.\n"
+            "Després clicar 'Actualitzar' al Dashboard per veure les noves seqüències."
         )
         info.setStyleSheet("color: #666; font-style: italic;")
         info.setWordWrap(True)
@@ -329,102 +323,76 @@ class ConfigPanel(QWidget):
 
     def _browse_dir(self, line_edit):
         """Obre diàleg per seleccionar directori."""
-        path = QFileDialog.getExistingDirectory(self, "Selecciona Directori")
+        current = line_edit.text().strip()
+        start_dir = current if current else ""
+        path = QFileDialog.getExistingDirectory(self, "Selecciona Directori", start_dir)
         if path:
             line_edit.setText(path)
 
-    def _get_config_file(self):
-        """Retorna el path del fitxer de configuració."""
-        config_dir = Path.home() / "HPSEC_Data"
-        config_dir.mkdir(exist_ok=True)
-        return config_dir / "hpsec_config.json"
-
     def _load_config(self):
-        """Carrega la configuració des del fitxer."""
-        config_file = self._get_config_file()
-        if config_file.exists():
-            try:
-                with open(config_file, 'r', encoding='utf-8') as f:
-                    self.config = json.load(f)
-                self._apply_config_to_ui()
-            except Exception as e:
-                print(f"[WARNING] Error carregant configuració: {e}")
+        """Carrega la configuració des del ConfigManager principal."""
+        cfg = get_config()
+        cfg.reload()
+        self._apply_config_to_ui(cfg)
 
-    def _apply_config_to_ui(self):
+    def _apply_config_to_ui(self, cfg):
         """Aplica la configuració als widgets."""
-        # General
-        lang = self.config.get('language', 'ca')
-        idx = self.language_combo.findData(lang)
-        if idx >= 0:
-            self.language_combo.setCurrentIndex(idx)
+        # Paths (del ConfigManager principal)
+        self.data_dir_edit.setText(cfg.get("paths", "data_folder") or "")
+        self.registry_dir_edit.setText(cfg.get("paths", "registry_folder") or "")
 
         # Detection
-        self.noise_thresh.setValue(self.config.get('noise_threshold', 20.0))
-        self.snr_thresh.setValue(self.config.get('snr_threshold', 10.0))
-        self.pearson_thresh.setValue(self.config.get('pearson_threshold', 0.995))
-        self.timeout_thresh.setValue(self.config.get('timeout_threshold_sec', 60))
+        self.noise_thresh.setValue(cfg.get("detection", "noise_threshold") or 20.0)
+        self.snr_thresh.setValue(cfg.get("detection", "snr_threshold") or 10.0)
+        self.pearson_thresh.setValue(cfg.get("detection", "pearson_threshold") or 0.995)
+        self.timeout_thresh.setValue(cfg.get("detection", "timeout_threshold_sec") or 60)
 
         # Calibration
-        self.khp_conc_default.setValue(self.config.get('khp_conc_default', 5.0))
-        self.rsd_max.setValue(self.config.get('rsd_max', 10.0))
-        self.quality_max.setValue(self.config.get('quality_max', 100))
-        self.vol_column.setValue(self.config.get('volume_column', 400))
-        self.vol_bp.setValue(self.config.get('volume_bp', 100))
-
-        # Paths
-        self.data_dir_edit.setText(self.config.get('data_dir', ''))
-        self.export_dir_edit.setText(self.config.get('export_dir', ''))
-        self.history_file_edit.setText(self.config.get('history_file', ''))
+        self.khp_conc_default.setValue(cfg.get("calibration", "khp_conc_default") or 5.0)
+        self.rsd_max.setValue(cfg.get("calibration", "rsd_max") or 10.0)
+        self.quality_max.setValue(cfg.get("calibration", "quality_max") or 100)
+        self.vol_column.setValue(cfg.get("calibration", "volume_column") or 400)
+        self.vol_bp.setValue(cfg.get("calibration", "volume_bp") or 100)
 
     def _save_config(self):
-        """Guarda la configuració."""
-        self.config = {
-            # General
-            'language': self.language_combo.currentData(),
-            'date_format': self.date_format_combo.currentData(),
-            'auto_backup': self.auto_backup_cb.isChecked(),
-            'show_tooltips': self.show_tooltips_cb.isChecked(),
-            'export_pdf': self.export_pdf_cb.isChecked(),
-            'export_excel': self.export_excel_cb.isChecked(),
-            'export_csv': self.export_csv_cb.isChecked(),
+        """Guarda la configuració al ConfigManager principal (hpsec_config.json)."""
+        cfg = get_config()
 
-            # Detection
-            'noise_threshold': self.noise_thresh.value(),
-            'snr_threshold': self.snr_thresh.value(),
-            'pearson_threshold': self.pearson_thresh.value(),
-            'timeout_threshold_sec': self.timeout_thresh.value(),
-            'pre_zone_min': self.pre_zone.value(),
-            'post_zone_min': self.post_zone.value(),
-            'batman_max_sep': self.batman_sep.value(),
-            'repair_factor': self.repair_factor.value(),
+        # Paths
+        data_dir = self.data_dir_edit.text().strip()
+        if data_dir:
+            cfg.set("paths", "data_folder", data_dir)
+        registry_dir = self.registry_dir_edit.text().strip()
+        if registry_dir:
+            cfg.set("paths", "registry_folder", registry_dir)
 
-            # Calibration
-            'khp_conc_default': self.khp_conc_default.value(),
-            'rsd_max': self.rsd_max.value(),
-            'quality_max': self.quality_max.value(),
-            'volume_column': self.vol_column.value(),
-            'volume_bp': self.vol_bp.value(),
-            'min_cals_average': self.min_cals_avg.value(),
-            'use_historical_fallback': self.use_historical_fallback.isChecked(),
+        # Detection
+        cfg.set("detection", "noise_threshold", self.noise_thresh.value())
+        cfg.set("detection", "snr_threshold", self.snr_thresh.value())
+        cfg.set("detection", "pearson_threshold", self.pearson_thresh.value())
+        cfg.set("detection", "timeout_threshold_sec", self.timeout_thresh.value())
+        cfg.set("detection", "pre_zone_min", self.pre_zone.value())
+        cfg.set("detection", "post_zone_min", self.post_zone.value())
+        cfg.set("detection", "batman_max_sep", self.batman_sep.value())
+        cfg.set("detection", "repair_factor", self.repair_factor.value())
 
-            # Paths
-            'data_dir': self.data_dir_edit.text(),
-            'export_dir': self.export_dir_edit.text(),
-            'history_file': self.history_file_edit.text(),
-        }
+        # Calibration
+        cfg.set("calibration", "khp_conc_default", self.khp_conc_default.value())
+        cfg.set("calibration", "rsd_max", self.rsd_max.value())
+        cfg.set("calibration", "quality_max", self.quality_max.value())
+        cfg.set("calibration", "volume_column", self.vol_column.value())
+        cfg.set("calibration", "volume_bp", self.vol_bp.value())
+        cfg.set("calibration", "min_cals_average", self.min_cals_avg.value())
+        cfg.set("calibration", "use_historical_fallback", self.use_historical_fallback.isChecked())
 
-        try:
-            config_file = self._get_config_file()
-            with open(config_file, 'w', encoding='utf-8') as f:
-                json.dump(self.config, f, indent=2, ensure_ascii=False)
-
-            self.main_window.set_status("Configuració guardada", 3000)
+        if cfg.save():
+            self.main_window.set_status("Configuració guardada a hpsec_config.json", 3000)
             QMessageBox.information(
                 self, "Configuració Guardada",
-                f"Configuració guardada a:\n{config_file}"
+                f"Configuració guardada a:\n{cfg.config_path}"
             )
-        except Exception as e:
-            QMessageBox.warning(self, "Error", f"Error guardant configuració: {e}")
+        else:
+            QMessageBox.warning(self, "Error", "Error guardant configuració")
 
     def _reset_defaults(self):
         """Restaura els valors per defecte."""
@@ -435,31 +403,11 @@ class ConfigPanel(QWidget):
         )
 
         if reply == QMessageBox.Yes:
-            # Detection
-            self.noise_thresh.setValue(20.0)
-            self.snr_thresh.setValue(10.0)
-            self.pearson_thresh.setValue(0.995)
-            self.timeout_thresh.setValue(60)
-            self.pre_zone.setValue(0.5)
-            self.post_zone.setValue(1.0)
-            self.batman_sep.setValue(0.5)
-            self.repair_factor.setValue(0.85)
-
-            # Calibration
-            self.khp_conc_default.setValue(5.0)
-            self.rsd_max.setValue(10.0)
-            self.quality_max.setValue(100)
-            self.vol_column.setValue(400)
-            self.vol_bp.setValue(100)
-            self.min_cals_avg.setValue(2)
-
-            # Paths
-            self.data_dir_edit.clear()
-            self.export_dir_edit.clear()
-            self.history_file_edit.clear()
-
+            cfg = get_config()
+            cfg.reload()
+            self._apply_config_to_ui(cfg)
             self.main_window.set_status("Valors per defecte restaurats", 3000)
 
     def get_config(self):
         """Retorna la configuració actual (per usar des d'altres mòduls)."""
-        return self.config.copy()
+        return get_config()
