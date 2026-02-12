@@ -2406,9 +2406,10 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
     snr = float((y_doc_net[peak_idx] - bl_stats["mean"]) / noise)
 
     # Timeout detection
+    # has_timeout only for WARNING/CRITICAL — INFO (safe zones like SB) is not relevant
     timeout_info = detect_timeout(t_doc, is_bp=is_bp_chromato)
-    has_timeout = timeout_info['n_timeouts'] > 0
     timeout_severity = timeout_info.get('severity', 'OK')
+    has_timeout = timeout_info['n_timeouts'] > 0 and timeout_severity in ('WARNING', 'CRITICAL')
 
     # Batman/Anomalies
     t_peak_seg = t_doc[left_idx:right_idx+1]
@@ -4182,6 +4183,11 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
             'has_batman': group_has_batman,
             'has_irregular': group_has_irregular,
             'has_timeout': group_has_timeout,
+            'timeout_severity': max(
+                (r.get('timeout_severity', 'OK') for r in replicas),
+                key=lambda s: {'OK': 0, 'INFO': 1, 'WARNING': 2, 'CRITICAL': 3}.get(s, 0),
+                default='OK'
+            ),
             'smoothness': group_smoothness,
             'batman_repaired': group_batman_repaired,
 

@@ -1146,7 +1146,10 @@ class DashboardPanel(QWidget):
                         if sample_data.get("batman_direct") or sample_data.get("batman_uib"):
                             batman_count += 1
                         if sample_data.get("has_timeout"):
-                            timeout_count += 1
+                            # Only count WARNING/CRITICAL timeouts
+                            to_sev = sample_data.get("timeout_severity", "OK")
+                            if to_sev in ("WARNING", "CRITICAL"):
+                                timeout_count += 1
 
                     if batman_count > 0:
                         notes.append({
@@ -1172,11 +1175,15 @@ class DashboardPanel(QWidget):
                                 "content": "KHP amb batman",
                             })
                         if cal.get("has_timeout"):
-                            notes.append({
-                                "stage": stage_name,
-                                "type": "ANOM",
-                                "content": "KHP amb timeout",
-                            })
+                            # Only show as anomaly if timeout severity is WARNING/CRITICAL
+                            # INFO timeouts (e.g. SB zone) are not relevant
+                            to_sev = cal.get("timeout_severity", "OK")
+                            if to_sev in ("WARNING", "CRITICAL"):
+                                notes.append({
+                                    "stage": stage_name,
+                                    "type": "ANOM",
+                                    "content": "KHP amb timeout",
+                                })
                         # Quality issues
                         for issue in cal.get("quality_issues", [])[:2]:
                             notes.append({
