@@ -18,6 +18,7 @@ from ._constants import DAD_WL_ALL, SIGNAL_KEYS_ALL
 from ._helpers import (
     configure_table_style, populate_signal_summary, populate_fractions_table
 )
+from hpsec_warnings import has_anomaly, get_anomaly_codes
 
 # Matplotlib
 try:
@@ -213,14 +214,15 @@ class SampleDetailDialog(QDialog):
         batman_signals = []
         for rep_key, rep_data in replicas.items():
             anomalies = rep_data.get("anomalies", [])
-            if "BATMAN_DIRECT" in anomalies:
+            if has_anomaly(anomalies, "BATMAN_DIRECT"):
                 has_batman = True
                 batman_signals.append(f"R{rep_key} Direct")
-            if "BATMAN_UIB" in anomalies:
+            if has_anomaly(anomalies, "BATMAN_UIB"):
                 has_batman = True
                 batman_signals.append(f"R{rep_key} UIB")
             # Ja reparats?
-            if any("_REPAIRED" in a for a in anomalies):
+            if any((a.get("repaired") if isinstance(a, dict) else "_REPAIRED" in str(a))
+                   for a in anomalies):
                 has_batman = True
                 batman_signals.append(f"R{rep_key} (ja reparat)")
 
@@ -265,7 +267,7 @@ class SampleDetailDialog(QDialog):
             for rep_key, rep_data in replicas.items():
                 anomalies = rep_data.get("anomalies", [])
                 for signal_type, anom_key in [("direct", "BATMAN_DIRECT"), ("uib", "BATMAN_UIB")]:
-                    if anom_key in anomalies:
+                    if has_anomaly(anomalies, anom_key):
                         btn = QPushButton(f"Reparar R{rep_key} {signal_type.upper()}")
                         btn.setStyleSheet(
                             "QPushButton { background-color: #F39C12; color: white; "
@@ -310,13 +312,14 @@ class SampleDetailDialog(QDialog):
 
                 # Comprovar si la mostra és vàlida després de la reparació
                 # (pot quedar no vàlida si l'altre senyal té anomalies no reparables)
-                irreparable = ["NO_PEAK", "TIMEOUT_IN_PEAK"]
                 remaining_anomalies = replica_data.get("anomalies", [])
-                still_has_irreparable = any(a in remaining_anomalies for a in irreparable)
-                # Comprovar també Batman no reparat
+                remaining_codes = get_anomaly_codes(remaining_anomalies)
+                still_has_irreparable = bool(remaining_codes & {"NO_PEAK", "TIMEOUT_IN_PEAK"})
+                # Comprovar també Batman no reparat (actiu, no marcat com repaired)
                 still_has_batman = any(
-                    a in remaining_anomalies
-                    for a in ["BATMAN_DIRECT", "BATMAN_UIB"]
+                    (isinstance(a, dict) and a.get("code") in ("BATMAN_DIRECT", "BATMAN_UIB") and not a.get("repaired"))
+                    or (isinstance(a, str) and a in ("BATMAN_DIRECT", "BATMAN_UIB"))
+                    for a in remaining_anomalies
                 )
                 if not still_has_irreparable and not still_has_batman:
                     self.sample_data["sample_valid"] = True

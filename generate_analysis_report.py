@@ -215,35 +215,35 @@ def _restore_arrays(data):
 
 
 def _get_status_color(anomalies, score=1.0):
-    """Retorna color per una mostra segons anomalies."""
-    critical = ["BATMAN_DIRECT", "BATMAN_UIB", "NO_PEAK", "TIMEOUT_IN_PEAK"]
-    has_critical = any(a in anomalies for a in critical)
-    has_repaired = any("_REPAIRED" in a for a in anomalies)
-
-    if has_critical:
+    """Retorna color per una mostra segons anomalies (suporta strings i dicts)."""
+    from hpsec_warnings import classify_anomalies
+    classified = classify_anomalies(anomalies)
+    if classified["blocker"]:
         return COLORS["danger"]
-    elif has_repaired or score < 0.7:
+    elif classified["repaired"] or classified["warning"] or score < 0.7:
         return COLORS["warning"]
     return COLORS["accent"]
 
 
 def _status_text(anomalies, sample_valid=True):
-    """Text curt d'estat per una mostra."""
+    """Text curt d'estat per una mostra (suporta strings i dicts)."""
     if not sample_valid:
         return "NO VÀL"
+    from hpsec_warnings import has_anomaly, ANOMALY_CATALOG
     parts = []
-    if any(a in anomalies for a in ["BATMAN_DIRECT", "BATMAN_UIB"]):
-        parts.append("B")
-    if any("_REPAIRED" in a for a in anomalies):
-        parts.append("B*")
-    if "NO_PEAK" in anomalies:
-        parts.append("!")
-    if "TIMEOUT_IN_PEAK" in anomalies:
-        parts.append("T")
-    if "BELOW_LOD" in anomalies:
-        parts.append("<LOD")
-    elif "BELOW_LOQ" in anomalies:
-        parts.append("<LOQ")
+    seen_icons = set()
+    for a in anomalies:
+        if isinstance(a, dict):
+            code = a.get("code", "")
+            repaired = a.get("repaired", False)
+        else:
+            repaired = "_REPAIRED" in str(a)
+            code = str(a).replace("_REPAIRED", "")
+        entry = ANOMALY_CATALOG.get(code, {})
+        icon = entry.get("icon", "")
+        if icon and icon not in seen_icons:
+            seen_icons.add(icon)
+            parts.append(f"{icon}*" if repaired else icon)
     return " ".join(parts) if parts else "OK"
 
 
@@ -375,20 +375,36 @@ def _draw_page1_summary(pdf, data, seq_name):
     fig.text(0.08, 0.46, "Distribució d'anomalies", fontsize=11,
              fontweight='bold', color=COLORS["text"])
 
-    anomaly_counts = {}
+    from hpsec_warnings import ANOMALY_CATALOG as _AC
+    anomaly_counts = {}  # code -> (count, label, severity_str)
     for sg_name, sg_data in samples_grouped.items():
         for rep_key, rep_data in sg_data.get("replicas", {}).items():
             for anom in rep_data.get("anomalies", []):
-                anomaly_counts[anom] = anomaly_counts.get(anom, 0) + 1
+                if isinstance(anom, dict):
+                    code = anom.get("code", "?")
+                    repaired = anom.get("repaired", False)
+                    key = f"{code}_REPAIRED" if repaired else code
+                else:
+                    key = str(anom)
+                anomaly_counts[key] = anomaly_counts.get(key, 0) + 1
 
     if anomaly_counts:
         anom_table = [["Anomalia", "Vegades", "Severitat"]]
-        critical_set = {"BATMAN_DIRECT", "BATMAN_UIB", "NO_PEAK", "TIMEOUT_IN_PEAK"}
-        for anom, count in sorted(anomaly_counts.items(), key=lambda x: -x[1]):
-            severity = "CRÍTIC" if anom in critical_set else "Avís"
-            if "_REPAIRED" in anom:
+        for anom_key, count in sorted(anomaly_counts.items(), key=lambda x: -x[1]):
+            repaired = "_REPAIRED" in anom_key
+            code = anom_key.replace("_REPAIRED", "")
+            entry = _AC.get(code, {})
+            label = entry.get("label", code)
+            if repaired:
                 severity = "Reparat"
-            anom_table.append([anom, str(count), severity])
+                label += " (reparat)"
+            elif entry.get("severity") and entry["severity"].value == "blocker":
+                severity = "CRÍTIC"
+            elif entry.get("severity") and entry["severity"].value == "warning":
+                severity = "Avís"
+            else:
+                severity = "Info"
+            anom_table.append([label, str(count), severity])
 
         n_anom_rows = len(anom_table)
         table_h = min(0.015 * (n_anom_rows + 1), 0.20)
@@ -913,22 +929,35 @@ def _draw_anomalies_page(pdf, data, page_num):
             timeout_info = rep_data.get("timeout_info", {})
 
             for anom in anomalies:
-                critical_set = {"BATMAN_DIRECT", "BATMAN_UIB",
-                                "NO_PEAK", "TIMEOUT_IN_PEAK"}
-                if anom in critical_set:
-                    severity = "CRÍTIC"
-                elif "_REPAIRED" in anom:
-                    severity = "Reparat"
+                from hpsec_warnings import ANOMALY_CATALOG as _AC
+                if isinstance(anom, dict):
+                    anom_code = anom.get("code", "")
+                    anom_repaired = anom.get("repaired", False)
+                    anom_details = anom.get("details", {})
                 else:
+                    anom_repaired = "_REPAIRED" in str(anom)
+                    anom_code = str(anom).replace("_REPAIRED", "")
+                    anom_details = {}
+
+                entry = _AC.get(anom_code, {})
+                sev = entry.get("severity")
+                if anom_repaired:
+                    severity = "Reparat"
+                elif sev and sev.value == "blocker":
+                    severity = "CRÍTIC"
+                elif sev and sev.value == "warning":
                     severity = "Avís"
+                else:
+                    severity = "Info"
 
                 detail = ""
-                if "BATMAN" in anom:
-                    batman_info = rep_data.get("batman_direct_info", {})
+                if "BATMAN" in anom_code:
+                    batman_info = anom_details if anom_details else rep_data.get("batman_direct_info", {})
                     if batman_info:
                         depth = batman_info.get("max_depth", 0)
-                        detail = f"depth={depth:.2f}"
-                elif "TIMEOUT" in anom:
+                        if depth:
+                            detail = f"depth={depth:.2f}"
+                elif "TIMEOUT" in anom_code:
                     n_t = timeout_info.get("n_timeouts", 0)
                     zone_summary = timeout_info.get("zone_summary", {})
                     zones_str = ",".join(zone_summary.keys()) if zone_summary else ""
@@ -939,8 +968,9 @@ def _draw_anomalies_page(pdf, data, page_num):
                     else:
                         detail = f"n={n_t}, zones={zones_str}"
 
+                anom_label = entry.get("label", anom_code) if entry else anom_code
                 anomaly_rows.append([
-                    sample_name[:18], f"R{rep_key}", anom, severity, detail[:30]
+                    sample_name[:18], f"R{rep_key}", anom_label, severity, detail[:30]
                 ])
 
         # Comparison warnings (replica correlation/area diff)
@@ -950,20 +980,37 @@ def _draw_anomalies_page(pdf, data, page_num):
         for signal_key in ("doc", "dad"):
             comp_data = comparison.get(signal_key, {})
             for warn in comp_data.get("warnings", []):
-                # LOW_CORRELATION_362 is informative (always low)
-                if "362" in warn and "CORRELATION" in warn.upper():
-                    severity = "Info"
-                elif "CORRELATION" in warn.upper():
-                    severity = "Avís"
-                elif "AREA_DIFF" in warn.upper():
-                    severity = "Avís"
+                if isinstance(warn, dict):
+                    w_code = warn.get("code", "")
+                    w_entry = _AC.get(w_code, {})
+                    w_label = w_entry.get("label", w_code)
+                    w_sev = w_entry.get("severity")
+                    severity = "Avís" if w_sev and w_sev.value == "warning" else "Info"
+                    w_details = warn.get("details", {})
+                    detail_str = ""
+                    if w_details.get("pearson"):
+                        detail_str = f"r={w_details['pearson']:.3f}"
+                    elif w_details.get("diff_pct"):
+                        detail_str = f"diff={w_details['diff_pct']:.1f}%"
+                    elif w_details.get("fraction"):
+                        detail_str = f"{w_details['fraction']}: diff={w_details.get('diff_pct', 0):.1f}%"
                 else:
-                    severity = "Info"
+                    w_label = str(warn)
+                    # LOW_CORRELATION_362 is informative (always low)
+                    if "362" in w_label and "CORRELATION" in w_label.upper():
+                        severity = "Info"
+                    elif "CORRELATION" in w_label.upper():
+                        severity = "Avís"
+                    elif "AREA_DIFF" in w_label.upper():
+                        severity = "Avís"
+                    else:
+                        severity = "Info"
+                    detail_str = ""
 
                 source = "DOC" if signal_key == "doc" else "DAD"
-                detail = f"Comparació rèpliques ({source})"
+                detail = detail_str or f"Comparació rèpliques ({source})"
                 anomaly_rows.append([
-                    sample_name[:18], rep_label, warn, severity, detail[:30]
+                    sample_name[:18], rep_label, w_label, severity, detail[:30]
                 ])
 
         # Mostra no vàlida

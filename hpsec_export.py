@@ -25,6 +25,15 @@ from datetime import datetime
 from scipy.integrate import trapezoid
 
 
+def _get_max_severity(anomalies):
+    """Retorna severitat màxima d'una llista d'anomalies (strings o dicts)."""
+    try:
+        from hpsec_warnings import get_max_anomaly_severity
+        return get_max_anomaly_severity(anomalies)
+    except ImportError:
+        return ""
+
+
 def _load_export_config():
     """Carrega configuració d'exportació des de hpsec_config.json.
 
@@ -234,6 +243,9 @@ def _build_id_sheet(sample_name, sample_data, calibration_data, mode, is_dual):
         rows.append(("Date", seq_date))
     if inj_volume:
         rows.append(("INJ_Volume_uL", inj_volume))
+    inj_idx = sample_data.get("injection_index")
+    if inj_idx is not None:
+        rows.append(("Injection_Index", inj_idx))
     if data_mode:
         rows.append(("Data_Mode", data_mode))
     rows.append(("---", "---"))
@@ -291,7 +303,14 @@ def _build_id_sheet(sample_name, sample_data, calibration_data, mode, is_dual):
     # Anomalies detectades
     anomalies = sample_data.get("anomalies", [])
     if anomalies:
-        rows.append(("Anomalies", "; ".join(anomalies)))
+        for a in anomalies:
+            if isinstance(a, dict):
+                code = a.get("code", "")
+                sev = a.get("severity", "info")
+                rep = " [REPAIRED]" if a.get("repaired") else ""
+                rows.append((f"Anomaly_{code}", f"{sev}{rep}"))
+            else:
+                rows.append(("Anomaly", str(a)))
 
     # Bi-Gaussian info (BP mode)
     bigaussian = sample_data.get("bigaussian_doc")
@@ -388,10 +407,14 @@ def _build_bp_id_sheet(sample_name, bp_data, calibration_data):
     # Anomalies
     anomalies = bp_data.get("anomalies", [])
     if anomalies:
-        if isinstance(anomalies, list):
-            rows.append(("Anomalies_BP", "; ".join(str(a) for a in anomalies)))
-        else:
-            rows.append(("Anomalies_BP", str(anomalies)))
+        for a in anomalies:
+            if isinstance(a, dict):
+                code = a.get("code", "")
+                sev = a.get("severity", "info")
+                rep = " [REPAIRED]" if a.get("repaired") else ""
+                rows.append((f"Anomaly_BP_{code}", f"{sev}{rep}"))
+            else:
+                rows.append(("Anomaly_BP", str(a)))
 
     # Bigaussian info
     bigaussian = bp_data.get("bigaussian_doc", bp_data.get("bigaussian", {}))
@@ -919,6 +942,7 @@ def generate_summary_excel(
             row = {
                 "Sample": sample_name,
                 "Type": sample_type,
+                "Inj_Index": doc_data.get("injection_index", ""),
                 "DOC_Replica": f"R{doc_replica}",
                 "DAD_Replica": None,
                 "Conc_ppm": None,
@@ -979,6 +1003,7 @@ def generate_summary_excel(
         row = {
             "Sample": sample_name,
             "Type": sample_type,
+            "Inj_Index": doc_data.get("injection_index", ""),
             "DOC_Replica": "Cap" if doc_replica == "none" else f"R{doc_replica}",
             "DAD_Replica": "Cap" if dad_replica == "none" else f"R{dad_replica}",
             "Conc_ppm": "NO VÀLIDA" if is_invalid else quantification.get("concentration_ppm"),
@@ -991,8 +1016,14 @@ def generate_summary_excel(
             "SNR_254": snr_254 if snr_254 else None,
             "R2_DOC": round(r2_doc, 4) if r2_doc > 0 else None,
             "R2_DAD": round(r2_dad, 4) if r2_dad > 0 else None,
-            "Anomalies": "; ".join(anomalies) if anomalies else "",
-            "Warnings": "; ".join(all_warnings) if all_warnings else "",
+            "Anomalies": "; ".join(
+                (a.get("code", "") + ("[R]" if a.get("repaired") else "")) if isinstance(a, dict)
+                else str(a) for a in anomalies
+            ) if anomalies else "",
+            "Max_Severity": _get_max_severity(anomalies),
+            "Warnings": "; ".join(
+                (w.get("code", "") if isinstance(w, dict) else str(w)) for w in all_warnings
+            ) if all_warnings else "",
         }
 
         # BP linked info

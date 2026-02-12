@@ -340,6 +340,258 @@ def migrate_warnings_list(legacy_warnings: list, stage: str = "unknown") -> list
 # UTILITATS PER AVISOS
 # =============================================================================
 
+# =============================================================================
+# CATÀLEG D'ANOMALIES (Single Source of Truth)
+# =============================================================================
+
+ANOMALY_CATALOG = {
+    # === Anomalies d'anàlisi (per rèplica) ===
+    "BATMAN_DIRECT": {
+        "severity": WarningLevel.BLOCKER,
+        "label": "Batman Direct",
+        "icon": "B",
+        "description": "Doble pic detectat en senyal DOC Direct",
+        "stage": "analyze",
+        "repairable": True,
+        "invalidates": False,
+    },
+    "BATMAN_UIB": {
+        "severity": WarningLevel.BLOCKER,
+        "label": "Batman UIB",
+        "icon": "B",
+        "description": "Doble pic detectat en senyal DOC UIB",
+        "stage": "analyze",
+        "repairable": True,
+        "invalidates": False,
+    },
+    "BATMAN": {
+        "severity": WarningLevel.BLOCKER,
+        "label": "Batman",
+        "icon": "B",
+        "description": "Doble pic detectat",
+        "stage": "analyze",
+        "repairable": True,
+        "invalidates": False,
+    },
+    "NO_PEAK": {
+        "severity": WarningLevel.BLOCKER,
+        "label": "Sense pic",
+        "icon": "!",
+        "description": "No s'ha detectat el pic DOC principal",
+        "stage": "analyze",
+        "repairable": False,
+        "invalidates": True,
+    },
+    "TIMEOUT_IN_PEAK": {
+        "severity": WarningLevel.BLOCKER,
+        "label": "Timeout al pic",
+        "icon": "T!",
+        "description": "Timeout del detector dins la zona del pic principal",
+        "stage": "analyze",
+        "repairable": False,
+        "invalidates": True,
+    },
+    "LOW_SNR": {
+        "severity": WarningLevel.WARNING,
+        "label": "SNR baix",
+        "icon": "SNR",
+        "description": "Relació senyal-soroll per sota del llindar",
+        "stage": "analyze",
+        "repairable": False,
+        "invalidates": False,
+    },
+    "BELOW_LOD": {
+        "severity": WarningLevel.WARNING,
+        "label": "Sota LOD",
+        "icon": "<LOD",
+        "description": "SNR < 3: senyal no distingible del soroll",
+        "stage": "analyze",
+        "repairable": False,
+        "invalidates": False,
+    },
+    "BELOW_LOQ": {
+        "severity": WarningLevel.WARNING,
+        "label": "Sota LOQ",
+        "icon": "<LOQ",
+        "description": "SNR < 10: quantificació poc fiable",
+        "stage": "analyze",
+        "repairable": False,
+        "invalidates": False,
+    },
+    "UIB_NO_BASELINE": {
+        "severity": WarningLevel.INFO,
+        "label": "UIB sense baseline",
+        "icon": "",
+        "description": "Senyal UIB sense correcció de baseline precomputada",
+        "stage": "analyze",
+        "repairable": False,
+        "invalidates": False,
+    },
+
+    # === Comparació de rèpliques ===
+    "LOW_CORRELATION": {
+        "severity": WarningLevel.WARNING,
+        "label": "Correlació baixa DOC",
+        "icon": "r\u2193",
+        "description": "Pearson entre rèpliques DOC per sota del llindar",
+        "stage": "analyze",
+        "repairable": False,
+        "invalidates": False,
+    },
+    "AREA_DIFF_HIGH": {
+        "severity": WarningLevel.WARNING,
+        "label": "Diferència àrea alta",
+        "icon": "\u0394A",
+        "description": "Diferència d'àrea total entre rèpliques supera el llindar",
+        "stage": "analyze",
+        "repairable": False,
+        "invalidates": False,
+    },
+    "FRACTION_DIFF_HIGH": {
+        "severity": WarningLevel.WARNING,
+        "label": "Diferència fracció alta",
+        "icon": "\u0394F",
+        "description": "Diferència d'àrea per fracció entre rèpliques supera el llindar",
+        "stage": "analyze",
+        "repairable": False,
+        "invalidates": False,
+    },
+    "REPLICA_NOT_PROCESSED": {
+        "severity": WarningLevel.BLOCKER,
+        "label": "Rèplica no processada",
+        "icon": "!",
+        "description": "Una o ambdues rèpliques no s'han processat",
+        "stage": "analyze",
+        "repairable": False,
+        "invalidates": False,
+    },
+    "LOW_CORRELATION_254": {
+        "severity": WarningLevel.WARNING,
+        "label": "Correlació baixa A254",
+        "icon": "r\u2193",
+        "description": "Pearson entre rèpliques a 254nm per sota del llindar",
+        "stage": "analyze",
+        "repairable": False,
+        "invalidates": False,
+    },
+    "AREA_DIFF_HIGH_254": {
+        "severity": WarningLevel.WARNING,
+        "label": "Diferència àrea alta A254",
+        "icon": "\u0394A",
+        "description": "Diferència d'àrea a 254nm entre rèpliques supera el llindar",
+        "stage": "analyze",
+        "repairable": False,
+        "invalidates": False,
+    },
+}
+
+# Sets derivats del catàleg
+CRITICAL_ANOMALIES = {code for code, e in ANOMALY_CATALOG.items()
+                      if e.get("severity") == WarningLevel.BLOCKER}
+WARNING_ANOMALIES = {code for code, e in ANOMALY_CATALOG.items()
+                     if e.get("severity") == WarningLevel.WARNING}
+
+
+def create_anomaly(code: str, details: dict = None, replica: str = None, sample: str = None) -> dict:
+    """Crea un dict d'anomalia estructurat des del catàleg."""
+    entry = ANOMALY_CATALOG.get(code, {})
+    return {
+        "code": code,
+        "severity": entry.get("severity", WarningLevel.INFO).value,
+        "label": entry.get("label", code),
+        "icon": entry.get("icon", ""),
+        "message": entry.get("description", code),
+        "repairable": entry.get("repairable", False),
+        "repaired": False,
+        "repair_info": None,
+        "details": details or {},
+        "replica": replica,
+        "sample": sample,
+    }
+
+
+def get_anomaly_codes(anomalies: list) -> set:
+    """Extreu codis d'una llista mixta (strings + dicts)."""
+    codes = set()
+    for a in anomalies:
+        if isinstance(a, str):
+            codes.add(a.replace("_REPAIRED", ""))
+        elif isinstance(a, dict):
+            codes.add(a.get("code", ""))
+    return codes
+
+
+def has_anomaly(anomalies: list, code: str) -> bool:
+    """Comprova si un codi existeix a la llista (suporta strings i dicts)."""
+    return code in get_anomaly_codes(anomalies)
+
+
+def classify_anomalies(anomalies: list) -> dict:
+    """Classifica per severitat: {blocker: [...], warning: [...], info: [...], repaired: [...]}."""
+    result = {"blocker": [], "warning": [], "info": [], "repaired": []}
+    for a in anomalies:
+        if isinstance(a, dict):
+            code = a.get("code", "")
+            repaired = a.get("repaired", False)
+        else:
+            repaired = "_REPAIRED" in str(a)
+            code = str(a).replace("_REPAIRED", "")
+        if repaired:
+            result["repaired"].append(a)
+            continue
+        sev = ANOMALY_CATALOG.get(code, {}).get("severity", WarningLevel.INFO)
+        key = sev.value if isinstance(sev, WarningLevel) else sev
+        if key == "blocker":
+            result["blocker"].append(a)
+        elif key == "warning":
+            result["warning"].append(a)
+        else:
+            result["info"].append(a)
+    return result
+
+
+def normalize_anomalies(raw_list: list) -> list:
+    """Converteix llista mixta (strings + dicts) a dicts estructurats. Per backward compat JSON."""
+    result = []
+    for item in raw_list:
+        if isinstance(item, str):
+            repaired = "_REPAIRED" in item
+            code = item.replace("_REPAIRED", "")
+            anomaly = create_anomaly(code)
+            if repaired:
+                anomaly["repaired"] = True
+            result.append(anomaly)
+        elif isinstance(item, dict) and "code" in item:
+            result.append(item)
+    return result
+
+
+def mark_repaired(anomalies: list, code: str, repair_info: dict = None) -> bool:
+    """Marca anomalia com a reparada. Retorna True si trobada."""
+    for a in anomalies:
+        if isinstance(a, dict) and a.get("code") == code and not a.get("repaired"):
+            a["repaired"] = True
+            a["repair_info"] = repair_info
+            return True
+    return False
+
+
+def get_max_anomaly_severity(anomalies: list) -> str:
+    """Retorna severitat màxima (ignorant repaired). Returns 'blocker'/'warning'/'info'/'none'."""
+    classified = classify_anomalies(anomalies)
+    if classified["blocker"]:
+        return "blocker"
+    if classified["warning"]:
+        return "warning"
+    if classified["info"] or classified["repaired"]:
+        return "info"
+    return "none"
+
+
+# =============================================================================
+# UTILITATS PER AVISOS
+# =============================================================================
+
 def create_warnings_from_timeout_info(timeout_info: dict, stage: str = "calibrate", sample: str = None) -> list:
     """
     Crea avisos estructurats a partir de la info de timeout de hpsec_core.detect_timeout().

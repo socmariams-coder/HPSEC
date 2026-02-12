@@ -780,26 +780,35 @@ class DashboardPanel(QWidget):
             has_warning = False
 
             # Notes dels JSON (tot: warnings, anomalies, notes)
-            for jn in json_notes[:4]:  # Màxim 4 per preview
+            for jn in json_notes[:5]:  # Màxim 5 per preview
                 stage = jn.get("stage", "?")
                 ntype = jn.get("type", "")
-                content = jn.get("content", "")[:35]
+                content = jn.get("content", "")
+                icon = jn.get("icon", "")
+                severity = jn.get("severity", "")
 
-                # Prefix segons tipus
-                if ntype == "ANOM":
-                    prefix = "!"
+                if ntype in ("ANOM",) or severity == "blocker":
                     has_anomaly = True
-                elif ntype == "WARN":
-                    prefix = "W"
+                elif ntype in ("WARN",) or severity == "warning":
                     has_warning = True
-                elif ntype == "QUAL":
-                    prefix = "Q"
-                elif ntype == "NOTE":
-                    prefix = "N"
-                else:
-                    prefix = ""
 
-                preview_parts.append(f"[{stage}:{prefix}] {content}")
+                # Preview amb icona del catàleg (si disponible)
+                if icon:
+                    preview_parts.append(f"{icon} {content}")
+                elif severity == "blocker":
+                    preview_parts.append(f"!! {content}")
+                elif severity == "warning":
+                    preview_parts.append(f"W {content}")
+                elif ntype == "ANOM":
+                    preview_parts.append(f"! {content}")
+                elif ntype == "WARN":
+                    preview_parts.append(f"W {content}")
+                elif ntype == "QUAL":
+                    preview_parts.append(f"Q {content}")
+                elif ntype == "NOTE":
+                    preview_parts.append(f"N {content}")
+                else:
+                    preview_parts.append(content)
                 tooltip_parts.append(f"[{stage}] ({ntype}) {jn.get('content', '')}")
 
             # Notes manuals
@@ -1139,30 +1148,48 @@ class DashboardPanel(QWidget):
 
                 # 2. ANOMALIES (batman, timeout, etc.) - analysis_result
                 if filename == "analysis_result.json":
-                    samples = data.get("samples_analyzed", {})
-                    batman_count = 0
-                    timeout_count = 0
-                    for sample_name, sample_data in samples.items():
-                        if sample_data.get("batman_direct") or sample_data.get("batman_uib"):
-                            batman_count += 1
-                        if sample_data.get("has_timeout"):
-                            # Only count WARNING/CRITICAL timeouts
-                            to_sev = sample_data.get("timeout_severity", "OK")
-                            if to_sev in ("WARNING", "CRITICAL"):
-                                timeout_count += 1
+                    from hpsec_warnings import normalize_anomalies, classify_anomalies, ANOMALY_CATALOG
 
-                    if batman_count > 0:
-                        notes.append({
-                            "stage": stage_name,
-                            "type": "ANOM",
-                            "content": f"BATMAN detectat en {batman_count} mostres",
-                        })
-                    if timeout_count > 0:
-                        notes.append({
-                            "stage": stage_name,
-                            "type": "ANOM",
-                            "content": f"TIMEOUT en {timeout_count} mostres",
-                        })
+                    # Agregar anomalies de totes les rèpliques
+                    samples_grouped = data.get("samples_grouped", {})
+                    all_sample_anomalies = []
+                    for sg in samples_grouped.values():
+                        for rep in sg.get("replicas", {}).values():
+                            raw = rep.get("anomalies", [])
+                            all_sample_anomalies.extend(normalize_anomalies(raw))
+
+                    classified = classify_anomalies(all_sample_anomalies)
+
+                    # Agrupar per codi i severitat
+                    for severity_key, note_type in [("blocker", "ANOM"), ("warning", "WARN")]:
+                        code_counts = {}
+                        for a in classified[severity_key]:
+                            code = a.get("code", "?") if isinstance(a, dict) else str(a)
+                            code_counts[code] = code_counts.get(code, 0) + 1
+                        for code, count in sorted(code_counts.items()):
+                            entry = ANOMALY_CATALOG.get(code, {})
+                            notes.append({
+                                "stage": stage_name,
+                                "type": note_type,
+                                "severity": severity_key,
+                                "content": f"{entry.get('label', code)} ({count})",
+                                "icon": entry.get("icon", ""),
+                            })
+
+                    if classified["repaired"]:
+                        codes_rep = {}
+                        for a in classified["repaired"]:
+                            c = a.get("code", "?") if isinstance(a, dict) else str(a)
+                            codes_rep[c] = codes_rep.get(c, 0) + 1
+                        for code, count in codes_rep.items():
+                            entry = ANOMALY_CATALOG.get(code, {})
+                            notes.append({
+                                "stage": stage_name,
+                                "type": "INFO",
+                                "severity": "info",
+                                "content": f"{entry.get('label', code)} reparat ({count})",
+                                "icon": (entry.get("icon", "") + "*").strip(),
+                            })
 
                 # 3. CALIBRACIÓ - problemes KHP
                 if filename == "calibration_result.json":
@@ -1547,23 +1574,34 @@ class DashboardPanel(QWidget):
         has_anomaly = False
         has_warning = False
 
-        for jn in json_notes[:4]:
+        for jn in json_notes[:5]:
             stage = jn.get("stage", "?")
             ntype = jn.get("type", "")
-            content = jn.get("content", "")[:35]
-            if ntype == "ANOM":
-                prefix = "!"
+            content = jn.get("content", "")
+            icon = jn.get("icon", "")
+            severity = jn.get("severity", "")
+
+            if ntype in ("ANOM",) or severity == "blocker":
                 has_anomaly = True
-            elif ntype == "WARN":
-                prefix = "W"
+            elif ntype in ("WARN",) or severity == "warning":
                 has_warning = True
+
+            if icon:
+                preview_parts.append(f"{icon} {content}")
+            elif severity == "blocker":
+                preview_parts.append(f"!! {content}")
+            elif severity == "warning":
+                preview_parts.append(f"W {content}")
+            elif ntype == "ANOM":
+                preview_parts.append(f"! {content}")
+            elif ntype == "WARN":
+                preview_parts.append(f"W {content}")
             elif ntype == "QUAL":
-                prefix = "Q"
+                preview_parts.append(f"Q {content}")
             elif ntype == "NOTE":
-                prefix = "N"
+                preview_parts.append(f"N {content}")
             else:
-                prefix = ""
-            preview_parts.append(f"[{stage}:{prefix}] {content}")
+                preview_parts.append(content)
             tooltip_parts.append(f"[{stage}] ({ntype}) {jn.get('content', '')}")
 
         if manual_notes:

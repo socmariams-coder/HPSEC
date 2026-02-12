@@ -2,18 +2,11 @@
 Shared constants for analyze_panel package.
 
 Derives fraction definitions and wavelengths from hpsec_config.
-Anomaly severity classification is defined here (not configurable).
+Anomaly severity classification from ANOMALY_CATALOG (hpsec_warnings.py).
 """
 
 from hpsec_config import get_config
-
-
-# ---------------------------------------------------------------------------
-# Anomaly severity classification (not configurable)
-# ---------------------------------------------------------------------------
-CRITICAL_ANOMALIES = {"BATMAN_DIRECT", "BATMAN_UIB", "TIMEOUT_IN_PEAK", "NO_PEAK"}
-WARNING_ANOMALIES = {"LOW_SNR", "BASELINE_MISSING", "ASYMMETRIC_PEAK", "BELOW_LOD", "BELOW_LOQ"}
-# Everything else (UIB_NO_BASELINE, EARS_DETECTED, etc.) → INFO
+from hpsec_warnings import CRITICAL_ANOMALIES, WARNING_ANOMALIES
 
 
 # ---------------------------------------------------------------------------

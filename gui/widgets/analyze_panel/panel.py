@@ -29,6 +29,10 @@ from ._constants import (
     CRITICAL_ANOMALIES, WARNING_ANOMALIES,
     DAD_WL_MAIN, SIGNAL_KEYS_MAIN,
 )
+from hpsec_warnings import (
+    has_anomaly, get_anomaly_codes, classify_anomalies,
+    ANOMALY_CATALOG,
+)
 from ._helpers import (
     configure_table_style, populate_signal_summary, populate_fractions_table
 )
@@ -562,6 +566,13 @@ class AnalyzePanel(QWidget):
             # Col 0: Sample name
             item_name = QTableWidgetItem(sample_name)
             item_name.setData(Qt.UserRole, sample_name)
+            inj_indices = []
+            for rk, rd in sorted(replicas.items()):
+                idx = rd.get("injection_index")
+                if idx is not None:
+                    inj_indices.append(f"R{rk}: inj #{idx}")
+            if inj_indices:
+                item_name.setToolTip("Ordre injecció: " + ", ".join(inj_indices))
             self.results_table.setItem(row, 0, item_name)
 
             # Col 1: Sel DOC — replica selector with (s) for suggested + "Cap" option
@@ -735,6 +746,13 @@ class AnalyzePanel(QWidget):
                 # Col 0: Sample name
                 item_name = QTableWidgetItem(sample_name)
                 item_name.setData(Qt.UserRole, sample_name)
+                inj_indices = []
+                for rk, rd in sorted(replicas.items()):
+                    idx = rd.get("injection_index")
+                    if idx is not None:
+                        inj_indices.append(f"R{rk}: inj #{idx}")
+                if inj_indices:
+                    item_name.setToolTip("Ordre injecció: " + ", ".join(inj_indices))
                 self.results_table.setItem(row, 0, item_name)
 
                 # Col 1-2: No selectors for KHP
@@ -829,6 +847,13 @@ class AnalyzePanel(QWidget):
                 # Col 0: Sample name
                 item_name = QTableWidgetItem(sample_name)
                 item_name.setData(Qt.UserRole, sample_name)
+                inj_indices = []
+                for rk, rd in sorted(replicas.items()):
+                    idx = rd.get("injection_index")
+                    if idx is not None:
+                        inj_indices.append(f"R{rk}: inj #{idx}")
+                if inj_indices:
+                    item_name.setToolTip("Ordre injecció: " + ", ".join(inj_indices))
                 self.results_table.setItem(row, 0, item_name)
 
                 # Col 1-2: No selectors for light samples
@@ -893,6 +918,8 @@ class AnalyzePanel(QWidget):
                                 sample_data=None):
         """Classifica l'estat d'una mostra considerant ambdues rèpliques (DOC + DAD).
 
+        Usa ANOMALY_CATALOG com a font de veritat per severitat, icones i labels.
+
         Args:
             doc_rep_data: Dades de la rèplica DOC seleccionada
             dad_rep_data: Dades de la rèplica DAD seleccionada
@@ -912,94 +939,87 @@ class AnalyzePanel(QWidget):
                           .get("doc", {}).get("reason", "Ambdues rèpliques amb anomalies crítiques"))
                 return COLOR_ERROR, "NO VÀL", f"Mostra no vàlida — {reason}\nSeleccionar 'Cap' o generar noves dades"
 
-        # Merge anomalies from both replicas (deduplicate)
+        # Merge anomalies from both replicas (deduplicate by code)
         doc_anomalies = doc_rep_data.get("anomalies", [])
         dad_anomalies = dad_rep_data.get("anomalies", [])
-        anomalies = list(doc_anomalies)
+        all_anomalies = list(doc_anomalies)
+        existing_codes = get_anomaly_codes(all_anomalies)
         for a in dad_anomalies:
-            if a not in anomalies:
-                anomalies.append(a)
+            code = a.get("code") if isinstance(a, dict) else str(a).replace("_REPAIRED", "")
+            if code not in existing_codes:
+                all_anomalies.append(a)
+                existing_codes.add(code)
+
+        classified = classify_anomalies(all_anomalies)
         timeout_info = doc_rep_data.get("timeout_info", {})
+        timeout_severity = timeout_info.get("severity", "OK")
+        n_timeouts = timeout_info.get("n_timeouts", 0)
         replica_warnings = comparison.get("doc", {}).get("warnings", []) if comparison else []
 
-        # Classify anomalies by severity
-        has_critical = any(a in CRITICAL_ANOMALIES for a in anomalies)
-        has_warning = any(a in WARNING_ANOMALIES for a in anomalies)
-        has_repaired = any("_REPAIRED" in a for a in anomalies)
-
-        # Timeout severity (already calculated per zone)
-        timeout_severity = timeout_info.get("severity", "OK")
-        has_timeout_warning = timeout_severity in ("WARNING", "CRITICAL")
-        n_timeouts = timeout_info.get("n_timeouts", 0)
-
-        # Build status icons
+        # Build status icons from catalog
         status_parts = []
-        if "BELOW_LOD" in anomalies:
-            status_parts.append("<LOD")
-        elif "BELOW_LOQ" in anomalies:
-            status_parts.append("<LOQ")
-        if n_timeouts > 0:
+        seen_icons = set()
+        for a in all_anomalies:
+            if isinstance(a, dict):
+                code = a.get("code", "")
+                repaired = a.get("repaired", False)
+            else:
+                repaired = "_REPAIRED" in str(a)
+                code = str(a).replace("_REPAIRED", "")
+            entry = ANOMALY_CATALOG.get(code, {})
+            icon = entry.get("icon", "")
+            if icon and icon not in seen_icons:
+                seen_icons.add(icon)
+                status_parts.append(f"{icon}*" if repaired else icon)
+        if n_timeouts > 0 and "T!" not in seen_icons:
             status_parts.append(f"T({n_timeouts})")
-        if any(a in anomalies for a in ["BATMAN_DIRECT", "BATMAN_UIB"]):
-            status_parts.append("B")
-        elif has_repaired:
-            status_parts.append("B*")  # Batman reparat
-        if "NO_PEAK" in anomalies:
-            status_parts.append("!")
 
         # Determine color
-        if has_critical:
+        has_blocker = bool(classified["blocker"])
+        has_warn = bool(classified["warning"] or classified["repaired"]
+                        or (timeout_severity in ("WARNING", "CRITICAL"))
+                        or replica_warnings)
+        if has_blocker:
             status_color = COLOR_ERROR
-        elif has_repaired:
-            # Reparat: warning (no error, però cal informar)
-            status_color = COLOR_WARNING
-        elif has_warning or has_timeout_warning or replica_warnings:
+        elif has_warn:
             status_color = COLOR_WARNING
         else:
             status_color = COLOR_SUCCESS
 
-        status_text = " ".join(status_parts) if status_parts else "✓"
+        status_text = " ".join(status_parts) if status_parts else "\u2713"
 
-        # Build tooltip
+        # Build tooltip with catalog labels
         tooltip_parts = []
-        # Critical/warning anomalies
-        critical_found = [a for a in anomalies if a in CRITICAL_ANOMALIES]
-        warning_found = [a for a in anomalies if a in WARNING_ANOMALIES]
-        repaired_found = [a for a in anomalies if "_REPAIRED" in a]
-        info_found = [a for a in anomalies
-                      if a not in CRITICAL_ANOMALIES
-                      and a not in WARNING_ANOMALIES
-                      and "_REPAIRED" not in a]
+        for key, label_prefix in [("blocker", "CRÍTIC"), ("repaired", "REPARAT"),
+                                    ("warning", "Avís"), ("info", "Info")]:
+            items = classified[key]
+            if items:
+                labels = []
+                for a in items:
+                    code = a.get("code") if isinstance(a, dict) else str(a).replace("_REPAIRED", "")
+                    entry = ANOMALY_CATALOG.get(code, {})
+                    lbl = entry.get("label", code)
+                    det = a.get("details", {}) if isinstance(a, dict) else {}
+                    if det.get("snr"):
+                        lbl += f" (SNR={det['snr']:.1f})"
+                    labels.append(lbl)
+                tooltip_parts.append(f"{label_prefix}: {', '.join(labels)}")
 
-        if critical_found:
-            tooltip_parts.append(f"CRÍTIC: {', '.join(critical_found)}")
-        if repaired_found:
-            tooltip_parts.append(f"REPARAT: {', '.join(a.replace('_REPAIRED', '') for a in repaired_found)}")
-            tooltip_parts.append("Pic Batman reparat amb interpolació parabòlica")
-        if warning_found:
-            tooltip_parts.append(f"Avís: {', '.join(warning_found)}")
-        # LOD/LOQ detail in tooltip
-        snr_info = doc_rep_data.get("snr_info", {})
-        snr_val = snr_info.get("snr_direct", 0)
-        if "BELOW_LOD" in anomalies:
-            tooltip_parts.append(f"SNR={snr_val:.1f} < 3 → Sota LOD (senyal no distingible del soroll)")
-        elif "BELOW_LOQ" in anomalies:
-            tooltip_parts.append(f"SNR={snr_val:.1f} < 10 → Sota LOQ (quantificació poc fiable)")
-        if info_found:
-            tooltip_parts.append(f"Info: {', '.join(info_found)}")
         if n_timeouts > 0:
             zones = timeout_info.get("zones", [])
-            zone_str = ", ".join(zones) if zones else "?"
             tooltip_parts.append(
-                f"Timeouts: {n_timeouts} ({timeout_severity}) — zones: {zone_str}"
+                f"Timeouts: {n_timeouts} ({timeout_severity}) — zones: {', '.join(zones) if zones else '?'}"
             )
-            tooltip_parts.append("Nota: timeouts DOC Direct també afecten UIB (mateix detector)")
         if replica_warnings:
-            tooltip_parts.extend(replica_warnings)
+            for rw in replica_warnings:
+                if isinstance(rw, dict):
+                    tooltip_parts.append(rw.get("label", rw.get("code", str(rw))))
+                else:
+                    tooltip_parts.append(str(rw))
 
         # Repairable hint
         if sample_data and sample_data.get("repairable") and not sample_data.get("repaired"):
-            tooltip_parts.append("ℹ Batman reparable — Doble-clic per opcions de reparació")
+            tooltip_parts.append("Batman reparable — Doble-clic per opcions de reparació")
 
         tooltip = "\n".join(tooltip_parts) if tooltip_parts else "OK"
         return status_color, status_text, tooltip

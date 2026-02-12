@@ -93,7 +93,11 @@ from hpsec_calibrate import (
 # Import sistema d'avisos estructurats
 from hpsec_warnings import (
     create_warning, get_max_warning_level, WarningLevel,
-    migrate_warnings_list
+    migrate_warnings_list,
+    # Anomaly catalog system
+    create_anomaly, get_anomaly_codes, has_anomaly, classify_anomalies,
+    normalize_anomalies, mark_repaired, get_max_anomaly_severity,
+    ANOMALY_CATALOG, CRITICAL_ANOMALIES,
 )
 
 
@@ -813,7 +817,7 @@ def analyze_signal(t, y, signal_type="DOC", mode="COLUMN", timeout_positions=Non
         result["is_batman"] = batman_result.get("is_batman", False)
         if result["is_batman"]:
             result["batman_info"] = batman_result
-            result["anomalies"].append("BATMAN")
+            result["anomalies"].append(create_anomaly("BATMAN", details=batman_result))
 
         # =====================================================================
         # SNR / LOD / LOQ
@@ -827,11 +831,11 @@ def analyze_signal(t, y, signal_type="DOC", mode="COLUMN", timeout_positions=Non
 
         # Check SNR threshold
         if result["snr"] < THRESH_SNR:
-            result["anomalies"].append("LOW_SNR")
+            result["anomalies"].append(create_anomaly("LOW_SNR", details={"snr": result["snr"]}))
 
         result["valid"] = True
     else:
-        result["anomalies"].append("NO_PEAK")
+        result["anomalies"].append(create_anomaly("NO_PEAK"))
 
     # =========================================================================
     # TIMEOUT CHECK (només DOC)
@@ -851,7 +855,7 @@ def analyze_signal(t, y, signal_type="DOC", mode="COLUMN", timeout_positions=Non
             result["timeout_in_peak"] = timeout_in_peak
 
             if timeout_in_peak:
-                result["anomalies"].append("TIMEOUT_IN_PEAK")
+                result["anomalies"].append(create_anomaly("TIMEOUT_IN_PEAK"))
     else:
         result["has_timeout"] = False
         result["timeout_in_peak"] = False
@@ -988,7 +992,7 @@ def compare_replicas(r1_result, r2_result, mode="COLUMN", config=None):
 
     # Verificar que ambdues rèpliques són vàlides
     if not r1_result.get("processed") or not r2_result.get("processed"):
-        result["doc"]["warnings"].append("REPLICA_NOT_PROCESSED")
+        result["doc"]["warnings"].append(create_anomaly("REPLICA_NOT_PROCESSED"))
         return result
 
     is_column = mode.upper() == "COLUMN"
@@ -1029,7 +1033,8 @@ def compare_replicas(r1_result, r2_result, mode="COLUMN", config=None):
             pearson_val, _ = pearsonr(y1_interp, y2_interp)
             result["doc"]["pearson"] = float(pearson_val)
             if pearson_val < pearson_threshold:
-                result["doc"]["warnings"].append("LOW_CORRELATION")
+                result["doc"]["warnings"].append(create_anomaly("LOW_CORRELATION",
+                    details={"pearson": float(pearson_val), "threshold": pearson_threshold}))
         except Exception:
             pass
 
@@ -1043,7 +1048,8 @@ def compare_replicas(r1_result, r2_result, mode="COLUMN", config=None):
             diff_pct = abs(area1_total - area2_total) / max(area1_total, area2_total) * 100
             result["doc"]["area_diff_pct"] = diff_pct
             if diff_pct > area_diff_threshold:
-                result["doc"]["warnings"].append("AREA_DIFF_HIGH")
+                result["doc"]["warnings"].append(create_anomaly("AREA_DIFF_HIGH",
+                    details={"diff_pct": diff_pct, "threshold": area_diff_threshold}))
 
         # Diferència per fracció (només COLUMN)
         if is_column:
@@ -1054,7 +1060,8 @@ def compare_replicas(r1_result, r2_result, mode="COLUMN", config=None):
                     frac_diff = abs(a1 - a2) / max(a1, a2) * 100
                     result["doc"]["fraction_diff_pct"][frac] = frac_diff
                     if frac_diff > frac_diff_threshold:
-                        result["doc"]["warnings"].append(f"{frac}_DIFF_HIGH")
+                        result["doc"]["warnings"].append(create_anomaly("FRACTION_DIFF_HIGH",
+                            details={"fraction": frac, "diff_pct": frac_diff, "threshold": frac_diff_threshold}))
                 else:
                     result["doc"]["fraction_diff_pct"][frac] = 0.0
 
@@ -1106,7 +1113,9 @@ def compare_replicas(r1_result, r2_result, mode="COLUMN", config=None):
 
                     # Warning si mínim és baix
                     if pearson_per_wl[min_wl] < REPLICA_PEARSON_THRESHOLD:
-                        result["dad"]["warnings"].append(f"LOW_CORRELATION_{min_wl}")
+                        result["dad"]["warnings"].append(create_anomaly("LOW_CORRELATION_254",
+                            details={"wavelength": min_wl, "pearson": pearson_per_wl[min_wl],
+                                     "threshold": REPLICA_PEARSON_THRESHOLD}))
 
                 # Mantenir pearson_254 per compatibilitat
                 if '254' in pearson_per_wl:
@@ -1122,7 +1131,8 @@ def compare_replicas(r1_result, r2_result, mode="COLUMN", config=None):
                     diff_254 = abs(a1_254 - a2_254) / max(a1_254, a2_254) * 100
                     result["dad"]["area_diff_pct"] = diff_254
                     if diff_254 > REPLICA_AREA_DIFF_THRESHOLD:
-                        result["dad"]["warnings"].append("AREA_DIFF_HIGH_254")
+                        result["dad"]["warnings"].append(create_anomaly("AREA_DIFF_HIGH_254",
+                            details={"diff_pct": diff_254, "threshold": REPLICA_AREA_DIFF_THRESHOLD}))
 
             except Exception:
                 pass
@@ -1163,10 +1173,17 @@ def recommend_replica(r1_result, r2_result, comparison, mode="COLUMN"):
     snr1 = r1_result.get("snr_info", {}).get("snr_direct", 0) or 0
     snr2 = r2_result.get("snr_info", {}).get("snr_direct", 0) or 0
 
-    # Anomalies crítiques (exclouen la rèplica)
-    critical_anomalies = ["BATMAN_DIRECT", "BATMAN_UIB", "NO_PEAK", "TIMEOUT_IN_PEAK"]
-    has_critical1 = any(a in anom1 for a in critical_anomalies)
-    has_critical2 = any(a in anom2 for a in critical_anomalies)
+    # Anomalies crítiques (del catàleg)
+    codes1 = get_anomaly_codes(anom1)
+    codes2 = get_anomaly_codes(anom2)
+    has_critical1 = bool(codes1 & CRITICAL_ANOMALIES)
+    has_critical2 = bool(codes2 & CRITICAL_ANOMALIES)
+
+    # Sets derivats del catàleg per reparabilitat
+    irreparable_codes = {c for c, e in ANOMALY_CATALOG.items()
+                         if e.get("invalidates") and not e.get("repairable")}
+    repairable_codes = {c for c, e in ANOMALY_CATALOG.items()
+                        if e.get("severity") == WarningLevel.BLOCKER and e.get("repairable")}
 
     if has_critical1 and not has_critical2:
         result["doc"] = {"replica": "2", "score": 0.95, "reason": "R1 té anomalies crítiques"}
@@ -1174,14 +1191,10 @@ def recommend_replica(r1_result, r2_result, comparison, mode="COLUMN"):
         result["doc"] = {"replica": "1", "score": 0.95, "reason": "R2 té anomalies crítiques"}
     elif has_critical1 and has_critical2:
         # Ambdues tenen anomalies crítiques
-        # Identificar si són Batman (reparables) o NO_PEAK/TIMEOUT (no reparables)
-        batman_anoms = ["BATMAN_DIRECT", "BATMAN_UIB"]
-        irreparable_anoms = ["NO_PEAK", "TIMEOUT_IN_PEAK"]
-
-        has_irreparable1 = any(a in anom1 for a in irreparable_anoms)
-        has_irreparable2 = any(a in anom2 for a in irreparable_anoms)
-        has_batman1 = any(a in anom1 for a in batman_anoms)
-        has_batman2 = any(a in anom2 for a in batman_anoms)
+        has_irreparable1 = bool(codes1 & irreparable_codes)
+        has_irreparable2 = bool(codes2 & irreparable_codes)
+        has_batman1 = bool(codes1 & repairable_codes)
+        has_batman2 = bool(codes2 & repairable_codes)
 
         if has_irreparable1 and has_irreparable2:
             # Ambdues amb anomalies no reparables → mostra no vàlida
@@ -1334,12 +1347,13 @@ def repair_batman_in_replica(sample_result, signal="direct"):
     sample_result[y_key] = y_repaired.tolist()
     sample_result[f"{y_key}_original"] = y_original.tolist()  # Backup
 
-    # Treure anomalia Batman de la llista
+    # Marcar anomalia Batman com a reparada
     anomalies = sample_result.get("anomalies", [])
-    if anom_key in anomalies:
-        anomalies.remove(anom_key)
-        # Afegir marca de reparació
-        anomalies.append(f"{anom_key}_REPAIRED")
+    if not mark_repaired(anomalies, anom_key, repair_info=repair_info):
+        # Fallback per strings antics (backward compat)
+        if anom_key in anomalies:
+            anomalies.remove(anom_key)
+            anomalies.append(f"{anom_key}_REPAIRED")
     sample_result[batman_key] = False
     sample_result[f"{batman_key}_repaired"] = True
     sample_result[f"{batman_key}_repair_info"] = {
@@ -1583,6 +1597,7 @@ def analyze_sample(sample_data, calibration_data=None, config=None):
         "name": sample_name,
         "replica": sample_data.get("replica", "1"),
         "inj_volume": sample_data.get("inj_volume"),  # Preservar per quantificació
+        "injection_index": sample_data.get("injection_index"),  # Ordre d'injecció
         "processed": False,
         "anomalies": [],
     }
@@ -1711,7 +1726,7 @@ def analyze_sample(sample_data, calibration_data=None, config=None):
             else:
                 # UIB sense baseline: warning però seguim amb Direct
                 y_doc_uib_net = None
-                result["anomalies"].append("UIB_NO_BASELINE")
+                result["anomalies"].append(create_anomaly("UIB_NO_BASELINE"))
         else:
             y_doc_uib_net = None
 
@@ -1737,12 +1752,12 @@ def analyze_sample(sample_data, calibration_data=None, config=None):
     peak_info = detect_main_peak(t_doc, y_smooth, config.get("peak_min_prominence_pct", 5.0), is_bp=is_bp)
 
     if not peak_info.get("valid"):
-        result["anomalies"].append("NO_PEAK")
+        result["anomalies"].append(create_anomaly("NO_PEAK"))
     else:
         # Detectar Batman DOC Direct
         batman_result = detect_batman(t_doc, y_smooth)
         if batman_result.get("is_batman"):
-            result["anomalies"].append("BATMAN_DIRECT")
+            result["anomalies"].append(create_anomaly("BATMAN_DIRECT", details=batman_result))
             result["batman_direct"] = True
             result["batman_direct_info"] = batman_result
             # Log per dev notes (si actiu)
@@ -1755,7 +1770,7 @@ def analyze_sample(sample_data, calibration_data=None, config=None):
         y_uib_smooth = apply_smoothing(y_doc_uib_net)
         batman_uib_result = detect_batman(t_doc, y_uib_smooth)
         if batman_uib_result.get("is_batman"):
-            result["anomalies"].append("BATMAN_UIB")
+            result["anomalies"].append(create_anomaly("BATMAN_UIB", details=batman_uib_result))
             result["batman_uib"] = True
             result["batman_uib_info"] = batman_uib_result
             # Log per dev notes (si actiu)
@@ -1778,7 +1793,7 @@ def analyze_sample(sample_data, calibration_data=None, config=None):
             for to in timeout_details
         )
         if timeout_in_peak:
-            result["anomalies"].append("TIMEOUT_IN_PEAK")
+            result["anomalies"].append(create_anomaly("TIMEOUT_IN_PEAK", details={"timeout_info": timeout_info}))
             result["timeout_in_peak"] = True
 
     # Calcular FWHM i simetria del pic principal
@@ -1920,9 +1935,9 @@ def analyze_sample(sample_data, calibration_data=None, config=None):
     # --- LOD/LOQ flags basats en SNR ---
     snr_direct = snr_info.get("snr_direct", 0)
     if snr_direct and 0 < snr_direct < 3:
-        result["anomalies"].append("BELOW_LOD")
+        result["anomalies"].append(create_anomaly("BELOW_LOD", details={"snr": snr_direct}))
     elif snr_direct and 3 <= snr_direct < 10:
-        result["anomalies"].append("BELOW_LOQ")
+        result["anomalies"].append(create_anomaly("BELOW_LOQ", details={"snr": snr_direct}))
 
     # Calcular SNR info per DAD (totes les wavelengths)
     dad_snr_info = calculate_dad_snr_info(df_dad, config.get("target_wavelengths"))
@@ -2106,6 +2121,7 @@ def _flatten_samples_for_processing(imported_data, data_mode="DUAL"):
                 "replica": str(rep_num),
                 "sample_type": sample_type,
                 "inj_volume": inj_info.get("inj_volume"),  # Volum d'injecció en µL
+                "injection_index": inj_info.get("line_num"),  # Ordre d'injecció al MasterFile
             }
 
             # Extreure dades segons data_mode (DUAL, DIRECT, UIB)
@@ -2204,19 +2220,19 @@ def _generate_analysis_warnings(result: dict) -> list:
     """
     Genera avisos estructurats a partir del resultat d'anàlisi.
 
-    Analitza el resultat i crea avisos amb nivells (BLOCKER/WARNING/INFO)
-    segons la jerarquia definida a docs/SISTEMA_AVISOS.md.
+    Ara les anomalies ja són dicts estructurats des de l'origen (create_anomaly).
+    Aquesta funció agrega totes les anomalies de totes les rèpliques + comparacions,
+    i afegeix errors de nivell de seqüència.
 
     Args:
         result: Dict del resultat de analyze_sequence()
 
     Returns:
-        Llista d'avisos estructurats
+        Llista d'avisos estructurats (mix de anomaly dicts + warning dicts)
     """
     warnings = []
-    method = result.get("method", "COLUMN")
 
-    # 1. Errors crítics (BLOCKER)
+    # 1. Errors crítics de seqüència (BLOCKER) — no són anomalies per-rèplica
     for error in result.get("errors", []):
         if "calibr" in error.lower():
             warnings.append(create_warning(
@@ -2245,99 +2261,16 @@ def _generate_analysis_warnings(result: dict) -> list:
             details={"n": n_empty},
         ))
 
-    # 3. Analitzar cada mostra
-    for sample_name, sample_group in result.get("samples_grouped", {}).items():
-        for replica in sample_group.get("replicas", {}).values():
-            if not replica.get("processed"):
-                continue
+    # 3. Agregar anomalies de totes les rèpliques i comparacions
+    all_anomalies = []
+    for sg in result.get("samples_grouped", {}).values():
+        for rep in sg.get("replicas", {}).values():
+            all_anomalies.extend(rep.get("anomalies", []))
+        comp = sg.get("comparison") or {}
+        for domain in ("doc", "dad"):
+            all_anomalies.extend(comp.get(domain, {}).get("warnings", []))
 
-            # Timeout
-            timeout_info = replica.get("timeout_info", {})
-            if timeout_info.get("n_timeouts", 0) > 0:
-                severity = timeout_info.get("severity", "CRITICAL")
-                if severity == "CRITICAL":
-                    warnings.append(create_warning(
-                        code="ANA_TIMEOUT",
-                        stage="analyze",
-                        sample=sample_name,
-                        details={
-                            "n_timeouts": timeout_info["n_timeouts"],
-                            "zones": timeout_info.get("zone_summary", {}),
-                        },
-                    ))
-
-            # Batman
-            batman_info = replica.get("batman_info", {})
-            if batman_info.get("is_batman", False):
-                warnings.append(create_warning(
-                    code="ANA_BATMAN",
-                    stage="analyze",
-                    sample=sample_name,
-                    details={
-                        "valley_depth": batman_info.get("max_depth", 0),
-                    },
-                ))
-
-            # SNR baix
-            snr = replica.get("snr_info", {}).get("snr", 0)
-            if 0 < snr < 10:
-                warnings.append(create_warning(
-                    code="ANA_SNR_LOW",
-                    stage="analyze",
-                    sample=sample_name,
-                    details={"snr": snr},
-                ))
-
-            # Peak no trobat
-            peak_info = replica.get("peak_info", {})
-            if not peak_info.get("valid", False):
-                warnings.append(create_warning(
-                    code="ANA_NO_PEAK",
-                    stage="analyze",
-                    sample=sample_name,
-                ))
-
-            # Àrea negativa
-            areas = replica.get("areas", {})
-            if areas.get("area_total", 0) < 0:
-                warnings.append(create_warning(
-                    code="ANA_AREA_NEGATIVE",
-                    stage="analyze",
-                    sample=sample_name,
-                ))
-
-        # Comparació rèpliques
-        comparison = sample_group.get("comparison") or {}
-        doc_comparison = comparison.get("doc") or {}
-        dad_comparison = comparison.get("dad") or {}
-
-        # Correlació baixa DOC
-        if doc_comparison.get("warnings"):
-            for warn in doc_comparison["warnings"]:
-                if "CORRELATION" in warn.upper():
-                    warnings.append(create_warning(
-                        code="ANA_REPLICA_CORRELATION_LOW",
-                        stage="analyze",
-                        sample=sample_name,
-                    ))
-                elif "AREA_DIFF" in warn.upper():
-                    warnings.append(create_warning(
-                        code="ANA_REPLICA_AREA_DIFF",
-                        stage="analyze",
-                        sample=sample_name,
-                    ))
-
-        # Correlació baixa DAD
-        if dad_comparison.get("warnings"):
-            for warn in dad_comparison["warnings"]:
-                if "CORRELATION" in warn.upper():
-                    warnings.append(create_warning(
-                        code="ANA_REPLICA_CORRELATION_LOW",
-                        stage="analyze",
-                        sample=sample_name,
-                        details={"source": "DAD"},
-                    ))
-
+    warnings.extend(all_anomalies)
     return warnings
 
 
@@ -2372,6 +2305,7 @@ def _analyze_light_sample(sample):
         "t_doc": sample.get("t_doc"),
         "y_doc_net": None,
         "inj_volume": sample.get("inj_volume"),
+        "injection_index": sample.get("injection_index"),  # Ordre d'injecció
     }
 
     # Obtenir senyal DOC
@@ -2754,7 +2688,12 @@ def analyze_sequence(imported_data, calibration_data=None, config=None, progress
 
     # Generar avisos estructurats (nou sistema)
     result["warnings_structured"] = _generate_analysis_warnings(result)
-    result["warning_level"] = get_max_warning_level(result["warnings_structured"])
+    # warning_level: prioritzar anomalies (blocker/warning) sobre warnings genèrics
+    anomaly_sev = get_max_anomaly_severity(result["warnings_structured"])
+    legacy_sev = get_max_warning_level(result["warnings_structured"])
+    # Usar el més greu entre anomalies i warnings legacy
+    sev_order = {"blocker": 3, "warning": 2, "info": 1, "none": 0}
+    result["warning_level"] = anomaly_sev if sev_order.get(anomaly_sev, 0) >= sev_order.get(legacy_sev, 0) else legacy_sev
 
     # Registrar mostres a l'índex global (Sample Database)
     try:
@@ -3021,6 +2960,21 @@ def load_analysis_result(seq_path):
         with open(filepath, "r", encoding="utf-8") as f:
             data = json.load(f)
         _restore_dataframes(data)
+
+        # Normalitzar anomalies (backward compat: strings → dicts)
+        for sg in data.get("samples_grouped", {}).values():
+            for rep in sg.get("replicas", {}).values():
+                raw = rep.get("anomalies", [])
+                if raw and any(isinstance(a, str) for a in raw):
+                    rep["anomalies"] = normalize_anomalies(raw)
+            # Normalitzar també warnings de comparació
+            comp = sg.get("comparison") or {}
+            for domain in ("doc", "dad"):
+                domain_data = comp.get(domain, {})
+                warns = domain_data.get("warnings", [])
+                if warns and any(isinstance(w, str) for w in warns):
+                    domain_data["warnings"] = normalize_anomalies(warns)
+
         return data
     except Exception as e:
         print(f"Error carregant analysis_result.json: {e}")
