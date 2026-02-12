@@ -144,9 +144,9 @@ DEFAULT_CONFIG = {
         "RUN_START": {"start": 0, "end": 1, "severity": "INFO"},
         "BioP": {"start": 0, "end": 18, "severity": "WARNING"},
         "HS": {"start": 18, "end": 23, "severity": "CRITICAL"},
-        "BB": {"start": 23, "end": 30, "severity": "WARNING"},
-        "SB": {"start": 30, "end": 40, "severity": "WARNING"},
-        "LMW": {"start": 40, "end": 70, "severity": "INFO"},
+        "BB": {"start": 23, "end": 26, "severity": "WARNING"},
+        "SB": {"start": 26, "end": 32, "severity": "INFO"},
+        "LMW": {"start": 32, "end": 70, "severity": "INFO"},
         "POST_RUN": {"start": 70, "end": 999, "severity": "OK"},
     },
 

@@ -17,16 +17,16 @@
     },
     "BB": {
       "start": 23.0,
-      "end": 30.0,
+      "end": 26.0,
       "name": "Building Blocks"
     },
     "SB": {
-      "start": 30.0,
-      "end": 40.0,
-      "name": "Small Building Blocks"
+      "start": 26.0,
+      "end": 32.0,
+      "name": "Salt Boundary"
     },
     "LMW": {
-      "start": 40.0,
+      "start": 32.0,
       "end": 70.0,
       "name": "Low Molecular Weight"
     }
@@ -217,16 +217,16 @@
     },
     "BB": {
       "start": 23,
-      "end": 30,
+      "end": 26,
       "severity": "WARNING"
     },
     "SB": {
-      "start": 30,
-      "end": 40,
-      "severity": "WARNING"
+      "start": 26,
+      "end": 32,
+      "severity": "INFO"
     },
     "LMW": {
-      "start": 40,
+      "start": 32,
       "end": 70,
       "severity": "INFO"
     },
