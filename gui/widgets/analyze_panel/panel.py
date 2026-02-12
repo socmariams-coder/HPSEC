@@ -523,13 +523,17 @@ class AnalyzePanel(QWidget):
         """Omple la taula unificada amb els resultats (13 cols, selectors DOC/DAD independents)."""
         self.results_table.setRowCount(0)
         self._sample_row_map = {}
-        n_ok, n_warning, n_error, n_light = 0, 0, 0, 0
+        n_ok, n_warning, n_error, n_light, n_khp = 0, 0, 0, 0, 0
 
-        # Separar mostres regulars i light
+        # Separar mostres regulars, KHP i light
         regular_names = []
+        khp_names = []
         light_names = []
         for name in sorted(self.samples_grouped.keys()):
-            if self.samples_grouped[name].get("analysis_type") == "light":
+            sd = self.samples_grouped[name]
+            if sd.get("analysis_type") == "khp":
+                khp_names.append(name)
+            elif sd.get("analysis_type") == "light":
                 light_names.append(name)
             else:
                 regular_names.append(name)
@@ -696,6 +700,99 @@ class AnalyzePanel(QWidget):
             else:
                 n_ok += 1
 
+        # --- Separator + KHP STANDARDS ---
+        if khp_names:
+            n_cols = self.results_table.columnCount()
+            sep_row = self.results_table.rowCount()
+            self.results_table.insertRow(sep_row)
+            sep_item = QTableWidgetItem("--- KHP STANDARDS ---")
+            sep_item.setFlags(Qt.ItemIsEnabled)
+            sep_font = QFont()
+            sep_font.setBold(True)
+            sep_item.setFont(sep_font)
+            sep_item.setForeground(QBrush(QColor("#1565C0")))
+            self.results_table.setItem(sep_row, 0, sep_item)
+            self.results_table.setSpan(sep_row, 0, 1, n_cols)
+            sep_bg = QBrush(QColor("#E3F2FD"))
+            for c in range(n_cols):
+                item = self.results_table.item(sep_row, c)
+                if item is None:
+                    item = QTableWidgetItem("")
+                    self.results_table.setItem(sep_row, c, item)
+                item.setBackground(sep_bg)
+
+            for sample_name in khp_names:
+                sample_data = self.samples_grouped[sample_name]
+                row = self.results_table.rowCount()
+                self.results_table.insertRow(row)
+                self._sample_row_map[sample_name] = row
+
+                replicas = sample_data.get("replicas") or {}
+                selected = sample_data.get("selected") or {}
+                doc_sel = selected.get("doc", sorted(replicas.keys())[0] if replicas else "1")
+                doc_rep = replicas.get(doc_sel, {})
+
+                # Col 0: Sample name
+                item_name = QTableWidgetItem(sample_name)
+                item_name.setData(Qt.UserRole, sample_name)
+                self.results_table.setItem(row, 0, item_name)
+
+                # Col 1-2: No selectors for KHP
+                self.results_table.setItem(row, 1, QTableWidgetItem("-"))
+                self.results_table.setItem(row, 2, QTableWidgetItem("-"))
+
+                # Col 3: A_DOC
+                areas = doc_rep.get("areas", {})
+                area_doc = areas.get("DOC", {}).get("total", 0) if areas else 0
+                self.results_table.setItem(row, 3, QTableWidgetItem(
+                    f"{area_doc:.0f}" if area_doc else "-"))
+
+                # Col 4-6: No ppm for KHP standards
+                for c in (4, 5, 6):
+                    self.results_table.setItem(row, c, QTableWidgetItem("-"))
+
+                # Col 7: SNR
+                snr_info = doc_rep.get("snr_info", {})
+                snr = snr_info.get("snr_direct", 0) if snr_info else 0
+                snr_item = QTableWidgetItem(f"{snr:.0f}" if snr else "-")
+                if snr and snr < 10:
+                    snr_item.setForeground(QBrush(QColor(COLOR_ERROR)))
+                elif snr and snr < 50:
+                    snr_item.setForeground(QBrush(QColor(COLOR_WARNING)))
+                self.results_table.setItem(row, 7, snr_item)
+
+                # Col 8: A_254
+                a254 = areas.get("254nm", {}).get("total", 0) if areas else 0
+                self.results_table.setItem(row, 8, QTableWidgetItem(
+                    f"{a254:.0f}" if a254 else "-"))
+
+                # Col 9: SNR_254
+                snr_254 = snr_info.get("snr_254", 0) if snr_info else 0
+                snr254_item = QTableWidgetItem(f"{snr_254:.0f}" if snr_254 else "-")
+                if snr_254 and snr_254 < 10:
+                    snr254_item.setForeground(QBrush(QColor(COLOR_ERROR)))
+                elif snr_254 and snr_254 < 50:
+                    snr254_item.setForeground(QBrush(QColor(COLOR_WARNING)))
+                self.results_table.setItem(row, 9, snr254_item)
+
+                # Col 10-11: No R² comparison
+                self.results_table.setItem(row, 10, QTableWidgetItem("-"))
+                self.results_table.setItem(row, 11, QTableWidgetItem("-"))
+
+                # Col 12: KHP type
+                type_item = QTableWidgetItem("KHP")
+                type_item.setForeground(QBrush(QColor("#1565C0")))
+                self.results_table.setItem(row, 12, type_item)
+
+                # Blue-tinted background
+                khp_bg = QBrush(QColor("#E8F4FD"))
+                for c in range(n_cols):
+                    item = self.results_table.item(row, c)
+                    if item:
+                        item.setBackground(khp_bg)
+
+                n_khp += 1
+
         # --- Separator + Light samples (BLANC / CONTROL) ---
         if light_names:
             n_cols = self.results_table.columnCount()
@@ -782,6 +879,8 @@ class AnalyzePanel(QWidget):
             f"<span style='color:#F39C12'>●</span> Warning: {n_warning} &nbsp;&nbsp;"
             f"<span style='color:#E74C3C'>●</span> Error: {n_error}"
         )
+        if n_khp > 0:
+            stats_text += f" &nbsp;&nbsp;|&nbsp;&nbsp; <span style='color:#1565C0'>●</span> KHP: {n_khp}"
         if n_light > 0:
             stats_text += f" &nbsp;&nbsp;|&nbsp;&nbsp; <span style='color:#888888'>●</span> Blancs/Controls: {n_light}"
         self.stats_label.setText(stats_text)
@@ -1109,7 +1208,7 @@ class AnalyzePanel(QWidget):
     # ------------------------------------------------------------------
 
     def _on_table_double_click(self, index):
-        """Handler per doble clic — obre SampleDetailDialog (skip light samples)."""
+        """Handler per doble clic — obre SampleDetailDialog per totes les tipologies."""
         row = index.row()
         item = self.results_table.item(row, 0)
         if item:
@@ -1118,9 +1217,6 @@ class AnalyzePanel(QWidget):
                 return  # Separator row
             sample_data = self.samples_grouped.get(sample_name)
             if not sample_data:
-                return
-            # Light samples: no detail dialog (no fractions to show)
-            if sample_data.get("analysis_type") == "light":
                 return
             self._show_detail(sample_name)
 

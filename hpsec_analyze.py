@@ -2704,6 +2704,27 @@ def analyze_sequence(imported_data, calibration_data=None, config=None, progress
         }
 
     # =========================================================================
+    # AGRUPAR KHP SAMPLES — després de light
+    # =========================================================================
+    khp_by_name = {}
+    for khp in result["khp_samples"]:
+        name = khp.get("name", "UNKNOWN")
+        replica = khp.get("replica", "1")
+        if name not in khp_by_name:
+            khp_by_name[name] = {}
+        khp_by_name[name][replica] = khp
+
+    for sample_name in sorted(khp_by_name.keys()):
+        replicas = khp_by_name[sample_name]
+        result["samples_grouped"][sample_name] = {
+            "analysis_type": "khp",
+            "sample_type": "KHP",
+            "replicas": replicas,
+            "selected": {"doc": sorted(replicas.keys())[0]},
+            "sample_valid": True,
+        }
+
+    # =========================================================================
     # GENERAR RESUM
     # =========================================================================
     n_valid = sum(1 for s in result["samples"] if s.get("processed") and s.get("peak_info", {}).get("valid"))
@@ -2711,7 +2732,7 @@ def analyze_sequence(imported_data, calibration_data=None, config=None, progress
     n_timeouts = sum(1 for s in result["samples"] if s.get("timeout_info", {}).get("n_timeouts", 0) > 0)
     n_with_warnings = sum(
         1 for sg in result["samples_grouped"].values()
-        if sg.get("analysis_type") != "light" and sg.get("comparison") and (
+        if sg.get("analysis_type") not in ("light", "khp") and sg.get("comparison") and (
             sg["comparison"].get("doc", {}).get("warnings") or
             sg["comparison"].get("dad", {}).get("warnings")
         )
