@@ -957,6 +957,8 @@ def generate_summary_excel(
                 "R2_DAD": None,
                 "Anomalies": "",
                 "Warnings": "",
+                "HCI": None,
+                "HCI_Character": "",
             }
             summary_rows.append(row)
             continue
@@ -1024,6 +1026,8 @@ def generate_summary_excel(
             "Warnings": "; ".join(
                 (w.get("code", "") if isinstance(w, dict) else str(w)) for w in all_warnings
             ) if all_warnings else "",
+            "HCI": quantification.get("hci"),
+            "HCI_Character": quantification.get("hci_character", ""),
         }
 
         # BP linked info

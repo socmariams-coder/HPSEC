@@ -2062,6 +2062,20 @@ def analyze_sample(sample_data, calibration_data=None, config=None):
         # Backwards compat
         result["n_peaks_254_HS"] = n_peaks_per_wl.get("A254", {}).get("HS")
 
+    # =========================================================================
+    # HCI (Humic Character Index) — només COLUMN, mai BP/BLANK/CONTROL
+    # =========================================================================
+    dad_export3d_path = sample_data.get("dad_export3d_path")
+    if dad_export3d_path and not is_bp:
+        try:
+            from hpsec_humic import compute_hci
+            hci_result = compute_hci(dad_export3d_path)
+            if hci_result:
+                result["hci"] = hci_result["hci"]
+                result["hci_character"] = hci_result["character"]
+        except Exception:
+            pass  # HCI es opcional, mai ha de bloquejar l'analisi
+
     # Guardar dades processades
     result["t_doc"] = t_doc
     result["y_doc_net"] = y_doc_net
@@ -2200,6 +2214,10 @@ def _flatten_samples_for_processing(imported_data, data_mode="DUAL"):
                 if hasattr(df_dad_raw, 'columns') and len(df_dad_raw.columns) > 8:
                     df_dad_raw = analyze_dad(df_dad_raw)
                 flat_sample["df_dad"] = df_dad_raw
+
+            # Propagar path Export3D original per HCI (necessita 101 wavelengths)
+            if dad.get("path"):
+                flat_sample["dad_export3d_path"] = dad["path"]
 
             # Classificar segons tipus
             if sample_type == "KHP":
@@ -2595,6 +2613,11 @@ def analyze_sequence(imported_data, calibration_data=None, config=None, progress
                     # Usar calibració específica segons volum d'injecció
                     sample_cal = get_sample_calibration(selected_sample)
                     quantification = quantify_sample(selected_sample, sample_cal, mode=mode)
+                    # HCI del doc_replica seleccionat
+                    hci = selected_sample.get("hci")
+                    if hci is not None:
+                        quantification["hci"] = hci
+                        quantification["hci_character"] = selected_sample.get("hci_character", "")
                     sample_group["quantification"] = quantification
 
         elif len(replica_keys) == 1:
@@ -2611,6 +2634,11 @@ def analyze_sequence(imported_data, calibration_data=None, config=None, progress
                 # Usar calibració específica segons volum d'injecció
                 sample_cal = get_sample_calibration(r1)
                 quantification = quantify_sample(r1, sample_cal, mode=mode)
+                # HCI
+                hci = r1.get("hci")
+                if hci is not None:
+                    quantification["hci"] = hci
+                    quantification["hci_character"] = r1.get("hci_character", "")
                 sample_group["quantification"] = quantification
 
         result["samples_grouped"][sample_name] = sample_group
@@ -2702,6 +2730,13 @@ def analyze_sequence(imported_data, calibration_data=None, config=None, progress
     except Exception as e:
         # No bloquejar l'anàlisi si falla el registre
         print(f"[WARNING] Error registrant mostres a l'índex: {e}")
+
+    # Estampar config fingerprint per detectar obsolescència
+    try:
+        from hpsec_config import get_config
+        result["config_fingerprint"] = get_config().compute_config_fingerprint()
+    except Exception:
+        pass
 
     if progress_callback:
         progress_callback("Processing complete", 100)

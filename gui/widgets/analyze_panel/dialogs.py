@@ -199,6 +199,21 @@ class SampleDetailDialog(QDialog):
         if cal_source:
             layout.addWidget(QLabel("<b>Calibració:</b>"), row, 0)
             layout.addWidget(QLabel(f"{cal_source}"), row, 1)
+            row += 1
+
+        # HCI (Humic Character Index)
+        hci = quantification.get("hci")
+        if hci is not None:
+            char = quantification.get("hci_character", "")
+            hci_label = QLabel(f"{hci:.1f} ({char})")
+            if hci > 60:
+                hci_label.setStyleSheet("color: #E74C3C; font-weight: bold;")
+            elif hci < 40:
+                hci_label.setStyleSheet("color: #3498DB; font-weight: bold;")
+            else:
+                hci_label.setStyleSheet("color: #27AE60; font-weight: bold;")
+            layout.addWidget(QLabel("<b>HCI:</b>"), row, 0)
+            layout.addWidget(hci_label, row, 1)
 
         return group
 

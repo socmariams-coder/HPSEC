@@ -48,11 +48,14 @@ Mark features as DONE only when code is fully functional end-to-end, not when pl
 - [x] Analyze backend: quantify_sample with rf_direct/rf_uib separate — DONE (v1.6.0)
 - [x] Analyze backend: R² DAD per 6 wavelengths (pearson_per_wavelength) — DONE (v1.6.0)
 - [x] Dashboard panel — DONE
-- [x] Analyze panel: taula unificada DOC+DAD (13 cols: Sel DOC, Sel DAD, SNR, SNR_254, R²_DOC, R²_DAD) — DONE (851f0b1)
+- [x] Analyze panel: taula unificada DOC+DAD (14 cols: Sel DOC, Sel DAD, SNR, SNR_254, R²_DOC, R²_DAD, HCI) — DONE (851f0b1)
 - [x] Analyze panel: dropdowns rèplica independents DOC vs DAD + opció "Cap" — DONE
 - [x] Analyze panel: detail dialog grid layout (DOC|UIB + DAD pairs + fraction table) — DONE (851f0b1)
 - [x] Analyze panel: Batman repair button in detail dialog (repair_with_parabola) — DONE
 - [x] Analyze panel: sample_valid flag (ambdues rèpliques amb anomalies no reparables) — DONE
+- [x] Analyze panel: HCI (Humic Character Index) column with PCA+LDA model — DONE
+- [x] Analyze backend: HCI compute_hci() from Export3D (hpsec_humic.py, no sklearn) — DONE
+- [x] Export: HCI + HCI_Character columns in SUMMARY.xlsx — DONE
 - [ ] Analyze panel: mostrar bigaussian (R², asym, quality) per BP — PENDING
 - [ ] Analyze panel: mostrar timeouts amb icones/tooltip — PENDING
 - [ ] Analyze backend: detecció deriva baseline DAD per replica selection — PENDING (TODO a hpsec_analyze.py L1210)
@@ -72,7 +75,14 @@ Mark features as DONE only when code is fully functional end-to-end, not when pl
 - [x] Analyze panel: BLANC/CONTROL rows at bottom with separator + grey background — DONE
 - [x] Export: lightweight Excel for BLANK/CONTROL (ID + DOC sheets only) — DONE
 - [x] Export: SUMMARY.xlsx Type column (SAMPLE/PR/BLANK/CONTROL) — DONE
+- [x] Architecture refactor: unify anomaly system (ANOMALY_CATALOG in hpsec_warnings.py) — DONE (0d0b960)
 - [ ] Architecture refactor: unify detection functions in hpsec_core.py — PENDING
+- [x] Config panel: 3 tabs per impacte (Anàlisi/Seqüència/Sistema), tots params editables — DONE
+- [x] Config panel: badges d'impacte (retroactiu/futur), diàleg de reprocessament — DONE
+- [x] Config panel: TimeFractionsEditor, TimeoutZonesEditor, WavelengthSelector, PatternListEditor — DONE
+- [x] Config backend: config fingerprint (SHA-256 16 chars) per detectar obsolescència — DONE
+- [x] Config backend: migració batman_max_sep → batman_max_sep_min — DONE
+- [x] Config backend: REPROCESS_SECTIONS/FUTURE_SECTIONS/IMMEDIATE_SECTIONS constants — DONE
 
 ## Design decisions
 

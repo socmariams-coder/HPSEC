@@ -169,11 +169,11 @@ class AnalyzePanel(QWidget):
 
         # === UNIFIED TABLE ===
         self.results_table = QTableWidget()
-        self.results_table.setColumnCount(13)
+        self.results_table.setColumnCount(14)
         self.results_table.setHorizontalHeaderLabels([
             "Mostra", "Sel DOC", "Sel DAD", "A_DOC", "ppm",
             "A_UIB", "ppm_U", "SNR", "A_254", "SNR_254",
-            "R²_DOC", "R²_DAD", "Estat"
+            "R²_DOC", "R²_DAD", "HCI", "Estat"
         ])
         configure_table_style(self.results_table)
         self._configure_unified_columns()
@@ -202,7 +202,7 @@ class AnalyzePanel(QWidget):
         """Configura columnes de la taula unificada."""
         header = self.results_table.horizontalHeader()
         for i in range(self.results_table.columnCount()):
-            if i == 12:  # Estat — much wider
+            if i == 13:  # Estat — much wider
                 header.setSectionResizeMode(i, QHeaderView.Stretch)
             else:
                 header.setSectionResizeMode(i, QHeaderView.ResizeToContents)
@@ -695,13 +695,33 @@ class AnalyzePanel(QWidget):
                 r2_dad_item.setToolTip("\n".join(tip_lines))
             self.results_table.setItem(row, 11, r2_dad_item)
 
-            # Col 12: Estat (considers both DOC and DAD replicas)
+            # Col 12: HCI (Humic Character Index)
+            hci_val = quantification.get("hci")
+            if hci_val is not None:
+                hci_char = quantification.get("hci_character", "")
+                abbrev = "HA" if "HA" in hci_char else "FA" if "FA" in hci_char else "Mix"
+                hci_item = QTableWidgetItem(f"{hci_val:.1f} {abbrev}")
+                # Color de fons segons caràcter
+                if hci_val > 60:
+                    hci_item.setBackground(QBrush(QColor("#FADBD8")))
+                elif hci_val < 40:
+                    hci_item.setBackground(QBrush(QColor("#D6EAF8")))
+                else:
+                    hci_item.setBackground(QBrush(QColor("#D5F5E3")))
+                hci_item.setToolTip(
+                    f"Humic Character Index: {hci_val:.1f} ({hci_char})\n"
+                    f"Model PCA+LDA v2.0")
+            else:
+                hci_item = QTableWidgetItem("-")
+            self.results_table.setItem(row, 12, hci_item)
+
+            # Col 13: Estat (considers both DOC and DAD replicas)
             status_color, status_text, tooltip = self._classify_sample_status(
                 doc_rep, dad_rep, comparison, sample_data=sample_data)
             status_item = QTableWidgetItem(status_text)
             status_item.setForeground(QBrush(QColor(status_color)))
             status_item.setToolTip(tooltip)
-            self.results_table.setItem(row, 12, status_item)
+            self.results_table.setItem(row, 13, status_item)
 
             # Count stats
             if status_color == COLOR_ERROR:
@@ -797,10 +817,13 @@ class AnalyzePanel(QWidget):
                 self.results_table.setItem(row, 10, QTableWidgetItem("-"))
                 self.results_table.setItem(row, 11, QTableWidgetItem("-"))
 
-                # Col 12: KHP type
+                # Col 12: HCI (not applicable for KHP)
+                self.results_table.setItem(row, 12, QTableWidgetItem("-"))
+
+                # Col 13: KHP type
                 type_item = QTableWidgetItem("KHP")
                 type_item.setForeground(QBrush(QColor("#1565C0")))
-                self.results_table.setItem(row, 12, type_item)
+                self.results_table.setItem(row, 13, type_item)
 
                 # Blue-tinted background
                 khp_bg = QBrush(QColor("#E8F4FD"))
@@ -882,10 +905,13 @@ class AnalyzePanel(QWidget):
                 for c in (8, 9, 10, 11):
                     self.results_table.setItem(row, c, QTableWidgetItem("-"))
 
-                # Col 12: sample_type text
+                # Col 12: HCI (not applicable for light samples)
+                self.results_table.setItem(row, 12, QTableWidgetItem("-"))
+
+                # Col 13: sample_type text
                 type_item = QTableWidgetItem(sample_type)
                 type_item.setForeground(QBrush(QColor("#888888")))
-                self.results_table.setItem(row, 12, type_item)
+                self.results_table.setItem(row, 13, type_item)
 
                 # Light grey background
                 light_bg = QBrush(QColor("#F0F0F0"))
@@ -1080,10 +1106,13 @@ class AnalyzePanel(QWidget):
 
         # "Cap" seleccionat → buidar columnes
         if doc_sel == "none":
-            for col in (3, 4, 5, 6, 7):
+            for col in (3, 4, 5, 6, 7, 12):
                 item = self.results_table.item(row, col)
                 if item:
                     item.setText("-")
+                    if col == 12:
+                        item.setBackground(QBrush(QColor("#FFFFFF")))
+                        item.setToolTip("")
             return
 
         doc_rep = replicas.get(doc_sel, {})
@@ -1124,6 +1153,28 @@ class AnalyzePanel(QWidget):
             snr_uib = snr_info.get("snr_uib", 0)
             snr_item.setToolTip(f"SNR UIB: {snr_uib:.0f}" if snr_uib else "")
 
+        # Col 12: HCI (update from new quantification)
+        hci_item = self.results_table.item(row, 12)
+        if hci_item:
+            hci_val = quantification.get("hci")
+            if hci_val is not None:
+                hci_char = quantification.get("hci_character", "")
+                abbrev = "HA" if "HA" in hci_char else "FA" if "FA" in hci_char else "Mix"
+                hci_item.setText(f"{hci_val:.1f} {abbrev}")
+                if hci_val > 60:
+                    hci_item.setBackground(QBrush(QColor("#FADBD8")))
+                elif hci_val < 40:
+                    hci_item.setBackground(QBrush(QColor("#D6EAF8")))
+                else:
+                    hci_item.setBackground(QBrush(QColor("#D5F5E3")))
+                hci_item.setToolTip(
+                    f"Humic Character Index: {hci_val:.1f} ({hci_char})\n"
+                    f"Model PCA+LDA v2.0")
+            else:
+                hci_item.setText("-")
+                hci_item.setBackground(QBrush(QColor("#FFFFFF")))
+                hci_item.setToolTip("")
+
     def _update_dad_columns(self, row, sample_name):
         """Actualitza columnes DAD (8-9) quan canvia la rèplica DAD."""
         sample_data = self.samples_grouped[sample_name]
@@ -1153,7 +1204,7 @@ class AnalyzePanel(QWidget):
                 snr_254_item.setForeground(QBrush(QColor("#000000")))
 
     def _update_estat_column(self, row, sample_name):
-        """Actualitza la columna Estat (col 12) considerant ambdues rèpliques."""
+        """Actualitza la columna Estat (col 13) considerant ambdues rèpliques."""
         sample_data = self.samples_grouped[sample_name]
         selected = sample_data.get("selected", {})
         replicas = sample_data.get("replicas", {})
@@ -1163,7 +1214,7 @@ class AnalyzePanel(QWidget):
 
         status_color, status_text, tooltip = self._classify_sample_status(
             doc_rep, dad_rep, comparison, sample_data=sample_data)
-        status_item = self.results_table.item(row, 12)
+        status_item = self.results_table.item(row, 13)
         if status_item:
             status_item.setText(status_text)
             status_item.setForeground(QBrush(QColor(status_color)))
@@ -1218,6 +1269,11 @@ class AnalyzePanel(QWidget):
                     selected_replica, calibration_data,
                     mode=mode, seq_date=seq_date
                 )
+                # Propagar HCI de la rèplica seleccionada
+                hci = selected_replica.get("hci")
+                if hci is not None:
+                    quantification["hci"] = hci
+                    quantification["hci_character"] = selected_replica.get("hci_character", "")
                 sample_data["quantification"] = quantification
         except Exception as e:
             print(f"Error recalculant quantificació: {e}")
