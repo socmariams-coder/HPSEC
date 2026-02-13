@@ -109,15 +109,16 @@ class ImportPanel(QWidget):
     COL_DIRECT_PTS = 5
     COL_DIRECT_FILE = 6
     # Columnes dinàmiques (s'ajusten segons mode de dades)
-    # Per DUAL: UIB=7,8, Estat_UIB=9, DAD=10,11, Estat_DAD=12
-    # Per DIRECT: DAD=7,8, Estat_DAD=9
+    # Per DUAL: UIB=7,8, DAD=9,10, SEM_DOC=11, SEM_UIB=12, SEM_DAD=13
+    # Per DIRECT: DAD=7,8, SEM_DOC=9, SEM_DAD=10
     COL_UIB_PTS_ACTUAL = 7
     COL_UIB_FILE_ACTUAL = 8
-    COL_ESTAT_UIB = 9  # I08: Estat separat per UIB
-    COL_DAD_PTS_ACTUAL = 10
-    COL_DAD_FILE_ACTUAL = 11
-    COL_ESTAT_DAD = 12  # I08: Estat separat per DAD
-    COL_ESTAT = 12  # Compatibilitat (apunta a DAD per defecte)
+    COL_DAD_PTS_ACTUAL = 9
+    COL_DAD_FILE_ACTUAL = 10
+    # Semàfors al final (s'ajusten a _setup_table_columns)
+    COL_SEM_DOC = 11
+    COL_SEM_UIB = 12  # None en mode DIRECT
+    COL_SEM_DAD = 13
 
     # Tipus de mostra que requereixen assignació obligatòria de fitxers
     TYPES_REQUIRE_ASSIGNMENT = {"MOSTRA", "PATRÓ_CAL", "PATRÓ_REF"}
@@ -838,39 +839,68 @@ class ImportPanel(QWidget):
 
         return review_signals, missing_signals, needs_review, dad_pts
 
-    def _populate_row_estat(self, row, review_signals, missing_signals, needs_review):
-        """Omple les columnes d'estat (UIB i DAD) d'una fila."""
-        # I08: Separar estat per UIB i DAD
+    def _create_semaphore_item(self, color, tooltip=""):
+        """Crea un item semàfor (cercle de color) per a la taula."""
+        item = QTableWidgetItem("\u25CF")
+        item.setTextAlignment(Qt.AlignCenter)
+        item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+        item.setForeground(QBrush(QColor(color)))
+        font = item.font()
+        font.setPointSize(14)
+        item.setFont(font)
+        if tooltip:
+            item.setToolTip(tooltip)
+        return item
+
+    def _populate_row_estat(self, row, review_signals, missing_signals, needs_review,
+                            direct_pts=0, uib_pts=0, dad_pts=0, sample_type="MOSTRA"):
+        """Omple les columnes semàfor (DOC, UIB, DAD) d'una fila."""
+        # Colors semàfor
+        GREEN = "#27AE60"
+        YELLOW = "#F39C12"
+        RED = "#E74C3C"
+        GREY = "#BDC3C7"
+
         uib_review = [s for s in review_signals if "UIB" in s]
         dad_review = [s for s in review_signals if "DAD" in s]
         uib_missing = "UIB" in missing_signals
         dad_missing = "DAD" in missing_signals
 
-        def create_estat_item(review_list, is_missing):
-            if review_list:
-                # Extreure només el percentatge si existeix
-                text = "Revisar"
-                color = QColor("#FCF3CF")  # Groc
-            elif is_missing:
-                text = "Assignar"
-                color = QColor("#FADBD8")  # Rosa
+        is_optional_type = sample_type in self.TYPES_OPTIONAL_ASSIGNMENT
+
+        # --- Semàfor DOC ---
+        if direct_pts > 0:
+            doc_item = self._create_semaphore_item(GREEN, f"DOC Direct: {direct_pts} punts")
+        else:
+            doc_item = self._create_semaphore_item(RED, "DOC Direct: sense dades")
+        self.samples_table.setItem(row, self.COL_SEM_DOC, doc_item)
+
+        # --- Semàfor UIB ---
+        if self.COL_SEM_UIB is not None:
+            if uib_review:
+                uib_item = self._create_semaphore_item(YELLOW, "UIB: revisar assignació")
+            elif uib_missing:
+                uib_item = self._create_semaphore_item(RED, "UIB: falta fitxer")
+            elif uib_pts > 0:
+                uib_item = self._create_semaphore_item(GREEN, f"UIB: {uib_pts} punts")
+            elif is_optional_type:
+                uib_item = self._create_semaphore_item(GREY, "UIB: opcional")
             else:
-                text = "OK"
-                color = QColor("#D5F5E3")  # Verd
-            item = QTableWidgetItem(text)
-            item.setTextAlignment(Qt.AlignCenter)
-            item.setFlags(item.flags() & ~Qt.ItemIsEditable)
-            item.setBackground(QBrush(color))
-            return item
+                uib_item = self._create_semaphore_item(GREY, "UIB: sense dades")
+            self.samples_table.setItem(row, self.COL_SEM_UIB, uib_item)
 
-        # Estat UIB (només si existeix la columna)
-        if self.COL_ESTAT_UIB is not None:
-            uib_item = create_estat_item(uib_review, uib_missing)
-            self.samples_table.setItem(row, self.COL_ESTAT_UIB, uib_item)
-
-        # Estat DAD
-        dad_item = create_estat_item(dad_review, dad_missing)
-        self.samples_table.setItem(row, self.COL_ESTAT_DAD, dad_item)
+        # --- Semàfor DAD ---
+        if dad_review:
+            dad_item = self._create_semaphore_item(YELLOW, "DAD: revisar assignació")
+        elif dad_missing:
+            dad_item = self._create_semaphore_item(RED, "DAD: falta fitxer")
+        elif dad_pts > 0:
+            dad_item = self._create_semaphore_item(GREEN, f"DAD: {dad_pts} punts")
+        elif is_optional_type:
+            dad_item = self._create_semaphore_item(GREY, "DAD: opcional")
+        else:
+            dad_item = self._create_semaphore_item(GREY, "DAD: sense dades")
+        self.samples_table.setItem(row, self.COL_SEM_DAD, dad_item)
 
         if needs_review:
             self._unverified_fuzzy.add(row)
@@ -957,8 +987,12 @@ class ImportPanel(QWidget):
             all_missing_signals.extend(missing_dad)
             needs_review = needs_review or review_dad_flag
 
-            # Estat
-            self._populate_row_estat(row, all_review_signals, all_missing_signals, needs_review)
+            # Semàfors
+            self._populate_row_estat(
+                row, all_review_signals, all_missing_signals, needs_review,
+                direct_pts=direct_pts, uib_pts=uib_pts, dad_pts=dad_pts,
+                sample_type=sample_type
+            )
 
             # Guardar per preview i lògica
             u = rep.get("uib", {})
@@ -1019,25 +1053,25 @@ class ImportPanel(QWidget):
     def _setup_table_columns(self):
         """Configura les columnes segons el mode de dades."""
         if self._data_mode == "DIRECT":
-            # Sense UIB: Inj, Mostra, Tipus, Rep, Vol, Direct, Fila, DAD, Fitxer DAD, Estat DAD
-            self.samples_table.setColumnCount(10)
-            headers = ["Inj", "Mostra", "Tipus", "Rep", "Inj Vol", "Direct", "Fila", "DAD", "Fitxer DAD", "Estat DAD"]
+            # Sense UIB: Inj, Mostra, Tipus, Rep, Vol, Direct, Fila, DAD, Fitxer DAD, DOC, DAD
+            self.samples_table.setColumnCount(11)
+            headers = ["Inj", "Mostra", "Tipus", "Rep", "Inj Vol", "Direct", "Fila", "DAD", "Fitxer DAD", "DOC", "DAD"]
             self.COL_DAD_PTS_ACTUAL = 7
             self.COL_DAD_FILE_ACTUAL = 8
-            self.COL_ESTAT_UIB = None  # No UIB en mode DIRECT
-            self.COL_ESTAT_DAD = 9
-            self.COL_ESTAT = 9  # Compatibilitat
+            self.COL_SEM_DOC = 9
+            self.COL_SEM_UIB = None  # No UIB en mode DIRECT
+            self.COL_SEM_DAD = 10
         else:
-            # DUAL o UIB: Inj, Mostra, Tipus, Rep, Vol, Direct, Fila, UIB, Fitxer UIB, Estat UIB, DAD, Fitxer DAD, Estat DAD
-            self.samples_table.setColumnCount(13)
-            headers = ["Inj", "Mostra", "Tipus", "Rep", "Inj Vol", "Direct", "Fila", "UIB", "Fitxer UIB", "Estat UIB", "DAD", "Fitxer DAD", "Estat DAD"]
+            # DUAL o UIB: Inj, Mostra, Tipus, Rep, Vol, Direct, Fila, UIB, Fitxer UIB, DAD, Fitxer DAD, DOC, UIB, DAD
+            self.samples_table.setColumnCount(14)
+            headers = ["Inj", "Mostra", "Tipus", "Rep", "Inj Vol", "Direct", "Fila", "UIB", "Fitxer UIB", "DAD", "Fitxer DAD", "DOC", "UIB", "DAD"]
             self.COL_UIB_PTS_ACTUAL = 7
             self.COL_UIB_FILE_ACTUAL = 8
-            self.COL_ESTAT_UIB = 9
-            self.COL_DAD_PTS_ACTUAL = 10
-            self.COL_DAD_FILE_ACTUAL = 11
-            self.COL_ESTAT_DAD = 12
-            self.COL_ESTAT = 12  # Compatibilitat (apunta a DAD)
+            self.COL_DAD_PTS_ACTUAL = 9
+            self.COL_DAD_FILE_ACTUAL = 10
+            self.COL_SEM_DOC = 11
+            self.COL_SEM_UIB = 12
+            self.COL_SEM_DAD = 13
 
         self.samples_table.setHorizontalHeaderLabels(headers)
 
@@ -1058,6 +1092,13 @@ class ImportPanel(QWidget):
         header = self.samples_table.horizontalHeader()
         for col in range(self.samples_table.columnCount()):
             header.setSectionResizeMode(col, QHeaderView.ResizeToContents)
+
+        # Semàfors amb amplada fixa estreta
+        sem_cols = [self.COL_SEM_DOC, self.COL_SEM_UIB, self.COL_SEM_DAD]
+        for col in sem_cols:
+            if col is not None:
+                header.setSectionResizeMode(col, QHeaderView.Fixed)
+                self.samples_table.setColumnWidth(col, 30)
 
     def _add_data_cell(self, row, col, text, match_type, editable=False):
         """Afegeix una cel·la amb color segons match_type."""
@@ -1407,9 +1448,17 @@ class ImportPanel(QWidget):
             print(f"Error carregant {filename}: {e}")
 
     def _update_row_state(self, row):
-        """Actualitza l'estat d'una fila específica."""
-        # Obtenir tipus de mostra (buscar per nom/replica per suportar taula ordenada)
+        """Actualitza l'estat (semàfors) d'una fila específica."""
+        GREEN = "#27AE60"
+        YELLOW = "#F39C12"
+        RED = "#E74C3C"
+        GREY = "#BDC3C7"
+
+        # Obtenir tipus de mostra i dades (buscar per nom/replica per suportar taula ordenada)
         sample_type = "MOSTRA"
+        direct_pts = 0
+        uib_pts = 0
+        dad_pts = 0
         name_item = self.samples_table.item(row, self.COL_MOSTRA)
         rep_item = self.samples_table.item(row, self.COL_REP)
         if name_item and rep_item:
@@ -1419,17 +1468,18 @@ class ImportPanel(QWidget):
                 if (data.get("name") == s_name and
                     str(data.get("replica", "")) == s_rep):
                     sample_type = data.get("type", "MOSTRA")
+                    direct_pts = data.get("direct_pts", 0)
+                    uib_pts = data.get("uib_pts", 0)
+                    dad_pts = data.get("dad_pts", 0)
                     break
 
-        # BLANC i CONTROL no requereixen assignació de DAD/UIB
-        # Només MOSTRA, PATRÓ_CAL, PATRÓ_REF necessiten verificació
         requires_assignment = sample_type in self.TYPES_REQUIRE_ASSIGNMENT
+        is_optional_type = sample_type in self.TYPES_OPTIONAL_ASSIGNMENT
 
         missing = []
         pending_review = []
 
         if requires_assignment:
-            # Comprovar UIB
             if self._data_mode in ["DUAL", "UIB"]:
                 uib_item = self.samples_table.item(row, self.COL_UIB_FILE_ACTUAL)
                 if uib_item:
@@ -1440,7 +1490,6 @@ class ImportPanel(QWidget):
                     elif match_type == "SUGGESTED":
                         pending_review.append("UIB")
 
-            # Comprovar DAD
             dad_item = self.samples_table.item(row, self.COL_DAD_FILE_ACTUAL)
             if dad_item:
                 val = dad_item.text()
@@ -1450,33 +1499,53 @@ class ImportPanel(QWidget):
                 elif match_type == "SUGGESTED":
                     pending_review.append("DAD")
 
-        # I08: Actualitzar Estat UIB i DAD per separat
         uib_missing = "UIB" in missing
         dad_missing = "DAD" in missing
         uib_review = "UIB" in pending_review
         dad_review = "DAD" in pending_review
 
-        def update_estat_cell(col, is_missing, is_review):
-            if col is None:
-                return
-            item = self.samples_table.item(row, col)
-            if item:
-                if is_missing:
-                    item.setText("Assignar")
-                    item.setBackground(QBrush(QColor("#FADBD8")))  # Rosa
-                elif is_review:
-                    item.setText("Revisar")
-                    item.setBackground(QBrush(QColor("#FCF3CF")))  # Groc
-                else:
-                    item.setText("OK")
-                    item.setBackground(QBrush(QColor("#D5F5E3")))  # Verd
+        # --- Semàfor DOC ---
+        if direct_pts > 0:
+            self.samples_table.setItem(row, self.COL_SEM_DOC,
+                self._create_semaphore_item(GREEN, f"DOC Direct: {direct_pts} punts"))
+        else:
+            self.samples_table.setItem(row, self.COL_SEM_DOC,
+                self._create_semaphore_item(RED, "DOC Direct: sense dades"))
 
-        # Actualitzar UIB (si existeix)
-        if self.COL_ESTAT_UIB is not None:
-            update_estat_cell(self.COL_ESTAT_UIB, uib_missing, uib_review)
+        # --- Semàfor UIB ---
+        if self.COL_SEM_UIB is not None:
+            if uib_review:
+                self.samples_table.setItem(row, self.COL_SEM_UIB,
+                    self._create_semaphore_item(YELLOW, "UIB: revisar assignació"))
+            elif uib_missing:
+                self.samples_table.setItem(row, self.COL_SEM_UIB,
+                    self._create_semaphore_item(RED, "UIB: falta fitxer"))
+            elif uib_pts > 0:
+                self.samples_table.setItem(row, self.COL_SEM_UIB,
+                    self._create_semaphore_item(GREEN, f"UIB: {uib_pts} punts"))
+            elif is_optional_type:
+                self.samples_table.setItem(row, self.COL_SEM_UIB,
+                    self._create_semaphore_item(GREY, "UIB: opcional"))
+            else:
+                self.samples_table.setItem(row, self.COL_SEM_UIB,
+                    self._create_semaphore_item(GREY, "UIB: sense dades"))
 
-        # Actualitzar DAD
-        update_estat_cell(self.COL_ESTAT_DAD, dad_missing, dad_review)
+        # --- Semàfor DAD ---
+        if dad_review:
+            self.samples_table.setItem(row, self.COL_SEM_DAD,
+                self._create_semaphore_item(YELLOW, "DAD: revisar assignació"))
+        elif dad_missing:
+            self.samples_table.setItem(row, self.COL_SEM_DAD,
+                self._create_semaphore_item(RED, "DAD: falta fitxer"))
+        elif dad_pts > 0:
+            self.samples_table.setItem(row, self.COL_SEM_DAD,
+                self._create_semaphore_item(GREEN, f"DAD: {dad_pts} punts"))
+        elif is_optional_type:
+            self.samples_table.setItem(row, self.COL_SEM_DAD,
+                self._create_semaphore_item(GREY, "DAD: opcional"))
+        else:
+            self.samples_table.setItem(row, self.COL_SEM_DAD,
+                self._create_semaphore_item(GREY, "DAD: sense dades"))
 
         # Marcar fila com no verificada si hi ha pendents
         if missing or pending_review:
@@ -1695,67 +1764,12 @@ class ImportPanel(QWidget):
 
 
     def _recalculate_row_states(self):
-        """Recalcula l'estat de cada fila basant-se en assignacions actuals."""
+        """Recalcula l'estat (semàfors) de cada fila basant-se en assignacions actuals."""
         self.samples_table.blockSignals(True)
         self._unverified_fuzzy.clear()
 
         for row in range(self.samples_table.rowCount()):
-            # Obtenir tipus de mostra (buscar per nom/replica)
-            sample_type = "MOSTRA"
-            name_item = self.samples_table.item(row, self.COL_MOSTRA)
-            rep_item = self.samples_table.item(row, self.COL_REP)
-            if name_item and rep_item:
-                s_name = name_item.data(Qt.UserRole)
-                s_rep = rep_item.text()
-                for data in self._sample_data:
-                    if (data.get("name") == s_name and
-                        str(data.get("replica", "")) == s_rep):
-                        sample_type = data.get("type", "MOSTRA")
-                        break
-
-            # BLANC i CONTROL no requereixen assignació
-            requires_assignment = sample_type in self.TYPES_REQUIRE_ASSIGNMENT
-
-            missing = []
-
-            if requires_assignment:
-                # Comprovar UIB
-                if self._data_mode in ["DUAL", "UIB"]:
-                    uib_item = self.samples_table.item(row, self.COL_UIB_FILE_ACTUAL)
-                    if uib_item:
-                        val = uib_item.text()
-                        if val == "-" and self._orphan_files.get("uib"):
-                            missing.append("UIB")
-
-                # Comprovar DAD
-                dad_item = self.samples_table.item(row, self.COL_DAD_FILE_ACTUAL)
-                if dad_item:
-                    val = dad_item.text()
-                    if val == "-" and self._orphan_files.get("dad"):
-                        missing.append("DAD")
-
-            # I08: Actualitzar Estat UIB i DAD per separat
-            uib_missing = "UIB" in missing
-            dad_missing = "DAD" in missing
-
-            def update_estat(col, is_missing):
-                if col is None:
-                    return
-                item = self.samples_table.item(row, col)
-                if item:
-                    if is_missing:
-                        item.setText("Assignar")
-                        item.setBackground(QBrush(QColor("#FADBD8")))
-                    else:
-                        item.setText("OK")
-                        item.setBackground(QBrush(QColor("#D5F5E3")))
-
-            if self.COL_ESTAT_UIB is not None:
-                update_estat(self.COL_ESTAT_UIB, uib_missing)
-            update_estat(self.COL_ESTAT_DAD, dad_missing)
-
-            if missing:
-                self._unverified_fuzzy.add(row)
+            self._update_row_state(row)
 
         self.samples_table.blockSignals(False)
 

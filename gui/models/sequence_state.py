@@ -84,6 +84,9 @@ class SequenceState:
     # Notes de l'usuari
     notes: str = ""
 
+    # Config fingerprint (per detectar obsolescència)
+    config_fingerprint: str = ""
+
     # Siblings (carpetes germanes com 282B_SEQ, 282C_SEQ)
     siblings: List[str] = field(default_factory=list)  # Paths de siblings
     is_sibling: bool = False  # True si és sibling secundari (282B, 282C...)
@@ -236,6 +239,7 @@ class SequenceState:
         if self.analyze_status.data:
             data = self.analyze_status.data
             self.analyze_warnings = data.get('warnings', [])
+            self.config_fingerprint = data.get('config_fingerprint', '')
 
     @property
     def info_text(self) -> str:
@@ -253,6 +257,14 @@ class SequenceState:
             parts.append("No KHP!")
 
         return " · ".join(parts) if parts else ""
+
+    @property
+    def is_config_stale(self) -> bool:
+        """True si la config actual difereix de la usada en l'anàlisi."""
+        if not self.config_fingerprint or not self.analyze_status.completed:
+            return False
+        from hpsec_config import get_config
+        return self.config_fingerprint != get_config().compute_config_fingerprint()
 
     @property
     def has_warnings(self) -> bool:

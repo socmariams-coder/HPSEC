@@ -99,8 +99,7 @@ class KHPReplicaGraphWidget(QWidget):
 
         # --- Direct DOC curve ---
         color_direct = '#2E86AB'
-        ax.plot(t_doc, y_doc, color=color_direct, linewidth=1.2,
-                label=f'Direct (A={area:.0f})')
+        ax.plot(t_doc, y_doc, color=color_direct, linewidth=1.2)
 
         # Shaded integrated area (Direct)
         li = rep_direct.get('peak_left_idx', 0)
@@ -114,22 +113,24 @@ class KHPReplicaGraphWidget(QWidget):
             y_repaired = np.asarray(rep_direct['y_doc_repaired'])
             if len(y_repaired) == len(t_doc):
                 ax.plot(t_doc, y_repaired, color='#E74C3C', linewidth=0.8,
-                       alpha=0.4, linestyle=':', label='Original (batman)')
+                       alpha=0.4, linestyle=':')
 
         # Bigaussian fit (dashed over DOC)
         self._plot_bigaussian_fit(ax, rep_direct)
 
         # --- UIB DOC curve (overlaid in green) ---
+        area_uib = 0
+        has_uib_curve = False
         if rep_uib is not None:
             t_uib = rep_uib.get('t_doc')
             y_uib = rep_uib.get('y_doc')
             area_uib = rep_uib.get('area', 0)
             if t_uib is not None and y_uib is not None:
+                has_uib_curve = True
                 t_uib = np.asarray(t_uib)
                 y_uib = np.asarray(y_uib)
                 color_uib = '#27AE60'
-                ax.plot(t_uib, y_uib, color=color_uib, linewidth=1.2,
-                       label=f'UIB (A={area_uib:.0f})')
+                ax.plot(t_uib, y_uib, color=color_uib, linewidth=1.2)
                 li_u = rep_uib.get('peak_left_idx', 0)
                 ri_u = rep_uib.get('peak_right_idx', len(t_uib) - 1)
                 if 0 <= li_u < ri_u < len(t_uib):
@@ -141,25 +142,12 @@ class KHPReplicaGraphWidget(QWidget):
         ax.set_ylabel('DOC (mAU)', fontsize=7)
         ax.tick_params(axis='both', labelsize=6)
         ax.grid(True, alpha=0.3)
-        if ax.get_legend_handles_labels()[1]:
-            ax.legend(fontsize=6, loc='upper right', framealpha=0.7)
 
-        # --- Title with key info (G5) ---
-        bg = rep_direct.get('bigaussian_doc', {})
-        r2_val = bg.get('r2', 0) if bg else 0
-        bg_status = bg.get('status', '') if bg else ''
-        status_icon = 'OK' if bg_status == 'VALID' else ('!!' if bg_status in ('CHECK', 'INVALID') else '')
-        title_parts = [f"R{replica_num} DOC: A={area:.0f}"]
-        if snr > 0:
-            title_parts.append(f"SNR={snr:.0f}")
-        if r2_val > 0:
-            title_parts.append(f"R\u00B2={r2_val:.3f}")
-        if status_icon:
-            title_parts.append(status_icon)
-        ax.set_title("  ".join(title_parts), fontsize=8, fontweight='bold')
+        # --- Title ---
+        ax.set_title(f"R{replica_num} DOC", fontsize=8, fontweight='bold')
 
-        # --- Metrics text box (G3) ---
-        self._draw_metrics_box(ax, rep_direct)
+        # --- Info box: llegenda + mètriques unificades ---
+        self._draw_info_box(ax, rep_direct, area, snr, has_uib_curve, area_uib)
 
         # --- Timeout zones ---
         self._draw_timeout_zones(ax, rep_direct)
@@ -233,44 +221,41 @@ class KHPReplicaGraphWidget(QWidget):
                 y_fit = bigaussian(t_fit, amp, mu, sigma_l, sigma_r, 0)
                 fit_color = '#27AE60' if bigauss.get('status') == 'VALID' else '#F39C12'
                 ax.plot(t_fit, y_fit, color=fit_color, linewidth=1.3, linestyle='--',
-                       alpha=0.8, label=f'Fit (R\u00B2={r2:.3f})')
+                       alpha=0.8, label='Fit BiGauss')
         except Exception:
             pass
 
-    def _draw_metrics_box(self, ax, rep):
-        """Draw metrics text box on DOC subplot (G3)."""
-        metrics_lines = []
+    def _draw_info_box(self, ax, rep, area, snr, has_uib, area_uib):
+        """Bloc únic amb llegenda + mètriques a upper right."""
+        lines = []
 
-        # R² bigaussian
+        # Senyals
+        lines.append(f"\u2501 Direct  A={area:.0f}")
+        if has_uib:
+            lines.append(f"\u2501 UIB     A={area_uib:.0f}")
+
+        # SNR
+        if snr > 0:
+            lines.append(f"SNR={snr:.0f}")
+
+        # Bigaussian R²
         bg = rep.get('bigaussian_doc', {})
         if bg:
             r2 = bg.get('r2', 0)
-            status = bg.get('status', '?')
+            status = bg.get('status', '')
             if r2 > 0:
-                metrics_lines.append(f"R\u00B2={r2:.4f} ({status})")
+                tag = 'OK' if status == 'VALID' else ('!!' if status in ('CHECK', 'INVALID') else '')
+                lines.append(f"R\u00B2={r2:.4f} {tag}")
 
-        # Quality score
+        # Anomalies
+        if rep.get('has_batman'):
+            lines.append("BATMAN" + (" (rep)" if rep.get('batman_repaired') else " !!"))
         qs = rep.get('quality_score', 0)
         if qs > 0:
-            metrics_lines.append(f"QS={qs}")
+            lines.append(f"QS={qs}")
 
-        # Batman
-        if rep.get('has_batman'):
-            if rep.get('batman_repaired'):
-                metrics_lines.append("BATMAN (reparat)")
-            else:
-                metrics_lines.append("!! BATMAN")
-
-        # Baseline drift warning
-        bl_pct = rep.get('bl_drift_pct', 0)
-        if bl_pct > 8:
-            metrics_lines.append(f"!! BL drift {bl_pct:.0f}%")
-
-        if not metrics_lines:
-            return
-
-        text = "\n".join(metrics_lines)
-        props = dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.75, edgecolor='#BDC3C7')
+        text = "\n".join(lines)
+        props = dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.8, edgecolor='#BDC3C7')
         ax.text(0.98, 0.97, text, transform=ax.transAxes, fontsize=6,
                verticalalignment='top', horizontalalignment='right',
                bbox=props, family='monospace')

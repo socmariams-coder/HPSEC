@@ -12,8 +12,29 @@ Versió: 1.0
 
 import os
 import json
+import hashlib
 from pathlib import Path
 from datetime import datetime
+
+# =============================================================================
+# CLASSIFICACIÓ DE SECCIONS PER IMPACTE
+# =============================================================================
+
+# Seccions que afecten resultats ja processats (requereixen reprocessament)
+REPROCESS_SECTIONS = frozenset([
+    "detection", "quality", "baseline", "chromatogram",
+    "time_fractions", "timeout_zones", "wavelengths", "warnings", "dad",
+])
+
+# Seccions que només afecten el proper processament
+FUTURE_SECTIONS = frozenset([
+    "calibration", "blank_injections", "control_injections",
+    "sample_types", "sequence", "injection_volumes",
+])
+
+# Seccions amb efecte immediat (UI, paths)
+IMMEDIATE_SECTIONS = frozenset(["paths", "ui"])
+
 
 # =============================================================================
 # CONFIGURACIÓ PER DEFECTE
@@ -193,11 +214,28 @@ class ConfigManager:
                 with open(self.config_path, 'r', encoding='utf-8') as f:
                     saved_config = json.load(f)
                 # Merge amb defaults (per si hi ha nous paràmetres)
-                return self._merge_configs(DEFAULT_CONFIG, saved_config)
+                config = self._merge_configs(DEFAULT_CONFIG, saved_config)
+                return self._migrate_config(config)
             except Exception as e:
                 print(f"Error carregant configuració: {e}")
                 return DEFAULT_CONFIG.copy()
         return DEFAULT_CONFIG.copy()
+
+    def _migrate_config(self, config):
+        """Migra claus obsoletes a les noves."""
+        det = config.get("detection", {})
+        # batman_max_sep → batman_max_sep_min
+        if "batman_max_sep" in det and "batman_max_sep_min" in det:
+            del det["batman_max_sep"]
+        elif "batman_max_sep" in det:
+            det["batman_max_sep_min"] = det.pop("batman_max_sep")
+        return config
+
+    def compute_config_fingerprint(self):
+        """SHA-256 de les seccions que afecten el processament. Returns hex[:16]."""
+        data = {s: self.config.get(s, {}) for s in sorted(REPROCESS_SECTIONS)}
+        raw = json.dumps(data, sort_keys=True, ensure_ascii=False)
+        return hashlib.sha256(raw.encode('utf-8')).hexdigest()[:16]
 
     def _merge_configs(self, default, saved):
         """Fusiona configuració guardada amb defaults (recursiu)."""
@@ -370,13 +408,15 @@ def get_data_folder():
 def get_registry_path():
     """
     Obté la carpeta REGISTRY per JSONs globals (KHP_History, Samples_History).
+    Relatiu a data_folder: DATA_FOLDER/REGISTRY/
     La crea si no existeix.
     """
-    cfg = get_config()
-    registry = cfg.get("paths", "registry_folder")
-    if registry:
+    data_folder = get_data_folder()
+    if data_folder:
+        registry = os.path.join(data_folder, "REGISTRY")
         os.makedirs(registry, exist_ok=True)
-    return registry
+        return registry
+    return None
 
 def save_config(cfg=None):
     """

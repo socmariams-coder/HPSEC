@@ -541,6 +541,11 @@ def llegir_masterfile_nou(filepath):
         if "3-DAD_KHP" in xl.sheet_names:
             result["dad_khp"] = pd.read_excel(xl, sheet_name="3-DAD_KHP", header=1, engine="openpyxl")
 
+    except PermissionError:
+        result["error"] = (
+            f"No es pot llegir el MasterFile: el fitxer està obert a Excel o sense permisos. "
+            f"Tancar '{os.path.basename(filepath)}' i tornar a importar."
+        )
     except Exception as e:
         result["error"] = str(e)
 
@@ -569,6 +574,11 @@ def llegir_master_direct(mestre):
             df_seq = pd.read_excel(xl, sheet_name="4-SEQ_DATA", engine="openpyxl")
 
         return df_toc, df_seq
+    except PermissionError:
+        raise PermissionError(
+            f"No es pot llegir el MasterFile: el fitxer està obert a Excel o sense permisos. "
+            f"Tancar '{os.path.basename(mestre)}' i tornar a importar."
+        )
     except Exception:
         return None, None
 
@@ -1998,6 +2008,159 @@ def parse_injections_from_masterfile(master_data, config=None):
     return injections, warnings, total_rows_with_line
 
 
+def compute_toc_calc(master_data, toc_df):
+    """
+    Calcula 4-TOC_CALC in-memory quan no existeix al MasterFile (ex: plantilla).
+
+    Replica la lògica de _create_masterfile de hpsec_migrate_master.py:
+    - Extreu timestamps TOC de 2-TOC (columna D, fila 8+)
+    - Extreu timestamps HPLC de 1-HPLC-SEQ (Acquired Date)
+    - Calcula net_delay des de 0-INFO (hora HPLC - hora TOC)
+    - Assigna cada punt TOC a la injecció corresponent
+
+    Returns:
+        pd.DataFrame amb columnes [TOC_Row, Sample, Temps_Relatiu (min), Inj_Index]
+        o None si no es pot calcular.
+    """
+    FLUSH_TIME_MIN = 3.637
+
+    # 1. Obtenir HPLC-SEQ amb timestamps
+    df_seq = master_data.get("hplc_seq")
+    if df_seq is None:
+        df_seq = master_data.get("seq")
+    if df_seq is None or (hasattr(df_seq, 'empty') and df_seq.empty):
+        print("[compute_toc_calc] No hi ha 1-HPLC-SEQ")
+        return None
+
+    # Trobar columnes rellevants
+    date_col = sample_col = sample_rep_col = None
+    for col in df_seq.columns:
+        col_lower = str(col).lower().strip()
+        if 'acquired date' in col_lower or ('injection' in col_lower and 'date' in col_lower):
+            date_col = col
+        elif ('sample' in col_lower and 'name' in col_lower) and sample_col is None:
+            sample_col = col
+        elif col_lower == 'sample_rep':
+            sample_rep_col = col
+
+    if date_col is None or sample_col is None:
+        print(f"[compute_toc_calc] Falten columnes: date_col={date_col}, sample_col={sample_col}")
+        return None
+
+    # Parsejar timestamps HPLC
+    df_hplc = df_seq[df_seq[sample_col].notna()].copy()
+    try:
+        df_hplc[date_col] = pd.to_datetime(df_hplc[date_col])
+    except Exception as e:
+        print(f"[compute_toc_calc] Error parsejant dates HPLC: {e}")
+        return None
+
+    df_hplc = df_hplc.sort_values(date_col).reset_index(drop=True)
+    hplc_times = df_hplc[date_col].values
+
+    # Obtenir noms de mostra (preferir Sample_Rep si existeix)
+    if sample_rep_col and sample_rep_col in df_hplc.columns:
+        hplc_samples = df_hplc[sample_rep_col].values
+    else:
+        # Crear Sample_Rep: nom_Rx per a cada rèplica
+        counts = {}
+        sample_reps = []
+        for name in df_hplc[sample_col].values:
+            name_str = str(name).strip()
+            counts[name_str] = counts.get(name_str, 0) + 1
+            sample_reps.append(f"{name_str}_R{counts[name_str]}")
+        hplc_samples = sample_reps
+
+    if len(hplc_times) == 0:
+        print("[compute_toc_calc] No hi ha timestamps HPLC")
+        return None
+
+    # 2. Extreure timestamps TOC de 2-TOC (columna D, fila 8+)
+    toc_timestamps = []
+    TOC_DATA_START_ROW = 8  # Les dades TOC comencen a la fila 8 (1-indexed)
+    if toc_df is not None and toc_df.shape[1] > 3:
+        # toc_df ja té header=6, així que la fila 0 del df correspon a la fila 7 de l'Excel
+        # Les dades comencen a la fila 8 de l'Excel = fila 1 del df (index 0-based)
+        for i in range(len(toc_df)):
+            # El TOC_Row a l'Excel és la fila real del full (i + header_offset + 1)
+            # Com que header=6, fila 0 del df = fila 8 de l'Excel
+            excel_row = i + TOC_DATA_START_ROW
+            # Columna D (index 3) del df original conté el timestamp
+            # Però amb header=6, la columna pot tenir diferent index
+            # Intentar trobar la columna de timestamp per nom o posició
+            val = None
+            # Primer buscar per posició (columna D = index 3)
+            col_list = list(toc_df.columns)
+            if len(col_list) > 3:
+                val = toc_df.iloc[i, 3]
+
+            if pd.notna(val):
+                try:
+                    toc_timestamps.append((excel_row, pd.to_datetime(val)))
+                except Exception:
+                    pass
+
+    if not toc_timestamps:
+        print("[compute_toc_calc] No s'han trobat timestamps TOC")
+        return None
+
+    # 3. Calcular net_delay des de 0-INFO
+    info = master_data.get("info", {})
+    hora_hplc_clock = None
+    hora_toc_clock = None
+
+    for key, val in info.items():
+        key_lower = str(key).lower()
+        if 'hora hplc' in key_lower or 'hora_hplc' in key_lower:
+            hora_hplc_clock = val
+        elif 'hora toc' in key_lower or 'hora_toc' in key_lower:
+            hora_toc_clock = val
+
+    net_delay_min = FLUSH_TIME_MIN
+    if hora_hplc_clock and hora_toc_clock:
+        try:
+            def to_minutes(t):
+                if hasattr(t, 'hour'):
+                    return t.hour * 60 + t.minute + t.second / 60
+                parts = str(t).split(':')
+                return int(parts[0]) * 60 + int(parts[1])
+
+            hplc_min = to_minutes(hora_hplc_clock)
+            toc_min = to_minutes(hora_toc_clock)
+            desfase_min = hplc_min - toc_min
+            net_delay_min = FLUSH_TIME_MIN - desfase_min
+        except Exception:
+            net_delay_min = FLUSH_TIME_MIN
+
+    # 4. Calcular mapping TOC → injecció
+    rows = []
+    for toc_row, toc_time in toc_timestamps:
+        hora_hplc = toc_time - pd.Timedelta(minutes=net_delay_min)
+        inj_index = int((hplc_times <= hora_hplc).sum())
+
+        if 0 < inj_index <= len(hplc_samples):
+            sample = hplc_samples[inj_index - 1]
+            inj_start = pd.Timestamp(hplc_times[inj_index - 1])
+            temps_rel = (hora_hplc - inj_start).total_seconds() / 60.0
+        else:
+            sample = ''
+            temps_rel = None
+
+        rows.append({
+            "TOC_Row": toc_row,
+            "Sample": sample,
+            "Temps_Relatiu (min)": round(temps_rel, 3) if temps_rel is not None else None,
+            "Inj_Index": inj_index,
+        })
+
+    if not rows:
+        return None
+
+    toc_calc_df = pd.DataFrame(rows)
+    print(f"[compute_toc_calc] Calculat 4-TOC_CALC amb {len(toc_calc_df)} files")
+    return toc_calc_df
+
+
 def find_data_for_injection(injection, seq_path, uib_files, dad_files, dad_csv_files,
                             master_khp_data, used_files, config=None,
                             toc_df=None, toc_calc_df=None,
@@ -2553,6 +2716,11 @@ def import_sequence(seq_path, config=None, progress_callback=None):
                 "filepath": master_path,
             }
 
+        # Comprovar si llegir_masterfile_nou ha fallat (ex: fitxer obert a Excel)
+        if result["master_data"].get("error"):
+            result["errors"].append(result["master_data"]["error"])
+            return result
+
         result["date"] = read_master_date(seq_path)
 
         # Extreure sensibilitat UIB si disponible (de 0-INFO B5)
@@ -2616,15 +2784,25 @@ def import_sequence(seq_path, config=None, progress_callback=None):
                 toc_df = pd.read_excel(master_path, sheet_name="2-TOC", header=6)
             if "4-TOC_CALC" in xl.sheet_names:
                 toc_calc_df = pd.read_excel(master_path, sheet_name="4-TOC_CALC")
+            elif "4-SEQ_DATA" in xl.sheet_names:
+                toc_calc_df = pd.read_excel(master_path, sheet_name="4-SEQ_DATA")
         except Exception as e:
             print(f"[WARNING] Error llegint fulls addicionals del MasterFile: {e}")
 
-        # Warning si 4-TOC_CALC buit (COLUMN mode necessita DOC Direct)
-        if result["method"] == "COLUMN":
-            if toc_calc_df is None or (hasattr(toc_calc_df, 'empty') and toc_calc_df.empty):
+        # Si 4-TOC_CALC no existeix, calcular in-memory (plantilla o MasterFile incomplet)
+        if toc_calc_df is None or (hasattr(toc_calc_df, 'empty') and toc_calc_df.empty):
+            if toc_df is not None:
                 result["warnings"].append(
-                    "ERROR fulla 4-TOC_CALC buida al MasterFile. "
-                    "No es poden obtenir dades DOC Direct. Revisar el MasterFile."
+                    "4-TOC_CALC no trobat al MasterFile, calculant automàticament..."
+                )
+                toc_calc_df = compute_toc_calc(result["master_data"], toc_df)
+                if toc_calc_df is None or toc_calc_df.empty:
+                    result["warnings"].append(
+                        "⚠️ No s'ha pogut calcular 4-TOC_CALC. DOC Direct no disponible."
+                    )
+            elif result["method"] == "COLUMN":
+                result["warnings"].append(
+                    "⚠️ 4-TOC_CALC i 2-TOC no disponibles. DOC Direct no disponible."
                 )
 
         # Warning KHP DAD: només si NO hi ha cap de les 3 fonts (3-DAD_KHP, CSV DAD, Export3D)
@@ -3617,6 +3795,12 @@ def import_from_manifest(seq_path, manifest=None, config=None, progress_callback
         xl = pd.ExcelFile(master_path, engine="openpyxl")
         if "2-TOC" in xl.sheet_names:
             toc_df = pd.read_excel(xl, sheet_name="2-TOC", header=6, engine="openpyxl")
+    except PermissionError:
+        result["errors"].append(
+            f"No es pot llegir el MasterFile: el fitxer està obert a Excel o sense permisos. "
+            f"Tancar '{os.path.basename(master_path)}' i tornar a importar."
+        )
+        return result
     except Exception as e:
         result["errors"].append(f"Error llegint MasterFile: {e}")
         return result
@@ -3681,6 +3865,12 @@ def import_from_manifest(seq_path, manifest=None, config=None, progress_callback
                     "y_net": None,
                     "baseline": None,
                 }
+
+                # Diagnòstic DOC Direct
+                if toc_df is None:
+                    result["warnings"].append(f"⚠️ {sample_name} R{rep_num}: No s'ha pogut llegir 2-TOC del MasterFile")
+                elif row_start is None or row_end is None:
+                    result["warnings"].append(f"⚠️ {sample_name} R{rep_num}: Fila DOC no definida al manifest")
 
                 # Intentar llegir les dades reals si tenim MasterFile
                 if toc_df is not None and row_start is not None and row_end is not None:

@@ -120,6 +120,27 @@ STYLE_LABEL_MUTED = f"color: {COLOR_TEXT_MUTED}; font-size: {SMALL_FONT_SIZE}px;
 STYLE_GROUPBOX = "QGroupBox { font-weight: bold; }"
 STYLE_GROUPBOX_PRIMARY = f"QGroupBox {{ font-weight: bold; color: {COLOR_PRIMARY_DARK}; }}"
 
+# Badges d'impacte per Config Panel
+STYLE_BADGE_RETROACTIVE = """
+    QLabel {
+        background-color: #FEF3C7; color: #92400E;
+        border: 1px solid #F59E0B; border-radius: 4px;
+        padding: 2px 8px; font-size: 11px; font-weight: bold;
+    }
+"""
+
+STYLE_BADGE_FUTURE = """
+    QLabel {
+        background-color: #DBEAFE; color: #1E40AF;
+        border: 1px solid #3B82F6; border-radius: 4px;
+        padding: 2px 8px; font-size: 11px; font-weight: bold;
+    }
+"""
+
+STYLE_SECTION_CHANGED = """
+    QFrame { border: 2px solid #F59E0B; background-color: #FFFBEB; }
+"""
+
 
 # =============================================================================
 # HELPER FUNCTIONS

@@ -119,6 +119,7 @@ class CalibratePanel(QWidget):
 
             if not all_cals:
                 self.condition_selector_frame.setVisible(False)
+                self._run_calibrate()
                 return
 
             # Filtrar per la SEQ actual i agrupar per condition_key
@@ -137,6 +138,7 @@ class CalibratePanel(QWidget):
 
             if not calibrations_by_condition:
                 self.condition_selector_frame.setVisible(False)
+                self._run_calibrate()
                 return
 
             # Guardar calibracions disponibles
@@ -217,11 +219,12 @@ class CalibratePanel(QWidget):
                 break
 
     def _try_load_signals_for_replicas(self, cal_enriched):
-        """Propaga dades de bigaussian fit i peak_info a les rèpliques per als gràfics.
+        """Carrega senyals des de imported_data per als gràfics de calibració.
 
-        Les dades de l'històric no contenen arrays de senyal (t_doc, y_doc).
-        Propagam el bigaussian fit des del top-level perquè el widget de gràfics
-        pugui dibuixar la corba de fit en lloc de "Sense dades".
+        Les dades de l'històric (JSON) no contenen arrays de senyal (t_doc, y_doc).
+        Si imported_data està disponible en memòria, extraiem els senyals KHP
+        directament per poder dibuixar els cromatogrames complets.
+        Fallback: propagar bigaussian fit per visualització mínima.
         """
         replicas = cal_enriched.get('replicas', [])
         if not replicas:
@@ -231,13 +234,76 @@ class CalibratePanel(QWidget):
         if replicas[0].get('t_doc') is not None:
             return
 
-        # Propagar bigaussian_doc del top-level a les rèpliques
+        # Intentar carregar senyals des de imported_data (en memòria)
+        imported_data = getattr(self.main_window, 'imported_data', None)
+        if imported_data and imported_data.get('success'):
+            samples = imported_data.get('samples', {})
+            khp_names = imported_data.get('khp_samples', [])
+
+            for rep in replicas:
+                filename = rep.get('filename', '')
+                khp_name = None
+                rep_num = None
+
+                # Intentar parsejar filename com "KHP2_R1" → khp_name="KHP2", rep_num="1"
+                for kname in khp_names:
+                    if filename.startswith(kname + '_R'):
+                        khp_name = kname
+                        try:
+                            rep_num = filename.split('_R')[-1]
+                        except Exception:
+                            pass
+                        break
+
+                # Fallback: primer KHP amb número de rèplica seqüencial
+                if not khp_name and khp_names:
+                    khp_name = khp_names[0]
+                    rep_num = str(rep.get('replica_num', 1))
+
+                if not khp_name or not rep_num:
+                    continue
+
+                sample = samples.get(khp_name, {})
+                sample_reps = sample.get('replicas', {})
+                rep_data = sample_reps.get(str(rep_num))
+
+                if not rep_data:
+                    continue
+
+                # Carregar senyal DOC Direct
+                direct = rep_data.get('direct') or {}
+                if direct.get('t') is not None and direct.get('y_net') is not None:
+                    rep['t_doc'] = direct['t']
+                    rep['y_doc'] = direct['y_net']
+
+                # Carregar senyal DAD 254nm
+                dad_data = rep_data.get('dad', {})
+                if dad_data:
+                    df_dad = dad_data.get('df')
+                    if df_dad is not None and hasattr(df_dad, 'columns') and not df_dad.empty:
+                        if 'time (min)' in df_dad.columns:
+                            col_254 = None
+                            for c in df_dad.columns:
+                                if '254' in str(c):
+                                    col_254 = c
+                                    break
+                            if col_254:
+                                import pandas as pd
+                                t_dad = pd.to_numeric(df_dad['time (min)'], errors='coerce').to_numpy()
+                                y_254 = pd.to_numeric(df_dad[col_254], errors='coerce').to_numpy()
+                                mask = np.isfinite(t_dad) & np.isfinite(y_254)
+                                rep['t_dad'] = t_dad[mask]
+                                rep['y_dad_254'] = y_254[mask]
+
+        # Propagar camps del top-level a rèpliques que no els tenen
         bigaussian_doc = cal_enriched.get('bigaussian_doc')
         t_retention = cal_enriched.get('t_retention', 0)
         area = cal_enriched.get('area', 0)
+        peak_left = cal_enriched.get('peak_left_idx', 0)
+        peak_right = cal_enriched.get('peak_right_idx', 0)
 
         for rep in replicas:
-            # Bigaussian fit (per visualització)
+            # Bigaussian fit (fallback per visualització)
             if bigaussian_doc and not rep.get('bigaussian_doc'):
                 rep['bigaussian_doc'] = bigaussian_doc
 
@@ -247,6 +313,57 @@ class CalibratePanel(QWidget):
                     't_max': rep.get('t_max', t_retention),
                     'y_max': rep.get('area', area),
                 }
+
+            # Índexs d'integració (per àrea ombrejada al gràfic)
+            if 'peak_left_idx' not in rep and peak_left > 0:
+                rep['peak_left_idx'] = peak_left
+            if 'peak_right_idx' not in rep and peak_right > 0:
+                rep['peak_right_idx'] = peak_right
+
+    def _build_uib_replicas_from_import(self, cal_enriched):
+        """Construeix replicas UIB des de imported_data per als gràfics.
+
+        Retorna un dict amb 'replicas' que contenen t_doc/y_doc amb senyal UIB,
+        o None si no hi ha dades UIB disponibles.
+        """
+        imported_data = getattr(self.main_window, 'imported_data', None)
+        if not imported_data or not imported_data.get('success'):
+            return None
+
+        samples = imported_data.get('samples', {})
+        khp_names = imported_data.get('khp_samples', [])
+        if not khp_names:
+            return None
+
+        uib_replicas = []
+        for khp_name in khp_names:
+            sample = samples.get(khp_name, {})
+            sample_reps = sample.get('replicas', {})
+
+            for rep_num, rep_data in sample_reps.items():
+                uib = rep_data.get('uib') or {}
+                if uib.get('t') is None or uib.get('y_net') is None:
+                    continue
+
+                uib_rep = {
+                    'filename': f"{khp_name}_R{rep_num}",
+                    'replica_num': int(rep_num),
+                    't_doc': uib['t'],
+                    'y_doc': uib['y_net'],
+                    'area': cal_enriched.get('area_u', 0),
+                    'snr': cal_enriched.get('snr_u', 0),
+                    'doc_source': 'uib',
+                    'bigaussian_doc': cal_enriched.get('bigaussian_uib'),
+                }
+                uib_replicas.append(uib_rep)
+
+        if not uib_replicas:
+            return None
+
+        return {
+            'replicas': uib_replicas,
+            'doc_source': 'uib',
+        }
 
     def _load_existing_calibration(self, cal):
         """Carrega una calibració existent de l'històric.
@@ -318,6 +435,11 @@ class CalibratePanel(QWidget):
         # Intentar carregar senyals des del manifest (per gràfics)
         self._try_load_signals_for_replicas(cal_enriched)
 
+        # Construir khp_data_uib des de imported_data si disponible
+        khp_data_uib = None
+        if rf_uib > 0 or cal.get('area_u', 0) > 0:
+            khp_data_uib = self._build_uib_replicas_from_import(cal_enriched)
+
         result = {
             "success": True,
             "mode": cal.get('mode', "DUAL" if cal.get('doc_mode') == 'DUAL' else "DIRECT"),
@@ -334,7 +456,7 @@ class CalibratePanel(QWidget):
             "khp_source": f"HISTÒRIC: {cal.get('seq_name', 'N/A')}",
             "khp_data": cal_enriched,
             "khp_data_direct": cal_enriched,
-            "khp_data_uib": None,
+            "khp_data_uib": khp_data_uib,
             "calibration": cal,
             "errors": [],
             "loaded_from_history": True,
