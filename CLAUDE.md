@@ -84,6 +84,34 @@ Mark features as DONE only when code is fully functional end-to-end, not when pl
 - [x] Config backend: migració batman_max_sep → batman_max_sep_min — DONE
 - [x] Config backend: REPROCESS_SECTIONS/FUTURE_SECTIONS/IMMEDIATE_SECTIONS constants — DONE
 
+## Research / Exploration (not integrated into Suite)
+
+All exploratory scripts and results live in `research/` — NOT part of the production Suite.
+
+### Humic exploration (`research/humic_exploration/`)
+- `rf_humic_lda.py` — PCA+LDA model HA/FA discrimination (LOO 93.5%, 31 refs, 242 features)
+- `rf_humic_analysis.py` — RF classifier + spectral analysis of HS zone
+- `rf_humic_index.py` — Humic index variants exploration
+- `rf_spectral_exploration.py` — General DAD spectral exploration
+- `rf_humic_std_report.py` — Standards inventory report
+- Output: `rf_humic_analysis/` (10 plots + CSVs)
+
+### BB exploration (`research/bb_exploration/`)
+- `rf_bb_analysis.py` — RF (100% CV) + PCA+LDA (94.4% LOO) on BB zone, 249 features, 11 classes
+- `rf_bb_fingerprint.py` — Organic/inorganic separation at BB (A254=organic, excess A210=inorganic)
+  - Key finding: A210 at BB is >90% inorganic for water samples
+  - PTLL/PTT ratio: 3.0x inorganic load difference
+  - Organic reference ratio A210/A254 at BB: 13.1 (geometric mean HA=6.7, FA=25.8)
+- `rf_bb_temporal.py` — Temporal sub-structure within BB (early/mid/late decomposition)
+  - Key finding: Inorganic elution timing differs between water types (FR peaks mid-BB, LAB/LAB_T late-BB)
+  - CAVEAT: Temporal alignment between chromatograms not verified — sub-window metrics may be unreliable
+- Output: `rf_bb_analysis/`, `rf_bb_fingerprint/`, `rf_bb_temporal/`
+
+### Integration status
+- [x] HCI (Humic Character Index) integrated into Suite (hpsec_humic.py + model JSON) — DONE
+- [ ] BB fingerprint integration — BLOCKED (temporal alignment not verified, no reference standards for BB)
+- [ ] BB organic/inorganic metrics as single-sample report — PENDING (needs alignment verification first)
+
 ## Design decisions
 
 - **Analyze table**: ONE unified table with all DOC+DAD columns. NO DOC/DAD toggle selector (not practical).
