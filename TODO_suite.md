@@ -6,7 +6,11 @@ Data: 2026-02-14
 
 ## Prioritat ALTA — Pendent
 
-(buit de moment)
+- [ ] **MasterFiles pendents a Dades3 (4 SEQs)**: Cal regenerar el rawdata des d'Agilent:
+  - `087_SEQ` — no té rawdata (només Export3D)
+  - `229_SEQ_BP` — rawdata corrupte (columnes HPLC-SEQ desplaçades, col A buida)
+  - `237_SEQ` — no té rawdata (només Export3D)
+  - `240_SEQ` — no té rawdata (només Export3D)
 
 ---
 
