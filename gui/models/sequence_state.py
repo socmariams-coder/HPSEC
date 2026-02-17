@@ -77,6 +77,10 @@ class SequenceState:
     n_khp: int = 0          # PC = Patrons Calibració
     n_pr: int = 0           # PR = Patrons Referència
 
+    # Comptadors d'injeccions (del manifest stats)
+    n_inj_master: int = 0   # Línies al MasterFile (1-HPLC-SEQ)
+    n_inj_imported: int = 0 # Injeccions realment importades
+
     # Data de la seqüència
     seq_date: str = ""      # Format: "YYYY-MM-DD" o "DD/MM/YY"
 
@@ -242,6 +246,17 @@ class SequenceState:
             self.n_samples = summary.get('total_samples', 0)
             self.n_khp = summary.get('total_khp', 0)
             self.n_pr = summary.get('total_pr', 0)
+            # Comptadors d'injeccions (stats o summary)
+            stats = data.get('stats', {})
+            self.n_inj_master = stats.get('master_line_count', 0)
+            # Prioritat: total_replicas_imported (nou) > summary.total_replicas (manifest)
+            # NO usar total_injections perquè no reflecteix pèrdues per Inj# duplicat
+            self.n_inj_imported = stats.get('total_replicas_imported', 0)
+            if self.n_inj_imported == 0:
+                self.n_inj_imported = summary.get('total_replicas', 0)
+            # Últim fallback: total_injections (igual a master_line_count si no hi ha pèrdues)
+            if self.n_inj_imported == 0:
+                self.n_inj_imported = stats.get('total_injections', 0)
             # Data de la seqüència
             seq_info = data.get('sequence', {})
             date_str = seq_info.get('date', '')
@@ -357,15 +372,24 @@ class SequenceState:
         return " ".join(parts)
 
     @property
+    def import_incomplete(self) -> bool:
+        """True si el MasterFile té més injeccions que les importades."""
+        if self.n_inj_master > 0 and self.n_inj_imported > 0:
+            return self.n_inj_imported < self.n_inj_master
+        return False
+
+    @property
     def import_state(self) -> str:
         """
         Estat de la fase Import per determinar color.
-        Returns: 'ok', 'warning', 'error', 'pending'
+        Returns: 'ok', 'warning', 'error', 'incomplete', 'pending'
         """
         if not self.import_status.completed:
             return 'pending'
         if self.import_status.errors:
             return 'error'
+        if self.import_incomplete:
+            return 'incomplete'
         if self.import_warnings:
             return 'warning'
         return 'ok'

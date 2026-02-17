@@ -3084,9 +3084,15 @@ def import_sequence(seq_path, config=None, progress_callback=None):
             if not r.get("has_data")
         )
 
+        # Comptador de rèpliques reals (pot ser < total_injections si hi ha sobreescriptures)
+        total_replicas_actual = sum(
+            len(s["replicas"]) for s in result["samples"].values()
+        )
+
         result["stats"] = {
             "master_line_count": result.get("master_line_count", len(injections)),  # Line# al MasterFile
-            "total_injections": len(injections),
+            "total_injections": len(injections),  # Injeccions parsejades del MasterFile
+            "total_replicas_imported": total_replicas_actual,  # Rèpliques reals (després de dedup)
             "total_samples": len(result["samples"]),
             "samples_with_data": samples_with_data,
             "samples_without_data": samples_without_data,
@@ -3097,6 +3103,15 @@ def import_sequence(seq_path, config=None, progress_callback=None):
             "orphan_uib": len(orphan_uib),
             "orphan_dad": len(orphan_dad),
         }
+
+        # Warning clar si s'han perdut injeccions per sobreescriptura
+        if total_replicas_actual < len(injections):
+            lost = len(injections) - total_replicas_actual
+            result["warnings"].insert(0,
+                f"⚠️ IMPORTACIÓ INCOMPLETA: {total_replicas_actual}/{len(injections)} "
+                f"injeccions importades. {lost} perdudes per Inj# duplicat al MasterFile. "
+                f"Cal corregir Sample_Rep al MasterFile i reimportar."
+            )
 
         # Validar que els KHP tenen dades DOC (necessari per calibrar)
         khp_without_doc = []

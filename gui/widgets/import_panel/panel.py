@@ -234,6 +234,18 @@ class ImportPanel(QWidget):
         self.total_label.setStyleSheet("font-weight: bold; color: #2E86AB;")
         info_layout.addWidget(self.total_label)
 
+        # Botó per obrir carpeta SEQ
+        self.btn_open_folder = QPushButton("📁 Obrir carpeta")
+        self.btn_open_folder.setToolTip("Obrir carpeta de la seqüència (per revisar MasterFile)")
+        self.btn_open_folder.setStyleSheet(
+            "QPushButton { border: 1px solid #ccc; border-radius: 3px; padding: 2px 8px; "
+            "font-size: 11px; color: #555; background: #f8f8f8; }"
+            "QPushButton:hover { background: #e8e8e8; color: #333; }"
+        )
+        self.btn_open_folder.setFixedHeight(22)
+        self.btn_open_folder.clicked.connect(self._open_seq_folder)
+        info_layout.addWidget(self.btn_open_folder)
+
         info_layout.addStretch()
 
         # Comptador de fitxers UIB i DAD
@@ -623,6 +635,8 @@ class ImportPanel(QWidget):
         total_injections = len(all_injections)
         stats = result.get("stats", {})
         master_line_count = stats.get("master_line_count", result.get("master_line_count", total_injections))
+        # Rèpliques reals importades (pot ser < total_injections si Inj# duplicats)
+        replicas_imported = stats.get("total_replicas_imported", total_injections)
 
         # Recollir volums d'injecció
         volumes = []
@@ -637,8 +651,11 @@ class ImportPanel(QWidget):
         method = result.get("method", "COLUMN")
         info_parts = []
 
-        # Injeccions (amb warning si no coincideixen)
-        if master_line_count > total_injections:
+        # Injeccions: comparar rèpliques importades vs línies al MasterFile
+        if master_line_count > replicas_imported:
+            info_parts.append(f"⚠️ {replicas_imported}/{master_line_count} inj")
+            has_warning = True
+        elif master_line_count > total_injections:
             info_parts.append(f"⚠️ {total_injections}/{master_line_count} inj")
             has_warning = True
         else:
@@ -683,6 +700,26 @@ class ImportPanel(QWidget):
         files_parts.append(f"DAD: {dad_used + dad_orphan}")
         self.files_label.setText(" · ".join(files_parts))
         self.info_frame.setVisible(True)
+
+        # Warning destacat si injeccions incompletes (rèpliques perdudes o línies faltants)
+        if master_line_count > replicas_imported:
+            missing = master_line_count - replicas_imported
+            self._import_warnings.append(
+                f"INCOMPLETA: {replicas_imported}/{master_line_count} injeccions. "
+                f"Falten {missing} (possibles Inj# duplicats al MasterFile). "
+                f"Obrir carpeta i corregir Sample_Rep."
+            )
+
+    def _open_seq_folder(self):
+        """Obre la carpeta de la seqüència a l'explorador de fitxers."""
+        import subprocess
+        seq_path = self.seq_path
+        if not seq_path and self.imported_data:
+            seq_path = self.imported_data.get('seq_path', '')
+        if seq_path and os.path.isdir(seq_path):
+            subprocess.Popen(f'explorer "{seq_path}"')
+        else:
+            QMessageBox.information(self, "Info", "No hi ha cap carpeta de seqüència carregada.")
 
     def _populate_row_basic(self, row, injection_num, inj):
         """Omple les columnes bàsiques d'una fila (Inj, Mostra, Tipus, Rep, Vol, Direct)."""

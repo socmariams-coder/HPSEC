@@ -65,12 +65,13 @@ COL_MODE = 5
 COL_M = 6
 COL_PC = 7
 COL_PR = 8
-COL_IMPORT = 9
-COL_CAL = 10
-COL_ANA = 11
-COL_REVIEW = 12
-COL_NOTES = 13
-NUM_COLS = 14
+COL_INJ = 9
+COL_IMPORT = 10
+COL_CAL = 11
+COL_ANA = 12
+COL_REVIEW = 13
+COL_NOTES = 14
+NUM_COLS = 15
 
 
 # =============================================================================
@@ -478,7 +479,7 @@ class DashboardPanel(QWidget):
         self.table = QTableWidget()
         self.table.setColumnCount(NUM_COLS)
         self.table.setHorizontalHeaderLabels([
-            "", "#", "Seqüència", "Data", "Tipus", "Mode", "M", "PC", "PR",
+            "", "#", "Seqüència", "Data", "Tipus", "Mode", "M", "PC", "PR", "Inj",
             "Importar", "Calibrar", "Analitzar", "Consolidar", "Notes"
         ])
 
@@ -486,6 +487,7 @@ class DashboardPanel(QWidget):
         self.table.horizontalHeaderItem(COL_M).setToolTip("Mostres")
         self.table.horizontalHeaderItem(COL_PC).setToolTip("Patrons de Calibració (KHP)")
         self.table.horizontalHeaderItem(COL_PR).setToolTip("Patrons de Referència")
+        self.table.horizontalHeaderItem(COL_INJ).setToolTip("Injeccions importades / total MasterFile")
         self.table.horizontalHeaderItem(COL_NOTES).setToolTip("Doble-clic per afegir notes")
 
         # Configurar columnes - autoajust amb mínims per capçaleres
@@ -512,6 +514,7 @@ class DashboardPanel(QWidget):
             COL_M: 30,      # M
             COL_PC: 32,     # PC
             COL_PR: 32,     # PR
+            COL_INJ: 48,    # Inj
             COL_IMPORT: 65, # Importar
             COL_CAL: 62,    # Calibrar
             COL_ANA: 68,    # Analitzar
@@ -705,6 +708,40 @@ class DashboardPanel(QWidget):
             item_pr.setToolTip(f"Patrons de Referència: {n_pr}")
             self.table.setItem(row, COL_PR, item_pr)
 
+            # Col INJ: Injeccions (importades/masterfile)
+            n_imp = seq.n_inj_imported
+            n_mst = seq.n_inj_master
+            if n_mst > 0 and seq.import_status.completed:
+                if n_imp < n_mst:
+                    inj_text = f"{n_imp}/{n_mst}"
+                    inj_tooltip = (f"INCOMPLETA: {n_imp} importades de {n_mst} al MasterFile\n"
+                                   f"Falten {n_mst - n_imp} injeccions (possibles Inj# duplicats)")
+                    inj_color = QColor(COLOR_ERROR)
+                else:
+                    inj_text = str(n_imp)
+                    inj_tooltip = f"Injeccions: {n_imp} (MasterFile: {n_mst})"
+                    inj_color = QColor("#666")
+            elif seq.import_status.completed:
+                inj_text = str(n_imp) if n_imp > 0 else "-"
+                inj_tooltip = f"Injeccions: {n_imp}" if n_imp > 0 else "Sense dades d'injeccions"
+                inj_color = QColor("#666")
+            else:
+                inj_text = "-"
+                inj_tooltip = "Pendent d'importar"
+                inj_color = QColor(COLOR_PENDING)
+
+            item_inj = SortableTableItem(inj_text)
+            item_inj.setData(Qt.UserRole, n_imp)
+            item_inj.setTextAlignment(Qt.AlignCenter)
+            item_inj.setForeground(inj_color)
+            item_inj.setFlags(item_inj.flags() & ~Qt.ItemIsEditable)
+            item_inj.setToolTip(inj_tooltip)
+            if n_imp < n_mst and n_mst > 0:
+                font = item_inj.font()
+                font.setBold(True)
+                item_inj.setFont(font)
+            self.table.setItem(row, COL_INJ, item_inj)
+
             # Fases (Importar, Calibrar, Analitzar, Consolidar)
             phases_data = [
                 (seq.import_status, seq.import_state, "Importar", seq.import_warnings),
@@ -739,6 +776,14 @@ class DashboardPanel(QWidget):
                     tooltip = f"{phase_name}: Completat"
                     if timestamp:
                         tooltip += f"\n{timestamp}"
+                elif state == 'incomplete':
+                    item.setText("½")
+                    item.setForeground(QColor(COLOR_ERROR))
+                    n_imp = seq.n_inj_imported
+                    n_mst = seq.n_inj_master
+                    tooltip = (f"{phase_name}: INCOMPLETA\n"
+                               f"{n_imp}/{n_mst} injeccions importades\n"
+                               f"Falten {n_mst - n_imp} injeccions")
                 elif state == 'warning':
                     item.setText("⚠")
                     item.setForeground(QColor(COLOR_WARNING))
