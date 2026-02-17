@@ -385,8 +385,8 @@ def quantify_with_global_calibration(area, volume_uL, signal='direct', mode='col
     """
     Quantifica una mostra usant rf_mass_cal global (Calibration_Reference.json).
 
-    Nota: Diferent de calculate_concentration() que usa calibració local de la SEQ.
-    Aquesta funció és la recomanada per quantificació estàndard.
+    Nota: Aquesta funció és la recomanada per quantificació estàndard.
+    Usa rf_mass_cal global (Calibration_Reference.json) amb intercept.
 
     Fórmules segons model:
     - origin:    ppm = Area × 1000 / (rf_mass_cal × volume_uL)
@@ -1197,84 +1197,6 @@ def validate_integration_baseline(t, y, left_idx, right_idx, peak_idx, baseline_
 # NOTA: detect_batman i detect_timeout ara estan a hpsec_core.py
 # (Single Source of Truth per evitar duplicació)
 # Usar: from hpsec_core import detect_batman, detect_timeout, detect_peak_anomaly
-
-
-# =============================================================================
-# HELPER: QUANTIFICACIÓ AMB CALIBRACIONS
-# =============================================================================
-
-def get_calibration_for_conditions(calibration_data, volume_uL, signal="direct"):
-    """
-    Troba la calibració que coincideix amb les condicions donades.
-
-    Args:
-        calibration_data: Resultat de calibrate_sequence()
-        volume_uL: Volum d'injecció de la mostra (µL)
-        signal: "direct", "uib", o "primary"
-
-    Returns:
-        dict: Calibració amb les mateixes condicions, o la principal si no hi ha match
-    """
-    if not calibration_data:
-        return None
-
-    # Seleccionar llista de calibracions segons senyal
-    if signal == "uib":
-        calibrations = calibration_data.get("calibrations_uib", [])
-    elif signal == "direct":
-        calibrations = calibration_data.get("calibrations_direct", [])
-    else:
-        calibrations = calibration_data.get("calibrations", [])
-
-    if not calibrations:
-        # Fallback: retornar khp_data si existeix (compatibilitat)
-        return calibration_data.get("khp_data")
-
-    # Buscar calibració pel volum
-    vol_int = int(volume_uL) if volume_uL else 0
-    for cal in calibrations:
-        if cal.get('volume_uL') == vol_int:
-            return cal
-
-    # Fallback: primera calibració (la de major conc/vol)
-    return calibrations[0]
-
-
-def calculate_concentration(area, volume_uL, calibration_data, signal="direct"):
-    """
-    Calcula la concentració d'una mostra usant la calibració local de la SEQ.
-
-    Args:
-        area: Àrea integrada del cromatograma (mAU·min)
-        volume_uL: Volum d'injecció de la mostra (µL)
-        calibration_data: Resultat de calibrate_sequence()
-        signal: "direct", "uib", o "primary"
-
-    Returns:
-        float: Concentració en ppm (mg/L)
-
-    Fórmula:
-        conc_ppm = Area × 1000 / (RF_mass × volume_µL)
-
-    Example:
-        >>> cal = calibrate_sequence(seq_path, samples)
-        >>> for sample in samples:
-        ...     area = sample.get("area", 0)
-        ...     vol = sample.get("inj_volume", 400)
-        ...     conc = calculate_concentration(area, vol, cal, signal="direct")
-    """
-    cal = get_calibration_for_conditions(calibration_data, volume_uL, signal)
-    if not cal:
-        return 0.0
-
-    rf_mass = cal.get('rf_mass', 0)
-    if rf_mass <= 0 or volume_uL <= 0:
-        return 0.0
-    return area * 1000 / (rf_mass * volume_uL)
-
-
-# Backward compat alias (deprecated)
-quantify_sample = calculate_concentration
 
 
 # =============================================================================

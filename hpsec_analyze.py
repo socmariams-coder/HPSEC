@@ -86,9 +86,8 @@ from hpsec_core import (
 )
 from hpsec_config import get_config
 
-# Import funcions calibració per seleccionar calibració segons volum d'injecció
+# Import funcions calibració global (rf_mass_cal + intercept)
 from hpsec_calibrate import (
-    get_calibration_for_conditions,
     get_all_active_calibrations,
     get_rf_mass_cal,
     get_calibration_intercept,
@@ -1460,7 +1459,10 @@ def quantify_sample(sample_result, calibration_data, mode="COLUMN", seq_date=Non
             result["rf_mass_cal_used"] = rf_mass_direct
             result["intercept"] = intercept
         else:
-            # Fallback: usar RF local (àrea/ppm) si disponible
+            # Fallback: usar RF local (àrea/ppm) si disponible — SENSE INTERCEPT
+            logger.warning("quantify_sample: calibració global no disponible per %s, "
+                           "usant RF local (punt únic, sense intercept)",
+                           sample_result.get("sample_name", "?"))
             rf_local = None
             if calibration_data:
                 rf_local = calibration_data.get("rf_direct") or calibration_data.get("rf")
@@ -1510,7 +1512,10 @@ def quantify_sample(sample_result, calibration_data, mode="COLUMN", seq_date=Non
                     else:
                         result["fractions_uib"][frac] = 0.0
         else:
-            # Fallback: usar RF UIB local si disponible
+            # Fallback: usar RF UIB local si disponible — SENSE INTERCEPT
+            logger.warning("quantify_sample: rf_mass_uib global no disponible, "
+                           "usant RF UIB local per %s",
+                           sample_result.get("sample_name", "?"))
             if calibration_data:
                 rf_uib_local = calibration_data.get("rf_uib", 0)
                 if rf_uib_local and rf_uib_local > 0:
