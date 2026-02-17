@@ -25,10 +25,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from gui.models.sequence_state import SequenceState, Phase, get_all_sequences
 from hpsec_config import get_config
-from hpsec_import import import_sequence, import_sequence_pack, save_import_manifest, import_from_manifest, load_manifest
-from hpsec_calibrate import calibrate_from_import
-from hpsec_analyze import analyze_sequence, save_analysis_result
-from hpsec_reports import generate_import_plots, generate_calibration_plots, generate_analysis_plots
+# NOTA: hpsec_import, hpsec_calibrate, hpsec_analyze, hpsec_reports
+# s'importen lazy dins les funcions run_*() per accelerar l'arrencada.
 
 # Contrasenya per operacions batch i reset
 BATCH_PASSWORD = "LEQUIA"
@@ -89,6 +87,8 @@ def run_import(seq_path, default_uib_sensitivity=None, siblings=None):
         default_uib_sensitivity: Sensibilitat UIB per defecte (opcional)
         siblings: Llista de paths de siblings (282B_SEQ, 282C_SEQ...) o None
     """
+    from hpsec_import import import_sequence, import_sequence_pack, save_import_manifest
+    from hpsec_reports import generate_import_plots
     try:
         # Si hi ha siblings, usar import_sequence_pack
         if siblings:
@@ -131,6 +131,9 @@ def run_import(seq_path, default_uib_sensitivity=None, siblings=None):
 
 def run_calibrate(seq_path):
     """Executa CALIBRATE per una seqüència. Retorna (success, message, data)."""
+    from hpsec_import import import_from_manifest
+    from hpsec_calibrate import calibrate_from_import
+    from hpsec_reports import generate_calibration_plots
     try:
         # IMPORTANT: El manifest JSON només conté metadades, no les dades reals.
         # Cal usar import_from_manifest per carregar les dades des dels fitxers.
@@ -159,6 +162,9 @@ def run_calibrate(seq_path):
 
 def run_analyze(seq_path):
     """Executa ANALYZE per una seqüència. Retorna (success, message, data)."""
+    from hpsec_import import import_from_manifest
+    from hpsec_analyze import analyze_sequence, save_analysis_result
+    from hpsec_reports import generate_analysis_plots
     try:
         import json
         data_path = Path(seq_path) / "CHECK" / "data"
@@ -335,7 +341,9 @@ class DashboardPanel(QWidget):
 
         self._loading_overlay = None
         self._setup_ui()
-        self.refresh_sequences()
+        # Defer: carregar seqüències DESPRÉS que la finestra sigui visible
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(0, self.refresh_sequences)
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
@@ -1121,6 +1129,21 @@ class DashboardPanel(QWidget):
                 continue
 
             try:
+                # analysis_result.json pot ser >10MB — no carregar sencer
+                if filename == "analysis_result.json":
+                    data = SequenceState._read_json_metadata(str(json_file))
+                    # Afegir notes basant-se en warning_level (metadata)
+                    wl = data.get("warning_level", "none")
+                    if wl in ("warning", "blocker"):
+                        notes.append({
+                            "stage": stage_name,
+                            "type": "WARN" if wl == "warning" else "ANOM",
+                            "severity": wl,
+                            "content": f"Avisos d'anàlisi ({wl})",
+                            "icon": "⚠" if wl == "warning" else "!!",
+                        })
+                    continue
+
                 with open(json_file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
 

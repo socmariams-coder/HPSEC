@@ -1102,12 +1102,12 @@ class ImportPanel(QWidget):
         for col in range(self.samples_table.columnCount()):
             header.setSectionResizeMode(col, QHeaderView.ResizeToContents)
 
-        # Semàfors amb amplada fixa estreta
+        # Semàfors amb amplada fixa (prou per capçalera ✔DOC)
         sem_cols = [self.COL_SEM_DOC, self.COL_SEM_UIB, self.COL_SEM_DAD]
         for col in sem_cols:
             if col is not None:
                 header.setSectionResizeMode(col, QHeaderView.Fixed)
-                self.samples_table.setColumnWidth(col, 30)
+                self.samples_table.setColumnWidth(col, 50)
 
     def _add_data_cell(self, row, col, text, match_type, editable=False):
         """Afegeix una cel·la amb color segons match_type."""

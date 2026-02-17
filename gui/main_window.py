@@ -25,15 +25,9 @@ from PySide6.QtGui import QFont, QAction
 # Importar estilos
 from gui.styles.theme import STYLESHEET, COLORS
 
-# Importar widgets
+# Importar widgets essencials (només Tab 0 — visible a l'inici)
 from gui.widgets.dashboard_panel import DashboardPanel
-from gui.widgets.process_wizard_panel import ProcessWizardPanel
-from gui.widgets.export_panel import ExportPanel
-from gui.widgets.samples_db_panel import SamplesDBPanel
-from gui.widgets.maintenance_panel import MaintenancePanel
-from gui.widgets.history_panel import HistoryPanel
-from gui.widgets.config_panel import ConfigPanel
-from gui.widgets.global_calibration_panel import GlobalCalibrationPanel
+# Tabs 1-7: lazy import quan l'usuari hi clica (estalvia ~3s d'arrencada)
 
 
 class HPSECSuiteWindow(QMainWindow):
@@ -88,35 +82,22 @@ class HPSECSuiteWindow(QMainWindow):
         self.dashboard_panel.sequence_selected.connect(self._on_sequence_selected)
         self.tab_widget.addTab(self.dashboard_panel, "📋 Dashboard")
 
-        # Tab 1: Processar - Wizard
-        self.process_panel = ProcessWizardPanel(self)
-        self.process_panel.process_completed.connect(self._on_process_completed)
-        self.process_panel.sequence_loaded.connect(self._on_wizard_sequence_loaded)
-        self.tab_widget.addTab(self.process_panel, "▶ Processar")
-
-        # Tab 2: Exportar
-        self.export_panel = ExportPanel(self)
-        self.tab_widget.addTab(self.export_panel, "📄 Exportar")
-
-        # Tab 3: Mostres (Base de Dades)
-        self.samples_db_panel = SamplesDBPanel(self)
-        self.tab_widget.addTab(self.samples_db_panel, "🔬 Mostres")
-
-        # Tab 4: Històric (Calibracions)
-        self.history_panel = HistoryPanel(self)
-        self.tab_widget.addTab(self.history_panel, "📊 Històric")
-
-        # Tab 5: Calibració Global
-        self.global_cal_panel = GlobalCalibrationPanel(self)
-        self.tab_widget.addTab(self.global_cal_panel, "📐 Calibració Global")
-
-        # Tab 6: Manteniment
-        self.maintenance_panel = MaintenancePanel(self)
-        self.tab_widget.addTab(self.maintenance_panel, "🔧 Manteniment")
-
-        # Tab 6: Configuració
-        self.config_panel = ConfigPanel(self)
-        self.tab_widget.addTab(self.config_panel, "⚙ Configuració")
+        # Tabs 1-7: placeholders (lazy loading — s'instancien al primer clic)
+        self._lazy_tabs = {}
+        lazy_tab_defs = [
+            (1, "▶ Processar", "process_panel", "gui.widgets.process_wizard_panel", "ProcessWizardPanel"),
+            (2, "📄 Exportar", "export_panel", "gui.widgets.export_panel", "ExportPanel"),
+            (3, "🔬 Mostres", "samples_db_panel", "gui.widgets.samples_db_panel", "SamplesDBPanel"),
+            (4, "📊 Històric", "history_panel", "gui.widgets.history_panel", "HistoryPanel"),
+            (5, "📐 Calibració Global", "global_cal_panel", "gui.widgets.global_calibration_panel", "GlobalCalibrationPanel"),
+            (6, "🔧 Manteniment", "maintenance_panel", "gui.widgets.maintenance_panel", "MaintenancePanel"),
+            (7, "⚙ Configuració", "config_panel", "gui.widgets.config_panel", "ConfigPanel"),
+        ]
+        for tab_idx, label, attr_name, module_path, class_name in lazy_tab_defs:
+            placeholder = QWidget()
+            self.tab_widget.addTab(placeholder, label)
+            self._lazy_tabs[tab_idx] = (attr_name, module_path, class_name)
+            setattr(self, attr_name, None)  # Inicialitzar a None
 
         # Connectar senyals
         self.tab_widget.currentChanged.connect(self._on_tab_changed)
@@ -194,8 +175,23 @@ class HPSECSuiteWindow(QMainWindow):
         self.status_bar.showMessage("Llest")
 
     def _on_tab_changed(self, index):
-        """Handler quan canvia el tab."""
-        pass
+        """Handler quan canvia el tab. Lazy loading de tabs 1-7."""
+        if index in self._lazy_tabs:
+            attr_name, module_path, class_name = self._lazy_tabs.pop(index)
+            import importlib
+            module = importlib.import_module(module_path)
+            panel_class = getattr(module, class_name)
+            panel = panel_class(self)
+            setattr(self, attr_name, panel)
+            # Inserir panell real dins el placeholder (manté índexs estables)
+            placeholder = self.tab_widget.widget(index)
+            layout = QVBoxLayout(placeholder)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.addWidget(panel)
+            # Connectar senyals post-creació
+            if attr_name == "process_panel":
+                panel.process_completed.connect(self._on_process_completed)
+                panel.sequence_loaded.connect(self._on_wizard_sequence_loaded)
 
     def _open_sequence(self):
         """Obre diàleg per seleccionar carpeta SEQ."""
@@ -236,15 +232,21 @@ class HPSECSuiteWindow(QMainWindow):
         """Navega a un tab específic del main window."""
         self.tab_widget.setCurrentIndex(index)
 
+    def _ensure_panel(self, tab_index):
+        """Assegura que un panell lazy s'ha creat (forçant _on_tab_changed)."""
+        if tab_index in self._lazy_tabs:
+            self._on_tab_changed(tab_index)
+
     def go_to_process_step(self, step_index):
         """
         Navega a una etapa específica del process wizard.
         0=Importar, 1=Calibrar, 2=Analitzar, 3=Consolidar
         """
         # Assegurar que estem al tab de Processar
+        self._ensure_panel(1)
         self.tab_widget.setCurrentIndex(1)  # Tab "Processar"
         # Navegar dins del wizard
-        if hasattr(self.process_panel, 'tab_widget'):
+        if self.process_panel and hasattr(self.process_panel, 'tab_widget'):
             self.process_panel.tab_widget.setCurrentIndex(step_index)
 
     def set_status(self, message, timeout=0):
@@ -293,8 +295,10 @@ class HPSECSuiteWindow(QMainWindow):
         # Actualitzar títol
         self.setWindowTitle(f"HPSEC Suite - {seq_name}")
 
-        # Carregar al wizard
-        self.process_panel.load_sequence_from_dashboard(seq_path)
+        # Carregar al wizard (assegurar que existeix)
+        self._ensure_panel(1)
+        if self.process_panel:
+            self.process_panel.load_sequence_from_dashboard(seq_path)
 
         return True
 

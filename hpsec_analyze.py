@@ -2809,6 +2809,8 @@ def save_analysis_result(analysis_data, output_path=None):
         "success": analysis_data.get("success", False),
         "errors": analysis_data.get("errors", []),
         "warnings": analysis_data.get("warnings", []),
+        "warning_level": analysis_data.get("warning_level", "none"),
+        "config_fingerprint": analysis_data.get("config_fingerprint", ""),
         "summary": analysis_data.get("summary", {}),
         # Llista de mostres amb info resumida (sense arrays de dades)
         "samples": [],

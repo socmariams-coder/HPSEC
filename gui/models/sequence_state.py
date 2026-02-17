@@ -109,6 +109,9 @@ class SequenceState:
         self.export_status = self._check_export()
         self._extract_metadata()
 
+    # JSONs grans que NO cal carregar sencer per al dashboard
+    _LARGE_JSONS = {"analysis_result.json"}
+
     def _check_phase(self, filename: str) -> PhaseStatus:
         """Comprova si una fase està completada."""
         filepath = os.path.join(self._check_data_path, filename)
@@ -117,8 +120,12 @@ class SequenceState:
             return PhaseStatus(completed=False)
 
         try:
-            with open(filepath, 'r', encoding='utf-8') as f:
-                data = json.load(f)
+            # analysis_result.json pot ser >10MB — llegir només metadades
+            if filename in self._LARGE_JSONS:
+                data = self._read_json_metadata(filepath)
+            else:
+                with open(filepath, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
 
             # Obtenir timestamp del fitxer o del contingut
             timestamp = data.get('timestamp') or data.get('date') or data.get('updated')
@@ -136,6 +143,42 @@ class SequenceState:
                 completed=False,
                 errors=[str(e)]
             )
+
+    @staticmethod
+    def _read_json_metadata(filepath: str, max_bytes: int = 4096) -> dict:
+        """Llegeix només les primeres claus d'un JSON gran (sense carregar-lo sencer)."""
+        import re
+        try:
+            with open(filepath, 'r', encoding='utf-8') as f:
+                head = f.read(max_bytes)
+            data = {}
+            for key in ('success', 'timestamp', 'date', 'method', 'data_mode',
+                        'seq_path', 'seq_name', 'warning_level',
+                        'config_fingerprint'):
+                pattern = rf'"{key}"\s*:\s*("([^"]*)"|(true|false|null|\d+[\.\d]*))'
+                m = re.search(pattern, head)
+                if m:
+                    val = m.group(2) if m.group(2) is not None else m.group(3)
+                    if val == 'true': val = True
+                    elif val == 'false': val = False
+                    elif val == 'null': val = None
+                    else:
+                        try: val = float(val) if '.' in str(val) else int(val)
+                        except: pass
+                    data[key] = val
+            # Detectar si "warnings" és un array no buit (no podem parsejar-lo,
+            # però podem veure si conté elements)
+            m_warn = re.search(r'"warnings"\s*:\s*\[(\s*\]|\s*[^\]])', head)
+            if m_warn:
+                content = m_warn.group(1).strip()
+                if content != ']':
+                    # Hi ha warnings — marcar amb placeholder
+                    data['warnings'] = ['[metadata-only]']
+                else:
+                    data['warnings'] = []
+            return data
+        except Exception:
+            return {}
 
     def _check_export(self) -> PhaseStatus:
         """Comprova si s'han exportat fitxers."""
@@ -239,6 +282,11 @@ class SequenceState:
         if self.analyze_status.data:
             data = self.analyze_status.data
             self.analyze_warnings = data.get('warnings', [])
+            # Fallback: si warning_level indica problemes (JSONs nous o metadata-only)
+            if not self.analyze_warnings:
+                wl = data.get('warning_level', 'none')
+                if wl in ('warning', 'blocker'):
+                    self.analyze_warnings = [f"[{wl}]"]
             self.config_fingerprint = data.get('config_fingerprint', '')
 
     @property
