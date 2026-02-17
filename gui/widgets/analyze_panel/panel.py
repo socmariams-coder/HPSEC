@@ -16,7 +16,10 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QBrush, QFont
 
+import logging
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 from hpsec_analyze import analyze_sequence, save_analysis_result, load_analysis_result
 from gui.widgets.styles import (
@@ -251,7 +254,7 @@ class AnalyzePanel(QWidget):
             if existing_analysis and existing_analysis.get("success"):
                 self._load_existing_analysis(existing_analysis)
         except Exception as e:
-            print(f"[WARNING] Error comprovant anàlisi existent: {e}")
+            logger.warning(f"Error comprovant anàlisi existent: {e}")
 
     def _load_existing_analysis(self, result):
         """Carrega una anàlisi existent."""
@@ -406,7 +409,7 @@ class AnalyzePanel(QWidget):
             try:
                 imported_data = import_from_manifest(seq_path)
             except Exception as e:
-                print(f"[WARNING] Error carregant import: {e}")
+                logger.warning(f"Error carregant import: {e}")
                 imported_data = None
             if imported_data and imported_data.get('success'):
                 self.main_window.imported_data = imported_data
@@ -1255,7 +1258,7 @@ class AnalyzePanel(QWidget):
                         if not calibration_data and active_cals:
                             calibration_data = active_cals[0]
                     except Exception as e:
-                        print(f"[WARN] Error carregant calibracions: {e}")
+                        logger.warning(f"Error carregant calibracions: {e}")
 
                 if not calibration_data:
                     calibration_data = self.main_window.calibration_data
@@ -1276,7 +1279,7 @@ class AnalyzePanel(QWidget):
                     quantification["hci_character"] = selected_replica.get("hci_character", "")
                 sample_data["quantification"] = quantification
         except Exception as e:
-            print(f"Error recalculant quantificació: {e}")
+            logger.error(f"Error recalculant quantificació: {e}")
             self.main_window.set_status(f"Error quantificació: {e}", 5000)
 
     # ------------------------------------------------------------------

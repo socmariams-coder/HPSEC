@@ -5,7 +5,10 @@ HPSEC Suite - Import Panel Dialogs
 Diàlegs per al panel d'importació.
 """
 
+import logging
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QLabel, QTextEdit, QDialogButtonBox
@@ -165,7 +168,7 @@ class ChromatogramPreviewDialog(QDialog):
                             y254 = df_dad[col].values
                             break
             except Exception as e:
-                print(f"Warning: Error llegint DataFrame DAD: {e}")
+                logger.warning(f"Error llegint DataFrame DAD: {e}")
 
             # Format 2: Arrays separats (t, wavelengths dict)
             if t_dad is None and dad.get("t") is not None:

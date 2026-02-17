@@ -29,11 +29,14 @@ import os
 import re
 import glob
 import json
+import logging
 from datetime import datetime
 from difflib import SequenceMatcher
 
 import numpy as np
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 from hpsec_config import get_config
 from hpsec_utils import get_baseline_value
@@ -1676,32 +1679,38 @@ def parse_injections_from_masterfile(master_data, config=None):
         elif ("volume" in col_lower or "vol" in col_lower) and volume_col is None:
             volume_col = col
 
-    # Columna N (índex 13) per volum si no té etiqueta
-    # En Excel v11/v12, el volum està a la columna N sense etiqueta
-    if volume_col is None:
-        col_list = list(df_seq.columns)
-        if len(col_list) > 13:
-            potential_vol_col = col_list[13]
-            try:
-                sample_vals = df_seq[potential_vol_col].dropna().head(5)
-                if len(sample_vals) > 0:
-                    numeric_vals = pd.to_numeric(sample_vals, errors='coerce').dropna()
-                    if len(numeric_vals) > 0 and all(50 <= v <= 1000 for v in numeric_vals):
-                        volume_col = potential_vol_col
-            except Exception:
-                pass
+    # Prioritat volum: 1) Capçalera explícita (ja detectada amunt)
+    #                  2) 0-INFO (fiable)
+    #                  3) Columna N índex 13 (heurístic, NOMÉS si no BP)
 
-    # Fallback volum: 0-INFO B4 (Inj_Volume)
+    # 0-INFO B4 (Inj_Volume) — font fiable
     info_volume = None
-    if volume_col is None:
-        info_data = master_data.get("info", {})
-        for key, val in info_data.items():
-            if "volume" in str(key).lower() or "vol" in str(key).lower():
+    info_data = master_data.get("info", {})
+    for key, val in info_data.items():
+        if "volume" in str(key).lower() or "vol" in str(key).lower():
+            try:
+                info_volume = float(val)
+            except (ValueError, TypeError):
+                pass
+            break
+
+    # Columna N (índex 13) per volum si no té etiqueta NI 0-INFO
+    # NOTA: Només activar per COLUMN mode. En BP, l'índex 13 pot contenir
+    # dades de pics (no volums) amb valors que passen el filtre (ex: 400).
+    if volume_col is None and info_volume is None:
+        method = master_data.get("method", "").upper()
+        if method != "BP":
+            col_list = list(df_seq.columns)
+            if len(col_list) > 13:
+                potential_vol_col = col_list[13]
                 try:
-                    info_volume = float(val)
-                except (ValueError, TypeError):
-                    pass
-                break
+                    sample_vals = df_seq[potential_vol_col].dropna().head(5)
+                    if len(sample_vals) > 0:
+                        numeric_vals = pd.to_numeric(sample_vals, errors='coerce').dropna()
+                        if len(numeric_vals) > 0 and all(50 <= v <= 1000 for v in numeric_vals):
+                            volume_col = potential_vol_col
+                except Exception as e:
+                    logger.debug("Volume column index-13 heuristic failed: %s", e)
 
     # --- VALIDACIÓ: columnes obligatòries han de tenir dades ---
     # Detectar si les dades estan desplaçades (columnes .1 amb dades, originals buides)
@@ -2051,7 +2060,7 @@ def compute_toc_calc(master_data, toc_df):
     if df_seq is None:
         df_seq = master_data.get("seq")
     if df_seq is None or (hasattr(df_seq, 'empty') and df_seq.empty):
-        print("[compute_toc_calc] No hi ha 1-HPLC-SEQ")
+        logger.debug("compute_toc_calc: No hi ha 1-HPLC-SEQ")
         return None
 
     # Trobar columnes rellevants
@@ -2066,7 +2075,7 @@ def compute_toc_calc(master_data, toc_df):
             sample_rep_col = col
 
     if date_col is None or sample_col is None:
-        print(f"[compute_toc_calc] Falten columnes: date_col={date_col}, sample_col={sample_col}")
+        logger.debug(f"compute_toc_calc: Falten columnes: date_col={date_col}, sample_col={sample_col}")
         return None
 
     # Parsejar timestamps HPLC
@@ -2074,7 +2083,7 @@ def compute_toc_calc(master_data, toc_df):
     try:
         df_hplc[date_col] = pd.to_datetime(df_hplc[date_col])
     except Exception as e:
-        print(f"[compute_toc_calc] Error parsejant dates HPLC: {e}")
+        logger.debug(f"compute_toc_calc: Error parsejant dates HPLC: {e}")
         return None
 
     df_hplc = df_hplc.sort_values(date_col).reset_index(drop=True)
@@ -2094,7 +2103,7 @@ def compute_toc_calc(master_data, toc_df):
         hplc_samples = sample_reps
 
     if len(hplc_times) == 0:
-        print("[compute_toc_calc] No hi ha timestamps HPLC")
+        logger.debug("compute_toc_calc: No hi ha timestamps HPLC")
         return None
 
     # 2. Extreure timestamps TOC de 2-TOC (columna D, fila 8+)
@@ -2123,7 +2132,7 @@ def compute_toc_calc(master_data, toc_df):
                     pass
 
     if not toc_timestamps:
-        print("[compute_toc_calc] No s'han trobat timestamps TOC")
+        logger.debug("compute_toc_calc: No s'han trobat timestamps TOC")
         return None
 
     # 3. Calcular net_delay des de 0-INFO
@@ -2179,7 +2188,7 @@ def compute_toc_calc(master_data, toc_df):
         return None
 
     toc_calc_df = pd.DataFrame(rows)
-    print(f"[compute_toc_calc] Calculat 4-TOC_CALC amb {len(toc_calc_df)} files")
+    logger.debug(f"compute_toc_calc: Calculat 4-TOC_CALC amb {len(toc_calc_df)} files")
     return toc_calc_df
 
 
@@ -2501,10 +2510,10 @@ def find_data_for_injection(injection, seq_path, uib_files, dad_files, dad_csv_f
             f"{sample_name}_{inj_num}",
         ]
         # DEBUG: mostrar què busquem
-        print(f"[DEBUG 3-DAD_KHP] Buscant KHP: sample={sample_name}, original={original_name}, inj={inj_num}")
-        print(f"[DEBUG 3-DAD_KHP] Claus a buscar: {khp_keys}")
+        logger.debug(f"3-DAD_KHP: Buscant KHP: sample={sample_name}, original={original_name}, inj={inj_num}")
+        logger.debug(f"3-DAD_KHP: Claus a buscar: {khp_keys}")
         all_cols = list(master_khp_data.columns)
-        print(f"[DEBUG 3-DAD_KHP] Totes les columnes ({len(all_cols)}): {all_cols}")
+        logger.debug(f"3-DAD_KHP: Totes les columnes ({len(all_cols)}): {all_cols}")
 
         found = False
         for khp_key in khp_keys:
@@ -2516,7 +2525,7 @@ def find_data_for_injection(injection, seq_path, uib_files, dad_files, dad_csv_f
                 # Match exacte o parcial (la columna conté la clau)
                 if col_norm == khp_key_norm or khp_key_norm in col_norm:
                     col_idx = master_khp_data.columns.get_loc(col)
-                    print(f"[DEBUG 3-DAD_KHP] MATCH! col='{col}', idx={col_idx}, key='{khp_key}'")
+                    logger.debug(f"3-DAD_KHP: MATCH! col='{col}', idx={col_idx}, key='{khp_key}'")
 
                     # Format 3-DAD_KHP: columna KHP té temps, següent té valors
                     # Estructura: KHP5_1_R1 | Unnamed:1 | NaN | KHP5_2_R2 | Unnamed:4
@@ -2534,9 +2543,9 @@ def find_data_for_injection(injection, seq_path, uib_files, dad_files, dad_csv_f
                             "254": pd.to_numeric(value_data, errors="coerce"),
                         }).dropna().reset_index(drop=True)
 
-                        print(f"[DEBUG 3-DAD_KHP] df_khp len={len(df_khp)}, empty={df_khp.empty}")
+                        logger.debug(f"3-DAD_KHP: df_khp len={len(df_khp)}, empty={df_khp.empty}")
                         if len(df_khp) > 0:
-                            print(f"[DEBUG 3-DAD_KHP] Primeres files: {df_khp.head(3).to_dict()}")
+                            logger.debug(f"3-DAD_KHP: Primeres files: {df_khp.head(3).to_dict()}")
 
                         if not df_khp.empty and len(df_khp) > 5:
                             result["dad"] = {
@@ -2547,11 +2556,11 @@ def find_data_for_injection(injection, seq_path, uib_files, dad_files, dad_csv_f
                             result["dad_source"] = "masterfile"
                             result["has_data"] = True
                             found = True
-                            print(f"[DEBUG 3-DAD_KHP] SUCCESS! Carregades {len(df_khp)} files de 3-DAD_KHP")
+                            logger.debug(f"3-DAD_KHP: SUCCESS! Carregades {len(df_khp)} files de 3-DAD_KHP")
                     break
 
         if not found:
-            print(f"[DEBUG 3-DAD_KHP] NO MATCH per {sample_name} (inj {inj_num})")
+            logger.debug(f"3-DAD_KHP: NO MATCH per {sample_name} (inj {inj_num})")
 
     return result
 
@@ -2809,7 +2818,7 @@ def import_sequence(seq_path, config=None, progress_callback=None):
             elif "4-SEQ_DATA" in xl.sheet_names:
                 toc_calc_df = pd.read_excel(master_path, sheet_name="4-SEQ_DATA")
         except Exception as e:
-            print(f"[WARNING] Error llegint fulls addicionals del MasterFile: {e}")
+            logger.warning(f"Error llegint fulls addicionals del MasterFile: {e}")
 
         # Si 4-TOC_CALC no existeix, calcular in-memory (plantilla o MasterFile incomplet)
         if toc_calc_df is None or (hasattr(toc_calc_df, 'empty') and toc_calc_df.empty):
@@ -3765,7 +3774,7 @@ def import_from_manifest(seq_path, manifest=None, config=None, progress_callback
     if not has_direct_info and manifest_samples:
         # Manifest antic sense informació DOC Direct - reimportar completament
         report_progress(0, "Manifest antic detectat, reimportant...")
-        print("[INFO] Manifest antic sense DOC Direct, fent reimportació completa")
+        logger.info("Manifest antic sense DOC Direct, fent reimportació completa")
         return import_sequence(seq_path, config, progress_callback)
 
     # Inicialitzar resultat
@@ -3811,12 +3820,17 @@ def import_from_manifest(seq_path, manifest=None, config=None, progress_callback
 
     report_progress(10, "Llegint MasterFile...")
 
-    # Llegir MasterFile per obtenir dades DOC Direct
+    # Llegir MasterFile per obtenir dades DOC Direct + DAD KHP
     try:
         toc_df = None
+        master_khp_data = None
         xl = pd.ExcelFile(master_path, engine="openpyxl")
         if "2-TOC" in xl.sheet_names:
             toc_df = pd.read_excel(xl, sheet_name="2-TOC", header=6, engine="openpyxl")
+        # FIX F2.2: Llegir 3-DAD_KHP per KHP samples (abans no es llegia des de manifest)
+        if "3-DAD_KHP" in xl.sheet_names:
+            master_khp_data = pd.read_excel(xl, sheet_name="3-DAD_KHP", engine="openpyxl")
+            logger.debug("3-DAD_KHP sheet loaded (%d rows)", len(master_khp_data))
     except PermissionError:
         result["errors"].append(
             f"No es pot llegir el MasterFile: el fitxer està obert a Excel o sense permisos. "
@@ -3990,11 +4004,54 @@ def import_from_manifest(seq_path, manifest=None, config=None, progress_callback
                 dad_source = dad_info.get("source", "export3d")
                 rep_data["dad_source"] = dad_source
 
+                # FIX F2.2: Si DAD ve de 3-DAD_KHP (source="masterfile"), llegir del MasterFile
+                if dad_source == "masterfile" and master_khp_data is not None:
+                    original_name = sample_info.get("original_name", sample_name)
+                    inj_num = rep_info.get("injection", {}).get("inj_num", rep_num) if rep_info.get("injection") else rep_num
+                    khp_keys = [
+                        f"{sample_name}_{inj_num}_R{inj_num}",
+                        f"{original_name}_{inj_num}_R{inj_num}",
+                        f"{original_name}_R{inj_num}",
+                        f"{sample_name}_R{inj_num}",
+                        f"{original_name}_{inj_num}",
+                        f"{sample_name}_{inj_num}",
+                    ]
+                    for khp_key in khp_keys:
+                        khp_key_norm = normalize_key(khp_key)
+                        found_khp = False
+                        for col in master_khp_data.columns:
+                            col_norm = normalize_key(str(col))
+                            if col_norm == khp_key_norm or khp_key_norm in col_norm:
+                                col_idx = master_khp_data.columns.get_loc(col)
+                                if col_idx + 1 < len(master_khp_data.columns):
+                                    time_col = col
+                                    value_col = master_khp_data.columns[col_idx + 1]
+                                    time_data = master_khp_data[time_col].iloc[1:] if len(master_khp_data) > 1 else master_khp_data[time_col]
+                                    value_data = master_khp_data[value_col].iloc[1:] if len(master_khp_data) > 1 else master_khp_data[value_col]
+                                    df_khp = pd.DataFrame({
+                                        "time (min)": pd.to_numeric(time_data, errors="coerce"),
+                                        "254": pd.to_numeric(value_data, errors="coerce"),
+                                    }).dropna().reset_index(drop=True)
+                                    if not df_khp.empty and len(df_khp) > 5:
+                                        rep_data["dad"] = {
+                                            "path": "MasterFile:3-DAD_KHP",
+                                            "df": df_khp,
+                                            "source": "masterfile",
+                                        }
+                                        rep_data["dad_source"] = "masterfile"
+                                        rep_data["has_data"] = True
+                                        found_khp = True
+                                        logger.debug("3-DAD_KHP manifest: loaded %d rows for %s", len(df_khp), sample_name)
+                                break
+                        if found_khp:
+                            break
+
                 # Prioritzar manual_file si existeix (assignació manual de l'usuari)
                 manual_dad_file = dad_info.get("manual_file")
                 dad_file_from_manifest = dad_info.get("file", "")
 
-                dad_loaded = False
+                # Si ja carregat des de masterfile (3-DAD_KHP), no cal buscar més
+                dad_loaded = rep_data.get("dad") is not None
 
                 # 1. Intentar carregar des de manual_file
                 if manual_dad_file and not dad_loaded:
@@ -4016,8 +4073,8 @@ def import_from_manifest(seq_path, manifest=None, config=None, progress_callback
                                     rep_data["has_data"] = True
                                     dad_loaded = True
                                     break
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                logger.debug("DAD manual export3d load failed for %s: %s", test_path, e)
                     if not dad_loaded:
                         # Intentar amb dad1a
                         for subdir in dad_dirs:
@@ -4036,8 +4093,8 @@ def import_from_manifest(seq_path, manifest=None, config=None, progress_callback
                                         rep_data["has_data"] = True
                                         dad_loaded = True
                                         break
-                                except Exception:
-                                    pass
+                                except Exception as e:
+                                    logger.debug("DAD manual dad1a load failed for %s: %s", test_path, e)
 
                 # 2. Intentar carregar des de file guardat al manifest
                 if dad_file_from_manifest and not dad_loaded:
@@ -4053,8 +4110,8 @@ def import_from_manifest(seq_path, manifest=None, config=None, progress_callback
                                     rep_data["has_data"] = True
                                     dad_loaded = True
                                     break
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                logger.debug("DAD manifest export3d load failed for %s: %s", test_path, e)
 
                 # 3. Fallback: buscar per nom de mostra (comportament original)
                 if not dad_loaded and dad_source == "export3d":
@@ -4077,8 +4134,8 @@ def import_from_manifest(seq_path, manifest=None, config=None, progress_callback
                                         rep_data["dad_source"] = "export3d"
                                         rep_data["has_data"] = True
                                         break
-                                except Exception:
-                                    pass
+                                except Exception as e:
+                                    logger.debug("DAD fallback export3d load failed for %s: %s", df_path, e)
 
             result["samples"][sample_name]["replicas"][rep_num] = rep_data
 

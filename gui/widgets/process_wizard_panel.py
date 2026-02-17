@@ -23,9 +23,13 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
 
+import logging
+
 from gui.widgets.styles import (
     COLOR_SUCCESS, COLOR_WARNING, COLOR_ERROR, COLOR_PRIMARY
 )
+
+logger = logging.getLogger(__name__)
 
 
 class WarningReviewDialog(QDialog):
@@ -724,7 +728,7 @@ class ProcessWizardPanel(QWidget):
             elif stage_idx == 3:  # Revisar
                 self._update_header_for_tab(stage_idx)
         except Exception as e:
-            print(f"[ERROR] _execute_stage({stage_idx}): {e}")
+            logger.error(f"_execute_stage({stage_idx}): {e}")
             self._set_tab_state(stage_idx, "error")
             self._update_header_for_tab(stage_idx)
 
@@ -779,7 +783,7 @@ class ProcessWizardPanel(QWidget):
             self.main_window.set_status(f"Avisos reconeguts per {reviewer}", 2000)
 
         except Exception as e:
-            print(f"[WARNING] No s'ha pogut guardar: {e}")
+            logger.warning(f"No s'ha pogut guardar: {e}")
 
     def _on_confirm_warnings(self):
         """Obre diàleg per revisar avisos: afegir nota i/o marcar com a OK."""
@@ -1147,10 +1151,10 @@ class ProcessWizardPanel(QWidget):
                 json.dump(data, f, indent=2, ensure_ascii=False, default=str)
 
             action = "confirmat" if mark_as_ok else "revisat (nota afegida)"
-            print(f"[INFO] Avís {action} a {json_file.name} per {reviewer}")
+            logger.info(f"Avís {action} a {json_file.name} per {reviewer}")
 
         except Exception as e:
-            print(f"[WARNING] No s'ha pogut guardar revisió: {e}")
+            logger.warning(f"No s'ha pogut guardar revisió: {e}")
 
     def _collect_warnings(self, data: dict, warning_fields: list, stage_idx: int) -> list:
         """Recull els avisos del JSON en format llegible per guardar com a notes."""
@@ -1220,7 +1224,7 @@ class ProcessWizardPanel(QWidget):
                 return True
 
         except Exception as e:
-            print(f"[WARNING] No s'ha pogut revertir confirmació: {e}")
+            logger.warning(f"No s'ha pogut revertir confirmació: {e}")
 
         return False
 
@@ -1658,7 +1662,15 @@ class ProcessWizardPanel(QWidget):
             return
 
         # Import: carregar dades per a etapes posteriors (cal/ana necessiten imported_data)
-        if self.tab_states[0] in ("ok", "warning") and not self.main_window.imported_data:
+        # OPTIMITZACIÓ: Si etapes posteriors (cal/ana) ja estan completades,
+        # defer la càrrega de imported_data fins que es necessiti realment
+        # (import_panel.load_from_dashboard ja la carregarà si cal).
+        # Només pre-carregar si cal/ana estan pendents i necessiten imported_data.
+        needs_imported_data = any(
+            self.tab_states[i] in ("pending", "current")
+            for i in [1, 2]  # calibrar, analitzar
+        )
+        if self.tab_states[0] in ("ok", "warning") and not self.main_window.imported_data and needs_imported_data:
             manifest_path = data_path / "import_manifest.json"
             if manifest_path.exists():
                 try:
@@ -1667,7 +1679,7 @@ class ProcessWizardPanel(QWidget):
                     if imported and imported.get("success"):
                         self.main_window.imported_data = imported
                 except Exception as e:
-                    print(f"[WARNING] Error pre-carregant import: {e}")
+                    logger.warning(f"Error pre-carregant import: {e}")
 
         # Calibració: carregar des de calibration_result.json
         if self.tab_states[1] in ("ok", "warning") and not self.main_window.calibration_data:
@@ -1707,7 +1719,7 @@ class ProcessWizardPanel(QWidget):
                             "loaded_from_json": True,
                         }
                 except Exception as e:
-                    print(f"[WARNING] Error pre-carregant calibració: {e}")
+                    logger.warning(f"Error pre-carregant calibració: {e}")
 
     def _detect_completed_stages(self, seq_path: str) -> list:
         """Detecta quines etapes estan completades basant-se en fitxers existents."""
@@ -1764,11 +1776,11 @@ class ProcessWizardPanel(QWidget):
                             states[idx] = "ok"
 
                     except Exception as e:
-                        print(f"[WARNING] Error llegint {filename}: {e}")
+                        logger.warning(f"Error llegint {filename}: {e}")
                         states[idx] = "ok"  # Assumir ok si no podem llegir
 
         except Exception as e:
-            print(f"[WARNING] Error detectant etapes: {e}")
+            logger.warning(f"Error detectant etapes: {e}")
 
         # Marcar primera etapa pendent com a "current"
         for i, state in enumerate(states):
@@ -1825,7 +1837,7 @@ class ProcessWizardPanel(QWidget):
                 data = json.load(f)
             return data.get("warnings_confirmed") is not None
         except Exception as e:
-            print(f"[WARNING] Error checking confirmed warnings: {e}")
+            logger.warning(f"Error checking confirmed warnings: {e}")
             return False
 
     def _update_seq_info(self, seq_path: str):

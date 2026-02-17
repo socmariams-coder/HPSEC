@@ -28,12 +28,15 @@ import os
 import re
 import glob
 import json
+import logging
 import numpy as np
 import pandas as pd
 from datetime import datetime
 from scipy.signal import savgol_filter
 from scipy.integrate import trapezoid
 from hpsec_config import get_registry_path, get_config
+
+logger = logging.getLogger(__name__)
 
 # Import funcions de detecció des de hpsec_core (Single Source of Truth)
 from hpsec_core import (
@@ -206,7 +209,7 @@ def load_qc_history():
             data = json.load(f)
             return data.get('entries', [])
     except Exception as e:
-        print(f"Error carregant QC History: {e}")
+        logger.error(f"Error carregant QC History: {e}")
         return []
 
 
@@ -225,7 +228,7 @@ def load_calibration_reference():
         with open(ref_path, 'r', encoding='utf-8') as f:
             return json.load(f)
     except Exception as e:
-        print(f"Error carregant calibració de referència: {e}")
+        logger.error(f"Error carregant calibració de referència: {e}")
         return None
 
 
@@ -249,7 +252,7 @@ def save_calibration_reference(data):
             json.dump(data, f, indent=2, ensure_ascii=False)
         return True
     except Exception as e:
-        print(f"Error guardant calibració de referència: {e}")
+        logger.error(f"Error guardant calibració de referència: {e}")
         return False
 
 
@@ -596,7 +599,7 @@ def register_qc_result(seq_name, seq_date, qc_result, khp_data):
             json.dump(history, f, indent=2, ensure_ascii=False)
         return True
     except Exception as e:
-        print(f"Error guardant QC History: {e}")
+        logger.error(f"Error guardant QC History: {e}")
         return False
 
 
@@ -644,8 +647,8 @@ def add_calibration(rf_mass_cal_values, source, valid_from, r2=None, n_points=No
                 vf = datetime.strptime(valid_from_date, '%Y-%m-%d')
                 valid_to = (vf - timedelta(days=1)).strftime('%Y-%m-%d')
                 cal['valid_to'] = valid_to
-            except Exception:
-                pass
+            except (ValueError, TypeError) as e:
+                logger.warning("Could not parse valid_from_date '%s': %s", valid_from_date, e)
             cal['is_active'] = False
 
     # Crear nova calibració
@@ -1543,6 +1546,16 @@ def validate_khp_quality(khp_data, all_peaks, timeout_info, anomaly_info=None, s
     warnings = []
     quality_score = 0
 
+    # 0. Guard: conc i area han de ser > 0 (entrades blanques/invàlides)
+    conc = khp_data.get('conc_ppm', khp_data.get('conc', 0))
+    area = khp_data.get('area', khp_data.get('area_total', 0))
+    if not conc or conc <= 0:
+        issues.append("ZERO_CONC: concentració KHP és 0 o absent")
+        quality_score += 200
+    if not area or area <= 0:
+        issues.append("ZERO_AREA: àrea KHP és 0 o absent")
+        quality_score += 200
+
     # 1. Multi-pic
     if all_peaks and len(all_peaks) > 2:
         significant_peaks = [p for p in all_peaks if p.get('prominence', 0) > khp_data.get('height', 1) * 0.1]
@@ -2052,7 +2065,7 @@ def load_local_calibrations(seq_path):
             data = json.load(f)
             return data.get("calibrations", [])
     except Exception as e:
-        print(f"Error carregant calibracions: {e}")
+        logger.error(f"Error carregant calibracions: {e}")
         return []
 
 
@@ -2077,7 +2090,7 @@ def save_local_calibrations(seq_path, calibrations):
             json.dump(data, f, indent=2, ensure_ascii=False, cls=NumpyEncoder)
         return True
     except Exception as e:
-        print(f"Error guardant CHECK/data: {e}")
+        logger.error(f"Error guardant CHECK/data: {e}")
         return False
 
 
@@ -2235,7 +2248,7 @@ def load_khp_history(seq_path):
             data = json.load(f)
             return data.get("calibrations", [])
     except Exception as e:
-        print(f"Error carregant històric KHP: {e}")
+        logger.error(f"Error carregant històric KHP: {e}")
         return []
 
 
@@ -2257,7 +2270,7 @@ def save_khp_history(seq_path, calibrations):
             json.dump(data, f, indent=2, ensure_ascii=False, cls=NumpyEncoder)
         return True
     except Exception as e:
-        print(f"Error guardant històric KHP: {e}")
+        logger.error(f"Error guardant històric KHP: {e}")
         return False
 
 
@@ -2793,8 +2806,8 @@ def _get_reference_area(mode, conc_ppm, volume_uL, doc_mode, uib_sensitivity):
                         'area_std': ref.get('area_std', 0),
                         'source': f"config:{key}"
                     }
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("Failed to get KHP reference values: %s", e)
     return None
 
 
@@ -2815,7 +2828,16 @@ def register_calibration(seq_path, khp_data, khp_source, mode="COLUMN"):
     # Calcular RF (Response Factor) = Àrea / Concentració
     area = khp_data.get('area', 0)
     conc = khp_data.get('conc_ppm', 0)
-    rf = area / conc if conc > 0 else 0
+
+    # Guard: entrades blanques (conc=0 o area=0) no s'han de registrar
+    if not conc or conc <= 0:
+        logger.warning("register_calibration: skip entry with conc=0 for %s", seq_name)
+        return {"success": False, "error": "KHP concentration is 0", "valid_for_calibration": False}
+    if not area or area <= 0:
+        logger.warning("register_calibration: skip entry with area=0 for %s", seq_name)
+        return {"success": False, "error": "KHP area is 0", "valid_for_calibration": False}
+
+    rf = area / conc
 
     seq_date = khp_data.get('seq_date', '')
     if not seq_date:
@@ -2829,9 +2851,9 @@ def register_calibration(seq_path, khp_data, khp_source, mode="COLUMN"):
 
     # Fallback si volume és None
     if volume is None:
-        print(f"  - khp_data.get('volume_uL') = {volume_from_khp}")
-        print(f"  - get_injection_volume({seq_path}, {is_bp}) = {volume_from_func}")
-        print(f"  - khp_data keys: {list(khp_data.keys())[:10]}...")
+        logger.debug(f"Volume fallback - khp_data.get('volume_uL') = {volume_from_khp}")
+        logger.debug(f"Volume fallback - get_injection_volume({seq_path}, {is_bp}) = {volume_from_func}")
+        logger.debug(f"Volume fallback - khp_data keys: {list(khp_data.keys())[:10]}...")
         volume = 100  # Fallback temporal per evitar crash
     khp_name = khp_data.get('name', f"KHP{conc}")  # Nom del KHP (ex: "KHP2", "KHP2_50")
     doc_mode = khp_data.get('doc_mode', 'N/A')
@@ -3885,8 +3907,8 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
                     from scipy.stats import pearsonr
                     pearson_profiles, _ = pearsonr(y1, y2)
                     pearson_profiles = float(pearson_profiles)
-                except:
-                    pass
+                except (ValueError, TypeError) as e:
+                    logger.debug("Pearson profiles calculation failed: %s", e)
 
         return {
             'n_replicas': len(replicas),
@@ -4347,8 +4369,8 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
                 with open(manifest_path, 'r', encoding='utf-8') as f:
                     manifest = json.load(f)
                     seq_date = manifest.get("seq_date") or manifest.get("date")
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("Could not load manifest for seq_date: %s", e)
 
     # QC per DOC Direct
     if result.get("khp_data_direct"):

@@ -30,7 +30,10 @@ from hpsec_import import (
     llegir_doc_uib, llegir_dad_export3d, llegir_dad_1a,
     get_baseline_value
 )
+import logging
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 # Importar components del paquet
 from .delegates import ComboBoxDelegate, FileAssignmentDelegate
@@ -331,9 +334,39 @@ class ImportPanel(QWidget):
         """Carrega una seqüència des del Dashboard - auto-carrega si hi ha manifest."""
         self.set_sequence_path(seq_path)
 
+        # Si main_window ja té imported_data (pre-carregat per _preload_completed_stages),
+        # reutilitzar-lo directament sense reimportar (evita doble lectura MasterFile)
+        if self.main_window.imported_data and self.main_window.imported_data.get("success"):
+            logger.info("Reutilitzant imported_data pre-carregat (skip MasterFile re-read)")
+            self._display_preloaded_data(self.main_window.imported_data)
+            return
+
         # Si hi ha manifest existent, carregar automàticament (async amb progrés)
         if self.existing_manifest:
             self._auto_load_from_manifest()
+
+    def _display_preloaded_data(self, result):
+        """Mostra dades ja carregades sense re-importar ni re-guardar manifest."""
+        self.placeholder.setVisible(False)
+        self.imported_data = result
+        self._loaded_from_manifest = True
+        self._orphan_warning_dismissed = result.get("orphan_warning_dismissed", False)
+        self._warnings_confirmed = result.get("warnings_confirmed", False)
+        self._warnings_confirmed_by = result.get("warnings_confirmed_by", None)
+
+        self._show_results(result)
+        self._update_next_button_state()
+        self.save_btn.setEnabled(True)
+        self.main_window.enable_tab(1)
+        self.main_window.set_status("Importació carregada", 3000)
+
+        self.import_completed.emit({
+            'success': True,
+            'warnings': result.get('warnings', []),
+            'orphan_files': result.get('orphan_files', {}),
+            'warnings_confirmed': self._warnings_confirmed,
+            'orphan_warning_dismissed': self._orphan_warning_dismissed,
+        })
 
     def _go_to_dashboard(self):
         """Torna al Dashboard per seleccionar una seqüència."""
@@ -437,7 +470,7 @@ class ImportPanel(QWidget):
             save_import_manifest(result)
             self.main_window.mark_manifest_saved()
         except Exception as e:
-            print(f"Warning: No s'ha pogut guardar manifest: {e}")
+            logger.warning(f"No s'ha pogut guardar manifest: {e}")
 
         # Auto-generar PDF d'importació
         try:
@@ -446,9 +479,9 @@ class ImportPanel(QWidget):
             if seq_path:
                 pdf = generate_import_report(seq_path)
                 if pdf:
-                    print(f"[INFO] Report importació: {pdf}")
+                    logger.info(f"Report importació: {pdf}")
         except Exception as e:
-            print(f"[WARNING] No s'ha pogut generar report d'importació: {e}")
+            logger.warning(f"No s'ha pogut generar report d'importació: {e}")
 
         self._update_next_button_state()
         self.save_btn.setEnabled(True)
@@ -503,9 +536,9 @@ class ImportPanel(QWidget):
                         ws = wb["0-INFO"]
                         ws["B5"] = sens_value
                         wb.save(master_file)
-                        print(f"Actualitzat UIB sensitivity a MasterFile: {sens_value}")
+                        logger.debug(f"Actualitzat UIB sensitivity a MasterFile: {sens_value}")
                 except Exception as e:
-                    print(f"Warning: No s'ha pogut actualitzar MasterFile: {e}")
+                    logger.warning(f"No s'ha pogut actualitzar MasterFile: {e}")
 
     def _on_import_error(self, error_msg):
         self.main_window.show_progress(-1)
@@ -1233,7 +1266,7 @@ class ImportPanel(QWidget):
                         save_import_manifest(self.imported_data)
                         self.main_window.mark_manifest_saved()
                     except Exception as e:
-                        print(f"Warning: No s'ha pogut auto-guardar manifest: {e}")
+                        logger.warning(f"No s'ha pogut auto-guardar manifest: {e}")
                 else:
                     # Si es tria "(cap)", la cel·la queda sense assignació
                     item.setBackground(QBrush(MATCH_COLORS["NORMAL"]))
@@ -1303,7 +1336,7 @@ class ImportPanel(QWidget):
             return best_count
 
         except Exception as e:
-            print(f"Warning: No s'ha pogut comptar punts de {filename}: {e}")
+            logger.warning(f"No s'ha pogut comptar punts de {filename}: {e}")
 
         return 0
 
@@ -1320,19 +1353,19 @@ class ImportPanel(QWidget):
         if not filename or filename in ["-", "(cap)"]:
             return
 
-        print(f"[DEBUG _load_and_store] Intentant carregar {filename} per {sample_name} R{replica}")
+        logger.debug(f"_load_and_store: Intentant carregar {filename} per {sample_name} R{replica}")
 
         # Obtenir referència a les dades de la rèplica primer
         samples = self.imported_data.get("samples", {})
         if sample_name not in samples:
-            print(f"[DEBUG _load_and_store] ERROR: Mostra '{sample_name}' no trobada a imported_data")
-            print(f"[DEBUG _load_and_store] Samples disponibles: {list(samples.keys())[:5]}...")
+            logger.debug(f"_load_and_store: Mostra '{sample_name}' no trobada a imported_data")
+            logger.debug(f"_load_and_store: Samples disponibles: {list(samples.keys())[:5]}...")
             return
 
         rep_data = samples[sample_name].get("replicas", {}).get(str(replica))
         if rep_data is None:
-            print(f"[DEBUG _load_and_store] ERROR: Rèplica {replica} no trobada per '{sample_name}'")
-            print(f"[DEBUG _load_and_store] Rèpliques disponibles: {list(samples[sample_name].get('replicas', {}).keys())}")
+            logger.debug(f"_load_and_store: Rèplica {replica} no trobada per '{sample_name}'")
+            logger.debug(f"_load_and_store: Rèpliques disponibles: {list(samples[sample_name].get('replicas', {}).keys())}")
             return
 
         # Buscar el path complet del fitxer
@@ -1384,7 +1417,7 @@ class ImportPanel(QWidget):
                     break
 
         if not full_path or not os.path.exists(full_path):
-            print(f"Warning: No s'ha trobat el fitxer {filename} (file_type={file_type})")
+            logger.warning(f"No s'ha trobat el fitxer {filename} (file_type={file_type})")
             return
 
         try:
@@ -1416,9 +1449,9 @@ class ImportPanel(QWidget):
                         "manual_assignment": True,
                     }
                     bl_val = baseline if baseline is not None else 0
-                    print(f"[DEBUG _load_and_store] Carregat UIB: {filename} per {sample_name} R{replica}")
-                    print(f"[DEBUG _load_and_store] rep_data['uib'] keys: {list(rep_data['uib'].keys())}")
-                    print(f"[DEBUG _load_and_store] t is not None: {t is not None}, len(t)={len(t) if t is not None else 0}")
+                    logger.debug(f"_load_and_store: Carregat UIB: {filename} per {sample_name} R{replica}")
+                    logger.debug(f"_load_and_store: rep_data['uib'] keys: {list(rep_data['uib'].keys())}")
+                    logger.debug(f"_load_and_store: t is not None: {t is not None}, len(t)={len(t) if t is not None else 0}")
                     # Treure de la llista d'orfes
                     if "orphan_files" in self.imported_data:
                         uib_orphans = self.imported_data["orphan_files"].get("uib", [])
@@ -1443,7 +1476,7 @@ class ImportPanel(QWidget):
                         "manual_assignment": True,
                         "source": "manual",
                     }
-                    print(f"Carregat DAD: {filename} ({len(df)} punts, columnes: {list(df.columns)[:5]})")
+                    logger.debug(f"Carregat DAD: {filename} ({len(df)} punts, columnes: {list(df.columns)[:5]})")
                     # Treure de la llista d'orfes
                     if "orphan_files" in self.imported_data:
                         dad_orphans = self.imported_data["orphan_files"].get("dad", [])
@@ -1451,10 +1484,10 @@ class ImportPanel(QWidget):
                             f for f in dad_orphans if Path(f).name != filename
                         ]
                 else:
-                    print(f"Warning: No s'han pogut llegir dades DAD de {filename}: {status}")
+                    logger.warning(f"No s'han pogut llegir dades DAD de {filename}: {status}")
 
         except Exception as e:
-            print(f"Error carregant {filename}: {e}")
+            logger.error(f"Error carregant {filename}: {e}")
 
     def _update_row_state(self, row):
         """Actualitza l'estat (semàfors) d'una fila específica."""
@@ -1758,16 +1791,16 @@ class ImportPanel(QWidget):
 
             # Guardar manifest immediatament
             try:
-                print(f"[DEBUG confirm] Guardant manifest amb {confirmed} confirmacions...")
+                logger.debug(f"confirm: Guardant manifest amb {confirmed} confirmacions...")
                 self._apply_manual_assignments()
                 manifest_path = save_import_manifest(self.imported_data)
-                print(f"[DEBUG confirm] Manifest guardat a: {manifest_path}")
+                logger.debug(f"confirm: Manifest guardat a: {manifest_path}")
                 self.main_window.mark_manifest_saved()
                 self.warnings_frame.setVisible(False)
                 QMessageBox.information(self, "Confirmat", f"S'han confirmat {confirmed} suggeriments i s'han guardat.")
             except Exception as e:
                 import traceback
-                print(f"[DEBUG confirm] ERROR: {e}")
+                logger.debug(f"confirm: ERROR: {e}")
                 traceback.print_exc()
                 QMessageBox.warning(self, "Avís", f"S'han confirmat {confirmed} suggeriments però no s'han pogut guardar: {e}")
 
@@ -1820,7 +1853,7 @@ class ImportPanel(QWidget):
                 save_import_manifest(self.imported_data)
                 self.main_window.set_status("Avís marcat com a revisat", 3000)
             except Exception as e:
-                print(f"Warning: No s'ha pogut guardar estat revisat: {e}")
+                logger.warning(f"No s'ha pogut guardar estat revisat: {e}")
 
         # Notificar al wizard que els warnings s'han descartat
         self.warnings_dismissed.emit()
@@ -1856,7 +1889,7 @@ class ImportPanel(QWidget):
                 save_import_manifest(self.imported_data)
                 self.main_window.set_status(f"Avisos confirmats per {initials}", 3000)
             except Exception as e:
-                print(f"Warning: No s'ha pogut guardar: {e}")
+                logger.warning(f"No s'ha pogut guardar: {e}")
 
         # Notificar wizard
         self.warnings_dismissed.emit()
@@ -1869,7 +1902,7 @@ class ImportPanel(QWidget):
             try:
                 save_import_manifest(self.imported_data)
             except Exception as e:
-                print(f"Warning: No s'ha pogut guardar notes: {e}")
+                logger.warning(f"No s'ha pogut guardar notes: {e}")
 
     def _save_manifest(self):
         """Guarda el manifest amb les assignacions actuals."""
@@ -1937,7 +1970,7 @@ class ImportPanel(QWidget):
                 save_import_manifest(self.imported_data)
                 self.main_window.mark_manifest_saved()
             except Exception as e:
-                print(f"Warning: No s'ha pogut guardar manifest: {e}")
+                logger.warning(f"No s'ha pogut guardar manifest: {e}")
 
         self.main_window.go_to_tab(1)
 
@@ -1984,4 +2017,4 @@ class ImportPanel(QWidget):
         try:
             save_import_manifest(self.imported_data)
         except Exception as e:
-            print(f"Warning: No s'ha pogut actualitzar manifest: {e}")
+            logger.warning(f"No s'ha pogut actualitzar manifest: {e}")

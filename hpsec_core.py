@@ -21,11 +21,14 @@ v1.1 - 2026-01-26: Afegides funcions timeout i detecció pics (migrades)
 v1.0 - 2026-01-22: Versió inicial
 """
 
+import logging
 import numpy as np
 from scipy.signal import find_peaks
 from scipy.stats import linregress, pearsonr
 from scipy.optimize import curve_fit
 from scipy.integrate import trapezoid
+
+logger = logging.getLogger(__name__)
 
 
 # =============================================================================
@@ -39,6 +42,15 @@ THRESH_R2_CHECK = 0.980      # 0.980 <= R² < 0.987 → CHECK
 # Repair thresholds
 REPAIR_MIN_R2 = 0.980        # Don't repair if R² < this (garbage peak)
 REPAIR_FACTOR = 0.85         # Tangent height correction factor
+
+# Bi-Gaussian fit constants
+GAUSSIAN_HW_TO_SIGMA = 1.177  # Half-width at half-max to sigma: sqrt(2*ln(2))
+MIN_SIGMA_GUESS = 0.05        # Minimum sigma initial guess (minutes)
+REPAIR_FACTOR_MIN = 0.5       # Tangent repair: minimum height ratio (real/tangent)
+REPAIR_FACTOR_MAX = 1.2       # Tangent repair: maximum height ratio (real/tangent)
+
+# Pearson correlation
+PEARSON_INTERP_POINTS = 500   # Grid points for interpolated Pearson calculation
 
 # Asymmetry thresholds
 ASYM_MIN = 0.33              # sigma_right/sigma_left minimum
@@ -126,7 +138,7 @@ def fit_bigaussian(t, y, peak_idx, left_idx, right_idx, r2_top_pct=0):
     if np.sum(left_mask) >= 1:
         t_left_half = t_seg[left_mask]
         hw_left = t_peak - t_left_half[0]
-        sigma_left_guess = hw_left / 1.177
+        sigma_left_guess = hw_left / GAUSSIAN_HW_TO_SIGMA
     else:
         sigma_left_guess = (t_peak - t_seg[0]) / 3
 
@@ -135,12 +147,12 @@ def fit_bigaussian(t, y, peak_idx, left_idx, right_idx, r2_top_pct=0):
     if np.sum(right_mask) >= 1:
         t_right_half = t_seg[right_mask]
         hw_right = t_right_half[-1] - t_peak
-        sigma_right_guess = hw_right / 1.177
+        sigma_right_guess = hw_right / GAUSSIAN_HW_TO_SIGMA
     else:
         sigma_right_guess = (t_seg[-1] - t_peak) / 3
 
-    sigma_left_guess = max(0.05, sigma_left_guess)
-    sigma_right_guess = max(0.05, sigma_right_guess)
+    sigma_left_guess = max(MIN_SIGMA_GUESS, sigma_left_guess)
+    sigma_right_guess = max(MIN_SIGMA_GUESS, sigma_right_guess)
 
     try:
         popt, _ = curve_fit(
@@ -738,14 +750,14 @@ def calc_pearson(t1, y1, t2, y2):
     if t_max <= t_min:
         return np.nan
 
-    t_common = np.linspace(t_min, t_max, 500)
+    t_common = np.linspace(t_min, t_max, PEARSON_INTERP_POINTS)
     y1_interp = np.interp(t_common, t1, y1)
     y2_interp = np.interp(t_common, t2, y2)
 
     try:
         r, _ = pearsonr(y1_interp, y2_interp)
         return r
-    except:
+    except (ValueError, TypeError):
         return np.nan
 
 
@@ -779,7 +791,7 @@ def calibrate_factor(t, y):
 
     factor = y_real / y_tangent
 
-    if factor < 0.5 or factor > 1.2:
+    if factor < REPAIR_FACTOR_MIN or factor > REPAIR_FACTOR_MAX:
         return None
 
     return {
@@ -1500,7 +1512,8 @@ def calculate_fwhm(t, y, peak_idx, left_idx=None, right_idx=None):
         fwhm = t_right - t_left
         return float(fwhm) if fwhm > 0 else np.nan
 
-    except Exception:
+    except Exception as e:
+        logger.debug("FWHM calculation failed: %s", e)
         return np.nan
 
 
@@ -1572,7 +1585,8 @@ def calculate_symmetry(t, y, peak_idx, left_idx=None, right_idx=None):
 
         return float(width_left / width_right)
 
-    except Exception:
+    except Exception as e:
+        logger.debug("Symmetry calculation failed: %s", e)
         return np.nan
 
 
@@ -2111,7 +2125,8 @@ def compare_signals(t1, y1, t2, y2, normalize=False):
     try:
         pearson_val, _ = pearsonr(y1_interp, y2_interp)
         result["pearson"] = float(pearson_val)
-    except Exception:
+    except (ValueError, TypeError) as e:
+        logger.debug("Pearson correlation failed: %s", e)
         result["pearson"] = np.nan
 
     area_1 = float(trapezoid(np.maximum(y1_interp, 0), t_common))

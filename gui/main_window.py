@@ -11,6 +11,7 @@ Finestra principal amb estructura simplificada:
 
 import sys
 import os
+import logging
 from pathlib import Path
 from datetime import datetime
 
@@ -375,6 +376,13 @@ class HPSECSuiteWindow(QMainWindow):
 
 def main():
     """Punt d'entrada principal."""
+    # Configurar logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
     app = QApplication(sys.argv)
 
     # Configurar aplicació
