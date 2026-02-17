@@ -148,14 +148,29 @@ def migrate_single(seq_path: str, progress_callback: Optional[Callable] = None,
 
     report(5, 5, "Completat")
 
+    # Warnings
+    warnings = []
+    has_khp = data.get('khp') is not None
+    if data.get('_has_dad_sheet') and not has_khp:
+        warnings.append("[!] El rawdata conte full 3-DAD_data pero no s'han detectat mostres KHP. "
+                         "Revisar noms de mostra al DAD (es busca 'KHP' o patro concentracio).")
+    if not data.get('_has_dad_sheet'):
+        warnings.append("El rawdata no conte full 3-DAD_data -- MasterFile sense dades DAD KHP.")
+
+    status = 'warning' if warnings else 'ok'
+    msg = f'MasterFile creat ({n_rows} files TOC)'
+    if warnings:
+        msg += ' -- ' + '; '.join(warnings)
+
     return {
-        'status': 'ok',
-        'message': f'MasterFile creat correctament ({n_rows} files TOC)',
+        'status': status,
+        'message': msg,
         'file': output_path,
         'rows': n_rows,
         'seq_id': info.get('seq_id'),
         'method': info.get('method'),
-        'has_khp': data.get('khp') is not None,
+        'has_khp': has_khp,
+        'warnings': warnings,
         'details': {
             'output_file': os.path.basename(output_path),
             'rawdata_used': os.path.basename(rawdata_path)
@@ -257,10 +272,13 @@ def _read_rawdata(filepath: str) -> Dict[str, Any]:
         data['toc'] = pd.read_excel(filepath, sheet_name='2-TOC', header=None, engine='openpyxl')
 
     # 3-DAD_data (per extreure KHP)
-    if '3-DAD_data' in wb.sheetnames:
+    data['_has_dad_sheet'] = '3-DAD_data' in wb.sheetnames
+    if data['_has_dad_sheet']:
         print(" DAD", end='', flush=True)
         df_dad = pd.read_excel(filepath, sheet_name='3-DAD_data', header=None, engine='openpyxl')
         data['khp'] = _extract_khp_from_dad(df_dad)
+        if data['khp'] is None:
+            print(" [!] DAD trobat pero cap KHP detectat!", end='', flush=True)
 
     wb.close()
     print(" OK", flush=True)
@@ -315,9 +333,34 @@ def _extract_seq_number(seq_id) -> Optional[int]:
 
 
 def _extract_khp_from_dad(df_dad: pd.DataFrame) -> Optional[Dict[str, pd.DataFrame]]:
-    """Extreu dades KHP del full DAD."""
+    """Extreu dades KHP del full DAD.
+
+    Detecta mostres KHP per nom:
+      - Conté "KHP" (ex: "KHP2", "KHP 1 ppm")
+      - Patró concentració (ex: "100 ppb", "2 ppm", "250 ppb 400ul")
+    Ignora blancs/controls: "mq", "naoh", "bl", "buffer"
+    """
+    import re
     if df_dad is None or df_dad.empty:
         return None
+
+    _SKIP = {'mq', 'naoh', 'bl', 'buffer', 'blank', 'fi', 'mix', '254', '210',
+             '206', '273', '280', '350', '365', '465', 't'}
+
+    def _is_khp_name(name_str):
+        """Retorna True si el nom correspon a una mostra KHP."""
+        s = str(name_str).strip()
+        s_lower = s.lower()
+        # Descartar blancs/controls/wavelengths
+        if s_lower in _SKIP or not s:
+            return False
+        # Match explícit "KHP"
+        if 'KHP' in s.upper():
+            return True
+        # Match patró concentració: "100 ppb", "2 ppm", "250 ppb 400ul"
+        if re.match(r'^\d+\.?\d*\s*(ppb|ppm)', s_lower):
+            return True
+        return False
 
     khp_data = {}
     khp_count = 0
@@ -325,9 +368,9 @@ def _extract_khp_from_dad(df_dad: pd.DataFrame) -> Optional[Dict[str, pd.DataFra
     for col in range(df_dad.shape[1]):
         name_val = df_dad.iloc[1, col] if df_dad.shape[0] > 1 and pd.notna(df_dad.iloc[1, col]) else None
 
-        if name_val and 'KHP' in str(name_val).upper():
+        if name_val and _is_khp_name(name_val):
             khp_count += 1
-            khp_name = f"{name_val}_R{khp_count}"
+            khp_name = f"KHP_{name_val}_R{khp_count}"
 
             # Trobar columnes amb dades
             time_col = val_col = None

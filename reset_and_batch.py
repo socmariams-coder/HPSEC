@@ -249,6 +249,96 @@ def batch_calibrate(data_folder: str, dev_notes: bool = True, force: bool = Fals
         end_session(f"Calibrate: {results['ok']} OK, {results['fail']} fail")
 
 
+def batch_analyze(data_folder: str, force: bool = False, report: bool = True):
+    """Fa anàlisi de totes les SEQs importades (i calibrades si cal)."""
+    import contextlib, io
+
+    from hpsec_import import import_from_manifest
+    from hpsec_calibrate import calibrate_from_import
+    from hpsec_analyze import analyze_sequence, save_analysis_result
+
+    data_path = Path(data_folder)
+    seq_dirs = sorted([d for d in data_path.glob("*_SEQ*") if d.is_dir()])
+
+    print(f"\nBatch analyze: {len(seq_dirs)} SEQs")
+    print("=" * 60)
+
+    results = {"ok": 0, "fail": 0, "skip": 0, "no_import": 0}
+
+    for seq_dir in seq_dirs:
+        manifest_path = seq_dir / "CHECK" / "data" / "import_manifest.json"
+        ana_path = seq_dir / "CHECK" / "data" / "analysis_result.json"
+
+        # Verificar que hi ha import
+        if not manifest_path.exists():
+            results["no_import"] += 1
+            continue
+
+        # Saltar si ja analitzat (excepte force)
+        if ana_path.exists() and not force:
+            print(f"  [SKIP] {seq_dir.name} (ja analitzat)")
+            results["skip"] += 1
+            continue
+
+        try:
+            print(f"  [ANA] {seq_dir.name}...", end=" ", flush=True)
+
+            # 1. Reimportar des de manifest (ràpid)
+            with contextlib.redirect_stdout(io.StringIO()):
+                imported = import_from_manifest(str(seq_dir))
+            if not imported or not imported.get("success"):
+                errors = imported.get("errors", []) if imported else []
+                error_msg = errors[0] if errors else "manifest invalid"
+                print(f"FAIL import: {error_msg}")
+                results["fail"] += 1
+                continue
+
+            # 2. Calibrar (en memòria, no guarda JSON — solo per shifts)
+            cal_data = None
+            with contextlib.redirect_stdout(io.StringIO()):
+                try:
+                    cal_data = calibrate_from_import(imported)
+                except Exception:
+                    pass
+
+            # 3. Analitzar
+            with contextlib.redirect_stdout(io.StringIO()):
+                analysis = analyze_sequence(imported, calibration_data=cal_data, config=None)
+
+            if not analysis or not analysis.get("success"):
+                errors = analysis.get("errors", []) if analysis else []
+                error_msg = errors[0] if errors else "Error desconegut"
+                print(f"FAIL: {error_msg}")
+                results["fail"] += 1
+                continue
+
+            # 4. Guardar JSON
+            save_analysis_result(analysis)
+
+            # 5. Generar PDF (opcional)
+            if report:
+                try:
+                    from generate_analysis_report import generate_analysis_report
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        generate_analysis_report(str(seq_dir), analysis_data=analysis)
+                except Exception:
+                    pass  # PDF no crític
+
+            n_samples = len(analysis.get("samples", []))
+            n_khp = len(analysis.get("khp_samples", []))
+            method = analysis.get("method", "?")
+            print(f"OK ({n_samples} samples, {n_khp} KHP, {method})")
+            results["ok"] += 1
+
+        except Exception as e:
+            print(f"ERROR: {e}")
+            results["fail"] += 1
+
+    print("=" * 60)
+    print(f"OK: {results['ok']} | FAIL: {results['fail']} | "
+          f"SKIP: {results['skip']} | NO_IMP: {results['no_import']}")
+
+
 def main():
     import argparse
 
@@ -261,7 +351,10 @@ def main():
     parser.add_argument("--reset-history", action="store_true", help="Reset històric global")
     parser.add_argument("--import", dest="do_import", action="store_true", help="Batch import")
     parser.add_argument("--calibrate", action="store_true", help="Batch calibrate")
-    parser.add_argument("--force", action="store_true", help="Forcar recalibrar/reimportar")
+    parser.add_argument("--analyze", action="store_true", help="Batch analyze")
+    parser.add_argument("--all", action="store_true", help="Import + Calibrate + Analyze")
+    parser.add_argument("--no-report", action="store_true", help="No generar PDFs")
+    parser.add_argument("--force", action="store_true", help="Forcar recalibrar/reimportar/reanalitzar")
     args = parser.parse_args()
 
     print(f"\n{'='*60}")
@@ -290,9 +383,13 @@ def main():
         print("\n[5] BATCH IMPORT")
         batch_import(args.folder)
 
-    if args.calibrate:
+    if args.calibrate or args.all:
         print("\n[6] BATCH CALIBRATE")
         batch_calibrate(args.folder, force=args.force)
+
+    if args.analyze or args.all:
+        print("\n[7] BATCH ANALYZE")
+        batch_analyze(args.folder, force=args.force, report=not args.no_report)
 
     print("\n[DONE]")
 

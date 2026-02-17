@@ -2183,6 +2183,95 @@ def compute_toc_calc(master_data, toc_df):
     return toc_calc_df
 
 
+def _match_khp_dad_from_masterfile(sample_name, original_name, inj_num, master_khp_data):
+    """
+    Busca dades DAD 254nm per un KHP al full 3-DAD_KHP del MasterFile.
+
+    Returns:
+        (dad_dict, source_str) o (None, None) si no trobat
+    """
+    def _try_load_col(col):
+        """Intenta carregar time+value des d'una columna nomenada."""
+        col_idx = master_khp_data.columns.get_loc(col)
+        if col_idx + 1 >= len(master_khp_data.columns):
+            return None
+        time_col = col
+        value_col = master_khp_data.columns[col_idx + 1]
+        time_data = master_khp_data[time_col].iloc[1:] if len(master_khp_data) > 1 else master_khp_data[time_col]
+        value_data = master_khp_data[value_col].iloc[1:] if len(master_khp_data) > 1 else master_khp_data[value_col]
+        df_khp = pd.DataFrame({
+            "time (min)": pd.to_numeric(time_data, errors="coerce"),
+            "254": pd.to_numeric(value_data, errors="coerce"),
+        }).dropna().reset_index(drop=True)
+        if not df_khp.empty and len(df_khp) > 5:
+            return {"path": "MasterFile:3-DAD_KHP", "df": df_khp, "source": "masterfile"}
+        return None
+
+    def _strip_all(s):
+        """Elimina tots els separadors per matching flexible."""
+        return re.sub(r'[\s_\-\.]+', '', str(s or '')).upper()
+
+    # --- Strategy 1: exact key match (incloent _R{inj_num}) ---
+    khp_keys = [
+        f"{sample_name}_{inj_num}_R{inj_num}",
+        f"{original_name}_{inj_num}_R{inj_num}",
+        f"{original_name}_R{inj_num}",
+        f"{sample_name}_R{inj_num}",
+    ]
+
+    for khp_key in khp_keys:
+        key_norm = normalize_key(khp_key)
+        key_stripped = _strip_all(khp_key)
+
+        for col in master_khp_data.columns:
+            if str(col).startswith("Unnamed"):
+                continue
+            col_norm = normalize_key(str(col))
+            col_stripped = _strip_all(str(col))
+
+            if (col_norm == key_norm or key_norm in col_norm
+                    or col_stripped == key_stripped or key_stripped in col_stripped):
+                result = _try_load_col(col)
+                if result:
+                    return result, "masterfile"
+                break
+
+    # --- Strategy 2: base name match (sense _R{N}), agafar la inj_num-èsima ---
+    base_names = list(dict.fromkeys([_strip_all(sample_name), _strip_all(original_name)]))
+
+    matching_cols = []
+    for col in master_khp_data.columns:
+        if str(col).startswith("Unnamed"):
+            continue
+        col_stripped = _strip_all(str(col))
+        for base in base_names:
+            if base in col_stripped:
+                matching_cols.append(col)
+                break
+
+    idx = int(inj_num) - 1 if str(inj_num).isdigit() else 0
+    if 0 <= idx < len(matching_cols):
+        result = _try_load_col(matching_cols[idx])
+        if result:
+            return result, "masterfile"
+
+    # --- Strategy 3: generic "KHP" prefix match ---
+    all_khp_cols = []
+    for col in master_khp_data.columns:
+        if str(col).startswith("Unnamed"):
+            continue
+        col_stripped = _strip_all(str(col))
+        if col_stripped.startswith("KHP"):
+            all_khp_cols.append(col)
+
+    if all_khp_cols and 0 <= idx < len(all_khp_cols):
+        result = _try_load_col(all_khp_cols[idx])
+        if result:
+            return result, "masterfile"
+
+    return None, None
+
+
 def find_data_for_injection(injection, seq_path, uib_files, dad_files, dad_csv_files,
                             master_khp_data, used_files, config=None,
                             toc_df=None, toc_calc_df=None,
@@ -2487,71 +2576,13 @@ def find_data_for_injection(injection, seq_path, uib_files, dad_files, dad_csv_f
 
     # 3. Si és KHP i no tenim DAD, buscar a MasterFile 3-DAD_KHP
     if sample_type == "KHP" and result["dad"] is None and master_khp_data is not None:
-        # Buscar columna corresponent al KHP
-        # Format MasterFile 3-DAD_KHP: {SAMPLE}_{INJ}_R{REP} (e.g., KHP5_1_R1, KHP5_2_R2)
-        # Per KHP controls: injection number = replica number
-        khp_keys = [
-            # Format correcte: SAMPLE_INJ_R{REP} (prioritari)
-            f"{sample_name}_{inj_num}_R{inj_num}",  # KHP5_1_R1
-            f"{original_name}_{inj_num}_R{inj_num}",
-            # Formats alternatius
-            f"{original_name}_R{inj_num}",
-            f"{sample_name}_R{inj_num}",
-            f"{original_name}_{inj_num}",
-            f"{sample_name}_{inj_num}",
-        ]
-        # DEBUG: mostrar què busquem
-        print(f"[DEBUG 3-DAD_KHP] Buscant KHP: sample={sample_name}, original={original_name}, inj={inj_num}")
-        print(f"[DEBUG 3-DAD_KHP] Claus a buscar: {khp_keys}")
-        all_cols = list(master_khp_data.columns)
-        print(f"[DEBUG 3-DAD_KHP] Totes les columnes ({len(all_cols)}): {all_cols}")
-
-        found = False
-        for khp_key in khp_keys:
-            if found:
-                break
-            khp_key_norm = normalize_key(khp_key)
-            for col in master_khp_data.columns:
-                col_norm = normalize_key(str(col))
-                # Match exacte o parcial (la columna conté la clau)
-                if col_norm == khp_key_norm or khp_key_norm in col_norm:
-                    col_idx = master_khp_data.columns.get_loc(col)
-                    print(f"[DEBUG 3-DAD_KHP] MATCH! col='{col}', idx={col_idx}, key='{khp_key}'")
-
-                    # Format 3-DAD_KHP: columna KHP té temps, següent té valors
-                    # Estructura: KHP5_1_R1 | Unnamed:1 | NaN | KHP5_2_R2 | Unnamed:4
-                    #             time      | value     | NaN | time      | value
-                    if col_idx + 1 < len(master_khp_data.columns):
-                        time_col = col
-                        value_col = master_khp_data.columns[col_idx + 1]
-
-                        # Llegir dades saltant la primera fila (capçalera "time (min)", "value (mAU)")
-                        time_data = master_khp_data[time_col].iloc[1:] if len(master_khp_data) > 1 else master_khp_data[time_col]
-                        value_data = master_khp_data[value_col].iloc[1:] if len(master_khp_data) > 1 else master_khp_data[value_col]
-
-                        df_khp = pd.DataFrame({
-                            "time (min)": pd.to_numeric(time_data, errors="coerce"),
-                            "254": pd.to_numeric(value_data, errors="coerce"),
-                        }).dropna().reset_index(drop=True)
-
-                        print(f"[DEBUG 3-DAD_KHP] df_khp len={len(df_khp)}, empty={df_khp.empty}")
-                        if len(df_khp) > 0:
-                            print(f"[DEBUG 3-DAD_KHP] Primeres files: {df_khp.head(3).to_dict()}")
-
-                        if not df_khp.empty and len(df_khp) > 5:
-                            result["dad"] = {
-                                "path": "MasterFile:3-DAD_KHP",
-                                "df": df_khp,
-                                "source": "masterfile",
-                            }
-                            result["dad_source"] = "masterfile"
-                            result["has_data"] = True
-                            found = True
-                            print(f"[DEBUG 3-DAD_KHP] SUCCESS! Carregades {len(df_khp)} files de 3-DAD_KHP")
-                    break
-
-        if not found:
-            print(f"[DEBUG 3-DAD_KHP] NO MATCH per {sample_name} (inj {inj_num})")
+        dad_result, dad_src = _match_khp_dad_from_masterfile(
+            sample_name, original_name, inj_num, master_khp_data
+        )
+        if dad_result is not None:
+            result["dad"] = dad_result
+            result["dad_source"] = dad_src
+            result["has_data"] = True
 
     return result
 
@@ -3811,12 +3842,16 @@ def import_from_manifest(seq_path, manifest=None, config=None, progress_callback
 
     report_progress(10, "Llegint MasterFile...")
 
-    # Llegir MasterFile per obtenir dades DOC Direct
+    # Llegir MasterFile per obtenir dades DOC Direct + DAD KHP
     try:
         toc_df = None
+        master_khp_data = None
         xl = pd.ExcelFile(master_path, engine="openpyxl")
         if "2-TOC" in xl.sheet_names:
             toc_df = pd.read_excel(xl, sheet_name="2-TOC", header=6, engine="openpyxl")
+        # FIX F2.2: Llegir 3-DAD_KHP per KHP samples (fallback DAD des de MasterFile)
+        if "3-DAD_KHP" in xl.sheet_names:
+            master_khp_data = pd.read_excel(xl, sheet_name="3-DAD_KHP", engine="openpyxl")
     except PermissionError:
         result["errors"].append(
             f"No es pot llegir el MasterFile: el fitxer està obert a Excel o sense permisos. "
@@ -3986,15 +4021,29 @@ def import_from_manifest(seq_path, manifest=None, config=None, progress_callback
 
             # === DAD ===
             dad_info = rep_info.get("dad")
+            dad_source = None
             if dad_info:
                 dad_source = dad_info.get("source", "export3d")
                 rep_data["dad_source"] = dad_source
+
+                # FIX F2.2: Si DAD ve de 3-DAD_KHP (source="masterfile"), llegir del MasterFile
+                if dad_source == "masterfile" and master_khp_data is not None:
+                    original_name = sample_info.get("original_name", sample_name)
+                    inj_num = rep_info.get("injection", {}).get("inj_num", rep_num) if rep_info.get("injection") else rep_num
+                    dad_result, dad_src = _match_khp_dad_from_masterfile(
+                        sample_name, original_name, inj_num, master_khp_data
+                    )
+                    if dad_result is not None:
+                        rep_data["dad"] = dad_result
+                        rep_data["dad_source"] = dad_src
+                        rep_data["has_data"] = True
 
                 # Prioritzar manual_file si existeix (assignació manual de l'usuari)
                 manual_dad_file = dad_info.get("manual_file")
                 dad_file_from_manifest = dad_info.get("file", "")
 
-                dad_loaded = False
+                # Si ja carregat des de masterfile (3-DAD_KHP), no cal buscar més
+                dad_loaded = rep_data.get("dad") is not None
 
                 # 1. Intentar carregar des de manual_file
                 if manual_dad_file and not dad_loaded:
@@ -4079,6 +4128,17 @@ def import_from_manifest(seq_path, manifest=None, config=None, progress_callback
                                         break
                                 except Exception:
                                     pass
+
+            # FIX F2.2: KHP sense DAD al manifest (seqs antigues pre-FIX F2.2)
+            # Si és KHP i encara no s'ha carregat DAD, intentar 3-DAD_KHP del MasterFile
+            if sample_type == "KHP" and rep_data.get("dad") is None and master_khp_data is not None:
+                original_name = sample_info.get("original_name", sample_name)
+                inj_num = rep_info.get("injection", {}).get("inj_num", rep_num) if rep_info.get("injection") else rep_num
+                rep_data["dad"], rep_data["dad_source"] = _match_khp_dad_from_masterfile(
+                    sample_name, original_name, inj_num, master_khp_data
+                )
+                if rep_data["dad"] is not None:
+                    rep_data["has_data"] = True
 
             result["samples"][sample_name]["replicas"][rep_num] = rep_data
 

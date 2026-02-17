@@ -2833,6 +2833,11 @@ def register_calibration(seq_path, khp_data, khp_source, mode="COLUMN"):
         print(f"  - get_injection_volume({seq_path}, {is_bp}) = {volume_from_func}")
         print(f"  - khp_data keys: {list(khp_data.keys())[:10]}...")
         volume = 100  # Fallback temporal per evitar crash
+
+    # Sanity check: BP sempre hauria de ser 100µL — avisar però NO corregir automàticament
+    if is_bp and volume > INJECTION_VOLUME_BP:
+        print(f"  ⚠ {seq_name}: BP amb volum={volume}µL (esperat {INJECTION_VOLUME_BP}µL) "
+              f"— revisar masterfile o manifest.")
     khp_name = khp_data.get('name', f"KHP{conc}")  # Nom del KHP (ex: "KHP2", "KHP2_50")
     doc_mode = khp_data.get('doc_mode', 'N/A')
     uib_sensitivity = khp_data.get('uib_sensitivity')
@@ -2904,6 +2909,16 @@ def register_calibration(seq_path, khp_data, khp_source, mode="COLUMN"):
     calibration_warnings = validation_result.get('warnings', [])
     quality_score = validation_result.get('quality_score', 0)
     quality_issues = calibration_issues + calibration_warnings
+
+    # =========================================================================
+    # GUARDS BÀSICS — invalidar casos impossibles
+    # =========================================================================
+    if conc <= 0:
+        valid_for_calibration = False
+        calibration_issues.append("Concentració KHP ≤ 0 — RF no calculable")
+    if area <= 0:
+        valid_for_calibration = False
+        calibration_issues.append(f"Àrea ≤ 0 ({area:.2f}) — pic invàlid o desplaçat")
 
     # =========================================================================
     # VALIDACIÓ PER SHIFT (alineació temporal)

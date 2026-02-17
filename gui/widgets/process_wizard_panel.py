@@ -501,6 +501,8 @@ class ProcessWizardPanel(QWidget):
                 return  # Usuari ha cancel·lat
 
         if current_idx == 0:  # Importar
+            # Netejar dades pre-carregades perquè reimporti realment del MasterFile
+            self.main_window.imported_data = None
             self.import_panel._run_import(force_reimport=force_redo)
         elif current_idx == 1:  # Calibrar
             if hasattr(self.calibrate_panel, '_run_calibrate'):
@@ -1617,7 +1619,7 @@ class ProcessWizardPanel(QWidget):
                 return
             if hasattr(self.import_panel, '_run_import'):
                 self._show_executing_state("Importar")
-                self.import_panel._run_import()
+                self.import_panel._run_import(force_reimport=True)
         elif stage_idx == 1:  # Calibrar
             self._execute_stage(1)
         elif stage_idx == 2:  # Analitzar

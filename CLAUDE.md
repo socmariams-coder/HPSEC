@@ -77,6 +77,8 @@ Mark features as DONE only when code is fully functional end-to-end, not when pl
 - [x] Export: SUMMARY.xlsx Type column (SAMPLE/PR/BLANK/CONTROL) — DONE
 - [x] Architecture refactor: unify anomaly system (ANOMALY_CATALOG in hpsec_warnings.py) — DONE (0d0b960)
 - [ ] Architecture refactor: unify detection functions in hpsec_core.py — PENDING
+- [x] Integration: derivative-based peak boundaries (Agilent tangent projection) — DONE (find_peak_boundaries in hpsec_core.py)
+- [x] Integration: re-process all KHP data with new derivative method — DONE (batch re-calibrate 137 SEQs, KHP_History regenerated with 96 entries)
 - [x] Config panel: 3 tabs per impacte (Anàlisi/Seqüència/Sistema), tots params editables — DONE
 - [x] Config panel: badges d'impacte (retroactiu/futur), diàleg de reprocessament — DONE
 - [x] Config panel: TimeFractionsEditor, TimeoutZonesEditor, WavelengthSelector, PatternListEditor — DONE
@@ -111,6 +113,26 @@ All exploratory scripts and results live in `research/` — NOT part of the prod
 - [x] HCI (Humic Character Index) integrated into Suite (hpsec_humic.py + model JSON) — DONE
 - [ ] BB fingerprint integration — BLOCKED (temporal alignment not verified, no reference standards for BB)
 - [ ] BB organic/inorganic metrics as single-sample report — PENDING (needs alignment verification first)
+
+## Known bugs (pendents de fix)
+
+- **Import re-llegeix masterfile quan ja existeix manifest JSON**: Quan una SEQ ja té import_manifest.json,
+  el panell d'importar hauria de carregar directament del JSON sense tornar a parsejar el masterfile.
+  Actualment ho re-llegeix sempre.
+- **072_SEQ: dades DAD KHP no detectades al carregar, però sí al refer**: Quan es carrega la SEQ per
+  primera vegada (des del JSON?), no detecta dades DAD del KHP. Si l'usuari fa "Refer" (re-importar),
+  llavors sí que les troba. Però no sembla reescriure el JSON, de manera que el bug es repeteix
+  cada vegada que es carrega. Investigar el flux de càrrega: d'on llegeix les dades KHP (manifest vs
+  recàlcul), i per què el "refer" no persisteix el resultat.
+- **Import auto-detecta columna volum erròniament en seqs BP**: `hpsec_import.py` (L1681-1690) busca
+  una columna numèrica amb valors 50-1000 a l'índex 13 del masterfile. En seqs BP, aquesta columna
+  pot contenir dades de pics (no volums) amb valors que passen el filtre (ex: 400). Resultat: BP
+  registrat amb volum=400µL en lloc de 100µL → RF calculat x4 massa baix. Fix parcial aplicat a
+  `register_calibration()` (correcció forçada BP→100µL). Fix definitiu pendent a hpsec_import.py:
+  requerir capçalera explícita "Volume"/"Vol" o prioritzar 0-INFO sobre auto-detecció.
+- **KHP_History.json: 20 blancs (conc=0) marcats valid_for_calibration=True**: El `validate_khp_quality()`
+  no verificava conc>0 ni area>0. Fix aplicat a `register_calibration()` amb guards bàsics.
+  Cal regenerar KHP_History amb batch per netejar entrades antigues.
 
 ## Design decisions
 
