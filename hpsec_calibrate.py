@@ -385,7 +385,7 @@ def quantify_with_global_calibration(area, volume_uL, signal='direct', mode='col
     """
     Quantifica una mostra usant rf_mass_cal global (Calibration_Reference.json).
 
-    Nota: Diferent de quantify_sample() que usa calibració local de la SEQ.
+    Nota: Diferent de calculate_concentration() que usa calibració local de la SEQ.
     Aquesta funció és la recomanada per quantificació estàndard.
 
     Fórmules segons model:
@@ -1240,9 +1240,9 @@ def get_calibration_for_conditions(calibration_data, volume_uL, signal="direct")
     return calibrations[0]
 
 
-def quantify_sample(area, volume_uL, calibration_data, signal="direct"):
+def calculate_concentration(area, volume_uL, calibration_data, signal="direct"):
     """
-    Calcula la concentració d'una mostra usant la calibració de les seves condicions.
+    Calcula la concentració d'una mostra usant la calibració local de la SEQ.
 
     Args:
         area: Àrea integrada del cromatograma (mAU·min)
@@ -1261,7 +1261,7 @@ def quantify_sample(area, volume_uL, calibration_data, signal="direct"):
         >>> for sample in samples:
         ...     area = sample.get("area", 0)
         ...     vol = sample.get("inj_volume", 400)
-        ...     conc = quantify_sample(area, vol, cal, signal="direct")
+        ...     conc = calculate_concentration(area, vol, cal, signal="direct")
     """
     cal = get_calibration_for_conditions(calibration_data, volume_uL, signal)
     if not cal:
@@ -1271,6 +1271,10 @@ def quantify_sample(area, volume_uL, calibration_data, signal="direct"):
     if rf_mass <= 0 or volume_uL <= 0:
         return 0.0
     return area * 1000 / (rf_mass * volume_uL)
+
+
+# Backward compat alias (deprecated)
+quantify_sample = calculate_concentration
 
 
 # =============================================================================

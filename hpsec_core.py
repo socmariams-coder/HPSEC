@@ -13,7 +13,7 @@ Funcions principals:
 - Timeout TOC: detect_timeout, format_timeout_status (MILLOR MÈTODE: dt intervals)
 - Detecció pics: detect_main_peak, detect_all_peaks
 - Integració: integrate_chromatogram (mode='full'|'main_peak')
-- Utilitats: calc_snr, calc_peak_area, calc_pearson
+- Utilitats: calc_snr, calc_peak_area, calc_pearson, apply_smoothing
 - Mètriques pics: calculate_fwhm, calculate_symmetry
 
 v1.2 - 2026-02-02: Afegides calculate_fwhm i calculate_symmetry (migrades de calibrate)
@@ -23,7 +23,7 @@ v1.0 - 2026-01-22: Versió inicial
 
 import logging
 import numpy as np
-from scipy.signal import find_peaks
+from scipy.signal import find_peaks, savgol_filter
 from scipy.stats import linregress, pearsonr
 from scipy.optimize import curve_fit
 from scipy.integrate import trapezoid
@@ -61,6 +61,28 @@ MIN_VALLEY_DEPTH = 0.01      # 1% of peak height to detect Batman
 
 # SNR
 THRESH_SNR = 10.0            # Minimum acceptable SNR
+
+
+# =============================================================================
+# SMOOTHING
+# =============================================================================
+
+def apply_smoothing(y, window_length=11, polyorder=3):
+    """
+    Aplica suavitzat Savgol.
+
+    Args:
+        y: Array de senyal
+        window_length: Longitud de la finestra (imparell)
+        polyorder: Ordre del polinomi
+
+    Returns:
+        Array suavitzat
+    """
+    y = np.asarray(y)
+    if len(y) < window_length:
+        return y
+    return savgol_filter(y, window_length, polyorder)
 
 
 # =============================================================================

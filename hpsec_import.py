@@ -893,6 +893,12 @@ def list_dad_files(folder_export3d, folder_csv=None):
 # MATCHING MOSTRES (UIB ↔ HPLC-SEQ)
 # =============================================================================
 
+def _add_unique(lst, item):
+    """Append item to list if not already present."""
+    if item not in lst:
+        lst.append(item)
+
+
 def get_valid_samples_from_hplc_seq(master_data):
     """
     Extreu la llista de mostres vàlides de 1-HPLC-SEQ.
@@ -901,13 +907,13 @@ def get_valid_samples_from_hplc_seq(master_data):
         master_data: Dict retornat per llegir_masterfile_nou()
 
     Returns:
-        set de noms de mostres (normalitzats) que pertanyen a la SEQ
+        list de noms de mostres (normalitzats) que pertanyen a la SEQ
     """
     df_hplc = master_data.get("hplc_seq")
     if df_hplc is None or df_hplc.empty:
-        return set()
+        return []
 
-    valid_samples = set()
+    valid_samples = []
 
     # Buscar columna "Sample Name"
     sample_col = None
@@ -917,14 +923,14 @@ def get_valid_samples_from_hplc_seq(master_data):
             break
 
     if sample_col is None:
-        return set()
+        return []
 
     # Extreure noms únics i normalitzar
     for val in df_hplc[sample_col].dropna().unique():
         name = str(val).strip()
         if name:
-            valid_samples.add(name)
-            valid_samples.add(normalize_key(name))
+            _add_unique(valid_samples, name)
+            _add_unique(valid_samples, normalize_key(name))
 
     return valid_samples
 
@@ -935,11 +941,15 @@ def match_sample_confidence(sample_name, valid_samples):
 
     Args:
         sample_name: Nom de la mostra (del fitxer UIB)
-        valid_samples: Set de mostres vàlides
+        valid_samples: Llista (o set) de mostres vàlides
 
     Returns:
         dict amb matched, best_match, confidence (0-100), match_type
     """
+    # Accept both set and list for backward compat
+    if isinstance(valid_samples, set):
+        valid_samples = sorted(valid_samples)
+
     result = {
         "matched": False,
         "best_match": None,
@@ -2688,7 +2698,7 @@ def import_sequence(seq_path, config=None, progress_callback=None):
         "samples": {},
         "khp_samples": [],
         "control_samples": [],
-        "valid_samples": set(),
+        "valid_samples": [],
         "orphan_files": {"uib": [], "dad": []},
         "file_check": None,
         "errors": [],
@@ -2777,10 +2787,10 @@ def import_sequence(seq_path, config=None, progress_callback=None):
                 result["errors"].append("No s'han trobat injeccions al MasterFile")
             return result
 
-        # Crear set de mostres vàlides
+        # Crear llista de mostres vàlides
         for inj in injections:
-            result["valid_samples"].add(inj["sample_name"])
-            result["valid_samples"].add(inj["sample_name_original"])
+            _add_unique(result["valid_samples"], inj["sample_name"])
+            _add_unique(result["valid_samples"], inj["sample_name_original"])
 
         report_progress(30, "Llistant fitxers disponibles...")
 
@@ -3318,7 +3328,7 @@ def _merge_import_results(results, primary_path):
         "samples": {},
         "khp_samples": [],
         "control_samples": [],
-        "valid_samples": set(),
+        "valid_samples": [],
         "orphan_files": {"uib": [], "dad": []},
         "errors": [],
         "warnings": [],
@@ -3392,7 +3402,8 @@ def _merge_import_results(results, primary_path):
                 merged["control_samples"].append(ctrl)
 
         # Fusionar valid_samples
-        merged["valid_samples"].update(result.get("valid_samples", set()))
+        for vs in result.get("valid_samples", []):
+            _add_unique(merged["valid_samples"], vs)
 
         # Fusionar orphan_files
         merged["orphan_files"]["uib"].extend(result.get("orphan_files", {}).get("uib", []))
@@ -3796,7 +3807,7 @@ def import_from_manifest(seq_path, manifest=None, config=None, progress_callback
         "samples": {},
         "khp_samples": [],
         "control_samples": [],
-        "valid_samples": set(),
+        "valid_samples": [],
         "orphan_files": {"uib": [], "dad": []},
         "errors": [],
         "warnings": ["Importat des de manifest existent"],
@@ -3867,7 +3878,7 @@ def import_from_manifest(seq_path, manifest=None, config=None, progress_callback
         elif sample_type == "CONTROL" and sample_name not in result["control_samples"]:
             result["control_samples"].append(sample_name)
 
-        result["valid_samples"].add(sample_name)
+        _add_unique(result["valid_samples"], sample_name)
 
         # Processar cada rèplica
         for rep_info in sample_info.get("replicas", []):

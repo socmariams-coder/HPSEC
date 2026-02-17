@@ -336,6 +336,36 @@ def migrate_warnings_list(legacy_warnings: list, stage: str = "unknown") -> list
     return [migrate_legacy_warning(w, stage) for w in legacy_warnings if isinstance(w, str)]
 
 
+def normalize_warnings(warnings: list, stage: str = "unknown") -> list:
+    """
+    Normalitza una llista mixta de warnings (strings + dicts) al format estructurat.
+
+    Strings es converteixen via migrate_legacy_warning().
+    Dicts ja estructurats es retornen tal qual.
+
+    Args:
+        warnings: Llista mixta de strings i/o dicts
+        stage: Etapa per defecte per warnings legacy
+
+    Returns:
+        Llista de dicts estructurats (format create_warning)
+    """
+    result = []
+    for w in warnings:
+        if isinstance(w, str):
+            result.append(migrate_legacy_warning(w, stage))
+        elif isinstance(w, dict) and "code" in w:
+            result.append(w)
+        elif isinstance(w, dict):
+            result.append(create_warning(
+                code="UNKNOWN",
+                message=str(w),
+                stage=stage,
+                details={"legacy": True, "original": w},
+            ))
+    return result
+
+
 # =============================================================================
 # UTILITATS PER AVISOS
 # =============================================================================

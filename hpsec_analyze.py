@@ -50,7 +50,7 @@ import numpy as np
 import pandas as pd
 
 logger = logging.getLogger(__name__)
-from scipy.signal import find_peaks, savgol_filter
+from scipy.signal import find_peaks
 from scipy.integrate import trapezoid
 from scipy.stats import pearsonr
 
@@ -81,6 +81,8 @@ from hpsec_core import (
     compare_signals,
     # Constants
     THRESH_SNR,
+    # Smoothing (migrat 2026-02)
+    apply_smoothing,
 )
 from hpsec_config import get_config
 
@@ -182,24 +184,9 @@ def truncate_chromatogram(t, y, max_time_min=None):
 
 
 # =============================================================================
-# FUNCIONS DE SMOOTHING
+# NOTA: apply_smoothing() migrat a hpsec_core.py (2026-02)
+# Importat a dalt via: from hpsec_core import apply_smoothing
 # =============================================================================
-def apply_smoothing(y, window_length=11, polyorder=3):
-    """
-    Aplica suavitzat Savgol.
-
-    Args:
-        y: Array de senyal
-        window_length: Longitud de la finestra (imparell)
-        polyorder: Ordre del polinomi
-
-    Returns:
-        Array suavitzat
-    """
-    y = np.asarray(y)
-    if len(y) < window_length:
-        return y
-    return savgol_filter(y, window_length, polyorder)
 
 
 # =============================================================================
