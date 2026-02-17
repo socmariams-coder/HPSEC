@@ -45,9 +45,12 @@ __version_date__ = "2026-02-05"
 
 import os
 import json
+import logging
 import numpy as np
 import pandas as pd
-from scipy.signal import find_peaks, savgol_filter
+
+logger = logging.getLogger(__name__)
+from scipy.signal import find_peaks
 from scipy.integrate import trapezoid
 from scipy.stats import pearsonr
 
@@ -78,12 +81,13 @@ from hpsec_core import (
     compare_signals,
     # Constants
     THRESH_SNR,
+    # Smoothing (migrat 2026-02)
+    apply_smoothing,
 )
 from hpsec_config import get_config
 
-# Import funcions calibració per seleccionar calibració segons volum d'injecció
+# Import funcions calibració global (rf_mass_cal + intercept)
 from hpsec_calibrate import (
-    get_calibration_for_conditions,
     get_all_active_calibrations,
     get_rf_mass_cal,
     get_calibration_intercept,
@@ -179,24 +183,9 @@ def truncate_chromatogram(t, y, max_time_min=None):
 
 
 # =============================================================================
-# FUNCIONS DE SMOOTHING
+# NOTA: apply_smoothing() migrat a hpsec_core.py (2026-02)
+# Importat a dalt via: from hpsec_core import apply_smoothing
 # =============================================================================
-def apply_smoothing(y, window_length=11, polyorder=3):
-    """
-    Aplica suavitzat Savgol.
-
-    Args:
-        y: Array de senyal
-        window_length: Longitud de la finestra (imparell)
-        polyorder: Ordre del polinomi
-
-    Returns:
-        Array suavitzat
-    """
-    y = np.asarray(y)
-    if len(y) < window_length:
-        return y
-    return savgol_filter(y, window_length, polyorder)
 
 
 # =============================================================================
@@ -292,8 +281,8 @@ def calcular_fraccions_temps(t, y, config=None, exclude_from_total=None):
             cfg = get_config()
             for fname, finfo in cfg.get_all_fractions():
                 fractions[fname] = [finfo["start"], finfo["end"]]
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Could not load time fractions from config: %s", e)
 
     # Calcular àrea per cada fracció
     kpis = {}
@@ -1035,8 +1024,8 @@ def compare_replicas(r1_result, r2_result, mode="COLUMN", config=None):
             if pearson_val < pearson_threshold:
                 result["doc"]["warnings"].append(create_anomaly("LOW_CORRELATION",
                     details={"pearson": float(pearson_val), "threshold": pearson_threshold}))
-        except Exception:
-            pass
+        except (ValueError, TypeError) as e:
+            logger.debug("DOC Pearson correlation failed: %s", e)
 
         # Diferència àrea total
         areas1 = r1_result.get("areas", {}).get("DOC", {})
@@ -1099,8 +1088,8 @@ def compare_replicas(r1_result, r2_result, mode="COLUMN", config=None):
                         try:
                             pearson_wl, _ = pearsonr(y1_wl, y2_wl)
                             pearson_per_wl[wl] = float(pearson_wl)
-                        except Exception:
-                            pass
+                        except (ValueError, TypeError) as e:
+                            logger.debug("Pearson for wavelength %s failed: %s", wl, e)
 
                 # Guardar resultats
                 result["dad"]["pearson_per_wavelength"] = pearson_per_wl
@@ -1134,8 +1123,8 @@ def compare_replicas(r1_result, r2_result, mode="COLUMN", config=None):
                         result["dad"]["warnings"].append(create_anomaly("AREA_DIFF_HIGH_254",
                             details={"diff_pct": diff_254, "threshold": REPLICA_AREA_DIFF_THRESHOLD}))
 
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("DAD replica comparison failed: %s", e)
 
     return result
 
@@ -1470,7 +1459,10 @@ def quantify_sample(sample_result, calibration_data, mode="COLUMN", seq_date=Non
             result["rf_mass_cal_used"] = rf_mass_direct
             result["intercept"] = intercept
         else:
-            # Fallback: usar RF local (àrea/ppm) si disponible
+            # Fallback: usar RF local (àrea/ppm) si disponible — SENSE INTERCEPT
+            logger.warning("quantify_sample: calibració global no disponible per %s, "
+                           "usant RF local (punt únic, sense intercept)",
+                           sample_result.get("sample_name", "?"))
             rf_local = None
             if calibration_data:
                 rf_local = calibration_data.get("rf_direct") or calibration_data.get("rf")
@@ -1520,7 +1512,10 @@ def quantify_sample(sample_result, calibration_data, mode="COLUMN", seq_date=Non
                     else:
                         result["fractions_uib"][frac] = 0.0
         else:
-            # Fallback: usar RF UIB local si disponible
+            # Fallback: usar RF UIB local si disponible — SENSE INTERCEPT
+            logger.warning("quantify_sample: rf_mass_uib global no disponible, "
+                           "usant RF UIB local per %s",
+                           sample_result.get("sample_name", "?"))
             if calibration_data:
                 rf_uib_local = calibration_data.get("rf_uib", 0)
                 if rf_uib_local and rf_uib_local > 0:
@@ -1840,7 +1835,8 @@ def analyze_sample(sample_data, calibration_data=None, config=None):
                         result["bigaussian_doc"]["quality"] = "CHECK"
                     else:
                         result["bigaussian_doc"]["quality"] = "INVALID"
-            except Exception:
+            except Exception as e:
+                logger.debug("Bi-Gaussian DOC fit failed: %s", e)
                 result["bigaussian_doc"] = {"valid": False, "r2": 0}
 
         # FWHM per UIB si és DUAL
@@ -1901,10 +1897,10 @@ def analyze_sample(sample_data, calibration_data=None, config=None):
                                     result["bigaussian_254"]["quality"] = "CHECK"
                                 else:
                                     result["bigaussian_254"]["quality"] = "INVALID"
-                        except Exception:
-                            pass
-            except Exception:
-                pass
+                        except Exception as e:
+                            logger.debug("Bi-Gaussian 254nm fit failed: %s", e)
+            except Exception as e:
+                logger.debug("DAD 254nm peak analysis failed: %s", e)
 
     # Calcular àrees per fraccions (inclou DAD si disponible)
     # LMW s'inclou al total (és senyal real). mode passa per baseline DAD correcta.
@@ -2037,8 +2033,8 @@ def analyze_sample(sample_data, calibration_data=None, config=None):
                         sig_peaks[zone_name] = len(peaks)
                     else:
                         sig_peaks[zone_name] = 0
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Peak count in timeout zone failed for %s: %s", signal_key, e)
             if sig_peaks:
                 n_peaks_per_wl[signal_key] = sig_peaks
 
@@ -2073,8 +2069,8 @@ def analyze_sample(sample_data, calibration_data=None, config=None):
             if hci_result:
                 result["hci"] = hci_result["hci"]
                 result["hci_character"] = hci_result["character"]
-        except Exception:
-            pass  # HCI es opcional, mai ha de bloquejar l'analisi
+        except Exception as e:
+            logger.debug("HCI computation skipped: %s", e)
 
     # Guardar dades processades
     result["t_doc"] = t_doc
@@ -2379,8 +2375,8 @@ def _analyze_light_sample(sample):
                     t_dad = np.asarray(df_dad[t_col], dtype=float)
                     y_254 = np.asarray(df_dad[col_254], dtype=float)
                     result["area_254"] = float(np.trapz(y_254, x=t_dad))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Area 254nm calculation failed: %s", e)
 
     return result
 
@@ -2728,15 +2724,14 @@ def analyze_sequence(imported_data, calibration_data=None, config=None, progress
         from hpsec_samples_db import register_samples_from_analysis
         register_samples_from_analysis(result)
     except Exception as e:
-        # No bloquejar l'anàlisi si falla el registre
-        print(f"[WARNING] Error registrant mostres a l'índex: {e}")
+        logger.warning("Error registrant mostres a l'índex: %s", e)
 
     # Estampar config fingerprint per detectar obsolescència
     try:
         from hpsec_config import get_config
         result["config_fingerprint"] = get_config().compute_config_fingerprint()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("Config fingerprint computation failed: %s", e)
 
     if progress_callback:
         progress_callback("Processing complete", 100)
@@ -2849,8 +2844,8 @@ def save_analysis_result(analysis_data, output_path=None):
             try:
                 if not df_dad.empty:
                     df_dad_serializable = df_dad.to_dict(orient="list")
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("Failed to serialize df_dad: %s", e)
 
         return {
             # --- Camps existents ---
@@ -3214,8 +3209,8 @@ def write_consolidated_excel(out_path, mostra, rep, seq_out, date_master,
             _cfg = get_config()
             for _fn, _fi in _cfg.get_all_fractions():
                 fractions_config[_fn] = [_fi["start"], _fi["end"]]
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Could not load fractions config for text report: %s", e)
     fraction_names = list(fractions_config.keys()) + ["total"]
 
     header = ["Fraction", "Range (min)", "DOC"]

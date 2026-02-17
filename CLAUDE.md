@@ -61,7 +61,8 @@ Mark features as DONE only when code is fully functional end-to-end, not when pl
 - [ ] Analyze backend: detecció deriva baseline DAD per replica selection — PENDING (TODO a hpsec_analyze.py L1210)
 - [x] Calibration: flux renovació calibració global (UI panel + regression) — DONE (GlobalCalibrationPanel)
 - [x] Calibration: auto-fit rf_mass_cal + intercept from KHP history (regression) — DONE (fit_calibration_from_history)
-- [ ] Calibration: UI to edit intercept values directly from panel — PENDING
+- [x] Calibration: KHP DAD 254nm fallback from MasterFile 3-DAD_KHP in manifest loading — DONE
+- [x] Calibration: clean_khp_history() to remove invalid entries (conc=0, area=0) — DONE
 - [x] Export: PDF analysis report (generate_analysis_report.py) — DONE
 - [x] Export: SUMMARY.xlsx ampliat (A_UIB, ppm_UIB, A_254, SNR_254, R²_DOC, R²_DAD, Anomalies) — DONE
 - [x] Export: ID sheet with full traceability (RF, intercept, anomalies, batman repair, timeouts) — DONE
@@ -119,20 +120,18 @@ All exploratory scripts and results live in `research/` — NOT part of the prod
 - **Import re-llegeix masterfile quan ja existeix manifest JSON**: Quan una SEQ ja té import_manifest.json,
   el panell d'importar hauria de carregar directament del JSON sense tornar a parsejar el masterfile.
   Actualment ho re-llegeix sempre.
-- **072_SEQ: dades DAD KHP no detectades al carregar, però sí al refer**: Quan es carrega la SEQ per
-  primera vegada (des del JSON?), no detecta dades DAD del KHP. Si l'usuari fa "Refer" (re-importar),
-  llavors sí que les troba. Però no sembla reescriure el JSON, de manera que el bug es repeteix
-  cada vegada que es carrega. Investigar el flux de càrrega: d'on llegeix les dades KHP (manifest vs
-  recàlcul), i per què el "refer" no persisteix el resultat.
+- **072_SEQ: dades DAD KHP no detectades al carregar, però sí al refer**: FIXED — El manifest de seqs
+  antigues (pre-FIX F2.2) no tenia `dad` info per KHP. Afegit fallback a 3-DAD_KHP del MasterFile quan
+  el manifest no conté DAD per KHP samples.
 - **Import auto-detecta columna volum erròniament en seqs BP**: `hpsec_import.py` (L1681-1690) busca
   una columna numèrica amb valors 50-1000 a l'índex 13 del masterfile. En seqs BP, aquesta columna
   pot contenir dades de pics (no volums) amb valors que passen el filtre (ex: 400). Resultat: BP
   registrat amb volum=400µL en lloc de 100µL → RF calculat x4 massa baix. Fix parcial aplicat a
   `register_calibration()` (correcció forçada BP→100µL). Fix definitiu pendent a hpsec_import.py:
   requerir capçalera explícita "Volume"/"Vol" o prioritzar 0-INFO sobre auto-detecció.
-- **KHP_History.json: 20 blancs (conc=0) marcats valid_for_calibration=True**: El `validate_khp_quality()`
-  no verificava conc>0 ni area>0. Fix aplicat a `register_calibration()` amb guards bàsics.
-  Cal regenerar KHP_History amb batch per netejar entrades antigues.
+- **KHP_History.json: blancs (conc=0) marcats valid_for_calibration=True**: FIXED — Guards afegits a
+  `register_calibration()` per rebutjar conc=0 i area=0. Funció `clean_khp_history()` disponible
+  per netejar entrades antigues invàlides.
 
 ## Design decisions
 

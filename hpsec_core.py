@@ -13,7 +13,7 @@ Funcions principals:
 - Timeout TOC: detect_timeout, format_timeout_status (MILLOR MÈTODE: dt intervals)
 - Detecció pics: detect_main_peak, detect_all_peaks
 - Integració: integrate_chromatogram (mode='full'|'main_peak')
-- Utilitats: calc_snr, calc_peak_area, calc_pearson
+- Utilitats: calc_snr, calc_peak_area, calc_pearson, apply_smoothing
 - Mètriques pics: calculate_fwhm, calculate_symmetry
 
 v1.2 - 2026-02-02: Afegides calculate_fwhm i calculate_symmetry (migrades de calibrate)
@@ -21,11 +21,14 @@ v1.1 - 2026-01-26: Afegides funcions timeout i detecció pics (migrades)
 v1.0 - 2026-01-22: Versió inicial
 """
 
+import logging
 import numpy as np
-from scipy.signal import find_peaks
+from scipy.signal import find_peaks, savgol_filter
 from scipy.stats import linregress, pearsonr
 from scipy.optimize import curve_fit
 from scipy.integrate import trapezoid
+
+logger = logging.getLogger(__name__)
 
 
 # =============================================================================
@@ -40,6 +43,15 @@ THRESH_R2_CHECK = 0.980      # 0.980 <= R² < 0.987 → CHECK
 REPAIR_MIN_R2 = 0.980        # Don't repair if R² < this (garbage peak)
 REPAIR_FACTOR = 0.85         # Tangent height correction factor
 
+# Bi-Gaussian fit constants
+GAUSSIAN_HW_TO_SIGMA = 1.177  # Half-width at half-max to sigma: sqrt(2*ln(2))
+MIN_SIGMA_GUESS = 0.05        # Minimum sigma initial guess (minutes)
+REPAIR_FACTOR_MIN = 0.5       # Tangent repair: minimum height ratio (real/tangent)
+REPAIR_FACTOR_MAX = 1.2       # Tangent repair: maximum height ratio (real/tangent)
+
+# Pearson correlation
+PEARSON_INTERP_POINTS = 500   # Grid points for interpolated Pearson calculation
+
 # Asymmetry thresholds
 ASYM_MIN = 0.33              # sigma_right/sigma_left minimum
 ASYM_MAX = 3.0               # sigma_right/sigma_left maximum
@@ -49,6 +61,28 @@ MIN_VALLEY_DEPTH = 0.01      # 1% of peak height to detect Batman
 
 # SNR
 THRESH_SNR = 10.0            # Minimum acceptable SNR
+
+
+# =============================================================================
+# SMOOTHING
+# =============================================================================
+
+def apply_smoothing(y, window_length=11, polyorder=3):
+    """
+    Aplica suavitzat Savgol.
+
+    Args:
+        y: Array de senyal
+        window_length: Longitud de la finestra (imparell)
+        polyorder: Ordre del polinomi
+
+    Returns:
+        Array suavitzat
+    """
+    y = np.asarray(y)
+    if len(y) < window_length:
+        return y
+    return savgol_filter(y, window_length, polyorder)
 
 
 # =============================================================================
@@ -126,7 +160,7 @@ def fit_bigaussian(t, y, peak_idx, left_idx, right_idx, r2_top_pct=0):
     if np.sum(left_mask) >= 1:
         t_left_half = t_seg[left_mask]
         hw_left = t_peak - t_left_half[0]
-        sigma_left_guess = hw_left / 1.177
+        sigma_left_guess = hw_left / GAUSSIAN_HW_TO_SIGMA
     else:
         sigma_left_guess = (t_peak - t_seg[0]) / 3
 
@@ -135,12 +169,12 @@ def fit_bigaussian(t, y, peak_idx, left_idx, right_idx, r2_top_pct=0):
     if np.sum(right_mask) >= 1:
         t_right_half = t_seg[right_mask]
         hw_right = t_right_half[-1] - t_peak
-        sigma_right_guess = hw_right / 1.177
+        sigma_right_guess = hw_right / GAUSSIAN_HW_TO_SIGMA
     else:
         sigma_right_guess = (t_seg[-1] - t_peak) / 3
 
-    sigma_left_guess = max(0.05, sigma_left_guess)
-    sigma_right_guess = max(0.05, sigma_right_guess)
+    sigma_left_guess = max(MIN_SIGMA_GUESS, sigma_left_guess)
+    sigma_right_guess = max(MIN_SIGMA_GUESS, sigma_right_guess)
 
     try:
         popt, _ = curve_fit(
@@ -738,14 +772,14 @@ def calc_pearson(t1, y1, t2, y2):
     if t_max <= t_min:
         return np.nan
 
-    t_common = np.linspace(t_min, t_max, 500)
+    t_common = np.linspace(t_min, t_max, PEARSON_INTERP_POINTS)
     y1_interp = np.interp(t_common, t1, y1)
     y2_interp = np.interp(t_common, t2, y2)
 
     try:
         r, _ = pearsonr(y1_interp, y2_interp)
         return r
-    except:
+    except (ValueError, TypeError):
         return np.nan
 
 
@@ -779,7 +813,7 @@ def calibrate_factor(t, y):
 
     factor = y_real / y_tangent
 
-    if factor < 0.5 or factor > 1.2:
+    if factor < REPAIR_FACTOR_MIN or factor > REPAIR_FACTOR_MAX:
         return None
 
     return {
@@ -1023,32 +1057,48 @@ def format_timeout_status(timeout_info):
 
 def find_peak_boundaries(t, y, peak_idx, baseline_level=None, threshold_pct=5.0, is_bp=False):
     """
-    Troba els límits reals d'un pic per integració.
+    Troba els límits d'integració d'un pic usant mètode de derivades (estil Agilent).
 
-    Busca on el senyal baixa al llindar (baseline + threshold% de l'amplitud).
+    MÈTODE (tangent projection):
+    1. Suavitzar senyal amb Savitzky-Golay per calcular derivades netes
+    2. Calcular 2a derivada → trobar punts d'inflexió (zero-crossings de d2)
+    3. Als punts d'inflexió, calcular la tangent (pendent = d1)
+    4. Projectar les tangents fins al nivell de baseline
+       → on la tangent creua el baseline = límit d'integració
+    5. Fallback a threshold si derivades no donen resultat fiable
+
+    AVANTATGE vs threshold:
+    - Independent del volum d'injecció (mateixa forma de pic → mateixos límits)
+    - Captura ~95.5% de l'àrea (equivalent a ±2σ en gaussiana ideal)
+    - Més robust amb baseline drift
+    - Consistent amb integració Agilent/ChemStation
 
     Args:
         t: Array de temps
         y: Array de senyal
         peak_idx: Índex del màxim del pic
         baseline_level: Nivell de baseline (auto-calculat si None)
-        threshold_pct: % de l'amplitud per definir límits (defecte: 5%)
+        threshold_pct: % de l'amplitud per fallback (defecte: 5%)
         is_bp: Si és mode BP (afecta càlcul baseline)
 
     Returns:
-        tuple(left_idx, right_idx): Índexs dels límits
+        tuple(left_idx, right_idx): Índexs dels límits d'integració
     """
     n = len(y)
-    t = np.asarray(t)
-    y = np.asarray(y)
+    t = np.asarray(t, dtype=float)
+    y = np.asarray(y, dtype=float)
 
+    if n < 15:
+        return 0, n - 1
+
+    # Calcular baseline si no proporcionat
     if baseline_level is None:
         if is_bp:
             n_edge = max(20, n // 5)
-            baseline_level = np.median(y[-n_edge:])
+            baseline_level = float(np.median(y[-n_edge:]))
         else:
             n_edge = max(10, n // 10)
-            baseline_level = min(np.median(y[:n_edge]), np.median(y[-n_edge:]))
+            baseline_level = float(min(np.median(y[:n_edge]), np.median(y[-n_edge:])))
 
     peak_height = y[peak_idx]
     peak_amplitude = peak_height - baseline_level
@@ -1056,7 +1106,111 @@ def find_peak_boundaries(t, y, peak_idx, baseline_level=None, threshold_pct=5.0,
     if peak_amplitude <= 0:
         return 0, n - 1
 
-    threshold = baseline_level + (threshold_pct / 100.0) * peak_amplitude
+    # --- MÈTODE DERIVADES AMB PROJECCIÓ TANGENT (Agilent-style) ---
+
+    # 1. Suavitzar per calcular derivades netes
+    sg_window = min(max(7, n // 20 * 2 + 1), n if n % 2 == 1 else n - 1)
+    if sg_window < 7:
+        sg_window = 7
+    if sg_window > n:
+        return _find_peak_boundaries_threshold(
+            t, y, peak_idx, baseline_level, threshold_pct)
+
+    try:
+        y_smooth = savgol_filter(y, window_length=sg_window, polyorder=3)
+    except Exception:
+        return _find_peak_boundaries_threshold(
+            t, y, peak_idx, baseline_level, threshold_pct)
+
+    # 2. Calcular 1a i 2a derivada del senyal suavitzat
+    dt_arr = np.diff(t)
+    dt_arr = np.where(dt_arr <= 0, 1e-8, dt_arr)
+
+    d1 = np.diff(y_smooth) / dt_arr           # 1a derivada (n-1 punts)
+    d2 = np.diff(d1) / dt_arr[:-1]            # 2a derivada (n-2 punts)
+
+    if len(d2) < 5:
+        return _find_peak_boundaries_threshold(
+            t, y, peak_idx, baseline_level, threshold_pct)
+
+    # 3. Trobar punts d'inflexió: zero-crossings de d2 a cada costat del pic
+    peak_in_d2 = min(peak_idx, len(d2) - 1)
+
+    # Punt d'inflexió esquerre (d2 passa de positiu a negatiu entrant al pic)
+    infl_left = None
+    for i in range(peak_in_d2 - 1, 0, -1):
+        if d2[i] >= 0 and d2[min(i + 1, len(d2) - 1)] < 0:
+            infl_left = i + 1  # Index en coordenades de y (d2 offset +1)
+            break
+
+    # Punt d'inflexió dret (d2 passa de negatiu a positiu sortint del pic)
+    infl_right = None
+    for i in range(peak_in_d2 + 1, len(d2) - 1):
+        if d2[i] >= 0 and d2[max(i - 1, 0)] < 0:
+            infl_right = i + 1  # Index en coordenades de y
+            break
+
+    if infl_left is None or infl_right is None:
+        return _find_peak_boundaries_threshold(
+            t, y, peak_idx, baseline_level, threshold_pct)
+
+    # 4. Projecció tangent: des del punt d'inflexió fins al baseline
+    #    Tangent: y_tang(t_x) = y_infl + slope * (t_x - t_infl)
+    #    Cruïlla amb baseline: baseline = y_infl + slope * (t_x - t_infl)
+    #    t_x = t_infl + (baseline - y_infl) / slope
+
+    # Tangent esquerra (pendent positiva, pujant cap al pic)
+    slope_left = float(d1[min(infl_left, len(d1) - 1)])
+    t_infl_left = float(t[infl_left])
+    y_infl_left = float(y_smooth[infl_left])
+
+    if slope_left > 1e-10:  # Pendent positiva (pujada)
+        t_baseline_left = t_infl_left + (baseline_level - y_infl_left) / slope_left
+    else:
+        t_baseline_left = t_infl_left  # Fallback
+
+    # Tangent dreta (pendent negativa, baixant des del pic)
+    slope_right = float(d1[min(infl_right, len(d1) - 1)])
+    t_infl_right = float(t[infl_right])
+    y_infl_right = float(y_smooth[infl_right])
+
+    if slope_right < -1e-10:  # Pendent negativa (baixada)
+        t_baseline_right = t_infl_right + (baseline_level - y_infl_right) / slope_right
+    else:
+        t_baseline_right = t_infl_right  # Fallback
+
+    # 5. Convertir temps de projecció a índexs
+    left_idx = int(np.searchsorted(t, t_baseline_left))
+    right_idx = int(np.searchsorted(t, t_baseline_right))
+
+    # Clamp als límits de l'array
+    left_idx = max(0, min(left_idx, n - 1))
+    right_idx = max(0, min(right_idx, n - 1))
+
+    # 6. VALIDACIÓ
+    width_idx = right_idx - left_idx
+    min_width = max(10, n // 30)
+    max_width = int(n * 0.90)
+
+    if width_idx < min_width or width_idx > max_width:
+        return _find_peak_boundaries_threshold(
+            t, y, peak_idx, baseline_level, threshold_pct)
+
+    if left_idx >= peak_idx or right_idx <= peak_idx:
+        return _find_peak_boundaries_threshold(
+            t, y, peak_idx, baseline_level, threshold_pct)
+
+    return int(left_idx), int(right_idx)
+
+
+def _find_peak_boundaries_threshold(t, y, peak_idx, baseline_level, threshold_pct=5.0):
+    """
+    Fallback: troba límits per threshold (mètode antic).
+
+    Usat quan el mètode de derivades no és fiable (poc senyal, soroll, etc.)
+    """
+    n = len(y)
+    threshold = baseline_level + (threshold_pct / 100.0) * (y[peak_idx] - baseline_level)
 
     # Buscar límit esquerre
     left_idx = peak_idx
@@ -1080,7 +1234,7 @@ def find_peak_boundaries(t, y, peak_idx, baseline_level=None, threshold_pct=5.0,
             break
         right_idx = i
 
-    return left_idx, right_idx
+    return int(left_idx), int(right_idx)
 
 
 def detect_main_peak(t, y, min_prominence_pct=5.0, is_bp=None):
@@ -1500,7 +1654,8 @@ def calculate_fwhm(t, y, peak_idx, left_idx=None, right_idx=None):
         fwhm = t_right - t_left
         return float(fwhm) if fwhm > 0 else np.nan
 
-    except Exception:
+    except Exception as e:
+        logger.debug("FWHM calculation failed: %s", e)
         return np.nan
 
 
@@ -1572,7 +1727,8 @@ def calculate_symmetry(t, y, peak_idx, left_idx=None, right_idx=None):
 
         return float(width_left / width_right)
 
-    except Exception:
+    except Exception as e:
+        logger.debug("Symmetry calculation failed: %s", e)
         return np.nan
 
 
@@ -2111,7 +2267,8 @@ def compare_signals(t1, y1, t2, y2, normalize=False):
     try:
         pearson_val, _ = pearsonr(y1_interp, y2_interp)
         result["pearson"] = float(pearson_val)
-    except Exception:
+    except (ValueError, TypeError) as e:
+        logger.debug("Pearson correlation failed: %s", e)
         result["pearson"] = np.nan
 
     area_1 = float(trapezoid(np.maximum(y1_interp, 0), t_common))

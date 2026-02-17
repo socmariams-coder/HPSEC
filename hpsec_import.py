@@ -29,11 +29,14 @@ import os
 import re
 import glob
 import json
+import logging
 from datetime import datetime
 from difflib import SequenceMatcher
 
 import numpy as np
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 from hpsec_config import get_config
 from hpsec_utils import get_baseline_value
@@ -890,6 +893,12 @@ def list_dad_files(folder_export3d, folder_csv=None):
 # MATCHING MOSTRES (UIB ↔ HPLC-SEQ)
 # =============================================================================
 
+def _add_unique(lst, item):
+    """Append item to list if not already present."""
+    if item not in lst:
+        lst.append(item)
+
+
 def get_valid_samples_from_hplc_seq(master_data):
     """
     Extreu la llista de mostres vàlides de 1-HPLC-SEQ.
@@ -898,13 +907,13 @@ def get_valid_samples_from_hplc_seq(master_data):
         master_data: Dict retornat per llegir_masterfile_nou()
 
     Returns:
-        set de noms de mostres (normalitzats) que pertanyen a la SEQ
+        list de noms de mostres (normalitzats) que pertanyen a la SEQ
     """
     df_hplc = master_data.get("hplc_seq")
     if df_hplc is None or df_hplc.empty:
-        return set()
+        return []
 
-    valid_samples = set()
+    valid_samples = []
 
     # Buscar columna "Sample Name"
     sample_col = None
@@ -914,14 +923,14 @@ def get_valid_samples_from_hplc_seq(master_data):
             break
 
     if sample_col is None:
-        return set()
+        return []
 
     # Extreure noms únics i normalitzar
     for val in df_hplc[sample_col].dropna().unique():
         name = str(val).strip()
         if name:
-            valid_samples.add(name)
-            valid_samples.add(normalize_key(name))
+            _add_unique(valid_samples, name)
+            _add_unique(valid_samples, normalize_key(name))
 
     return valid_samples
 
@@ -932,11 +941,15 @@ def match_sample_confidence(sample_name, valid_samples):
 
     Args:
         sample_name: Nom de la mostra (del fitxer UIB)
-        valid_samples: Set de mostres vàlides
+        valid_samples: Llista (o set) de mostres vàlides
 
     Returns:
         dict amb matched, best_match, confidence (0-100), match_type
     """
+    # Accept both set and list for backward compat
+    if isinstance(valid_samples, set):
+        valid_samples = sorted(valid_samples)
+
     result = {
         "matched": False,
         "best_match": None,
@@ -1676,32 +1689,38 @@ def parse_injections_from_masterfile(master_data, config=None):
         elif ("volume" in col_lower or "vol" in col_lower) and volume_col is None:
             volume_col = col
 
-    # Columna N (índex 13) per volum si no té etiqueta
-    # En Excel v11/v12, el volum està a la columna N sense etiqueta
-    if volume_col is None:
-        col_list = list(df_seq.columns)
-        if len(col_list) > 13:
-            potential_vol_col = col_list[13]
-            try:
-                sample_vals = df_seq[potential_vol_col].dropna().head(5)
-                if len(sample_vals) > 0:
-                    numeric_vals = pd.to_numeric(sample_vals, errors='coerce').dropna()
-                    if len(numeric_vals) > 0 and all(50 <= v <= 1000 for v in numeric_vals):
-                        volume_col = potential_vol_col
-            except Exception:
-                pass
+    # Prioritat volum: 1) Capçalera explícita (ja detectada amunt)
+    #                  2) 0-INFO (fiable)
+    #                  3) Columna N índex 13 (heurístic, NOMÉS si no BP)
 
-    # Fallback volum: 0-INFO B4 (Inj_Volume)
+    # 0-INFO B4 (Inj_Volume) — font fiable
     info_volume = None
-    if volume_col is None:
-        info_data = master_data.get("info", {})
-        for key, val in info_data.items():
-            if "volume" in str(key).lower() or "vol" in str(key).lower():
+    info_data = master_data.get("info", {})
+    for key, val in info_data.items():
+        if "volume" in str(key).lower() or "vol" in str(key).lower():
+            try:
+                info_volume = float(val)
+            except (ValueError, TypeError):
+                pass
+            break
+
+    # Columna N (índex 13) per volum si no té etiqueta NI 0-INFO
+    # NOTA: Només activar per COLUMN mode. En BP, l'índex 13 pot contenir
+    # dades de pics (no volums) amb valors que passen el filtre (ex: 400).
+    if volume_col is None and info_volume is None:
+        method = master_data.get("method", "").upper()
+        if method != "BP":
+            col_list = list(df_seq.columns)
+            if len(col_list) > 13:
+                potential_vol_col = col_list[13]
                 try:
-                    info_volume = float(val)
-                except (ValueError, TypeError):
-                    pass
-                break
+                    sample_vals = df_seq[potential_vol_col].dropna().head(5)
+                    if len(sample_vals) > 0:
+                        numeric_vals = pd.to_numeric(sample_vals, errors='coerce').dropna()
+                        if len(numeric_vals) > 0 and all(50 <= v <= 1000 for v in numeric_vals):
+                            volume_col = potential_vol_col
+                except Exception as e:
+                    logger.debug("Volume column index-13 heuristic failed: %s", e)
 
     # --- VALIDACIÓ: columnes obligatòries han de tenir dades ---
     # Detectar si les dades estan desplaçades (columnes .1 amb dades, originals buides)
@@ -2051,7 +2070,7 @@ def compute_toc_calc(master_data, toc_df):
     if df_seq is None:
         df_seq = master_data.get("seq")
     if df_seq is None or (hasattr(df_seq, 'empty') and df_seq.empty):
-        print("[compute_toc_calc] No hi ha 1-HPLC-SEQ")
+        logger.debug("compute_toc_calc: No hi ha 1-HPLC-SEQ")
         return None
 
     # Trobar columnes rellevants
@@ -2066,7 +2085,7 @@ def compute_toc_calc(master_data, toc_df):
             sample_rep_col = col
 
     if date_col is None or sample_col is None:
-        print(f"[compute_toc_calc] Falten columnes: date_col={date_col}, sample_col={sample_col}")
+        logger.debug(f"compute_toc_calc: Falten columnes: date_col={date_col}, sample_col={sample_col}")
         return None
 
     # Parsejar timestamps HPLC
@@ -2074,7 +2093,7 @@ def compute_toc_calc(master_data, toc_df):
     try:
         df_hplc[date_col] = pd.to_datetime(df_hplc[date_col])
     except Exception as e:
-        print(f"[compute_toc_calc] Error parsejant dates HPLC: {e}")
+        logger.debug(f"compute_toc_calc: Error parsejant dates HPLC: {e}")
         return None
 
     df_hplc = df_hplc.sort_values(date_col).reset_index(drop=True)
@@ -2094,7 +2113,7 @@ def compute_toc_calc(master_data, toc_df):
         hplc_samples = sample_reps
 
     if len(hplc_times) == 0:
-        print("[compute_toc_calc] No hi ha timestamps HPLC")
+        logger.debug("compute_toc_calc: No hi ha timestamps HPLC")
         return None
 
     # 2. Extreure timestamps TOC de 2-TOC (columna D, fila 8+)
@@ -2123,7 +2142,7 @@ def compute_toc_calc(master_data, toc_df):
                     pass
 
     if not toc_timestamps:
-        print("[compute_toc_calc] No s'han trobat timestamps TOC")
+        logger.debug("compute_toc_calc: No s'han trobat timestamps TOC")
         return None
 
     # 3. Calcular net_delay des de 0-INFO
@@ -2179,13 +2198,26 @@ def compute_toc_calc(master_data, toc_df):
         return None
 
     toc_calc_df = pd.DataFrame(rows)
-    print(f"[compute_toc_calc] Calculat 4-TOC_CALC amb {len(toc_calc_df)} files")
+    logger.debug(f"compute_toc_calc: Calculat 4-TOC_CALC amb {len(toc_calc_df)} files")
     return toc_calc_df
+
+
+def _strip_all(s):
+    """Normalitza eliminant TOTS els separadors (espais, guions, underscores) i majúscules."""
+    return re.sub(r"[\-\s_]+", "", str(s or "")).upper()
 
 
 def _match_khp_dad_from_masterfile(sample_name, original_name, inj_num, master_khp_data):
     """
     Busca dades DAD 254nm per un KHP al full 3-DAD_KHP del MasterFile.
+
+    Strategy:
+    1. Exact match: busca columna que contingui el nom exacte + _R{inj_num}
+    2. Base match: busca totes les columnes que continguin el nom base del KHP
+       (sense concentració repetida) i agafa la N-èsima per inj_num.
+
+    Format 3-DAD_KHP: columnes amb nom KHP seguides de time/value columns.
+    Row 0 conté "time (min)" / "value (mAU)" com a headers.
 
     Returns:
         (dad_dict, source_str) o (None, None) si no trobat
@@ -2206,10 +2238,6 @@ def _match_khp_dad_from_masterfile(sample_name, original_name, inj_num, master_k
         if not df_khp.empty and len(df_khp) > 5:
             return {"path": "MasterFile:3-DAD_KHP", "df": df_khp, "source": "masterfile"}
         return None
-
-    def _strip_all(s):
-        """Elimina tots els separadors per matching flexible."""
-        return re.sub(r'[\s_\-\.]+', '', str(s or '')).upper()
 
     # --- Strategy 1: exact key match (incloent _R{inj_num}) ---
     khp_keys = [
@@ -2237,8 +2265,10 @@ def _match_khp_dad_from_masterfile(sample_name, original_name, inj_num, master_k
                 break
 
     # --- Strategy 2: base name match (sense _R{N}), agafar la inj_num-èsima ---
+    # Construir nom base: "KHP100PPB" o "KHP 100 ppb" → stripped = "KHP100PPB"
     base_names = list(dict.fromkeys([_strip_all(sample_name), _strip_all(original_name)]))
 
+    # Trobar totes les columnes que continguin el nom base
     matching_cols = []
     for col in master_khp_data.columns:
         if str(col).startswith("Unnamed"):
@@ -2249,13 +2279,19 @@ def _match_khp_dad_from_masterfile(sample_name, original_name, inj_num, master_k
                 matching_cols.append(col)
                 break
 
+    # Agafar la inj_num-èsima columna (1-based)
     idx = int(inj_num) - 1 if str(inj_num).isdigit() else 0
     if 0 <= idx < len(matching_cols):
         result = _try_load_col(matching_cols[idx])
         if result:
+            logger.debug("3-DAD_KHP: base match %s[%d] → col '%s'",
+                         base_names[0], idx, matching_cols[idx])
             return result, "masterfile"
 
     # --- Strategy 3: generic "KHP" prefix match ---
+    # Per SEQs amb noms genèrics al MasterFile (KHP_R1, KHP 1_R2) que no contenen
+    # la concentració, buscar totes les columnes que comencin per "KHP" i assignar
+    # per inj_num. Això funciona per SEQs amb un sol tipus de KHP (la majoria).
     all_khp_cols = []
     for col in master_khp_data.columns:
         if str(col).startswith("Unnamed"):
@@ -2267,6 +2303,7 @@ def _match_khp_dad_from_masterfile(sample_name, original_name, inj_num, master_k
     if all_khp_cols and 0 <= idx < len(all_khp_cols):
         result = _try_load_col(all_khp_cols[idx])
         if result:
+            logger.debug("3-DAD_KHP: generic KHP[%d] → col '%s'", idx, all_khp_cols[idx])
             return result, "masterfile"
 
     return None, None
@@ -2337,7 +2374,7 @@ def find_data_for_injection(injection, seq_path, uib_files, dad_files, dad_csv_f
                     # 3. Fallback: nom parcial + line_num
                     # Treure sufixos _1, _2 del original_name per matching més flexible
                     original_base = re.sub(r'[_\-]?\d+$', '', original_name).strip()
-                    mask = (toc_calc_df["Sample"].str.contains(original_base, case=False, na=False))
+                    mask = (toc_calc_df["Sample"].astype(str).str.contains(original_base, case=False, na=False))
 
             sample_rows = toc_calc_df[mask] if mask is not None else pd.DataFrame()
             if not sample_rows.empty:
@@ -2583,6 +2620,10 @@ def find_data_for_injection(injection, seq_path, uib_files, dad_files, dad_csv_f
             result["dad"] = dad_result
             result["dad_source"] = dad_src
             result["has_data"] = True
+            logger.debug("3-DAD_KHP: SUCCESS! %d files per %s (inj %s)",
+                         len(dad_result["df"]), sample_name, inj_num)
+        else:
+            logger.debug("3-DAD_KHP: NO MATCH per %s (inj %s)", sample_name, inj_num)
 
     return result
 
@@ -2710,7 +2751,7 @@ def import_sequence(seq_path, config=None, progress_callback=None):
         "samples": {},
         "khp_samples": [],
         "control_samples": [],
-        "valid_samples": set(),
+        "valid_samples": [],
         "orphan_files": {"uib": [], "dad": []},
         "file_check": None,
         "errors": [],
@@ -2799,10 +2840,10 @@ def import_sequence(seq_path, config=None, progress_callback=None):
                 result["errors"].append("No s'han trobat injeccions al MasterFile")
             return result
 
-        # Crear set de mostres vàlides
+        # Crear llista de mostres vàlides
         for inj in injections:
-            result["valid_samples"].add(inj["sample_name"])
-            result["valid_samples"].add(inj["sample_name_original"])
+            _add_unique(result["valid_samples"], inj["sample_name"])
+            _add_unique(result["valid_samples"], inj["sample_name_original"])
 
         report_progress(30, "Llistant fitxers disponibles...")
 
@@ -2840,7 +2881,7 @@ def import_sequence(seq_path, config=None, progress_callback=None):
             elif "4-SEQ_DATA" in xl.sheet_names:
                 toc_calc_df = pd.read_excel(master_path, sheet_name="4-SEQ_DATA")
         except Exception as e:
-            print(f"[WARNING] Error llegint fulls addicionals del MasterFile: {e}")
+            logger.warning(f"Error llegint fulls addicionals del MasterFile: {e}")
 
         # Si 4-TOC_CALC no existeix, calcular in-memory (plantilla o MasterFile incomplet)
         if toc_calc_df is None or (hasattr(toc_calc_df, 'empty') and toc_calc_df.empty):
@@ -3340,7 +3381,7 @@ def _merge_import_results(results, primary_path):
         "samples": {},
         "khp_samples": [],
         "control_samples": [],
-        "valid_samples": set(),
+        "valid_samples": [],
         "orphan_files": {"uib": [], "dad": []},
         "errors": [],
         "warnings": [],
@@ -3414,7 +3455,8 @@ def _merge_import_results(results, primary_path):
                 merged["control_samples"].append(ctrl)
 
         # Fusionar valid_samples
-        merged["valid_samples"].update(result.get("valid_samples", set()))
+        for vs in result.get("valid_samples", []):
+            _add_unique(merged["valid_samples"], vs)
 
         # Fusionar orphan_files
         merged["orphan_files"]["uib"].extend(result.get("orphan_files", {}).get("uib", []))
@@ -3614,7 +3656,7 @@ def generate_import_manifest(imported_data, include_injection_details=True):
                     "n_wavelengths": len(df.columns) - 1,  # -1 per columna temps
                     "t_min": float(pd.to_numeric(df[t_col], errors='coerce').min()),
                     "t_max": float(pd.to_numeric(df[t_col], errors='coerce').max()),
-                    "wavelengths_range": f"{df.columns[1]}-{df.columns[-1]}",
+                    "wavelengths_range": f"{df.columns[1]}-{df.columns[-1]}" if len(df.columns) > 1 else "none",
                 }
                 # Afegir info d'assignació manual si existeix
                 if dad.get("manual_assignment"):
@@ -3796,7 +3838,7 @@ def import_from_manifest(seq_path, manifest=None, config=None, progress_callback
     if not has_direct_info and manifest_samples:
         # Manifest antic sense informació DOC Direct - reimportar completament
         report_progress(0, "Manifest antic detectat, reimportant...")
-        print("[INFO] Manifest antic sense DOC Direct, fent reimportació completa")
+        logger.info("Manifest antic sense DOC Direct, fent reimportació completa")
         return import_sequence(seq_path, config, progress_callback)
 
     # Inicialitzar resultat
@@ -3818,7 +3860,7 @@ def import_from_manifest(seq_path, manifest=None, config=None, progress_callback
         "samples": {},
         "khp_samples": [],
         "control_samples": [],
-        "valid_samples": set(),
+        "valid_samples": [],
         "orphan_files": {"uib": [], "dad": []},
         "errors": [],
         "warnings": ["Importat des de manifest existent"],
@@ -3849,9 +3891,10 @@ def import_from_manifest(seq_path, manifest=None, config=None, progress_callback
         xl = pd.ExcelFile(master_path, engine="openpyxl")
         if "2-TOC" in xl.sheet_names:
             toc_df = pd.read_excel(xl, sheet_name="2-TOC", header=6, engine="openpyxl")
-        # FIX F2.2: Llegir 3-DAD_KHP per KHP samples (fallback DAD des de MasterFile)
+        # FIX F2.2: Llegir 3-DAD_KHP per KHP samples (abans no es llegia des de manifest)
         if "3-DAD_KHP" in xl.sheet_names:
             master_khp_data = pd.read_excel(xl, sheet_name="3-DAD_KHP", engine="openpyxl")
+            logger.debug("3-DAD_KHP sheet loaded (%d rows)", len(master_khp_data))
     except PermissionError:
         result["errors"].append(
             f"No es pot llegir el MasterFile: el fitxer està obert a Excel o sense permisos. "
@@ -3888,7 +3931,7 @@ def import_from_manifest(seq_path, manifest=None, config=None, progress_callback
         elif sample_type == "CONTROL" and sample_name not in result["control_samples"]:
             result["control_samples"].append(sample_name)
 
-        result["valid_samples"].add(sample_name)
+        _add_unique(result["valid_samples"], sample_name)
 
         # Processar cada rèplica
         for rep_info in sample_info.get("replicas", []):
@@ -4037,6 +4080,7 @@ def import_from_manifest(seq_path, manifest=None, config=None, progress_callback
                         rep_data["dad"] = dad_result
                         rep_data["dad_source"] = dad_src
                         rep_data["has_data"] = True
+                        logger.debug("3-DAD_KHP manifest: loaded %d rows for %s", len(dad_result["df"]), sample_name)
 
                 # Prioritzar manual_file si existeix (assignació manual de l'usuari)
                 manual_dad_file = dad_info.get("manual_file")
@@ -4065,8 +4109,8 @@ def import_from_manifest(seq_path, manifest=None, config=None, progress_callback
                                     rep_data["has_data"] = True
                                     dad_loaded = True
                                     break
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                logger.debug("DAD manual export3d load failed for %s: %s", test_path, e)
                     if not dad_loaded:
                         # Intentar amb dad1a
                         for subdir in dad_dirs:
@@ -4085,8 +4129,8 @@ def import_from_manifest(seq_path, manifest=None, config=None, progress_callback
                                         rep_data["has_data"] = True
                                         dad_loaded = True
                                         break
-                                except Exception:
-                                    pass
+                                except Exception as e:
+                                    logger.debug("DAD manual dad1a load failed for %s: %s", test_path, e)
 
                 # 2. Intentar carregar des de file guardat al manifest
                 if dad_file_from_manifest and not dad_loaded:
@@ -4102,8 +4146,8 @@ def import_from_manifest(seq_path, manifest=None, config=None, progress_callback
                                     rep_data["has_data"] = True
                                     dad_loaded = True
                                     break
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                logger.debug("DAD manifest export3d load failed for %s: %s", test_path, e)
 
                 # 3. Fallback: buscar per nom de mostra (comportament original)
                 if not dad_loaded and dad_source == "export3d":
@@ -4126,19 +4170,23 @@ def import_from_manifest(seq_path, manifest=None, config=None, progress_callback
                                         rep_data["dad_source"] = "export3d"
                                         rep_data["has_data"] = True
                                         break
-                                except Exception:
-                                    pass
+                                except Exception as e:
+                                    logger.debug("DAD fallback export3d load failed for %s: %s", df_path, e)
 
-            # FIX F2.2: KHP sense DAD al manifest (seqs antigues pre-FIX F2.2)
+            # FIX: KHP sense DAD al manifest (seqs antigues pre-FIX F2.2)
             # Si és KHP i encara no s'ha carregat DAD, intentar 3-DAD_KHP del MasterFile
             if sample_type == "KHP" and rep_data.get("dad") is None and master_khp_data is not None:
-                original_name = sample_info.get("original_name", sample_name)
-                inj_num = rep_info.get("injection", {}).get("inj_num", rep_num) if rep_info.get("injection") else rep_num
                 rep_data["dad"], rep_data["dad_source"] = _match_khp_dad_from_masterfile(
-                    sample_name, original_name, inj_num, master_khp_data
+                    sample_name, sample_info.get("original_name", sample_name),
+                    rep_info.get("injection", {}).get("inj_num", rep_num) if rep_info.get("injection") else rep_num,
+                    master_khp_data
                 )
                 if rep_data["dad"] is not None:
                     rep_data["has_data"] = True
+                    logger.info("3-DAD_KHP fallback: loaded %d rows for %s (manifest sense DAD)",
+                                len(rep_data["dad"]["df"]), sample_name)
+                else:
+                    logger.warning("KHP %s rep %s: cap font DAD disponible (ni manifest ni 3-DAD_KHP)", sample_name, rep_num)
 
             result["samples"][sample_name]["replicas"][rep_num] = rep_data
 

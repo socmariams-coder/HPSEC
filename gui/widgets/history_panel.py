@@ -23,8 +23,11 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from hpsec_calibrate import load_khp_history
 
+import logging
 import numpy as np
 import re
+
+logger = logging.getLogger(__name__)
 
 # =========================================================================
 # HELPER: Extreu número de seqüència del nom
@@ -342,9 +345,9 @@ class HistoryPanel(QWidget):
             history = load_khp_history(None)  # seq_path s'ignora, usa REGISTRY global
             if history:
                 self._all_calibrations = history
-                print(f"[INFO] Carregades {len(history)} calibracions des de REGISTRY")
+                logger.info(f"Carregades {len(history)} calibracions des de REGISTRY")
         except Exception as e:
-            print(f"[WARNING] Error carregant històric: {e}")
+            logger.warning(f"Error carregant històric: {e}")
 
         # Eliminar duplicats per seq_name + date
         seen = set()
@@ -682,7 +685,7 @@ class HistoryPanel(QWidget):
             if hasattr(self.main_window, 'maintenance_panel'):
                 return self.main_window.maintenance_panel.events
         except Exception as e:
-            print(f"[DEBUG] No s'han pogut obtenir events de manteniment: {e}")
+            logger.debug(f"No s'han pogut obtenir events de manteniment: {e}")
         return []
 
     def _add_maintenance_markers(self, ax, dates, seq_names, y_min, y_max):
@@ -1404,6 +1407,6 @@ class HistoryPanel(QWidget):
                 return fig
 
         except Exception as e:
-            print(f"[WARNING] Error carregant perfil: {e}")
+            logger.warning(f"Error carregant perfil: {e}")
 
         return None

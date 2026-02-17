@@ -28,12 +28,15 @@ import os
 import re
 import glob
 import json
+import logging
 import numpy as np
 import pandas as pd
 from datetime import datetime
 from scipy.signal import savgol_filter
 from scipy.integrate import trapezoid
 from hpsec_config import get_registry_path, get_config
+
+logger = logging.getLogger(__name__)
 
 # Import funcions de detecció des de hpsec_core (Single Source of Truth)
 from hpsec_core import (
@@ -206,7 +209,7 @@ def load_qc_history():
             data = json.load(f)
             return data.get('entries', [])
     except Exception as e:
-        print(f"Error carregant QC History: {e}")
+        logger.error(f"Error carregant QC History: {e}")
         return []
 
 
@@ -225,7 +228,7 @@ def load_calibration_reference():
         with open(ref_path, 'r', encoding='utf-8') as f:
             return json.load(f)
     except Exception as e:
-        print(f"Error carregant calibració de referència: {e}")
+        logger.error(f"Error carregant calibració de referència: {e}")
         return None
 
 
@@ -249,7 +252,7 @@ def save_calibration_reference(data):
             json.dump(data, f, indent=2, ensure_ascii=False)
         return True
     except Exception as e:
-        print(f"Error guardant calibració de referència: {e}")
+        logger.error(f"Error guardant calibració de referència: {e}")
         return False
 
 
@@ -382,8 +385,8 @@ def quantify_with_global_calibration(area, volume_uL, signal='direct', mode='col
     """
     Quantifica una mostra usant rf_mass_cal global (Calibration_Reference.json).
 
-    Nota: Diferent de quantify_sample() que usa calibració local de la SEQ.
-    Aquesta funció és la recomanada per quantificació estàndard.
+    Nota: Aquesta funció és la recomanada per quantificació estàndard.
+    Usa rf_mass_cal global (Calibration_Reference.json) amb intercept.
 
     Fórmules segons model:
     - origin:    ppm = Area × 1000 / (rf_mass_cal × volume_uL)
@@ -596,7 +599,7 @@ def register_qc_result(seq_name, seq_date, qc_result, khp_data):
             json.dump(history, f, indent=2, ensure_ascii=False)
         return True
     except Exception as e:
-        print(f"Error guardant QC History: {e}")
+        logger.error(f"Error guardant QC History: {e}")
         return False
 
 
@@ -644,8 +647,8 @@ def add_calibration(rf_mass_cal_values, source, valid_from, r2=None, n_points=No
                 vf = datetime.strptime(valid_from_date, '%Y-%m-%d')
                 valid_to = (vf - timedelta(days=1)).strftime('%Y-%m-%d')
                 cal['valid_to'] = valid_to
-            except Exception:
-                pass
+            except (ValueError, TypeError) as e:
+                logger.warning("Could not parse valid_from_date '%s': %s", valid_from_date, e)
             cal['is_active'] = False
 
     # Crear nova calibració
@@ -979,12 +982,13 @@ def timeout_affects_peak(timeout_info, t_doc, left_idx, right_idx):
 
 def calculate_integration_limits(t, y, peak_idx, min_width_min=1.0, max_width_min=6.0):
     """
-    Calcula els límits d'integració d'un pic KHP usant mètode simplificat.
+    Calcula els límits d'integració d'un pic KHP usant mètode de derivades (Agilent-style).
 
-    LÒGICA SIMPLIFICADA:
-    1. Baseline = MODA de tot el senyal (valor més freqüent)
-    2. Threshold = baseline + 3*sigma (estadístic)
-    3. Límits = des del pic fins que senyal ≤ threshold
+    LÒGICA:
+    1. Delegar a find_peak_boundaries() de hpsec_core.py (mètode derivades)
+    2. Calcular baseline com a MODA del senyal
+    3. Validar amplada mínima/màxima
+    4. Retornar info completa per compatibilitat
 
     Args:
         t: Array de temps (minuts)
@@ -996,6 +1000,8 @@ def calculate_integration_limits(t, y, peak_idx, min_width_min=1.0, max_width_mi
     Returns:
         Dict amb left_idx, right_idx, baseline, threshold, width_minutes, etc.
     """
+    from hpsec_core import find_peak_boundaries
+
     try:
         t = np.asarray(t, dtype=float)
         y = np.asarray(y, dtype=float)
@@ -1031,40 +1037,31 @@ def calculate_integration_limits(t, y, peak_idx, min_width_min=1.0, max_width_mi
         if std_baseline < 1e-6:
             std_baseline = 0.01 * y_range
 
-        # === 3. THRESHOLD = baseline + 3*sigma ===
         threshold = baseline + 3 * std_baseline
 
-        # Calcular límits en índexs basats en temps
+        # === 3. DELIMITAR per DERIVADES (mètode Agilent) ===
+        left_idx, right_idx = find_peak_boundaries(
+            t, y, peak_idx, baseline_level=baseline, is_bp=False
+        )
+
+        # === 4. VALIDAR AMPLADA ===
         dt = np.mean(np.diff(t)) if n > 1 else 0.01
         max_width_idx = int(max_width_min / dt) if dt > 0 else 300
         min_width_idx = int(min_width_min / dt) if dt > 0 else 50
 
-        # === 4. BUSCAR LÍMIT ESQUERRE ===
-        left_idx = peak_idx
-        for i in range(peak_idx - 1, max(0, peak_idx - max_width_idx), -1):
-            if y[i] <= threshold:
-                left_idx = i
-                break
-            left_idx = i
-        else:
-            left_idx = max(0, peak_idx - max_width_idx)
-
-        # === 5. BUSCAR LÍMIT DRET ===
-        right_idx = peak_idx
-        for i in range(peak_idx + 1, min(n, peak_idx + max_width_idx)):
-            if y[i] <= threshold:
-                right_idx = i
-                break
-            right_idx = i
-        else:
-            right_idx = min(n - 1, peak_idx + max_width_idx)
-
-        # === 6. VALIDAR AMPLADA MÍNIMA ===
         current_width_idx = right_idx - left_idx
+
+        # Expandir si massa estret
         if current_width_idx < min_width_idx:
             expand_needed = (min_width_idx - current_width_idx) // 2 + 1
             left_idx = max(0, left_idx - expand_needed)
             right_idx = min(n - 1, right_idx + expand_needed)
+
+        # Retallar si massa ample
+        if current_width_idx > max_width_idx:
+            excess = (current_width_idx - max_width_idx) // 2
+            left_idx = min(left_idx + excess, peak_idx - 3)
+            right_idx = max(right_idx - excess, peak_idx + 3)
 
         # Assegurar que el pic està dins dels límits
         left_idx = int(min(left_idx, peak_idx - 3))
@@ -1087,7 +1084,8 @@ def calculate_integration_limits(t, y, peak_idx, min_width_min=1.0, max_width_mi
             "left_at_baseline": left_at_baseline,
             "right_at_baseline": right_at_baseline,
             "valid": left_at_baseline and right_at_baseline,
-            "message": "OK" if (left_at_baseline and right_at_baseline) else "Límits no arriben a baseline"
+            "message": "OK" if (left_at_baseline and right_at_baseline) else "Limits no arriben a baseline",
+            "method": "derivative"
         }
 
     except Exception as e:
@@ -1194,80 +1192,6 @@ def validate_integration_baseline(t, y, left_idx, right_idx, peak_idx, baseline_
 # NOTA: detect_batman i detect_timeout ara estan a hpsec_core.py
 # (Single Source of Truth per evitar duplicació)
 # Usar: from hpsec_core import detect_batman, detect_timeout, detect_peak_anomaly
-
-
-# =============================================================================
-# HELPER: QUANTIFICACIÓ AMB CALIBRACIONS
-# =============================================================================
-
-def get_calibration_for_conditions(calibration_data, volume_uL, signal="direct"):
-    """
-    Troba la calibració que coincideix amb les condicions donades.
-
-    Args:
-        calibration_data: Resultat de calibrate_sequence()
-        volume_uL: Volum d'injecció de la mostra (µL)
-        signal: "direct", "uib", o "primary"
-
-    Returns:
-        dict: Calibració amb les mateixes condicions, o la principal si no hi ha match
-    """
-    if not calibration_data:
-        return None
-
-    # Seleccionar llista de calibracions segons senyal
-    if signal == "uib":
-        calibrations = calibration_data.get("calibrations_uib", [])
-    elif signal == "direct":
-        calibrations = calibration_data.get("calibrations_direct", [])
-    else:
-        calibrations = calibration_data.get("calibrations", [])
-
-    if not calibrations:
-        # Fallback: retornar khp_data si existeix (compatibilitat)
-        return calibration_data.get("khp_data")
-
-    # Buscar calibració pel volum
-    vol_int = int(volume_uL) if volume_uL else 0
-    for cal in calibrations:
-        if cal.get('volume_uL') == vol_int:
-            return cal
-
-    # Fallback: primera calibració (la de major conc/vol)
-    return calibrations[0]
-
-
-def quantify_sample(area, volume_uL, calibration_data, signal="direct"):
-    """
-    Calcula la concentració d'una mostra usant la calibració de les seves condicions.
-
-    Args:
-        area: Àrea integrada del cromatograma (mAU·min)
-        volume_uL: Volum d'injecció de la mostra (µL)
-        calibration_data: Resultat de calibrate_sequence()
-        signal: "direct", "uib", o "primary"
-
-    Returns:
-        float: Concentració en ppm (mg/L)
-
-    Fórmula:
-        conc_ppm = Area × 1000 / (RF_mass × volume_µL)
-
-    Example:
-        >>> cal = calibrate_sequence(seq_path, samples)
-        >>> for sample in samples:
-        ...     area = sample.get("area", 0)
-        ...     vol = sample.get("inj_volume", 400)
-        ...     conc = quantify_sample(area, vol, cal, signal="direct")
-    """
-    cal = get_calibration_for_conditions(calibration_data, volume_uL, signal)
-    if not cal:
-        return 0.0
-
-    rf_mass = cal.get('rf_mass', 0)
-    if rf_mass <= 0 or volume_uL <= 0:
-        return 0.0
-    return area * 1000 / (rf_mass * volume_uL)
 
 
 # =============================================================================
@@ -1542,6 +1466,16 @@ def validate_khp_quality(khp_data, all_peaks, timeout_info, anomaly_info=None, s
     issues = []
     warnings = []
     quality_score = 0
+
+    # 0. Guard: conc i area han de ser > 0 (entrades blanques/invàlides)
+    conc = khp_data.get('conc_ppm', khp_data.get('conc', 0))
+    area = khp_data.get('area', khp_data.get('area_total', 0))
+    if not conc or conc <= 0:
+        issues.append("ZERO_CONC: concentració KHP és 0 o absent")
+        quality_score += 200
+    if not area or area <= 0:
+        issues.append("ZERO_AREA: àrea KHP és 0 o absent")
+        quality_score += 200
 
     # 1. Multi-pic
     if all_peaks and len(all_peaks) > 2:
@@ -2052,7 +1986,7 @@ def load_local_calibrations(seq_path):
             data = json.load(f)
             return data.get("calibrations", [])
     except Exception as e:
-        print(f"Error carregant calibracions: {e}")
+        logger.error(f"Error carregant calibracions: {e}")
         return []
 
 
@@ -2077,7 +2011,7 @@ def save_local_calibrations(seq_path, calibrations):
             json.dump(data, f, indent=2, ensure_ascii=False, cls=NumpyEncoder)
         return True
     except Exception as e:
-        print(f"Error guardant CHECK/data: {e}")
+        logger.error(f"Error guardant CHECK/data: {e}")
         return False
 
 
@@ -2235,7 +2169,7 @@ def load_khp_history(seq_path):
             data = json.load(f)
             return data.get("calibrations", [])
     except Exception as e:
-        print(f"Error carregant històric KHP: {e}")
+        logger.error(f"Error carregant històric KHP: {e}")
         return []
 
 
@@ -2257,8 +2191,72 @@ def save_khp_history(seq_path, calibrations):
             json.dump(data, f, indent=2, ensure_ascii=False, cls=NumpyEncoder)
         return True
     except Exception as e:
-        print(f"Error guardant històric KHP: {e}")
+        logger.error(f"Error guardant històric KHP: {e}")
         return False
+
+
+def clean_khp_history(seq_path, dry_run=True):
+    """
+    Neteja entrades invàlides del KHP_History.json.
+
+    Elimina:
+    - Entrades amb conc_ppm=0 (blancs invàlids)
+    - Entrades amb area=0 (sense dades DOC)
+    - Entrades amb rf=0 i rf_mass_cal=0 (sense RF calculat)
+
+    Args:
+        seq_path: Path per localitzar KHP_History.json
+        dry_run: Si True, només reporta sense modificar
+
+    Returns:
+        dict amb {removed: int, kept: int, total: int, removed_entries: [...]}
+    """
+    history = load_khp_history(seq_path)
+    if not history:
+        return {"removed": 0, "kept": 0, "total": 0, "removed_entries": []}
+
+    kept = []
+    removed = []
+
+    for entry in history:
+        conc = entry.get("conc_ppm", 0)
+        area = entry.get("area", 0)
+        rf = entry.get("rf", 0)
+        rf_mass = entry.get("rf_mass_cal", 0)
+        seq = entry.get("seq_name", "?")
+
+        reasons = []
+        if not conc or conc <= 0:
+            reasons.append("conc=0")
+        if not area or area <= 0:
+            reasons.append("area=0")
+        if (not rf or rf <= 0) and (not rf_mass or rf_mass <= 0):
+            reasons.append("rf=0")
+
+        if reasons:
+            entry["_removal_reasons"] = reasons
+            removed.append(entry)
+            logger.info("clean_khp_history: REMOVE %s — %s", seq, ", ".join(reasons))
+        else:
+            kept.append(entry)
+
+    result = {
+        "removed": len(removed),
+        "kept": len(kept),
+        "total": len(history),
+        "removed_entries": [
+            {"seq_name": e.get("seq_name", "?"), "conc": e.get("conc_ppm", 0),
+             "area": e.get("area", 0), "reasons": e.get("_removal_reasons", [])}
+            for e in removed
+        ],
+    }
+
+    if not dry_run and removed:
+        save_khp_history(seq_path, kept)
+        logger.info("clean_khp_history: eliminades %d/%d entrades, %d vàlides conservades",
+                     len(removed), len(history), len(kept))
+
+    return result
 
 
 def get_khp_from_history(seq_path, target_seq_name, mode="COLUMN"):
@@ -2460,6 +2458,7 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
                 break
 
         if col_254:
+            logger.debug("analizar_khp_data: DAD 254nm trobat (col=%s, %d files)", col_254, len(df_dad))
             t_dad = pd.to_numeric(df_dad["time (min)"], errors="coerce").to_numpy()
             dad_254 = pd.to_numeric(df_dad[col_254], errors="coerce").to_numpy()
 
@@ -2491,6 +2490,12 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
                                                    t_dad[dad_left_idx:dad_right_idx+1]))
                         if a254_area > 0:
                             a254_doc_ratio = peak_info['area'] / a254_area
+                            logger.debug("analizar_khp_data: a254_area=%.2f, ratio DOC/254=%.3f",
+                                         a254_area, a254_doc_ratio)
+                        else:
+                            logger.warning("analizar_khp_data: a254_area=0 malgrat pic DAD vàlid")
+                else:
+                    logger.warning("analizar_khp_data: pic DAD no vàlid o no detectat")
 
     # Àrees amb integració sobre baseline
     baseline_mean = bl_stats.get('mean', 0)
@@ -2516,8 +2521,7 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
     concentration_ratio = area_main_peak / area_total if area_total > 0 else 1.0
 
     # Baseline drift local
-    dt = np.median(np.diff(t_doc)) if len(t_doc) > 1 else 1.0
-    n_bl = max(3, int(1.0 / dt))
+    n_bl = max(3, len(t_doc) // 10)
     bl_left = float(np.median(y_doc_net[max(0, left_idx - n_bl):left_idx])) if left_idx > 0 else 0.0
     bl_right_slice = y_doc_net[right_idx + 1:min(len(y_doc_net), right_idx + n_bl + 1)]
     bl_right = float(np.median(bl_right_slice)) if len(bl_right_slice) > 0 else 0.0
@@ -2793,8 +2797,8 @@ def _get_reference_area(mode, conc_ppm, volume_uL, doc_mode, uib_sensitivity):
                         'area_std': ref.get('area_std', 0),
                         'source': f"config:{key}"
                     }
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("Failed to get KHP reference values: %s", e)
     return None
 
 
@@ -2815,7 +2819,16 @@ def register_calibration(seq_path, khp_data, khp_source, mode="COLUMN"):
     # Calcular RF (Response Factor) = Àrea / Concentració
     area = khp_data.get('area', 0)
     conc = khp_data.get('conc_ppm', 0)
-    rf = area / conc if conc > 0 else 0
+
+    # Guard: entrades blanques (conc=0 o area=0) no s'han de registrar
+    if not conc or conc <= 0:
+        logger.warning("register_calibration: skip entry with conc=0 for %s", seq_name)
+        return {"success": False, "error": "KHP concentration is 0", "valid_for_calibration": False}
+    if not area or area <= 0:
+        logger.warning("register_calibration: skip entry with area=0 for %s", seq_name)
+        return {"success": False, "error": "KHP area is 0", "valid_for_calibration": False}
+
+    rf = area / conc
 
     seq_date = khp_data.get('seq_date', '')
     if not seq_date:
@@ -2829,15 +2842,10 @@ def register_calibration(seq_path, khp_data, khp_source, mode="COLUMN"):
 
     # Fallback si volume és None
     if volume is None:
-        print(f"  - khp_data.get('volume_uL') = {volume_from_khp}")
-        print(f"  - get_injection_volume({seq_path}, {is_bp}) = {volume_from_func}")
-        print(f"  - khp_data keys: {list(khp_data.keys())[:10]}...")
+        logger.debug(f"Volume fallback - khp_data.get('volume_uL') = {volume_from_khp}")
+        logger.debug(f"Volume fallback - get_injection_volume({seq_path}, {is_bp}) = {volume_from_func}")
+        logger.debug(f"Volume fallback - khp_data keys: {list(khp_data.keys())[:10]}...")
         volume = 100  # Fallback temporal per evitar crash
-
-    # Sanity check: BP sempre hauria de ser 100µL — avisar però NO corregir automàticament
-    if is_bp and volume > INJECTION_VOLUME_BP:
-        print(f"  ⚠ {seq_name}: BP amb volum={volume}µL (esperat {INJECTION_VOLUME_BP}µL) "
-              f"— revisar masterfile o manifest.")
     khp_name = khp_data.get('name', f"KHP{conc}")  # Nom del KHP (ex: "KHP2", "KHP2_50")
     doc_mode = khp_data.get('doc_mode', 'N/A')
     uib_sensitivity = khp_data.get('uib_sensitivity')
@@ -2876,6 +2884,10 @@ def register_calibration(seq_path, khp_data, khp_source, mode="COLUMN"):
 
     # --- 254nm ---
     area_254 = khp_data.get('a254_area', 0)
+    if area_254 > 0:
+        logger.info("register_calibration: %s area_254=%.2f (QAQC disponible)", seq_name, area_254)
+    else:
+        logger.warning("register_calibration: %s area_254=0 — QAQC 254nm no disponible", seq_name)
     rf_254 = khp_data.get('rf_254', 0)
     if rf_254 == 0 and area_254 > 0 and conc > 0:
         rf_254 = area_254 / conc
@@ -2909,16 +2921,6 @@ def register_calibration(seq_path, khp_data, khp_source, mode="COLUMN"):
     calibration_warnings = validation_result.get('warnings', [])
     quality_score = validation_result.get('quality_score', 0)
     quality_issues = calibration_issues + calibration_warnings
-
-    # =========================================================================
-    # GUARDS BÀSICS — invalidar casos impossibles
-    # =========================================================================
-    if conc <= 0:
-        valid_for_calibration = False
-        calibration_issues.append("Concentració KHP ≤ 0 — RF no calculable")
-    if area <= 0:
-        valid_for_calibration = False
-        calibration_issues.append(f"Àrea ≤ 0 ({area:.2f}) — pic invàlid o desplaçat")
 
     # =========================================================================
     # VALIDACIÓ PER SHIFT (alineació temporal)
@@ -3763,6 +3765,13 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
             # Obtenir DAD si disponible
             dad_data = rep_data.get("dad", {})
             df_dad = dad_data.get("df") if dad_data else None
+            if df_dad is not None:
+                logger.debug("calibrate_from_import: %s rep %s té DAD (%s, %d files)",
+                             khp_name, rep_num, rep_data.get("dad_source", "?"),
+                             len(df_dad))
+            else:
+                logger.warning("calibrate_from_import: %s rep %s SENSE DAD — area_254 serà 0",
+                               khp_name, rep_num)
 
             # Obtenir volum d'injecció
             injection_info = rep_data.get("injection_info", {})
@@ -3900,8 +3909,8 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
                     from scipy.stats import pearsonr
                     pearson_profiles, _ = pearsonr(y1, y2)
                     pearson_profiles = float(pearson_profiles)
-                except:
-                    pass
+                except (ValueError, TypeError) as e:
+                    logger.debug("Pearson profiles calculation failed: %s", e)
 
         return {
             'n_replicas': len(replicas),
@@ -4362,8 +4371,8 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
                 with open(manifest_path, 'r', encoding='utf-8') as f:
                     manifest = json.load(f)
                     seq_date = manifest.get("seq_date") or manifest.get("date")
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("Could not load manifest for seq_date: %s", e)
 
     # QC per DOC Direct
     if result.get("khp_data_direct"):

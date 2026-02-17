@@ -18,11 +18,14 @@ __version__ = "2.0.0"
 __version_date__ = "2026-02-10"
 
 import os
+import logging
 import numpy as np
 import pandas as pd
 from pathlib import Path
 from datetime import datetime
 from scipy.integrate import trapezoid
+
+logger = logging.getLogger(__name__)
 
 
 def _get_max_severity(anomalies):
@@ -71,8 +74,8 @@ def _load_export_config():
             if fractions:
                 fallback["time_fractions"] = fractions
 
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("Could not load export fractions from config: %s", e)
 
     return fallback
 

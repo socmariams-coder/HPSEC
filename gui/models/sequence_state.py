@@ -16,8 +16,11 @@ Fases del pipeline:
 
 import os
 import json
+import logging
 from dataclasses import dataclass, field
 from typing import Optional, Dict, List, Any
+
+logger = logging.getLogger(__name__)
 from datetime import datetime
 from enum import Enum
 
@@ -164,7 +167,7 @@ class SequenceState:
                     elif val == 'null': val = None
                     else:
                         try: val = float(val) if '.' in str(val) else int(val)
-                        except: pass
+                        except (ValueError, TypeError): pass
                     data[key] = val
             # Detectar si "warnings" és un array no buit (no podem parsejar-lo,
             # però podem veure si conté elements)
@@ -664,11 +667,11 @@ def get_all_sequences(data_folder: str, group_siblings: bool = True) -> List[Seq
                         sibling_state = SequenceState(sibling_path)
                         sibling_state.is_sibling = True
                         sequences.append(sibling_state)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug("Could not load sibling %s: %s", sibling_path, e)
 
-        except Exception:
-            pass  # Ignorar carpetes problemàtiques
+        except Exception as e:
+            logger.debug("Skipping problematic folder %s: %s", entry.name if hasattr(entry, 'name') else '?', e)
 
     return sequences
 

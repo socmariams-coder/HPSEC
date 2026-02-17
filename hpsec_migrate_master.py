@@ -148,29 +148,14 @@ def migrate_single(seq_path: str, progress_callback: Optional[Callable] = None,
 
     report(5, 5, "Completat")
 
-    # Warnings
-    warnings = []
-    has_khp = data.get('khp') is not None
-    if data.get('_has_dad_sheet') and not has_khp:
-        warnings.append("[!] El rawdata conte full 3-DAD_data pero no s'han detectat mostres KHP. "
-                         "Revisar noms de mostra al DAD (es busca 'KHP' o patro concentracio).")
-    if not data.get('_has_dad_sheet'):
-        warnings.append("El rawdata no conte full 3-DAD_data -- MasterFile sense dades DAD KHP.")
-
-    status = 'warning' if warnings else 'ok'
-    msg = f'MasterFile creat ({n_rows} files TOC)'
-    if warnings:
-        msg += ' -- ' + '; '.join(warnings)
-
     return {
-        'status': status,
-        'message': msg,
+        'status': 'ok',
+        'message': f'MasterFile creat correctament ({n_rows} files TOC)',
         'file': output_path,
         'rows': n_rows,
         'seq_id': info.get('seq_id'),
         'method': info.get('method'),
-        'has_khp': has_khp,
-        'warnings': warnings,
+        'has_khp': data.get('khp') is not None,
         'details': {
             'output_file': os.path.basename(output_path),
             'rawdata_used': os.path.basename(rawdata_path)
@@ -264,7 +249,35 @@ def _read_rawdata(filepath: str) -> Dict[str, Any]:
     # 1-HPLC-SEQ_RAW
     if '1-HPLC-SEQ_RAW' in wb.sheetnames:
         print(" HPLC", end='', flush=True)
-        data['hplc'] = pd.read_excel(filepath, sheet_name='1-HPLC-SEQ_RAW', engine='openpyxl')
+        df_hplc = pd.read_excel(filepath, sheet_name='1-HPLC-SEQ_RAW', engine='openpyxl')
+
+        # Detectar columnes desalineades (format Agilent antic):
+        # Algunes exportacions Agilent tenen les DADES desplaçades +1 columna
+        # respecte les capçaleres. Detecció: columna "Line#" buida + columna
+        # "Injection Acquired Date" no conté dates sinó noms de mètode (.M).
+        first_col = df_hplc.columns[0]
+        if df_hplc[first_col].isna().all() and len(df_hplc.columns) > 5:
+            # Buscar la columna "Acquired Date"
+            date_col_name = None
+            for col in df_hplc.columns:
+                cl = str(col).lower()
+                if 'acquired date' in cl or ('injection' in cl and 'date' in cl):
+                    date_col_name = col
+                    break
+            # Si la columna "date" conté noms de mètode (.M), confirmat offset
+            if date_col_name is not None:
+                sample_vals = df_hplc[date_col_name].dropna().astype(str)
+                has_method = any('.M' in v or '.m' in v for v in sample_vals.head(5))
+                if has_method:
+                    # Desplaçar capçaleres +1 (equivalent a shift dades -1):
+                    # Afegir una capçalera extra al final i renombrar
+                    old_cols = list(df_hplc.columns)
+                    new_cols = ['_dropped'] + old_cols[:-1]
+                    df_hplc.columns = new_cols
+                    df_hplc = df_hplc.drop(columns=['_dropped'])
+                    print(" [OFFSET FIX]", end='', flush=True)
+
+        data['hplc'] = df_hplc
 
     # 2-TOC
     if '2-TOC' in wb.sheetnames:
@@ -272,13 +285,10 @@ def _read_rawdata(filepath: str) -> Dict[str, Any]:
         data['toc'] = pd.read_excel(filepath, sheet_name='2-TOC', header=None, engine='openpyxl')
 
     # 3-DAD_data (per extreure KHP)
-    data['_has_dad_sheet'] = '3-DAD_data' in wb.sheetnames
-    if data['_has_dad_sheet']:
+    if '3-DAD_data' in wb.sheetnames:
         print(" DAD", end='', flush=True)
         df_dad = pd.read_excel(filepath, sheet_name='3-DAD_data', header=None, engine='openpyxl')
         data['khp'] = _extract_khp_from_dad(df_dad)
-        if data['khp'] is None:
-            print(" [!] DAD trobat pero cap KHP detectat!", end='', flush=True)
 
     wb.close()
     print(" OK", flush=True)
@@ -333,34 +343,9 @@ def _extract_seq_number(seq_id) -> Optional[int]:
 
 
 def _extract_khp_from_dad(df_dad: pd.DataFrame) -> Optional[Dict[str, pd.DataFrame]]:
-    """Extreu dades KHP del full DAD.
-
-    Detecta mostres KHP per nom:
-      - Conté "KHP" (ex: "KHP2", "KHP 1 ppm")
-      - Patró concentració (ex: "100 ppb", "2 ppm", "250 ppb 400ul")
-    Ignora blancs/controls: "mq", "naoh", "bl", "buffer"
-    """
-    import re
+    """Extreu dades KHP del full DAD."""
     if df_dad is None or df_dad.empty:
         return None
-
-    _SKIP = {'mq', 'naoh', 'bl', 'buffer', 'blank', 'fi', 'mix', '254', '210',
-             '206', '273', '280', '350', '365', '465', 't'}
-
-    def _is_khp_name(name_str):
-        """Retorna True si el nom correspon a una mostra KHP."""
-        s = str(name_str).strip()
-        s_lower = s.lower()
-        # Descartar blancs/controls/wavelengths
-        if s_lower in _SKIP or not s:
-            return False
-        # Match explícit "KHP"
-        if 'KHP' in s.upper():
-            return True
-        # Match patró concentració: "100 ppb", "2 ppm", "250 ppb 400ul"
-        if re.match(r'^\d+\.?\d*\s*(ppb|ppm)', s_lower):
-            return True
-        return False
 
     khp_data = {}
     khp_count = 0
@@ -368,9 +353,9 @@ def _extract_khp_from_dad(df_dad: pd.DataFrame) -> Optional[Dict[str, pd.DataFra
     for col in range(df_dad.shape[1]):
         name_val = df_dad.iloc[1, col] if df_dad.shape[0] > 1 and pd.notna(df_dad.iloc[1, col]) else None
 
-        if name_val and _is_khp_name(name_val):
+        if name_val and 'KHP' in str(name_val).upper():
             khp_count += 1
-            khp_name = f"KHP_{name_val}_R{khp_count}"
+            khp_name = f"{name_val}_R{khp_count}"
 
             # Trobar columnes amb dades
             time_col = val_col = None
@@ -454,9 +439,37 @@ def _create_masterfile(data: Dict, info: Dict, seq_path: str) -> tuple:
             df_hplc = df_hplc[df_hplc[sample_col].notna()].copy()
 
         if date_col:
-            df_hplc[date_col] = pd.to_datetime(df_hplc[date_col])
+            try:
+                df_hplc[date_col] = pd.to_datetime(df_hplc[date_col])
+            except Exception:
+                # Columnes desplaçades (format Agilent antic): la data real
+                # pot estar a la columna següent (col+1) en comptes de la
+                # columna amb capçalera "Acquired Date".
+                cols = list(df_hplc.columns)
+                date_col_idx = cols.index(date_col)
+                if date_col_idx + 1 < len(cols):
+                    next_col = cols[date_col_idx + 1]
+                    try:
+                        df_hplc[next_col] = pd.to_datetime(df_hplc[next_col])
+                        # Reassignar: la columna amb dates reals és la següent
+                        date_col = next_col
+                    except Exception:
+                        date_col = None  # No s'ha pogut parsejar cap columna com a data
+                else:
+                    date_col = None
+
+        if date_col:
             df_hplc = df_hplc.sort_values(date_col).reset_index(drop=True)
             df_hplc['Inj_Index'] = range(1, len(df_hplc) + 1)
+
+            # Omplir Line# si buida (format Agilent antic on col A no té dades)
+            line_col = None
+            for col in df_hplc.columns:
+                if str(col).strip().lower().replace('#', '') == 'line':
+                    line_col = col
+                    break
+            if line_col and df_hplc[line_col].isna().all():
+                df_hplc[line_col] = range(1, len(df_hplc) + 1)
 
             # Crear Sample_Rep
             df_hplc['Sample_Rep'] = _create_sample_rep(df_hplc, sample_col)

@@ -59,6 +59,18 @@ HS_SUBWINDOWS = {
 }
 WL_ALL = list(range(200, 402, 2))
 
+# Signal thresholds
+MIN_SIGNAL_MAU = 0.01          # Minimum signal at 254nm to compute HCI (mAU)
+MIN_RATIO_DENOMINATOR = 0.01   # Minimum denominator for spectral ratios
+
+# Model confidence guards
+MAX_MISSING_FEATURES_PCT = 0.10  # Max fraction of missing/NaN features (10%)
+MAX_TRAINING_DISTANCE = 30       # Max scaled Euclidean distance from training center
+
+# HCI classification thresholds
+HCI_HA_THRESHOLD = 60    # HCI > 60 → "HA-dominant"
+HCI_FA_THRESHOLD = 40    # HCI < 40 → "FA-dominant", else "Mixed"
+
 # =============================================================================
 # MODEL SINGLETON
 # =============================================================================
@@ -132,7 +144,7 @@ def extract_all_features(time_vals, wavelengths, data):
         return None
 
     a254 = get_val(hs, 254)
-    if a254 < 0.01:
+    if a254 < MIN_SIGNAL_MAU:
         return None  # Too weak
 
     # Normalized HS spectrum
@@ -144,7 +156,7 @@ def extract_all_features(time_vals, wavelengths, data):
     for name, (t0, t1) in HS_SUBWINDOWS.items():
         sub = fraction_spec(t0, t1)
         if sub is not None:
-            sub_norm = sub / get_val(sub, 254) if get_val(sub, 254) > 0.01 else sub
+            sub_norm = sub / get_val(sub, 254) if get_val(sub, 254) > MIN_RATIO_DENOMINATOR else sub
             for w in [200, 210, 220, 230, 240, 250, 254, 260, 270, 280, 300, 330, 350, 365, 400]:
                 features[f"sub_{name}_{w}"] = get_val(sub_norm, w)
 
@@ -158,10 +170,10 @@ def extract_all_features(time_vals, wavelengths, data):
             e = get_val(early, w)
             l = get_val(late, w)
             m = get_val(mid, w) if mid is not None else np.nan
-            features[f"ratio_el_{w}"] = e / l if l > 0.01 else np.nan
-            if mid is not None and m > 0.01:
+            features[f"ratio_el_{w}"] = e / l if l > MIN_RATIO_DENOMINATOR else np.nan
+            if mid is not None and m > MIN_RATIO_DENOMINATOR:
                 features[f"ratio_em_{w}"] = e / m
-                features[f"ratio_ml_{w}"] = m / l if l > 0.01 else np.nan
+                features[f"ratio_ml_{w}"] = m / l if l > MIN_RATIO_DENOMINATOR else np.nan
 
     # --- Spectral ratios (on HS) ---
     a210 = get_val(hs, 210)
@@ -177,8 +189,8 @@ def extract_all_features(time_vals, wavelengths, data):
     a365 = get_val(hs, 365)
     a400 = get_val(hs, 400)
 
-    features["E2_E3"] = a250 / a365 if a365 > 0.01 else np.nan
-    features["A254_A280"] = a254 / a280 if a280 > 0.01 else np.nan
+    features["E2_E3"] = a250 / a365 if a365 > MIN_RATIO_DENOMINATOR else np.nan
+    features["A254_A280"] = a254 / a280 if a280 > MIN_RATIO_DENOMINATOR else np.nan
     features["A210_A254"] = a210 / a254
     features["A220_A254"] = a220 / a254
     features["A280_A254"] = a280 / a254
@@ -186,11 +198,11 @@ def extract_all_features(time_vals, wavelengths, data):
     features["A350_A254"] = a350 / a254 if a350 > 0.001 else np.nan
     features["A365_A254"] = a365 / a254 if a365 > 0.001 else np.nan
     features["A400_A254"] = a400 / a254 if a400 > 0.001 else np.nan
-    features["A250_A365"] = a250 / a365 if a365 > 0.01 else np.nan
-    features["A230_A260"] = a230 / a260 if a260 > 0.01 else np.nan
-    features["A272_A280"] = a272 / a280 if a280 > 0.01 else np.nan
-    features["A280_A350"] = a280 / a350 if a350 > 0.01 else np.nan
-    features["A300_A400"] = a300 / a400 if a400 > 0.01 else np.nan
+    features["A250_A365"] = a250 / a365 if a365 > MIN_RATIO_DENOMINATOR else np.nan
+    features["A230_A260"] = a230 / a260 if a260 > MIN_RATIO_DENOMINATOR else np.nan
+    features["A272_A280"] = a272 / a280 if a280 > MIN_RATIO_DENOMINATOR else np.nan
+    features["A280_A350"] = a280 / a350 if a350 > MIN_RATIO_DENOMINATOR else np.nan
+    features["A300_A400"] = a300 / a400 if a400 > MIN_RATIO_DENOMINATOR else np.nan
 
     # --- Spectral slopes ---
     features["S206_240"] = _spectral_slope(hs, wl, 206, 240)
@@ -212,7 +224,7 @@ def extract_all_features(time_vals, wavelengths, data):
     features["shape_uv_area"] = np.trapz(hs_norm[uv_mask], wl[uv_mask])
     features["shape_vis_area"] = np.trapz(hs_norm[vis_mask], wl[vis_mask])
     features["shape_uv_vis"] = features["shape_uv_area"] / features["shape_vis_area"] \
-        if features["shape_vis_area"] > 0.01 else np.nan
+        if features["shape_vis_area"] > MIN_RATIO_DENOMINATOR else np.nan
 
     # Peak wavelength of normalized spectrum
     features["shape_peak_wl"] = wl[np.argmax(hs_norm[:50])]
@@ -230,7 +242,7 @@ def extract_all_features(time_vals, wavelengths, data):
     for target_wl in [210, 230, 254, 280, 300, 350]:
         wl_idx = np.argmin(np.abs(wl - target_wl))
         profile = hs_data[:, wl_idx]
-        if len(profile) < 10 or np.max(profile) < 0.01:
+        if len(profile) < 10 or np.max(profile) < MIN_SIGNAL_MAU:
             continue
 
         norm_profile = profile / np.max(profile)
@@ -271,14 +283,14 @@ def extract_all_features(time_vals, wavelengths, data):
         fspec = fraction_spec(t0, t1)
         if fspec is not None:
             fa254 = get_val(fspec, 254)
-            if fa254 > 0.01:
+            if fa254 > MIN_RATIO_DENOMINATOR:
                 for w in [210, 230, 254, 280, 300, 350]:
                     features[f"{frac}_norm_{w}"] = get_val(fspec, w) / fa254
 
             for w in [210, 254, 280, 350]:
                 fval = get_val(fspec, w)
                 hval = get_val(hs, w)
-                if fval > 0.01:
+                if fval > MIN_RATIO_DENOMINATOR:
                     features[f"hs_{frac}_ratio_{w}"] = hval / fval
 
     return features
@@ -352,7 +364,7 @@ def compute_hci(dad_export3d_path):
 
     # Guard: si falten >10% de features, el score serà poc fiable
     # (ex: Nordic NOM amb senyal feble → 50/242 features absents → HCI = -568)
-    if (n_missing + n_nan) > len(feat_cols) * 0.10:
+    if (n_missing + n_nan) > len(feat_cols) * MAX_MISSING_FEATURES_PCT:
         return None
 
     X = np.array([feats.get(col, 0.0) for col in feat_cols], dtype=np.float64)
@@ -365,7 +377,7 @@ def compute_hci(dad_export3d_path):
     # Mostres molt lluny del training donen scores per extrapolació (no fiables)
     # Ref: SRFA nova → dist ~9, Nordic NOM → dist ~82
     dist = float(np.sqrt(np.sum(X_scaled ** 2)))
-    if dist > 30:
+    if dist > MAX_TRAINING_DISTANCE:
         return None
 
     # PCA: X_pca = (X_scaled - pca_mean) @ pca_components.T
@@ -385,9 +397,9 @@ def compute_hci(dad_export3d_path):
         hci = 50.0
 
     # Classify
-    if hci > 60:
+    if hci > HCI_HA_THRESHOLD:
         character = "HA-dominant"
-    elif hci < 40:
+    elif hci < HCI_FA_THRESHOLD:
         character = "FA-dominant"
     else:
         character = "Mixed"

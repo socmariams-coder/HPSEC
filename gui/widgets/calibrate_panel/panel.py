@@ -26,7 +26,10 @@ from hpsec_calibrate import (
 )
 from hpsec_config import get_config
 
+import logging
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 # Importar components del paquet
 from .worker import CalibrateWorker
@@ -172,7 +175,7 @@ class CalibratePanel(QWidget):
             self._load_existing_calibration(active_cal)
 
         except Exception as e:
-            print(f"[WARNING] Error comprovant calibració existent: {e}")
+            logger.warning(f"Error comprovant calibració existent: {e}")
             self.condition_selector_frame.setVisible(False)
 
     def _populate_condition_combo(self):
@@ -482,7 +485,7 @@ class CalibratePanel(QWidget):
             try:
                 fn(result)
             except Exception as e:
-                print(f"[WARNING] Error a {fn.__name__}: {e}")
+                logger.warning(f"Error a {fn.__name__}: {e}")
                 import traceback; traceback.print_exc()
 
         self.main_window.enable_tab(2)
@@ -943,7 +946,7 @@ class CalibratePanel(QWidget):
             try:
                 fn(result)
             except Exception as e:
-                print(f"[WARNING] Error a {fn.__name__}: {e}")
+                logger.warning(f"Error a {fn.__name__}: {e}")
                 import traceback; traceback.print_exc()
 
         # Auto-generar PDF de QA/QC
@@ -953,9 +956,9 @@ class CalibratePanel(QWidget):
             if seq_path:
                 pdf = generate_calibration_report(seq_path)
                 if pdf:
-                    print(f"[INFO] Report QA/QC: {pdf}")
+                    logger.info(f"Report QA/QC: {pdf}")
         except Exception as e:
-            print(f"[WARNING] No s'ha pogut generar report de QA/QC: {e}")
+            logger.warning(f"No s'ha pogut generar report de QA/QC: {e}")
 
         # Recarregar el selector de condicions (potser s'han creat noves calibracions)
         self._reload_condition_selector()
@@ -1008,7 +1011,7 @@ class CalibratePanel(QWidget):
                         break
 
         except Exception as e:
-            print(f"[WARNING] Error recarregant selector de condicions: {e}")
+            logger.warning(f"Error recarregant selector de condicions: {e}")
 
     def _on_error(self, error_msg):
         self.main_window.show_progress(-1)
@@ -1368,7 +1371,7 @@ class CalibratePanel(QWidget):
             else:
                 self.result_labels["qc_rf"].setText("-")
         except Exception as e:
-            print(f"[DEBUG] Error calculant QC RF: {e}")
+            logger.debug(f"Error calculant QC RF: {e}")
             self.result_labels["qc_rf"].setText("-")
 
         # === QC SHIFT: Desplaçament temporal ===
@@ -1402,7 +1405,7 @@ class CalibratePanel(QWidget):
             self.result_labels["qc_shift"].setText(shift_text)
             self.result_labels["qc_shift"].setStyleSheet(qc_style)
         except Exception as e:
-            print(f"[DEBUG] Error calculant QC Shift: {e}")
+            logger.debug(f"Error calculant QC Shift: {e}")
             self.result_labels["qc_shift"].setText("-")
 
     def _extract_all_replicas(self, khp_data):
@@ -2066,7 +2069,7 @@ class CalibratePanel(QWidget):
                 self.main_window.set_status(f"Rèplica R{replica_num} {action}", 3000)
 
         except Exception as e:
-            print(f"[ERROR] Error canviant estat rèplica: {e}")
+            logger.error(f"Error canviant estat rèplica: {e}")
 
     def _on_selection_combo_changed(self):
         """Handler quan canvia la selecció al combo."""
@@ -2471,7 +2474,7 @@ class CalibratePanel(QWidget):
                     intercept_bp=intercept_bp,
                 )
             except Exception as e:
-                print(f"Error plotant gràfic calibració: {e}")
+                logger.error(f"Error plotant gràfic calibració: {e}")
                 self.calibration_line_graph.clear()
                 self.cal_line_group.setVisible(False)
 
@@ -2494,7 +2497,7 @@ class CalibratePanel(QWidget):
 
         except Exception as e:
             import traceback
-            print(f"[WARNING] Error carregant històric: {e}")
+            logger.warning(f"Error carregant històric: {e}")
             traceback.print_exc()
             self.history_graph.clear()
             self.history_doc254_graph.clear()
@@ -2661,7 +2664,7 @@ i determina el time shift necessari per a la quantificació.</p>
         # Propagar a main_window
         self.main_window.calibration_data = self.calibration_data
 
-        print(f"[DEBUG] Calibració aplicada: RF={new_rf:.0f}, shift_direct={shift_min:.4f} min")
+        logger.debug(f"Calibració aplicada: RF={new_rf:.0f}, shift_direct={shift_min:.4f} min")
 
         QMessageBox.information(
             self, "Calibració Aplicada",
@@ -2739,7 +2742,7 @@ i determina el time shift necessari per a la quantificació.</p>
                     break
 
             if not history_file:
-                print(f"[WARNING] No s'ha trobat fitxer d'històric")
+                logger.warning("No s'ha trobat fitxer d'històric")
                 return
 
             # Llegir i actualitzar
@@ -2761,10 +2764,10 @@ i determina el time shift necessari per a la quantificació.</p>
             if updated:
                 with open(history_file, 'w', encoding='utf-8') as f:
                     json.dump(history, f, indent=2, ensure_ascii=False)
-                print(f"[INFO] Outlier actualitzat per {seq_name}: {is_outlier}")
+                logger.info(f"Outlier actualitzat per {seq_name}: {is_outlier}")
 
         except Exception as e:
-            print(f"[WARNING] Error guardant outlier: {e}")
+            logger.warning(f"Error guardant outlier: {e}")
 
     def _use_historical_average(self):
         """Calibra usant la mitjana de les calibracions vàlides AMB CONDICIONS IDÈNTIQUES."""

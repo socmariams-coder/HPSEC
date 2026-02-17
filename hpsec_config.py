@@ -13,8 +13,11 @@ Versió: 1.0
 import os
 import json
 import hashlib
+import logging
 from pathlib import Path
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 # =============================================================================
 # CLASSIFICACIÓ DE SECCIONS PER IMPACTE
@@ -43,8 +46,8 @@ IMMEDIATE_SECTIONS = frozenset(["paths", "ui"])
 DEFAULT_CONFIG = {
     # --- PATHS ---
     "paths": {
-        "data_folder": "C:/Users/Lequia/Desktop/Dades3",  # Carpeta base amb les SEQs
-        "registry_folder": "C:/Users/Lequia/Desktop/Dades3/REGISTRY",  # Carpeta global JSONs (KHP_History, etc.)
+        "data_folder": "",  # Carpeta base amb les SEQs (configurat a hpsec_config.json)
+        "registry_folder": "",  # Carpeta global JSONs — derivat de data_folder/REGISTRY
     },
 
     # --- FRACCIONS TEMPORALS (min) ---
@@ -217,7 +220,7 @@ class ConfigManager:
                 config = self._merge_configs(DEFAULT_CONFIG, saved_config)
                 return self._migrate_config(config)
             except Exception as e:
-                print(f"Error carregant configuració: {e}")
+                logger.error(f"Error carregant configuració: {e}")
                 return DEFAULT_CONFIG.copy()
         return DEFAULT_CONFIG.copy()
 
@@ -258,7 +261,7 @@ class ConfigManager:
                 json.dump(self.config, f, indent=2, ensure_ascii=False)
             return True
         except Exception as e:
-            print(f"Error guardant configuració: {e}")
+            logger.error(f"Error guardant configuració: {e}")
             return False
 
     def reload(self):
@@ -365,7 +368,7 @@ class ConfigManager:
                 json.dump(self.config, f, indent=2, ensure_ascii=False)
             return True
         except Exception as e:
-            print(f"Error exportant: {e}")
+            logger.error(f"Error exportant: {e}")
             return False
 
     def import_config(self, filepath):
@@ -377,7 +380,7 @@ class ConfigManager:
             self.save()
             return True
         except Exception as e:
-            print(f"Error important: {e}")
+            logger.error(f"Error important: {e}")
             return False
 
 

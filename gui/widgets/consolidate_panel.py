@@ -30,11 +30,15 @@ from hpsec_consolidate import (
     load_bp_data_for_sample,
     detect_seq_type,
 )
+import logging
+
 from gui.widgets.styles import (
     PANEL_MARGINS, PANEL_SPACING,
     COLOR_SUCCESS, COLOR_WARNING, apply_panel_layout,
     create_empty_state_widget
 )
+
+logger = logging.getLogger(__name__)
 
 
 class ConsolidateWorker(QThread):
@@ -286,7 +290,7 @@ class ConsolidatePanel(QWidget):
                 return
 
         except Exception as e:
-            print(f"[WARNING] Error comprovant consolidació existent: {e}")
+            logger.warning(f"Error comprovant consolidació existent: {e}")
 
         # Si no hi ha consolidació prèvia, mostrar estat normal
         self._update_current_seq_info()
