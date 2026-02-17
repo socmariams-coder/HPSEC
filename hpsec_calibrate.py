@@ -3397,57 +3397,6 @@ def mark_calibration_as_outlier(seq_path, seq_name, mode="COLUMN", is_outlier=Tr
 
 
 # =============================================================================
-# HELPERS PER FALLBACK HISTORY
-# =============================================================================
-# NOTA: La cerca de siblings s'ha eliminat perquè ara els packs
-# s'importen junts amb import_sequence_pack(). Si hi ha siblings
-# (282_SEQ, 282B_SEQ), es fusionen a la importació.
-
-def _try_history_calibration(seq_path, method):
-    """
-    Busca calibracio a KHP_History.json.
-
-    Returns:
-        Dict amb rf, khp_conc i history_entry o None
-    """
-    history = load_khp_history(seq_path)
-    if not history:
-        return None
-
-    # Filtrar per metode
-    method_history = [h for h in history if h.get("mode", "").upper() == method.upper()]
-    if not method_history:
-        method_history = history  # Usar qualsevol si no hi ha del metode
-
-    if not method_history:
-        return None
-
-    # Usar la calibracio mes recent
-    latest = method_history[-1]
-    khp_conc = latest.get("conc_ppm", 0)
-    khp_area = latest.get("area", 0)
-
-    # Obtenir RF (nou format) o calcular des de factor/area (format antic)
-    rf = latest.get("rf", 0)
-    if rf == 0 and khp_conc > 0 and khp_area > 0:
-        rf = khp_area / khp_conc
-    elif rf == 0:
-        # Fallback: intentar convertir des de factor antic
-        old_factor = latest.get("factor", 0)
-        if old_factor > 0:
-            rf = 1.0 / old_factor  # factor = conc/area, RF = area/conc = 1/factor
-
-    if rf > 0:
-        return {
-            "rf": rf,
-            "rf_direct": latest.get("rf_direct", rf),
-            "rf_uib": latest.get("rf_uib", 0),
-            "khp_conc": khp_conc,
-            "history_entry": latest,
-        }
-
-    return None
-
 
 # =============================================================================
 # GENERACIÓ D'AVISOS ESTRUCTURATS PER CALIBRACIÓ
@@ -3645,12 +3594,12 @@ def _generate_calibration_warnings(result: dict, method: str = "COLUMN") -> list
                         condition_key=condition_key,
                     ))
 
-    # 3. KHP source = GLOBAL (sense KHP local ni historial)
-    if result.get("khp_source") == "GLOBAL":
+    # 3. Sense KHP local — shift no verificable
+    if result.get("khp_source") == "SENSE_KHP":
         warnings.append(create_warning(
             code="CAL_GLOBAL_ONLY",
             stage="calibrate",
-            details={"msg": "Sense KHP - shift no disponible"},
+            details={"msg": "Sense KHP local — shift no verificable"},
         ))
 
     # 4. Replicas amb outliers
@@ -3698,26 +3647,31 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
     Returns:
         Dict amb:
         - success: bool
-        - mode: "DUAL", "DIRECT", "UIB" (quins senyals s'han calibrat)
-        # Calibració DOC Direct:
-        - rf_direct: Response Factor Direct (àrea/conc)
+        - mode: "DUAL", "DIRECT", "UIB" (quins senyals s'han analitzat)
+        # Verificació KHP DOC Direct (RF per QC, NO per quantificació):
+        - rf_direct: Response Factor Direct local (per comparar amb recta global)
         - shift_direct: Shift temporal Direct vs 254nm (min)
         - khp_area_direct: Àrea KHP amb DOC Direct
         - khp_data_direct: Dades KHP completes per Direct
-        # Calibració DOC UIB:
-        - rf_uib: Response Factor UIB (àrea/conc)
+        # Verificació KHP DOC UIB:
+        - rf_uib: Response Factor UIB local (per QC)
         - shift_uib: Shift temporal UIB (min)
         - khp_area_uib: Àrea KHP amb DOC UIB
         - khp_data_uib: Dades KHP completes per UIB
-        # Calibració 254nm:
+        # Verificació 254nm:
         - rf_254: Response Factor 254nm
         # Principal (usa Direct si disponible, sino UIB):
-        - rf: Response Factor principal (Direct > UIB)
+        - rf: Response Factor principal local (per QC, Direct > UIB)
         - khp_area: Àrea principal
         - khp_conc: Concentració del KHP (ppm)
         - khp_data: Dades KHP principals
-        - khp_source: "LOCAL"
+        - khp_source: "LOCAL" (amb KHP) o "SENSE_KHP" (sense KHP)
+        - qc_results: Validació KHP vs calibració global
         - errors: Llista d'errors
+
+    NOTA: La quantificació de mostres usa SEMPRE la calibració global
+    (rf_mass_cal + intercept de Calibration_Reference.json).
+    El RF local calculat aquí serveix NOMÉS per verificació QC.
     """
     config = {**DEFAULT_CONFIG, **(config or {})}
 
@@ -3768,25 +3722,13 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
         khp_names = [name for name in samples.keys() if "KHP" in name.upper()]
 
     if not khp_names:
-        # Sense KHP local: provar historial per obtenir shift
-        # NOTA: Els siblings ja estan fusionats a la importació (pack), no cal buscar-los
-        report_progress(15, "No KHP, buscant historial per shift...")
-        history_result = _try_history_calibration(seq_path, method)
-        if history_result:
-            result["rf"] = history_result.get("rf", 0)
-            result["rf_direct"] = history_result.get("rf_direct", 0)
-            result["rf_uib"] = history_result.get("rf_uib", 0)
-            result["khp_conc"] = history_result.get("khp_conc", 0)
-            result["khp_source"] = "HISTORY"
-            result["success"] = True
-            result["warnings"].append("Usant shift d'historial (sense KHP local)")
-            return result
-
-        # Sense KHP ni historial: usar calibració global (rf_mass_cal)
-        # Això és acceptable - la quantificació usa rf_mass_cal global
-        result["khp_source"] = "GLOBAL"
+        # Sense KHP local: shift temporal no verificable.
+        # La quantificació usa sempre la calibració global (rf_mass_cal).
+        # El KHP local serveix per: (1) verificar shift DOC-DAD, (2) QC vs recta global.
+        report_progress(15, "Sense KHP local — shift no verificable")
+        result["khp_source"] = "SENSE_KHP"
         result["success"] = True
-        result["warnings"].append("Sense KHP - usant calibració global (sense shift)")
+        result["warnings"].append("Sense KHP local — shift no verificable, quantificació amb calibració global (shift=0)")
         return result
 
     report_progress(20, f"Analitzant {len(khp_names)} KHP...")
@@ -3844,6 +3786,24 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
                 if khp_result_uib:
                     khp_result_uib["doc_source"] = "uib"
                     khp_data_uib_list.append(khp_result_uib)
+
+    # Warnings per concentració i DAD 254
+    for khp_result in khp_data_direct_list + khp_data_uib_list:
+        kname = khp_result.get('name', 'KHP')
+        if khp_result.get('conc_ppm', 0) == 0:
+            w = f"⚠️ {kname}: concentració no detectada al nom — RF no calculable"
+            if w not in result["warnings"]:
+                result["warnings"].append(w)
+        if khp_result.get('has_dad') and khp_result.get('a254_area', 0) == 0:
+            w = f"⚠️ {kname}: DAD disponible però sense pic 254nm vàlid — 254 no registrat a històric"
+            if w not in result["warnings"]:
+                result["warnings"].append(w)
+
+    # Propagar uib_sensitivity i doc_mode als resultats KHP
+    uib_sensitivity = imported_data.get("uib_sensitivity")
+    for entry in khp_data_direct_list + khp_data_uib_list:
+        if uib_sensitivity is not None:
+            entry['uib_sensitivity'] = uib_sensitivity
 
     has_direct = len(khp_data_direct_list) > 0
     has_uib = len(khp_data_uib_list) > 0
@@ -4241,7 +4201,7 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
             result["rf_uib"] = primary.get('rf', 0)
             result["rf_mass_uib"] = primary.get('rf_mass', 0)
 
-    report_progress(80, "Calculant RF...")
+    report_progress(80, "Verificant KHP vs calibració global...")
 
     # Usar Direct com a principal, sino UIB
     if calibrations_direct:
@@ -4332,8 +4292,28 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
 
     report_progress(90, "Registrant calibracions...")
 
-    # Registrar TOTES les calibracions (una per cada condició)
+    # Enriquir calibracions Direct amb dades UIB (perquè register_calibration les guardi)
     calibrations_list = result.get("calibrations", [])
+    calibrations_uib_reg = result.get("calibrations_uib", [])
+    if calibrations_uib_reg and calibrations_list:
+        uib_primary = calibrations_uib_reg[0]
+        for cal_data in calibrations_list:
+            cal_data['area_uib'] = uib_primary.get('area', 0)
+            cal_data['area_total_uib'] = uib_primary.get('area_total', 0)
+            cal_data['rf_uib'] = uib_primary.get('rf_doc', uib_primary.get('rf', 0))
+            cal_data['rf_mass_uib'] = uib_primary.get('rf_mass_doc', uib_primary.get('rf_mass', 0))
+            cal_data['t_retention_uib'] = uib_primary.get('t_retention', 0)
+            cal_data['t_doc_max_uib'] = uib_primary.get('t_doc_max', uib_primary.get('t_retention', 0))
+            cal_data['fwhm_uib'] = uib_primary.get('fwhm_doc', 0)
+            cal_data['snr_uib'] = uib_primary.get('snr', 0)
+            cal_data['symmetry_uib'] = uib_primary.get('symmetry', 1.0)
+            cal_data['concentration_ratio_uib'] = uib_primary.get('concentration_ratio', 1.0)
+            cal_data['shift_sec_uib'] = uib_primary.get('shift_sec', 0)
+            cal_data['shift_min_uib'] = uib_primary.get('shift_min', 0)
+            cal_data['doc_mode'] = result.get('mode', 'DUAL')
+            cal_data['bigaussian_uib'] = uib_primary.get('bigaussian_doc')
+
+    # Registrar TOTES les calibracions (una per cada condició)
     if calibrations_list:
         registered = []
         for cal_data in calibrations_list:

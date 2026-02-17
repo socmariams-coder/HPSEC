@@ -60,7 +60,7 @@ class SequenceState:
 
     # Info addicional
     has_khp: bool = False
-    khp_source: str = ""  # "SEQ", "SIBLING", "HISTORY"
+    khp_source: str = ""  # "LOCAL", "SIBLING", "SENSE_KHP", "ALTERNATIU", "MITJANA HISTÒRICA"
     data_mode: str = ""   # "DUAL", "UIB", "DIRECT"
     method: str = ""      # "COLUMN", "BP"
     warnings: List[str] = field(default_factory=list)
@@ -324,8 +324,8 @@ class SequenceState:
         """
         Estat de la fase Calibrar per determinar color.
         - ok: KHP local (SEQ/DIRECT/UIB/DUAL)
-        - warning: KHP sibling (acceptable)
-        - error: Només històric o cap KHP
+        - warning: KHP sibling o sense KHP (shift no verificable, però quantificació OK)
+        - error: Error real de calibració
         Returns: 'ok', 'warning', 'error', 'pending'
         """
         if not self.calibrate_status.completed:
@@ -337,10 +337,13 @@ class SequenceState:
         # KHP local = verd
         if khp_upper in ('LOCAL', 'SEQ', 'DIRECT', 'UIB', 'DUAL'):
             return 'ok'
-        # KHP sibling = taronja (acceptable)
-        if khp_upper.startswith('SIBLING'):
+        # KHP sibling o sense KHP = taronja (shift no verificable, quantificació OK)
+        if khp_upper.startswith('SIBLING') or khp_upper == 'SENSE_KHP':
             return 'warning'
-        # Històric o cap = vermell
+        # Alternatiu o mitjana històrica = taronja
+        if khp_upper.startswith('ALTERNATIU') or khp_upper.startswith('MITJANA'):
+            return 'warning'
+        # Cas desconegut = vermell
         return 'error'
 
     @property

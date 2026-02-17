@@ -1297,9 +1297,15 @@ class AnalyzePanel(QWidget):
             self._show_detail(sample_name)
 
     def _show_detail(self, sample_name):
-        """Mostra el diàleg de detall."""
+        """Mostra el diàleg de detall (no-modal per evitar pèrdua de finestra)."""
         if sample_name not in self.samples_grouped:
             return
+        # Tancar diàleg anterior si existeix
+        if hasattr(self, '_detail_dialog') and self._detail_dialog is not None:
+            try:
+                self._detail_dialog.close()
+            except RuntimeError:
+                pass
         method = "COLUMN"
         if self.main_window.processed_data:
             method = self.main_window.processed_data.get("method", "COLUMN")
@@ -1309,8 +1315,15 @@ class AnalyzePanel(QWidget):
             method,
             parent=self
         )
-        dialog.exec()
-        # Actualitzar taula si hi ha hagut reparació
+        self._detail_dialog = dialog  # Mantenir referència
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        dialog.finished.connect(lambda: self._on_detail_closed(sample_name))
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def _on_detail_closed(self, sample_name):
+        """Actualitza taula després de tancar el diàleg de detall."""
         row = self._sample_row_map.get(sample_name)
         if row is not None:
             sample_data = self.samples_grouped[sample_name]
@@ -1318,6 +1331,7 @@ class AnalyzePanel(QWidget):
                 self._update_quantification(sample_name)
                 self._update_doc_columns(row, sample_name)
                 self._update_estat_column(row, sample_name)
+        self._detail_dialog = None
 
     # ------------------------------------------------------------------
     # Report PDF generation
@@ -1366,6 +1380,8 @@ class AnalyzePanel(QWidget):
                 )
 
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             self.report_btn.setEnabled(True)
             self.report_btn.setText("Generar Report PDF")
             QMessageBox.critical(

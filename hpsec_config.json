@@ -1,6 +1,6 @@
 {
   "paths": {
-    "data_folder": "C:/Users/Lequia/OneDrive - Universitat de Girona/UdG365_HPLC-DAD - General/Dades",
+    "data_folder": "C:/Users/Lequia/Desktop/Dades3",
     "registry_folder": "C:/Users/Lequia/Desktop/Dades3/REGISTRY",
     "maintenance_excel": "C:/Users/Lequia/Desktop/Manteniment/Registre manteniment HPLC-DAD-TOC.xlsx"
   },
@@ -72,13 +72,6 @@
     "doc_correlation_warning": 0.95
   },
   "wavelengths": {
-    "selected": [
-      220,
-      254,
-      272,
-      290,
-      362
-    ],
     "available": [
       210,
       220,
@@ -94,6 +87,13 @@
       350,
       362,
       400
+    ],
+    "selected": [
+      220,
+      254,
+      272,
+      290,
+      362
     ],
     "primary": 254
   },
@@ -118,7 +118,6 @@
     "timeout_threshold_sec": 60,
     "pre_zone_min": 0.5,
     "post_zone_min": 1.0,
-    "batman_max_sep": 0.5,
     "repair_factor": 0.85
   },
   "calibration": {
@@ -201,38 +200,38 @@
   },
   "timeout_zones": {
     "RUN_START": {
-      "start": 0,
-      "end": 1,
+      "start": 0.0,
+      "end": 1.0,
       "severity": "INFO"
     },
     "BioP": {
-      "start": 0,
-      "end": 18,
+      "start": 0.0,
+      "end": 18.0,
       "severity": "WARNING"
     },
     "HS": {
-      "start": 18,
-      "end": 23,
+      "start": 18.0,
+      "end": 23.0,
       "severity": "CRITICAL"
     },
     "BB": {
-      "start": 23,
-      "end": 26,
+      "start": 23.0,
+      "end": 26.0,
       "severity": "WARNING"
     },
     "SB": {
-      "start": 26,
-      "end": 32,
+      "start": 26.0,
+      "end": 32.0,
       "severity": "INFO"
     },
     "LMW": {
-      "start": 32,
-      "end": 70,
+      "start": 32.0,
+      "end": 70.0,
       "severity": "INFO"
     },
     "POST_RUN": {
-      "start": 70,
-      "end": 999,
+      "start": 70.0,
+      "end": 999.0,
       "severity": "OK"
     }
   },

@@ -148,35 +148,57 @@ def is_khp(name):
 
 def extract_khp_conc(filename):
     """
-    Extreu la concentració de KHP del nom del fitxer.
+    Extreu la concentració de KHP del nom del fitxer (en ppm C).
 
     Patrons suportats:
     - KHP2, KHP_2, KHP-2 -> 2.0 ppm
-    - KHP2.5 -> 2.5 ppm
-    - KHP 10 -> 10.0 ppm
+    - KHP2.5, KHP 0.25 -> 2.5 / 0.25 ppm
+    - KHP 1 ppm -> 1.0 ppm
+    - KHP 500 ppb -> 0.5 ppm
+    - KHP 100 (sense unitat, >=100) -> 0.1 ppm (assumeix ppb)
+
+    Exclou noms especials: BUFFER, MQ, FI, MIX, BLANK, NaOH, mM.
 
     Args:
         filename: Nom del fitxer o mostra
 
     Returns:
-        float: Concentració en ppm, o 0.0 si no trobada
+        float: Concentració en ppm C, o 0.0 si no trobada/exclosa
     """
-    name = os.path.basename(str(filename)).upper()
+    name = str(filename).strip()
+    name_upper = name.upper()
 
-    patterns = [
-        r"KHP[_\-]?(\d+(?:\.\d+)?)",  # KHP2, KHP_2, KHP-2, KHP2.5
-        r"KHP\s+(\d+(?:\.\d+)?)",      # KHP 2
-    ]
+    # Excloure noms especials (no són estàndards de concentració)
+    _KHP_EXCLUDE = (r'\bBUFFER\b', r'\bMQ\b', r'\bFI\b', r'\bMIX\b',
+                    r'\bBLANC\b', r'\bBLANK\b', r'\bNaOH\b')
+    for pat in _KHP_EXCLUDE:
+        if re.search(pat, name_upper):
+            return 0.0
 
-    for pattern in patterns:
-        match = re.search(pattern, name)
-        if match:
-            try:
-                return float(match.group(1))
-            except ValueError:
-                continue
+    # "KHP 20mM" → concentració molar, no ppm C directe
+    if "MM" in name_upper:
+        return 0.0
 
-    return 0.0
+    # Regex unificat: "KHP 1", "KHP1", "KHP 1 ppm", "KHP 500 ppb", "KHP 0.25"
+    match = re.search(
+        r'KHP[_\-\s]*(\d+\.?\d*)\s*(ppm|ppb)?',
+        name, re.IGNORECASE
+    )
+    if not match:
+        return 0.0
+
+    value = float(match.group(1))
+    unit = (match.group(2) or "").upper()
+
+    if unit == "PPB":
+        value /= 1000.0  # ppb → ppm
+
+    # Sense unitat explícita i valor >= 100: assumir ppb
+    # Ex: "KHP 250" en context DOC = 250 ppb = 0.25 ppm
+    if not unit and value >= 100:
+        value /= 1000.0
+
+    return value
 
 
 def is_control_injection(sample_name, config=None):

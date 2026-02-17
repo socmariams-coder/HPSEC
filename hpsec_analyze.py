@@ -2208,7 +2208,7 @@ def _flatten_samples_for_processing(imported_data, data_mode="DUAL"):
                         flat_sample["baseline"] = uib["baseline"]
 
             # Extreure dades DAD — filtrar a λ seleccionades des del principi
-            dad = rep_data.get("dad", {})
+            dad = rep_data.get("dad") or {}
             if dad and "df" in dad:
                 df_dad_raw = dad["df"]
                 if hasattr(df_dad_raw, 'columns') and len(df_dad_raw.columns) > 8:

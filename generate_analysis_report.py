@@ -326,13 +326,13 @@ def _draw_page1_summary(pdf, data, seq_name):
 
     samples_grouped = data.get("samples_grouped", {})
     for sg_name, sg_data in samples_grouped.items():
-        selected = sg_data.get("selected", {})
+        selected = sg_data.get("selected") or {}
         doc_sel = selected.get("doc", "1")
         if doc_sel == "none":
             continue  # Saltar mostres sense selecció
-        rep_data = sg_data.get("replicas", {}).get(doc_sel, {})
+        rep_data = (sg_data.get("replicas") or {}).get(doc_sel, {})
 
-        snr_info = rep_data.get("snr_info", {})
+        snr_info = rep_data.get("snr_info") or {}
         snr_d = snr_info.get("snr_direct")
         if snr_d and snr_d > 0:
             snr_directs.append(snr_d)
@@ -343,8 +343,8 @@ def _draw_page1_summary(pdf, data, seq_name):
         dad_sel = selected.get("dad", "1")
         if dad_sel == "none":
             continue
-        dad_data = sg_data.get("replicas", {}).get(dad_sel, {})
-        snr_dad = dad_data.get("snr_info_dad", {}).get("A254", {}).get("snr")
+        dad_data = (sg_data.get("replicas") or {}).get(dad_sel, {})
+        snr_dad = (dad_data.get("snr_info_dad") or {}).get("A254", {}).get("snr")
         if snr_dad and snr_dad > 0:
             snr_254s.append(snr_dad)
 
@@ -378,7 +378,7 @@ def _draw_page1_summary(pdf, data, seq_name):
     from hpsec_warnings import ANOMALY_CATALOG as _AC
     anomaly_counts = {}  # code -> (count, label, severity_str)
     for sg_name, sg_data in samples_grouped.items():
-        for rep_key, rep_data in sg_data.get("replicas", {}).items():
+        for rep_key, rep_data in (sg_data.get("replicas") or {}).items():
             for anom in rep_data.get("anomalies", []):
                 if isinstance(anom, dict):
                     code = anom.get("code", "?")
@@ -446,13 +446,13 @@ def _draw_results_pages(pdf, data, page_start=2):
     table_rows = []
     for sample_name in sorted(samples_grouped.keys()):
         sg = samples_grouped[sample_name]
-        selected = sg.get("selected", {})
-        quant = sg.get("quantification", {})
-        comparison = sg.get("comparison", {})
+        selected = sg.get("selected") or {}
+        quant = sg.get("quantification") or {}
+        comparison = sg.get("comparison") or {}
         doc_sel = selected.get("doc", "1")
         dad_sel = selected.get("dad", "1")
-        doc_rep = sg.get("replicas", {}).get(doc_sel, {})
-        dad_rep = sg.get("replicas", {}).get(dad_sel, {})
+        doc_rep = (sg.get("replicas") or {}).get(doc_sel, {})
+        dad_rep = (sg.get("replicas") or {}).get(dad_sel, {})
         sample_valid = sg.get("sample_valid", True)
 
         # DOC data
@@ -572,9 +572,9 @@ def _draw_fraction_table(ax, sg, is_bp, fracs, wl_cols):
     """Dibuixa taula de fraccions a un axes (matplotlib table)."""
     ax.axis('off')
 
-    selected = sg.get("selected", {})
+    selected = sg.get("selected") or {}
     rep_sel = selected.get("doc", "1")
-    rep_data = sg.get("replicas", {}).get(rep_sel, {})
+    rep_data = (sg.get("replicas") or {}).get(rep_sel, {})
 
     sel_areas = rep_data.get("areas") or {}
     areas_uib = rep_data.get("areas_uib") or {}
@@ -672,11 +672,11 @@ def _draw_chromatogram_pages(pdf, data, page_start):
         if not replicas:
             continue
 
-        selected = sg.get("selected", {})
-        comparison = sg.get("comparison", {})
-        doc_comp = comparison.get("doc", {}) if comparison else {}
-        dad_comp = comparison.get("dad", {}) if comparison else {}
-        quant = sg.get("quantification", {})
+        selected = sg.get("selected") or {}
+        comparison = sg.get("comparison") or {}
+        doc_comp = comparison.get("doc") or {}
+        dad_comp = comparison.get("dad") or {}
+        quant = sg.get("quantification") or {}
 
         rep_keys = sorted(replicas.keys())
         r1 = replicas.get(rep_keys[0], {})
@@ -924,12 +924,12 @@ def _draw_anomalies_page(pdf, data, page_num):
         sg = samples_grouped[sample_name]
         sample_valid = sg.get("sample_valid", True)
 
-        for rep_key, rep_data in sg.get("replicas", {}).items():
+        from hpsec_warnings import ANOMALY_CATALOG as _AC
+        for rep_key, rep_data in (sg.get("replicas") or {}).items():
             anomalies = rep_data.get("anomalies", [])
-            timeout_info = rep_data.get("timeout_info", {})
+            timeout_info = rep_data.get("timeout_info") or {}
 
             for anom in anomalies:
-                from hpsec_warnings import ANOMALY_CATALOG as _AC
                 if isinstance(anom, dict):
                     anom_code = anom.get("code", "")
                     anom_repaired = anom.get("repaired", False)
@@ -975,10 +975,10 @@ def _draw_anomalies_page(pdf, data, page_num):
 
         # Comparison warnings (replica correlation/area diff)
         comparison = sg.get("comparison") or {}
-        rep_keys_list = sorted(sg.get("replicas", {}).keys())
+        rep_keys_list = sorted((sg.get("replicas") or {}).keys())
         rep_label = f"R{rep_keys_list[0]} vs R{rep_keys_list[1]}" if len(rep_keys_list) >= 2 else "-"
         for signal_key in ("doc", "dad"):
-            comp_data = comparison.get(signal_key, {})
+            comp_data = comparison.get(signal_key) or {}
             for warn in comp_data.get("warnings", []):
                 if isinstance(warn, dict):
                     w_code = warn.get("code", "")
@@ -1015,8 +1015,8 @@ def _draw_anomalies_page(pdf, data, page_num):
 
         # Mostra no vàlida
         if not sample_valid:
-            reason = (sg.get("recommendation", {})
-                      .get("doc", {}).get("reason", ""))
+            reason = ((sg.get("recommendation") or {})
+                      .get("doc") or {}).get("reason", "")
             anomaly_rows.append([
                 sample_name[:18], "-", "MOSTRA NO VÀLIDA", "CRÍTIC",
                 reason[:30]

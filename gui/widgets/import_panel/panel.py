@@ -839,9 +839,18 @@ class ImportPanel(QWidget):
 
         return review_signals, missing_signals, needs_review, dad_pts
 
+    # Símbols semàfor: forma diferent per cada estat (accessibilitat daltonisme)
+    _SEM_SHAPES = {
+        "#27AE60": "\u2714",  # ✔ tick verd = OK
+        "#F39C12": "\u25B2",  # ▲ triangle groc = revisar
+        "#E74C3C": "\u2716",  # ✖ creu vermella = falta
+        "#BDC3C7": "\u25CB",  # ○ cercle buit gris = sense dades
+    }
+
     def _create_semaphore_item(self, color, tooltip=""):
-        """Crea un item semàfor (cercle de color) per a la taula."""
-        item = QTableWidgetItem("\u25CF")
+        """Crea un item semàfor amb forma + color per a la taula."""
+        symbol = self._SEM_SHAPES.get(color, "\u25CF")
+        item = QTableWidgetItem(symbol)
         item.setTextAlignment(Qt.AlignCenter)
         item.setFlags(item.flags() & ~Qt.ItemIsEditable)
         item.setForeground(QBrush(QColor(color)))
@@ -1053,18 +1062,18 @@ class ImportPanel(QWidget):
     def _setup_table_columns(self):
         """Configura les columnes segons el mode de dades."""
         if self._data_mode == "DIRECT":
-            # Sense UIB: Inj, Mostra, Tipus, Rep, Vol, Direct, Fila, DAD, Fitxer DAD, DOC, DAD
+            # Sense UIB
             self.samples_table.setColumnCount(11)
-            headers = ["Inj", "Mostra", "Tipus", "Rep", "Inj Vol", "Direct", "Fila", "DAD", "Fitxer DAD", "DOC", "DAD"]
+            headers = ["Inj", "Mostra", "Tipus", "Rep", "Vol (µL)", "Pts DOC", "Fila TOC", "Pts DAD", "Fitxer DAD", "✔DOC", "✔DAD"]
             self.COL_DAD_PTS_ACTUAL = 7
             self.COL_DAD_FILE_ACTUAL = 8
             self.COL_SEM_DOC = 9
             self.COL_SEM_UIB = None  # No UIB en mode DIRECT
             self.COL_SEM_DAD = 10
         else:
-            # DUAL o UIB: Inj, Mostra, Tipus, Rep, Vol, Direct, Fila, UIB, Fitxer UIB, DAD, Fitxer DAD, DOC, UIB, DAD
+            # DUAL o UIB
             self.samples_table.setColumnCount(14)
-            headers = ["Inj", "Mostra", "Tipus", "Rep", "Inj Vol", "Direct", "Fila", "UIB", "Fitxer UIB", "DAD", "Fitxer DAD", "DOC", "UIB", "DAD"]
+            headers = ["Inj", "Mostra", "Tipus", "Rep", "Vol (µL)", "Pts DOC", "Fila TOC", "Pts UIB", "Fitxer UIB", "Pts DAD", "Fitxer DAD", "✔DOC", "✔UIB", "✔DAD"]
             self.COL_UIB_PTS_ACTUAL = 7
             self.COL_UIB_FILE_ACTUAL = 8
             self.COL_DAD_PTS_ACTUAL = 9
