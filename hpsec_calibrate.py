@@ -687,8 +687,8 @@ def fit_calibration_from_history(calibrations, mode="COLUMN", signal="direct",
 
     Args:
         calibrations: llista d'entrades KHP_History (dicts amb area, conc_ppm, volume_uL, etc.)
-        mode: "COLUMN" o "BP"
-        signal: "direct" o "uib"
+        mode: "COLUMN", "BP", o "ALL" (unificada COL+BP)
+        signal: "direct", "uib", o "254"
         model: "intercept" (lliure) o "origin" (intercept=0)
 
     Returns:
@@ -699,7 +699,8 @@ def fit_calibration_from_history(calibrations, mode="COLUMN", signal="direct",
     # Filtrar per mode, descartar outliers i no vàlids
     filtered = []
     for cal in calibrations:
-        if cal.get('mode', '').upper() != mode.upper():
+        cal_mode = cal.get('mode', '').upper()
+        if mode.upper() != "ALL" and cal_mode != mode.upper():
             continue
         if cal.get('is_outlier', False):
             continue
@@ -714,6 +715,8 @@ def fit_calibration_from_history(calibrations, mode="COLUMN", signal="direct",
         # Àrea segons senyal
         if signal.lower() == 'uib':
             area = cal.get('area_u', 0)
+        elif signal.lower() == '254':
+            area = cal.get('area_254', 0) or cal.get('a254_area', 0) or 0
         else:
             area = cal.get('area', 0)
 
@@ -724,6 +727,7 @@ def fit_calibration_from_history(calibrations, mode="COLUMN", signal="direct",
         filtered.append({
             'seq_name': cal.get('seq_name', ''),
             'date': cal.get('date', ''),
+            'mode': cal_mode,
             'conc_ppm': conc,
             'volume_uL': vol,
             'ug_doc': ug_doc,
@@ -1603,6 +1607,59 @@ def validate_khp_quality(khp_data, all_peaks, timeout_info, anomaly_info=None, s
             )
             quality_score += 15
 
+    # 7b. Bigaussian shape quality (R² > 0.98 requerit)
+    bigaussian_doc = khp_data.get('bigaussian_doc')
+    bigaussian_254 = khp_data.get('bigaussian_254')
+
+    if bigaussian_doc and bigaussian_doc.get('status') not in ('ERROR', None):
+        r2_doc = bigaussian_doc.get('r2', 0)
+        if r2_doc < 0.95:
+            issues.append(f"PEAK_SHAPE_POOR: bigaussian DOC R²={r2_doc:.3f} < 0.95")
+            quality_score += 40
+        elif r2_doc < 0.98:
+            warnings.append(f"PEAK_SHAPE_WARN: bigaussian DOC R²={r2_doc:.3f} < 0.98")
+            quality_score += 15
+
+    if bigaussian_254 and bigaussian_254.get('status') not in ('ERROR', None):
+        r2_254 = bigaussian_254.get('r2', 0)
+        if r2_254 < 0.95:
+            issues.append(f"PEAK_SHAPE_POOR_254: bigaussian 254nm R²={r2_254:.3f} < 0.95")
+            quality_score += 30
+        elif r2_254 < 0.98:
+            warnings.append(f"PEAK_SHAPE_WARN_254: bigaussian 254nm R²={r2_254:.3f} < 0.98")
+            quality_score += 10
+
+    # 7c. t_retention anomal (checks basats en t_max_254 o t_max_DOC)
+    t_retention = khp_data.get('t_retention', 0)
+    t_dad_max = khp_data.get('t_dad_max', 0)
+    t_ref = t_dad_max if t_dad_max and t_dad_max > 0 else t_retention
+
+    if t_ref > 0:
+        if is_bp_mode:
+            if t_ref > 3.5:
+                issues.append(f"T_RETENTION_ANOMAL: t={t_ref:.2f} min (BP esperat <3.5)")
+                quality_score += 50
+        else:
+            if t_ref < 18 or t_ref > 25:
+                issues.append(f"T_RETENTION_ANOMAL: t={t_ref:.2f} min (COLUMN esperat 18-25)")
+                quality_score += 50
+
+    # 7d. t_retention mismatch DOC vs 254
+    if t_retention > 0 and t_dad_max and t_dad_max > 0:
+        dt = abs(t_retention - t_dad_max)
+        if dt > 2.0:
+            issues.append(f"T_MISMATCH: |DOC({t_retention:.2f})-254({t_dad_max:.2f})|={dt:.2f} min >2")
+            quality_score += 60
+        elif dt > 1.0:
+            warnings.append(f"T_MISMATCH_WARN: |DOC({t_retention:.2f})-254({t_dad_max:.2f})|={dt:.2f} min >1")
+            quality_score += 20
+
+    # 7e. NO_DAD_254_REFERENCE
+    has_dad = khp_data.get('a254_area', 0) > 0 or (t_dad_max and t_dad_max > 0)
+    if not has_dad:
+        warnings.append("NO_DAD_254: sense senyal 254nm per verificar alineació")
+        quality_score += 15
+
     # 8. Comparació històrica (si tenim seq_path)
     # Filtrar per concentració i volum per comparar "pomes amb pomes"
     historical_comparison = None
@@ -2342,21 +2399,132 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
     # Detectar si és BP
     t_max_chromato = float(np.max(t_doc))
     is_bp_chromato = (method == "BP") or t_max_chromato < 20
+    mode = "BP" if is_bp_chromato else "COLUMN"
 
-    # Detectar pics
+    # =========================================================================
+    # STEP 0: Integrar DAD 254nm PRIMER (referència temporal)
+    # El 254nm defineix la posició del pic KHP. El DOC s'alinea després.
+    # =========================================================================
+    has_dad = df_dad is not None and not df_dad.empty
+    t_dad = None
+    dad_254 = None
+    t_max_254 = None  # Referència temporal del pic KHP
+    dad_peak_info = None
+    a254_area = 0.0
+    a254_area_total = 0.0
+    cr_254 = np.nan
+    dad_quality_warnings = []
+
+    if has_dad and "time (min)" in df_dad.columns:
+        col_254 = None
+        for c in df_dad.columns:
+            if "254" in str(c):
+                col_254 = c
+                break
+
+        if col_254:
+            t_dad = pd.to_numeric(df_dad["time (min)"], errors="coerce").to_numpy()
+            dad_254 = pd.to_numeric(df_dad[col_254], errors="coerce").to_numpy()
+            dad_mask = np.isfinite(t_dad) & np.isfinite(dad_254)
+            t_dad, dad_254 = t_dad[dad_mask], dad_254[dad_mask]
+
+            if len(t_dad) > 10:
+                # Integrar 254nm amb derivades (find_peak_boundaries)
+                dad_peak_info = detect_main_peak(t_dad, dad_254, config["peak_min_prominence_pct"])
+
+                if dad_peak_info and dad_peak_info.get('valid'):
+                    t_max_254 = dad_peak_info.get('t_max', 0)
+                    dad_pk_idx = dad_peak_info.get('peak_idx', 0)
+                    dad_l_idx = dad_peak_info.get('left_idx', 0)
+                    dad_r_idx = dad_peak_info.get('right_idx', len(t_dad) - 1)
+
+                    # Buscar límits en all_peaks DAD
+                    dad_all_peaks = detect_all_peaks(t_dad, dad_254, config["peak_min_prominence_pct"])
+                    for pk in dad_all_peaks:
+                        if pk['idx'] == dad_pk_idx or abs(pk['t'] - t_max_254) < 0.1:
+                            dad_l_idx = pk['left_idx']
+                            dad_r_idx = pk['right_idx']
+                            break
+
+                    # Àrea 254nm
+                    if dad_r_idx > dad_l_idx:
+                        a254_area = float(trapezoid(dad_254[dad_l_idx:dad_r_idx+1],
+                                                    t_dad[dad_l_idx:dad_r_idx+1]))
+
+                    # Àrea total 254nm
+                    a254_area_total = float(trapezoid(np.maximum(dad_254, 0), t_dad))
+
+                    # Check 90%: àrea pic principal vs total
+                    if a254_area_total > 0 and a254_area > 0:
+                        cr_254 = a254_area / a254_area_total
+                        if cr_254 < 0.90:
+                            dad_quality_warnings.append(
+                                f"MULTI_PEAK_254: pic principal={cr_254:.0%} de l'àrea total 254nm")
+
+                    # t_ret check per 254
+                    if is_bp_chromato and t_max_254 > 3.5:
+                        dad_quality_warnings.append(
+                            f"T_RETENTION_254_ANOMAL: t_max={t_max_254:.2f} min (BP esperat <3.5)")
+                    elif not is_bp_chromato and (t_max_254 < 18 or t_max_254 > 25):
+                        dad_quality_warnings.append(
+                            f"T_RETENTION_254_ANOMAL: t_max={t_max_254:.2f} min (COLUMN esperat 18-25)")
+
+                    logger.debug("analizar_khp_data: 254nm integrat independent: t_max=%.2f, area=%.2f, CR=%.2f",
+                                 t_max_254, a254_area, cr_254 if not np.isnan(cr_254) else 0)
+                else:
+                    dad_quality_warnings.append("NO_254_PEAK: pic 254nm no detectat o invàlid")
+                    logger.warning("analizar_khp_data: pic DAD 254nm no vàlid")
+    else:
+        dad_quality_warnings.append("NO_DAD_254_REFERENCE: no hi ha senyal 254nm, no es pot verificar alineació")
+
+    # =========================================================================
+    # STEP 1: Integrar DOC alineat a t_max_254 (o independent si no hi ha 254)
+    # =========================================================================
     all_peaks = detect_all_peaks(t_doc, y_doc_net, config["peak_min_prominence_pct"])
-    peak_info = detect_main_peak(t_doc, y_doc_net, config["peak_min_prominence_pct"])
+
+    if t_max_254 is not None and len(all_peaks) > 0:
+        # Buscar pic DOC més proper a t_max_254
+        best_peak = min(all_peaks, key=lambda pk: abs(pk['t'] - t_max_254))
+        # Si el pic més proper és massa lluny (>2 min), usar detect_main_peak normal
+        if abs(best_peak['t'] - t_max_254) > 2.0:
+            dad_quality_warnings.append(
+                f"T_RETENTION_MISMATCH: pic DOC a {best_peak['t']:.2f} vs 254 a {t_max_254:.2f} min")
+            peak_info = detect_main_peak(t_doc, y_doc_net, config["peak_min_prominence_pct"])
+        else:
+            # Usar el pic DOC alineat al 254
+            peak_info = detect_main_peak(t_doc, y_doc_net, config["peak_min_prominence_pct"])
+            # Si detect_main_peak no ha trobat el pic alineat, forçar-lo
+            if peak_info.get('valid') and abs(peak_info['t_max'] - best_peak['t']) > 0.5:
+                # El pic principal DOC no coincideix amb el 254 → usar el proper al 254
+                peak_info['peak_idx'] = best_peak['idx']
+                peak_info['t_max'] = best_peak['t']
+                peak_info['left_idx'] = best_peak['left_idx']
+                peak_info['right_idx'] = best_peak['right_idx']
+                peak_info['area'] = float(trapezoid(
+                    y_doc_net[best_peak['left_idx']:best_peak['right_idx']+1],
+                    t_doc[best_peak['left_idx']:best_peak['right_idx']+1]))
+                dad_quality_warnings.append(
+                    f"DOC_ALIGNED_TO_254: pic DOC seleccionat per alineació amb 254nm (t={best_peak['t']:.2f})")
+    else:
+        peak_info = detect_main_peak(t_doc, y_doc_net, config["peak_min_prominence_pct"])
 
     if not peak_info.get('valid', False):
         return None
 
     t_retention = peak_info.get('t_max', 0)
 
+    # Shift temporal DOC vs 254
+    shift_khp = (t_max_254 - t_retention) if t_max_254 is not None else 0.0
+
+    # Check t_mismatch DOC vs 254
+    if t_max_254 is not None and abs(shift_khp) > 1.0:
+        dad_quality_warnings.append(
+            f"T_RETENTION_MISMATCH: |DOC({t_retention:.2f}) - 254({t_max_254:.2f})| = {abs(shift_khp):.2f} min")
+
     # Baseline stats
-    mode = "BP" if is_bp_chromato else "COLUMN"
     bl_stats = get_baseline_stats(t_doc, y_doc_net, mode=mode)
 
-    # Límits del pic
+    # Límits del pic DOC
     peak_idx = peak_info.get('peak_idx', int(np.argmax(y_doc_net)))
     left_idx = peak_info.get('left_idx', 0)
     right_idx = peak_info.get('right_idx', len(y_doc_net) - 1)
@@ -2439,63 +2607,8 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
         except Exception:
             batman_repaired = False
 
-    # DAD 254nm
-    shift_khp = 0.0
-    has_dad = df_dad is not None and not df_dad.empty
-    t_dad = None
-    dad_254 = None
-    t_dad_max = None
-    dad_peak_info = None
-    a254_area = 0.0
-    a254_doc_ratio = 0.0
-
-    if has_dad and "time (min)" in df_dad.columns:
-        # Buscar columna 254
-        col_254 = None
-        for c in df_dad.columns:
-            if "254" in str(c):
-                col_254 = c
-                break
-
-        if col_254:
-            logger.debug("analizar_khp_data: DAD 254nm trobat (col=%s, %d files)", col_254, len(df_dad))
-            t_dad = pd.to_numeric(df_dad["time (min)"], errors="coerce").to_numpy()
-            dad_254 = pd.to_numeric(df_dad[col_254], errors="coerce").to_numpy()
-
-            dad_mask = np.isfinite(t_dad) & np.isfinite(dad_254)
-            t_dad, dad_254 = t_dad[dad_mask], dad_254[dad_mask]
-
-            if len(t_dad) > 10:
-                t_doc_max = t_at_max(t_doc, y_doc_net)
-                t_dad_max = t_at_max(t_dad, dad_254)
-
-                if t_doc_max and t_dad_max:
-                    shift_khp = t_dad_max - t_doc_max
-
-                dad_peak_info = detect_main_peak(t_dad, dad_254, config["peak_min_prominence_pct"])
-
-                if dad_peak_info and dad_peak_info.get('valid'):
-                    t_start_doc = peak_info.get('t_start', t_doc[left_idx])
-                    t_end_doc = peak_info.get('t_end', t_doc[right_idx])
-                    t_start_dad = t_start_doc + shift_khp
-                    t_end_dad = t_end_doc + shift_khp
-
-                    dad_left_idx = int(np.searchsorted(t_dad, t_start_dad))
-                    dad_right_idx = int(np.searchsorted(t_dad, t_end_dad))
-                    dad_left_idx = max(0, min(dad_left_idx, len(t_dad) - 1))
-                    dad_right_idx = max(0, min(dad_right_idx, len(t_dad) - 1))
-
-                    if dad_right_idx > dad_left_idx:
-                        a254_area = float(trapezoid(dad_254[dad_left_idx:dad_right_idx+1],
-                                                   t_dad[dad_left_idx:dad_right_idx+1]))
-                        if a254_area > 0:
-                            a254_doc_ratio = peak_info['area'] / a254_area
-                            logger.debug("analizar_khp_data: a254_area=%.2f, ratio DOC/254=%.3f",
-                                         a254_area, a254_doc_ratio)
-                        else:
-                            logger.warning("analizar_khp_data: a254_area=0 malgrat pic DAD vàlid")
-                else:
-                    logger.warning("analizar_khp_data: pic DAD no vàlid o no detectat")
+    # DAD 254nm: ratio DOC/254
+    a254_doc_ratio = peak_info['area'] / a254_area if a254_area > 0 else 0.0
 
     # Àrees amb integració sobre baseline
     baseline_mean = bl_stats.get('mean', 0)
@@ -2539,6 +2652,22 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
     # Qualitat
     quality_score = 0
     quality_issues = []
+
+    # Afegir warnings de DAD 254nm (detectats a STEP 0)
+    for dw in dad_quality_warnings:
+        quality_issues.append(dw)
+        if "ANOMAL" in dw or "MISMATCH" in dw:
+            quality_score += 50
+        elif "MULTI_PEAK" in dw:
+            quality_score += 30
+        elif "NO_DAD_254" in dw or "NO_254_PEAK" in dw:
+            quality_score += 20
+
+    # Check DOC: àrea pic principal vs total (90% check)
+    if concentration_ratio < 0.90 and area_total > 0:
+        quality_issues.append(
+            f"MULTI_PEAK_DOC: pic principal={concentration_ratio:.0%} de l'àrea total DOC")
+        quality_score += 30
 
     # C11: Simetria i smoothness irrellevants per BP (senyal molt variable)
     if not is_bp_chromato:
@@ -2587,14 +2716,14 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
     # FWHM per DOC
     fwhm_doc = calculate_fwhm(t_doc, y_doc_net, peak_idx, left_idx, right_idx)
 
-    # FWHM per 254nm
+    # FWHM per 254nm (usa límits propis del 254, no transferits del DOC)
     fwhm_254 = np.nan
     if has_dad and dad_peak_info and dad_peak_info.get('valid'):
-        dad_peak_idx = dad_peak_info.get('peak_idx', 0)
-        dad_left_idx = dad_peak_info.get('left_idx', 0)
-        dad_right_idx = dad_peak_info.get('right_idx', len(t_dad) - 1 if t_dad is not None else 0)
+        _dad_pk = dad_peak_info.get('peak_idx', 0)
+        _dad_li = dad_peak_info.get('left_idx', 0)
+        _dad_ri = dad_peak_info.get('right_idx', len(t_dad) - 1 if t_dad is not None else 0)
         if t_dad is not None and dad_254 is not None:
-            fwhm_254 = calculate_fwhm(t_dad, dad_254, dad_peak_idx, dad_left_idx, dad_right_idx)
+            fwhm_254 = calculate_fwhm(t_dad, dad_254, _dad_pk, _dad_li, _dad_ri)
 
     # =========================================================================
     # BIGAUSSIAN FIT (C05) - Sempre guardar (INVALID = info QC valuosa)
@@ -2618,14 +2747,14 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
     except Exception as e:
         bigaussian_doc = {"r2": 0, "status": "ERROR", "error": str(e)}
 
-    # Bigaussian per 254nm
+    # Bigaussian per 254nm (usa límits propis del 254)
     try:
         if has_dad and dad_peak_info and dad_peak_info.get('valid'):
-            dad_peak_idx = dad_peak_info.get('peak_idx', 0)
-            dad_left_idx = dad_peak_info.get('left_idx', 0)
-            dad_right_idx = dad_peak_info.get('right_idx', len(t_dad) - 1 if t_dad is not None else 0)
+            _dad_pk = dad_peak_info.get('peak_idx', 0)
+            _dad_li = dad_peak_info.get('left_idx', 0)
+            _dad_ri = dad_peak_info.get('right_idx', len(t_dad) - 1 if t_dad is not None else 0)
             if t_dad is not None and dad_254 is not None and len(t_dad) > 20:
-                bigauss_254 = fit_bigaussian(t_dad, dad_254, dad_peak_idx, dad_left_idx, dad_right_idx)
+                bigauss_254 = fit_bigaussian(t_dad, dad_254, _dad_pk, _dad_li, _dad_ri)
                 bigaussian_254 = {
                     "r2": bigauss_254.get("r2", 0),
                     "asymmetry": bigauss_254.get("asymmetry", 1),
@@ -2644,15 +2773,7 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
     rf_254 = a254_area / conc if conc > 0 and a254_area > 0 else 0.0
     rf_mass_254 = a254_area * 1000 / (conc * volume_uL) if conc > 0 and volume_uL > 0 and a254_area > 0 else 0.0
 
-    # CR per 254nm (àrea pic principal / àrea total)
-    # Necessitem calcular l'àrea total de 254nm
-    cr_254 = np.nan
-    a254_area_total = 0.0
-    if has_dad and t_dad is not None and dad_254 is not None and len(t_dad) > 10:
-        # Integrar tot el cromatograma 254nm
-        a254_area_total = float(trapezoid(dad_254, t_dad))
-        if a254_area_total > 0 and a254_area > 0:
-            cr_254 = a254_area / a254_area_total
+    # CR 254nm ja calculat a STEP 0 (cr_254, a254_area_total)
 
     return {
         'name': name,  # Nom del KHP (ex: "KHP2", "KHP2_50")
@@ -2665,7 +2786,7 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
         'peak_info': peak_info,
         'has_dad': has_dad,
         't_doc_max': t_at_max(t_doc, y_doc_net),
-        't_dad_max': t_dad_max,
+        't_dad_max': t_max_254,  # 254nm és la referència temporal
         't_doc': t_doc,
         'y_doc': y_doc_net,
         'y_doc_repaired': y_doc_net_repaired if batman_repaired else None,
@@ -2954,7 +3075,7 @@ def register_calibration(seq_path, khp_data, khp_source, mode="COLUMN"):
     entry = {
         "cal_id": generate_calibration_id(),
         "seq_name": seq_name,
-        "seq_path": seq_path,
+        "seq_path": os.path.basename(seq_path),  # Relatiu: només nom SEQ
         "date": seq_date,
         "seq_date": seq_date,
         "date_processed": datetime.now().isoformat(),
@@ -3784,7 +3905,7 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
                 "volume_uL": inj_volume,
                 "replica": str(rep_num),
                 "method": method,
-                "seq_path": seq_path,
+                "seq_path": os.path.basename(seq_path),  # Relatiu: només nom SEQ
             }
 
             # Analitzar DOC DIRECT si disponible

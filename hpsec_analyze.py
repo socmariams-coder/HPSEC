@@ -2798,7 +2798,7 @@ def save_analysis_result(analysis_data, output_path=None):
         "timestamp": datetime.now().isoformat(),
         "date_processed": datetime.now().isoformat(),
         "seq_name": analysis_data.get("seq_name", ""),
-        "seq_path": seq_path,
+        "seq_path": os.path.basename(seq_path),  # Relatiu: només nom SEQ
         "method": analysis_data.get("method", ""),
         "data_mode": analysis_data.get("data_mode", ""),
         "success": analysis_data.get("success", False),

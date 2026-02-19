@@ -651,15 +651,15 @@ class ImportPanel(QWidget):
         method = result.get("method", "COLUMN")
         info_parts = []
 
-        # Injeccions: comparar rèpliques importades vs línies al MasterFile
+        # Injeccions: sempre mostrar importades vs total MasterFile
         if master_line_count > replicas_imported:
-            info_parts.append(f"⚠️ {replicas_imported}/{master_line_count} inj")
+            info_parts.append(f"⚠️ Importades: {replicas_imported}/{master_line_count}")
             has_warning = True
         elif master_line_count > total_injections:
-            info_parts.append(f"⚠️ {total_injections}/{master_line_count} inj")
+            info_parts.append(f"⚠️ Importades: {total_injections}/{master_line_count}")
             has_warning = True
         else:
-            info_parts.append(f"{total_injections} inj")
+            info_parts.append(f"Importades: {total_injections}/{master_line_count}")
             has_warning = False
 
         info_parts.append(method)
@@ -714,12 +714,28 @@ class ImportPanel(QWidget):
         """Obre la carpeta de la seqüència a l'explorador de fitxers."""
         import subprocess
         seq_path = self.seq_path
-        if not seq_path and self.imported_data:
-            seq_path = self.imported_data.get('seq_path', '')
+
+        # Si no tenim path absolut, reconstruir des de config + nom SEQ
+        if not seq_path or not os.path.isdir(seq_path):
+            seq_name = os.path.basename(seq_path or "")
+            if not seq_name and self.imported_data:
+                seq_name = self.imported_data.get('seq_name', '')
+            if seq_name:
+                try:
+                    with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
+                        config = json.load(f)
+                    data_folder = config.get("paths", {}).get("data_folder", "")
+                    if data_folder:
+                        alt_path = os.path.join(data_folder, seq_name)
+                        if os.path.isdir(alt_path):
+                            seq_path = alt_path
+                except Exception:
+                    pass
+
         if seq_path and os.path.isdir(seq_path):
             subprocess.Popen(f'explorer "{seq_path}"')
         else:
-            QMessageBox.information(self, "Info", "No hi ha cap carpeta de seqüència carregada.")
+            QMessageBox.information(self, "Info", "No s'ha trobat la carpeta de la seqüència.")
 
     def _populate_row_basic(self, row, injection_num, inj):
         """Omple les columnes bàsiques d'una fila (Inj, Mostra, Tipus, Rep, Vol, Direct)."""

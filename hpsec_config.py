@@ -90,6 +90,11 @@ DEFAULT_CONFIG = {
         # Cicle TOC
         "toc_cycle_min": 77.2,            # Cicle recàrrega xeringa TOC
         "toc_timeout_sec": 74,            # Duració timeout
+        # Marge pre-injecció per assignació TOC→HPLC (minuts)
+        # El pic DOC s'eixampla per dispersió al reactor TOC: la pujada comença
+        # ABANS de l'hora d'injecció HPLC. Aquest marge permet assignar files TOC
+        # amb temps negatiu (fins a -X min) a la injecció correcta.
+        "toc_pre_margin_min": 1.5,        # BP: dispersió reactor TOC
     },
 
     # --- THRESHOLDS QUALITAT ---

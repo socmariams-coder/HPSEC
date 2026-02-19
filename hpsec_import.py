@@ -2174,10 +2174,28 @@ def compute_toc_calc(master_data, toc_df):
             net_delay_min = FLUSH_TIME_MIN
 
     # 4. Calcular mapping TOC → injecció
+    # Pre-margin: el pic DOC s'eixampla per dispersió al reactor TOC, la pujada
+    # pot començar ABANS de l'hora d'injecció HPLC. Si una fila TOC cau dins
+    # [inj_start_{N+1} - pre_margin, inj_start_{N+1}], assignar a injecció N+1.
+    pre_margin_min = 1.5  # minuts — dispersió reactor TOC
+    try:
+        from hpsec_config import get_config
+        pre_margin_min = get_config().get("sequence", "toc_pre_margin_min", default=1.5)
+    except Exception:
+        pass
+    pre_margin_ns = pre_margin_min * 60 * 1e9  # nanoseconds
+
     rows = []
     for toc_row, toc_time in toc_timestamps:
         hora_hplc = toc_time - pd.Timedelta(minutes=net_delay_min)
+        hora_hplc_ns = hora_hplc.value
         inj_index = int((hplc_times <= hora_hplc).sum())
+
+        # Check pre-margin: si cau just abans de la injecció següent, reassignar
+        if inj_index < len(hplc_times):
+            next_start_ns = pd.Timestamp(hplc_times[inj_index]).value
+            if (next_start_ns - hora_hplc_ns) <= pre_margin_ns:
+                inj_index += 1
 
         if 0 < inj_index <= len(hplc_samples):
             sample = hplc_samples[inj_index - 1]
@@ -3549,19 +3567,19 @@ def generate_import_manifest(imported_data, include_injection_details=True):
         "generated_at": datetime.now().isoformat(),
         "generator": f"hpsec_import v{__version__}",
 
-        # Info seqüència
+        # Info seqüència (path relatiu: només nom SEQ, es reconstrueix amb data_folder del config)
         "sequence": {
             "name": imported_data.get("seq_name", ""),
-            "path": imported_data.get("seq_path", ""),
+            "path": os.path.basename(imported_data.get("seq_path", "")),
             "date": str(imported_data.get("date", "")),
             "method": imported_data.get("method", ""),  # COLUMN o BP
             "data_mode": imported_data.get("data_mode", ""),  # DUAL, DIRECT, UIB
             "uib_sensitivity": imported_data.get("uib_sensitivity"),  # Sensibilitat UIB (700, 1000, etc.)
         },
 
-        # MasterFile
+        # MasterFile (path relatiu dins SEQ)
         "master_file": {
-            "path": imported_data.get("master_file", ""),
+            "path": os.path.basename(imported_data.get("master_file", "")),
             "format": imported_data.get("master_format", ""),  # NEW o OLD
             "filename": os.path.basename(imported_data.get("master_file", "")) if imported_data.get("master_file") else "",
         },
@@ -3885,8 +3903,11 @@ def import_from_manifest(seq_path, manifest=None, config=None, progress_callback
         "warnings_confirmed": manifest.get("warnings_confirmed", False),
     }
 
-    # Verificar que MasterFile existeix
+    # Verificar que MasterFile existeix (pot ser relatiu al manifest)
     master_path = mf_info.get("path", "")
+    if master_path and not os.path.isabs(master_path):
+        # Path relatiu → reconstruir absolut dins seq_path
+        master_path = os.path.join(seq_path, master_path)
     if not master_path or not os.path.exists(master_path):
         # Intentar trobar-lo
         master_path_new, _ = trobar_excel_mestre(seq_path)

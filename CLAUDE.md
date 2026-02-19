@@ -146,3 +146,148 @@ All exploratory scripts and results live in `research/` — NOT part of the prod
 4. **When user asks about a feature**, check this list first to give accurate status.
 5. Comments and variable names: Catalan/English mix is normal.
 6. See `PROVES/CLAUDE.md` for detailed technical reference (thresholds, TOC params, etc).
+7. **Working Notes**: Actualitzar la secció Working Notes cada vegada que es toca un tema nou
+   rellevant (NO només al final de sessió). Incloure context, decisions, dades trobades.
+   Això és CRÍTIC — l'usuari no ha de re-explicar context entre sessions.
+
+## Working notes
+
+> Last updated: 2026-02-18
+
+### Revisió calibració KHP (EN CURS)
+
+**Bug crític trobat i fixat — finestra Savitzky-Golay a `find_peak_boundaries()`:**
+- `hpsec_core.py` L1112: finestra SG era `n // 20 * 2 + 1` → proporcional al cromatograma (117 pt = 7.9 min)
+- Amb finestra massa gran, el suavitzat aplanava el pic i les pendents al punt d'inflexió
+  eren massa petites → la projecció tangent donava límits 14x massa amples (27σ vs 4σ esperats)
+- **FIX**: finestra SG basada en temps (`sg_target_min = 0.7` min ≈ FWHM típic pic HPLC-SEC)
+  → `sg_window = int(0.7 / dt_median)`, amb clamp a [7, n]
+- Verificat: amb SG=11pt (0.73 min), projecció tangent dóna 4.1-4.4σ = correcte per gaussiana
+
+**Resultats calibració COLUMN DOC (amb fix SG):**
+- 36 entrades OK (de 123 totals), R²=0.977, slope=749, RF mediana=730, CV=16%
+- Per concentració: 1ppm RF=724±109, 2ppm RF=726±27, 3ppm RF=828±3, 5ppm RF=749±77
+- SEQs 256-274 COLUMN tenien v=100µL al manifest però àrees idèntiques a v=400µL
+  → detecció automàtica VOL_SUSPECT: si COLUMN amb v=100 i àrea>400, corregir a v=400
+
+**Calibració BP DOC — PENDENT, alineació temporal en curs:**
+- R²=0.019, RF CV=165% — **NO ACCEPTABLE** (amb dades sense alinear)
+- **Causa arrel**: el 2-TOC del masterfile és un flux continu de mesures TOC (una cada 4s).
+  La Suite assigna files TOC a cada injecció HPLC via un desfase temporal (0-INFO "Net delay").
+  Si el desfase és erroni o absent (nan), les files assignades no corresponen al cromatograma
+  real → baselines de ~100 ppb (= nivell aigua MQ del TOC), pics desplaçats, àrees incorrectes.
+
+**Mètode de verificació delay HPLC↔TOC (robust, validat):**
+- Principi: hora_injecció_HPLC + RT_DAD = hora real del pic al detector.
+  El flux TOC continu mostra pics per cada injecció → trobar pics TOC per proximitat temporal
+  (finestra ±6 min) amb els pics DAD calcula el delay real sense dependre del 0-INFO.
+- Implementació: `find_peaks(toc_vals, prominence=3, distance=15)` sobre columna TOC(ppb)
+  del full 2-TOC. Per cada pic HPLC, buscar el pic TOC més proper dins ±6 min.
+- Resultat: 42/53 SEQs BP amb matching 100% i std < 2 min.
+  5 SEQs REVISAR (111, 169, 221, 225, 277: matching parcial o std alt).
+  3 SEQs sense dades HPLC (261B, 261C, 261D).
+- Delays reals varien de -5 a +4 min entre SEQs (configuració tuberia variable).
+  Quasi tots els 0-INFO tenen delay=nan o valors absurds (1128 min).
+- **Proper pas**: l'usuari corregirà els masterfiles/excels d'origen amb els delays correctes,
+  després es regeneraran els manifests i es reprocessarà la calibració BP.
+
+**Delays mesurats per SEQ BP (CORREGIR = fiable, std<2min):**
+- 072B:+2.74, 073B:+2.77, 074B:+2.92, 075B:+2.86, 077B:+3.06
+- 107:-0.04, 108:+0.02, 109B:-0.35, 113:-1.58, 114:-1.68
+- 145:+3.47, 146:+3.65, 148:+0.65, 151:+3.87, 152:+3.76, 154:+3.82
+- 156:-3.01, 162:-3.26, 165:-3.53, 167:-4.48
+- 173:+3.24, 178:+3.12, 181:+2.94, 189:+2.37, 193:+2.27
+- 208:+2.65, 214:+3.36, 217:-4.74, 220:-4.69
+- 226:+2.47, 229:+2.29, 231:+2.13, 235:-1.44, 247:+3.50, 249:+3.52
+- 261:-4.95, 263:+1.61, 268:+3.24, 270:+2.95, 271:+2.77, 273:+2.73
+- 279B:+3.51, 281:+2.99, 284:+2.48, 286:+3.53
+- REVISAR: 111(35/48), 169(6/12), 221(std=2.85), 225(std=4.82), 277(23/29)
+- SENSE HPLC: 261B, 261C, 261D
+
+**Flags de qualitat (khp_reintegrate_doc.py):**
+- MULTI_PEAK: CR local (±5 min) < 0.70
+- MULTI_PEAK_MILD: CR local 0.70-0.90
+- T_RET_ANOMAL: COLUMN fora 18-28 min, BP fora 0-12 min
+- VOL_SUSPECT: COLUMN v=100µL amb àrea>400 (probablement v=400µL erroni)
+- FALLBACK_MAX: `find_peak_boundaries` ha caigut al fallback threshold
+
+**Script diagnòstic: `khp_reintegrate_doc.py`:**
+- Llegeix manifest JSON per baseline i volum (mateixa metodologia que la Suite)
+- Extreu DOC del MasterFile 2-TOC amb `extract_doc_from_masterfile()`
+- Integra amb `detect_main_peak()` sobre y_net = max(y_raw - baseline, 0)
+- Genera CSV (226 entrades) + scatter plots a `REGISTRY/review/`
+
+**Fitxers a REGISTRY/review/:**
+- `khp_doc_reintegration.csv`: 226 entrades amb àrea, RF, flags, vol_corrected
+- `scatter_doc_clean.png`: Area vs ug_DOC per mode amb recta regressió
+- `153_SEQ_diagnostic.png`: Diagnòstic visual pics solapats KHP1/KHP500
+- `peak_limits_comparison.png`: Comparació 5 mètodes de límits (tangent, inflexió, ±2σ, ±3σ, 5%)
+- `chromatograms/*.png`: 226 cromatogrames individuals
+
+**Regeneració MasterFiles BP:**
+- `regenerate_bp_masterfiles.py`: pipeline complet (rawdata → MasterFile → delay → 4-TOC_CALC)
+- Dry-run: 45 OK, 5 REVISAR, 3 sense HPLC
+- Pendent: usuari verificant delays de les 5 REVISAR (111, 169, 221, 225, 277)
+- **111_SEQ_BP és clau** (l'usuari ho marca explícitament)
+
+**Detecció KHP per nom de mostra:**
+- SEQs amb concentracions al nom sense "KHP": 111, 113, 114 (KHP pur), 148 (mostra+buff), 225 (HA/FA)
+- Solució: convenció `_CAL` al nom de carpeta. Si la SEQ conté "CAL", tota injecció no-exclosa
+  (MQ/NaOH/BUFFER/etc.) es tracta com a KHP. Implementat a `_extract_khp_from_masterfile()`.
+- SEQs a renombrar per l'usuari: `111→111_CAL`, `113→113_CAL`, `114→114_CAL`
+- La 148 i 225 NO són KHP pur (buffer i HA/FA respectivament) → no renombrar.
+
+**Sistemàtica preparació KHP — IMPORTANT:**
+- A partir de la **111_SEQ_BP** (inclosa), els KHP es preparen amb **pipetes Pasteur**.
+- Les SEQs anteriors a la 111 (072B–109B) tenen sistemàtica desconeguda.
+- Pot haver-hi **diferències sistemàtiques** en la preparació entre pre-111 i post-111.
+- Considerar separar les rectes de calibració pre/post-111 o verificar si hi ha salt en RF.
+
+**Resultats regressió BP (amb SEQs _CAL):**
+- 281 entrades totals (123 COLUMN + 158 BP), 137 OK
+- **114_SEQ_BP_CAL: R²=0.9954**, slope=681, intercept=-3.9 → RF_BP=681 (referència!)
+  - Test linealitat volum: 5ppm × 6 volums (50-200µL). Resultat perfecte.
+  - t_max coherent: 2.4-2.7 min. RF consistent per tots els volums (654-708).
+  - RF_BP=681 és ~7% menys que RF_COLUMN=730 — diferència plausible camí hidràulic.
+- **113_SEQ_BP_CAL: R²=0.858**, slope=1224, intercept=232
+  - L'intercept alt (232) indica àrea de fons significativa a baixa concentració.
+  - Àrees inflades per offset: a 0.05ppm, àrea=210 ≈ tot offset, no KHP real.
+  - Slope corregit (1224) no és directament comparable, cal model amb intercept.
+- **111_SEQ_BP_CAL: PROBLEMÀTICA** — R²=0.025
+  - Àrees molt baixes (6-132) per TOTES les conc (incloent 5ppm, que a 114 dóna 335).
+  - 16/29 entrades amb MULTI_PEAK flags.
+  - Probable causa: delay no prou precís o 4-TOC_CALC no captura el pic complet.
+  - Cal revisar: la 111 té 3 blocs de 16 inj (48 total), potser cada bloc necessita
+    delay diferent (tèrmica del sistema canvia en 8h de seqüència).
+- Totes BP (sense outlier 271): R²=0.31, slope=488, intercept=159
+- Post-111 only: R²=0.44, slope=600, intercept=101
+
+**Regressió combinada (millor estimació RF_BP):**
+- De la 114 (R²=0.9954): **RF_BP_direct = 681 ± 20** (intercept ≈ 0)
+- Coherent amb la tendència de les altres SEQs a concentracions altes (5ppm RF~683)
+
+### Canvis sessió actual
+- Carpetes renombrades: `111→111_CAL`, `113→113_CAL`, `114→114_CAL` a Dades3
+- `regenerate_bp_masterfiles.py`: regeneració MasterFiles + delay + 4-TOC_CALC
+- `fix_masterfile_delay.py`: afegit delay 111=-0.63, tret de REVISAR; fix `_CAL` a extract_seq_number
+- `khp_reintegrate_doc.py`: mode _CAL, `extract_conc_from_calname()`, `extract_volume_from_calname()`
+- `hpsec_import.py`: revertit matching concentracions pures (mantenir només KHP explícit)
+- `hpsec_config.py`, `hpsec_import.py`, `hpsec_migrate_master.py`: pre-margin 1.5 min
+- Sessions anteriors: FIX find_peak_boundaries SG, seq_path relatiu, pipeline 254→DOC
+
+### Canvis sessió actual
+- `regenerate_bp_masterfiles.py`: script regeneració complet en espera
+- `fix_masterfile_delay.py` completat: 45/53 SEQs amb delay mesurat aplicat
+- `hpsec_config.py`, `hpsec_import.py`, `hpsec_migrate_master.py`: pre-margin 1.5 min
+- `khp_reintegrate_doc.py`: lectura directa MasterFile sense manifest
+- Sessions anteriors: FIX find_peak_boundaries SG, seq_path relatiu, pipeline 254→DOC
+
+### Sessions anteriors (resum)
+- Pipeline 254→DOC: `analizar_khp_data()` reescrit, recalibrate_all_khp.py, calibration_review.py
+- validate_khp_quality: 5 nous checks (bigaussian, t_ret, mismatch, no_dad)
+- fit_calibration_from_history: mode="ALL", signal="254"
+- Dashboard: columna Inj amb detecció importació incompleta
+- Derivative integration: find_peak_boundaries amb projecció tangent Agilent
+- KHP DAD 254nm: fallback robust des de MasterFile 3-DAD_KHP
+- Startup optimization: 24s → <1s (lazy tabs, metadata-only JSON)
+- Config panel: 3 tabs, badges impacte, fingerprint SHA-256

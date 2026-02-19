@@ -1109,9 +1109,14 @@ def find_peak_boundaries(t, y, peak_idx, baseline_level=None, threshold_pct=5.0,
     # --- MÈTODE DERIVADES AMB PROJECCIÓ TANGENT (Agilent-style) ---
 
     # 1. Suavitzar per calcular derivades netes
-    sg_window = min(max(7, n // 20 * 2 + 1), n if n % 2 == 1 else n - 1)
-    if sg_window < 7:
-        sg_window = 7
+    #    Finestra SG basada en temps (~0.7 min), independent de la durada del cromatograma.
+    #    Una finestra massa gran (ex: proporcional a n) aplana el pic i redueix les
+    #    pendents al punt d'inflexió → la projecció tangent va massa lluny.
+    dt_median = float(np.median(np.diff(t))) if n > 1 else 1.0
+    sg_target_min = 0.7  # minuts — ~FWHM típic d'un pic HPLC-SEC
+    sg_window = int(sg_target_min / dt_median) if dt_median > 0 else 11
+    sg_window = sg_window if sg_window % 2 == 1 else sg_window + 1
+    sg_window = max(7, min(sg_window, n if n % 2 == 1 else n - 1))
     if sg_window > n:
         return _find_peak_boundaries_threshold(
             t, y, peak_idx, baseline_level, threshold_pct)

@@ -18,6 +18,7 @@ Data: 2025-01
 
 import os
 import glob
+import numpy as np
 import pandas as pd
 import openpyxl
 from openpyxl.utils.dataframe import dataframe_to_rows
@@ -563,12 +564,31 @@ def _create_masterfile(data: Dict, info: Dict, seq_path: str) -> tuple:
     else:
         net_delay_min = FLUSH_TIME_MIN
 
+    # Pre-margin: dispersió reactor TOC fa que el pic DOC comenci abans
+    # de l'hora d'injecció HPLC. Assignar files TOC a la injecció següent
+    # si cauen dins el marge pre-injecció.
+    pre_margin_min = 1.5
+    try:
+        from hpsec_config import get_config
+        pre_margin_min = get_config().get("sequence", "toc_pre_margin_min", default=1.5)
+    except Exception:
+        pass
+
     n_rows = 0
     if toc_timestamps and len(hplc_times) > 0:
+        hplc_times_ns = np.array([pd.Timestamp(t).value for t in hplc_times])
+        pre_margin_ns = pre_margin_min * 60 * 1e9
+
         for i, (toc_row, toc_time) in enumerate(toc_timestamps):
             # hora_HPLC = toc_time - net_delay
             hora_hplc = toc_time - pd.Timedelta(minutes=net_delay_min)
-            inj_index = int((hplc_times <= hora_hplc).sum())
+            hora_hplc_ns = hora_hplc.value
+            inj_index = int((hplc_times_ns <= hora_hplc_ns).sum())
+
+            # Check pre-margin: reassignar a injecció següent si dins marge
+            if inj_index < len(hplc_times_ns):
+                if (hplc_times_ns[inj_index] - hora_hplc_ns) <= pre_margin_ns:
+                    inj_index += 1
 
             if 0 < inj_index <= len(hplc_samples):
                 sample = hplc_samples[inj_index - 1]

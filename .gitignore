@@ -20,19 +20,22 @@ dist/
 # Backup files
 *.backup_*
 *_backup_*.py
+*_backup_*.json
+*_backup_*.xlsx
 
 # Windows artifacts
 nul
 
-# IDE
+# IDE / Claude
 .vscode/
 .idea/
+.claude/
 
 # Output directories
 CHECK/
 BATCH_REPORTS/
 
-# Obsolete/Development scripts
+# Obsolete/Development
 _OBSOLET/
 _DEV/
 PROVES/
@@ -51,13 +54,62 @@ cleanup_*.py
 recalibrate_log_*.txt
 *.log
 
-# Data files (keep templates only)
-*.xlsx
-!MasterFile_Template.xlsx
-
 # Draft documentation
 *_Draft.txt
 *_draft.md
 
 # JSON batch reports
 batch_*.json
+
+# ── Excluded auxiliary scripts ──
+# (were tracked before, now removed from repo)
+batch_cli.py
+batch_dev_test.py
+batch_masterfiles_dades3.py
+batch_validate.py
+build_exe.py
+generate_analysis_report.py
+generate_calibration_report.py
+generate_import_report.py
+report_salt_boundary.*
+regenerate_calibration_history.py
+regenerate_masterfiles.py
+reset_and_batch.py
+hpsec_reset.py
+verify_json_identity.py
+train_humic_model.py
+update_uib_sensitivity.py
+hpsec_dev_notes.py
+hpsec_planner_gui.py
+calibration_review.py
+recalibrate_all_khp.py
+khp_reintegrate_doc.py
+khp_check_bp.py
+fix_masterfile_delay.py
+fix_bp_delay.py
+regenerate_bp_masterfiles.py
+inject_sreport.py
+generate_v11_from_template.py
+TODO_SUITE.*
+CALCULS_PER_SENYAL.md
+docs/
+research/
+
+# ── Dades3: only MasterFiles and RAWDATA xlsx ──
+# Exclude all generated/metadata files
+Dades3/**/*.json
+Dades3/**/CHECK/
+Dades3/**/CALDATA/
+Dades3/**/Export3d/
+Dades3/REGISTRY/
+Dades3/_UNMAPPED_MERITXELL/
+Dades3/**/*_backup_*
+Dades3/**/*v11*.xlsx
+Dades3/**/*v12*.xlsx
+Dades3/**/*.bak
+Dades3/*.py
+Dades3/*.vbs
+Dades3/*.txt
+
+# Keep MasterFile xlsx (override the general *.xlsx exclusion)
+!Dades3/**/*MasterFile*.xlsx
