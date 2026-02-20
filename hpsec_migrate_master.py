@@ -352,7 +352,13 @@ def _extract_info(data: Dict, seq_path: str) -> Dict[str, Any]:
                 pass
 
     if info['inj_volume'] is None:
-        print(f"  AVIS: No s'ha trobat volum d'injeccio a la columna N del v11 ({os.path.basename(seq_path)})")
+        # Default validat: COLUMN=400, BP=100 (confirmat manualment per SEQs 181-249)
+        default_vol = 100 if info['method'] == 'BP' else 400
+        info['inj_volume'] = default_vol
+        info['inj_volume_source'] = 'default'
+        print(f"  AVIS: Volum no trobat al v11 ({os.path.basename(seq_path)}) — usant default {default_vol} uL ({info['method']})")
+    else:
+        info['inj_volume_source'] = 'v11'
 
     # UIB range es determina a la GUI si no està definit
     # (ja no s'assigna automàticament per número de seqüència)
@@ -427,13 +433,8 @@ def _create_masterfile(data: Dict, info: Dict, seq_path: str) -> tuple:
     ws_info['A3'] = 'Method'
     ws_info['B3'] = info.get('method', 'COLUMN')
     ws_info['A4'] = 'Inj_Volume (uL)'
-    # Volum llegit del v11 (col N). Si no existeix, NO suposar — deixar buit.
-    inj_vol = info.get('inj_volume')
-    if inj_vol is not None:
-        ws_info['B4'] = inj_vol
-    else:
-        ws_info['B4'] = 'DESCONEGUT'
-        print(f"  AVIS: 0-INFO Inj_Volume = DESCONEGUT (no trobat al v11)")
+    # Volum del v11 (col N) o default validat (COLUMN=400, BP=100)
+    ws_info['B4'] = info.get('inj_volume', 100)
     ws_info['A5'] = 'UIB_range'
     ws_info['B5'] = info.get('uib_range') or 'None'
 
