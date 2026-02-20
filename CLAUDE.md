@@ -123,12 +123,11 @@ All exploratory scripts and results live in `research/` — NOT part of the prod
 - **072_SEQ: dades DAD KHP no detectades al carregar, però sí al refer**: FIXED — El manifest de seqs
   antigues (pre-FIX F2.2) no tenia `dad` info per KHP. Afegit fallback a 3-DAD_KHP del MasterFile quan
   el manifest no conté DAD per KHP samples.
-- **Import auto-detecta columna volum erròniament en seqs BP**: `hpsec_import.py` (L1681-1690) busca
-  una columna numèrica amb valors 50-1000 a l'índex 13 del masterfile. En seqs BP, aquesta columna
-  pot contenir dades de pics (no volums) amb valors que passen el filtre (ex: 400). Resultat: BP
-  registrat amb volum=400µL en lloc de 100µL → RF calculat x4 massa baix. Fix parcial aplicat a
-  `register_calibration()` (correcció forçada BP→100µL). Fix definitiu pendent a hpsec_import.py:
-  requerir capçalera explícita "Volume"/"Vol" o prioritzar 0-INFO sobre auto-detecció.
+- **Import auto-detecta columna volum erròniament en seqs BP**: FIXED — Eliminat BP guard que bloquejava
+  lectura de volums per BP. Ara l'heurístic index-13 s'aplica a TOTS els modes. Si cap font té volum
+  (ni capçalera, ni 0-INFO, ni index-13), warning emès i volum = None (no se suposa res).
+  `get_injection_volume()` ara accepta `manifest_volume` amb prioritat absoluta. `register_calibration()`
+  rebutja entrades sense volum en lloc de suposar 100µL.
 - **KHP_History.json: blancs (conc=0) marcats valid_for_calibration=True**: FIXED — Guards afegits a
   `register_calibration()` per rebutjar conc=0 i area=0. Funció `clean_khp_history()` disponible
   per netejar entrades antigues invàlides.
@@ -152,7 +151,7 @@ All exploratory scripts and results live in `research/` — NOT part of the prod
 
 ## Working notes
 
-> Last updated: 2026-02-18
+> Last updated: 2026-02-20
 
 ### Revisió calibració KHP (EN CURS)
 
@@ -177,32 +176,14 @@ All exploratory scripts and results live in `research/` — NOT part of the prod
   Si el desfase és erroni o absent (nan), les files assignades no corresponen al cromatograma
   real → baselines de ~100 ppb (= nivell aigua MQ del TOC), pics desplaçats, àrees incorrectes.
 
-**Mètode de verificació delay HPLC↔TOC (robust, validat):**
-- Principi: hora_injecció_HPLC + RT_DAD = hora real del pic al detector.
-  El flux TOC continu mostra pics per cada injecció → trobar pics TOC per proximitat temporal
-  (finestra ±6 min) amb els pics DAD calcula el delay real sense dependre del 0-INFO.
-- Implementació: `find_peaks(toc_vals, prominence=3, distance=15)` sobre columna TOC(ppb)
-  del full 2-TOC. Per cada pic HPLC, buscar el pic TOC més proper dins ±6 min.
-- Resultat: 42/53 SEQs BP amb matching 100% i std < 2 min.
-  5 SEQs REVISAR (111, 169, 221, 225, 277: matching parcial o std alt).
-  3 SEQs sense dades HPLC (261B, 261C, 261D).
-- Delays reals varien de -5 a +4 min entre SEQs (configuració tuberia variable).
-  Quasi tots els 0-INFO tenen delay=nan o valors absurds (1128 min).
-- **Proper pas**: l'usuari corregirà els masterfiles/excels d'origen amb els delays correctes,
-  després es regeneraran els manifests i es reprocessarà la calibració BP.
-
-**Delays mesurats per SEQ BP (CORREGIR = fiable, std<2min):**
-- 072B:+2.74, 073B:+2.77, 074B:+2.92, 075B:+2.86, 077B:+3.06
-- 107:-0.04, 108:+0.02, 109B:-0.35, 113:-1.58, 114:-1.68
-- 145:+3.47, 146:+3.65, 148:+0.65, 151:+3.87, 152:+3.76, 154:+3.82
-- 156:-3.01, 162:-3.26, 165:-3.53, 167:-4.48
-- 173:+3.24, 178:+3.12, 181:+2.94, 189:+2.37, 193:+2.27
-- 208:+2.65, 214:+3.36, 217:-4.74, 220:-4.69
-- 226:+2.47, 229:+2.29, 231:+2.13, 235:-1.44, 247:+3.50, 249:+3.52
-- 261:-4.95, 263:+1.61, 268:+3.24, 270:+2.95, 271:+2.77, 273:+2.73
-- 279B:+3.51, 281:+2.99, 284:+2.48, 286:+3.53
-- REVISAR: 111(35/48), 169(6/12), 221(std=2.85), 225(std=4.82), 277(23/29)
-- SENSE HPLC: 261B, 261C, 261D
+**Delay HPLC↔TOC:**
+- El delay (Net delay) és el paràmetre clau per assignar files TOC a cada injecció HPLC.
+  Es llegeix del v11 original (full 0-CHECK) i s'aplica al MasterFile (full 0-INFO).
+- `hpsec_migrate_master.py` calcula el delay a partir de les hores rellotge HPLC i TOC.
+  **IMPORTANT**: aquest càlcul automàtic pot ser erroni (demostrat amb la 156: delay automàtic
+  -3.01 vs delay real 7.67 del v11). Sempre verificar amb el v11 original.
+- **156_SEQ_BP**: delay corregit de -3.01 a 7.67 min (del v11). Amb delay erroni, les files
+  estaven desplaçades -175 rows (~11.7 min) i cada R1 agafava el pic de la injecció anterior.
 
 **Flags de qualitat (khp_reintegrate_doc.py):**
 - MULTI_PEAK: CR local (±5 min) < 0.70
@@ -266,21 +247,45 @@ All exploratory scripts and results live in `research/` — NOT part of the prod
 - De la 114 (R²=0.9954): **RF_BP_direct = 681 ± 20** (intercept ≈ 0)
 - Coherent amb la tendència de les altres SEQs a concentracions altes (5ppm RF~683)
 
-### Canvis sessió actual
-- Carpetes renombrades: `111→111_CAL`, `113→113_CAL`, `114→114_CAL` a Dades3
-- `regenerate_bp_masterfiles.py`: regeneració MasterFiles + delay + 4-TOC_CALC
-- `fix_masterfile_delay.py`: afegit delay 111=-0.63, tret de REVISAR; fix `_CAL` a extract_seq_number
-- `khp_reintegrate_doc.py`: mode _CAL, `extract_conc_from_calname()`, `extract_volume_from_calname()`
-- `hpsec_import.py`: revertit matching concentracions pures (mantenir només KHP explícit)
-- `hpsec_config.py`, `hpsec_import.py`, `hpsec_migrate_master.py`: pre-margin 1.5 min
-- Sessions anteriors: FIX find_peak_boundaries SG, seq_path relatiu, pipeline 254→DOC
+**Anàlisi integració BP (analyze_integration_bp.py) — COMPLETAT:**
+- 6 mètodes comparats: thr1%, thr5%, tangent Agilent, bigauss 3s, bigauss analytic, trapezoid net
+- **Tangent (Agilent) confirmat com a millor**: R²=0.978 combinat, 0.999 per 152 sola
+- **152_SEQ_BP com a referència primària**: slope=817, intercept=11 (~0), R²=0.9992, n=10
+- **156_SEQ_BP exclosa**: intercept=58 (possible contaminació DOC preparació)
+- Diferència RF: COLUMN=628 vs BP=817 és efecte d'integració, no del detector
+  (el detector TOC és el mateix; calculant àrea efectiva per µg: COLUMN=830, BP=817 = 1.6% diferència)
 
-### Canvis sessió actual
-- `regenerate_bp_masterfiles.py`: script regeneració complet en espera
-- `fix_masterfile_delay.py` completat: 45/53 SEQs amb delay mesurat aplicat
+**Calibration_Reference.json ACTUALITZAT (2026-02-20):**
+- `rf_mass_cal.direct.bp`: 915 → **817** (de 152_SEQ_BP tangent)
+- `r2.bp`: 0.8213 → **0.9992**
+- `n_points.bp`: 7 → **10**
+- `intercept.direct.bp`: 0 (mantingut — intercept 152=11 ≈ negligible)
+
+**Fix volums d'injecció (CRÍTIC):**
+- `hpsec_migrate_master.py`: volum llegit de col N (Unnamed:13) del v11, NO hardcoded.
+  Si no existeix → 0-INFO = "DESCONEGUT" + warning. Detecta volums variables.
+- Eliminat BP guard a `hpsec_import.py`: ara l'heurístic index-13 s'aplica a TOTS els modes
+- `get_injection_volume()` a `hpsec_calibrate.py`: nou param `manifest_volume` amb prioritat absoluta
+- `register_calibration()`: rebutja entrades sense volum (en lloc de suposar 100µL)
+- `quantify_sample()` a `hpsec_analyze.py`: warning si volum no ve del manifest
+- Propagació `method` a `master_data` per futur ús
+- **PENDENT**: els MasterFiles BP existents (generats amb l'antic hardcode BP=100) poden tenir
+  volums incorrectes. Cal regenerar els afectats (especialment 107, i qualsevol BP amb v≠100).
+
+### Canvis sessió actual (2026-02-20)
+- `Calibration_Reference.json`: BP rf=817, R²=0.999, n=10 (ref: 152_SEQ_BP tangent)
+- `hpsec_migrate_master.py`: volum de col N del v11 (no hardcoded), warning si absent
+- `hpsec_import.py`: eliminat BP guard volum, warning si cap injecció té volum, propagació method
+- `hpsec_calibrate.py`: `get_injection_volume(manifest_volume=)`, `register_calibration()` rebutja vol=None
+- `hpsec_analyze.py`: warning si volum no al manifest (heurístic com a fallback)
+- `analyze_integration_bp.py`: script comparació 6 mètodes integració BP
+
+### Sessions anteriors (resum)
+- Carpetes renombrades: `111→111_CAL`, `113→113_CAL`, `114→114_CAL`
+- `regenerate_bp_masterfiles.py`: regeneració MasterFiles + delay + 4-TOC_CALC
+- `fix_masterfile_delay.py`: 45/53 SEQs amb delay mesurat aplicat
+- `khp_reintegrate_doc.py`: lectura directa MasterFile, mode _CAL
 - `hpsec_config.py`, `hpsec_import.py`, `hpsec_migrate_master.py`: pre-margin 1.5 min
-- `khp_reintegrate_doc.py`: lectura directa MasterFile sense manifest
-- Sessions anteriors: FIX find_peak_boundaries SG, seq_path relatiu, pipeline 254→DOC
 
 ### Sessions anteriors (resum)
 - Pipeline 254→DOC: `analizar_khp_data()` reescrit, recalibrate_all_khp.py, calibration_review.py

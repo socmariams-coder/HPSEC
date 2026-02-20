@@ -1422,8 +1422,10 @@ def quantify_sample(sample_result, calibration_data, mode="COLUMN", seq_date=Non
     if volume_uL is None and calibration_data:
         volume_uL = calibration_data.get("volume_uL") or calibration_data.get("inj_volume")
     if volume_uL is None:
-        # Default segons mode
+        # Fallback heurístic — emetre warning perquè no s'ha trobat al manifest
         volume_uL = 100 if mode.upper() == "BP" else 400
+        logger.warning("quantify_sample: VOLUM NO AL MANIFEST per '%s' mode=%s — usant heuristic %d uL",
+                       sample_result.get("sample_name", "?"), mode, volume_uL)
 
     # =========================================================================
     # OBTENIR rf_mass_cal GLOBAL I INTERCEPT

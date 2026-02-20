@@ -795,14 +795,32 @@ def fit_calibration_from_history(calibrations, mode="COLUMN", signal="direct",
 # FUNCIONS AUXILIARS
 # =============================================================================
 
-def get_injection_volume(seq_path, is_bp):
+def get_injection_volume(seq_path, is_bp, manifest_volume=None):
     """
-    Retorna el volum d'injecció en µL segons el mode i la seqüència.
+    Retorna el volum d'injecció en µL.
 
-    - BP: sempre 100 µL
-    - COLUMN SEQ 256-274: 100 µL (protocol antic)
-    - COLUMN SEQ >= 275: 400 µL (protocol actual)
+    Prioritat:
+    1) manifest_volume — valor llegit del MasterFile (font de veritat)
+    2) Heurístic per mode/SEQ — NOMÉS si manifest no té dades
+
+    Si cap font proporciona volum, retorna None (NO suposar).
+
+    Args:
+        seq_path: Path de la SEQ
+        is_bp: True si mode BP
+        manifest_volume: Volum llegit del manifest (pot ser None)
+
+    Returns:
+        float o None
     """
+    # 1) Manifest té prioritat absoluta
+    if manifest_volume is not None:
+        return float(manifest_volume)
+
+    # 2) Heurístic com a fallback (amb warning al log)
+    logger.warning("get_injection_volume: No manifest volume for %s (is_bp=%s) — using heuristic",
+                   os.path.basename(seq_path) if seq_path else "?", is_bp)
+
     if is_bp:
         return INJECTION_VOLUME_BP
 
@@ -2641,13 +2659,12 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
     bl_mean = (bl_left + bl_right) / 2
     bl_drift_pct = abs(bl_mean / float(y_doc_net[peak_idx]) * 100) if y_doc_net[peak_idx] > 0 else 0.0
 
-    # Volum injecció (prioritza metadata, després calcula)
-    if volume_uL_meta is not None:
-        volume_uL = volume_uL_meta
-    elif seq_path:
-        volume_uL = get_injection_volume(seq_path, is_bp_chromato)
-    else:
-        volume_uL = 100
+    # Volum injecció (prioritza metadata del manifest, heurístic com a fallback)
+    volume_uL = get_injection_volume(seq_path, is_bp_chromato, manifest_volume=volume_uL_meta)
+    if volume_uL is None:
+        logger.warning("analizar_khp_data: VOLUM DESCONEGUT per %s — usant 100 uL per evitar crash",
+                       os.path.basename(seq_path) if seq_path else "?")
+        volume_uL = 100  # Fallback últim recurs per no crashejar
 
     # Qualitat
     quality_score = 0
@@ -2956,17 +2973,14 @@ def register_calibration(seq_path, khp_data, khp_source, mode="COLUMN"):
         seq_date = datetime.now().isoformat()
 
     is_bp = khp_data.get('is_bp', False)
-    # Usar volum de khp_data si disponible (per múltiples condicions), sino default
+    # Volum: prioritat manifest → heurístic → warning si cap
     volume_from_khp = khp_data.get('volume_uL')
-    volume_from_func = get_injection_volume(seq_path, is_bp)
-    volume = volume_from_khp or volume_from_func
+    volume = get_injection_volume(seq_path, is_bp, manifest_volume=volume_from_khp)
 
-    # Fallback si volume és None
     if volume is None:
-        logger.debug(f"Volume fallback - khp_data.get('volume_uL') = {volume_from_khp}")
-        logger.debug(f"Volume fallback - get_injection_volume({seq_path}, {is_bp}) = {volume_from_func}")
-        logger.debug(f"Volume fallback - khp_data keys: {list(khp_data.keys())[:10]}...")
-        volume = 100  # Fallback temporal per evitar crash
+        logger.warning("register_calibration: VOLUM DESCONEGUT per %s — no es pot calcular RF_mass", seq_name)
+        return {"success": False, "error": "Volume unknown — cannot compute RF_mass",
+                "valid_for_calibration": False}
     khp_name = khp_data.get('name', f"KHP{conc}")  # Nom del KHP (ex: "KHP2", "KHP2_50")
     doc_mode = khp_data.get('doc_mode', 'N/A')
     uib_sensitivity = khp_data.get('uib_sensitivity')

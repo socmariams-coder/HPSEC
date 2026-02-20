@@ -304,7 +304,8 @@ def _extract_info(data: Dict, seq_path: str) -> Dict[str, Any]:
         'method': 'COLUMN',
         'hora_hplc': None,
         'hora_toc': None,
-        'uib_range': None
+        'uib_range': None,
+        'inj_volume': None,  # Volum d'injecció llegit del v11 (col N / Unnamed:13)
     }
 
     # Extreure de 0-CHECK
@@ -327,6 +328,31 @@ def _extract_info(data: Dict, seq_path: str) -> Dict[str, Any]:
     folder_name = os.path.basename(seq_path).upper()
     if '_BP' in folder_name or folder_name.endswith('BP'):
         info['method'] = 'BP'
+
+    # Extreure volum d'injecció de la columna N (Unnamed:13) del HPLC-SEQ
+    # Aquesta columna conté el volum real per injecció al v11 original
+    df_hplc = data.get('hplc')
+    if df_hplc is not None:
+        col_list = list(df_hplc.columns)
+        if len(col_list) > 13:
+            vol_col = col_list[13]
+            try:
+                vol_vals = pd.to_numeric(df_hplc[vol_col].dropna(), errors='coerce').dropna()
+                if len(vol_vals) > 0:
+                    # Prendre la moda (valor mes frequent) com a volum nominal
+                    vol_mode = float(vol_vals.mode().iloc[0]) if len(vol_vals.mode()) > 0 else None
+                    if vol_mode is not None and 10 <= vol_mode <= 1000:
+                        info['inj_volume'] = vol_mode
+                        # Comprovar si hi ha volums variables
+                        unique_vols = sorted(vol_vals.unique())
+                        if len(unique_vols) > 1:
+                            info['inj_volume_variable'] = True
+                            info['inj_volume_values'] = [float(v) for v in unique_vols]
+            except Exception:
+                pass
+
+    if info['inj_volume'] is None:
+        print(f"  AVIS: No s'ha trobat volum d'injeccio a la columna N del v11 ({os.path.basename(seq_path)})")
 
     # UIB range es determina a la GUI si no està definit
     # (ja no s'assigna automàticament per número de seqüència)
@@ -401,7 +427,13 @@ def _create_masterfile(data: Dict, info: Dict, seq_path: str) -> tuple:
     ws_info['A3'] = 'Method'
     ws_info['B3'] = info.get('method', 'COLUMN')
     ws_info['A4'] = 'Inj_Volume (uL)'
-    ws_info['B4'] = 100 if info.get('method') == 'BP' else 400
+    # Volum llegit del v11 (col N). Si no existeix, NO suposar — deixar buit.
+    inj_vol = info.get('inj_volume')
+    if inj_vol is not None:
+        ws_info['B4'] = inj_vol
+    else:
+        ws_info['B4'] = 'DESCONEGUT'
+        print(f"  AVIS: 0-INFO Inj_Volume = DESCONEGUT (no trobat al v11)")
     ws_info['A5'] = 'UIB_range'
     ws_info['B5'] = info.get('uib_range') or 'None'
 

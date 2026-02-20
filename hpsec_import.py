@@ -1705,22 +1705,24 @@ def parse_injections_from_masterfile(master_data, config=None):
             break
 
     # Columna N (índex 13) per volum si no té etiqueta NI 0-INFO
-    # NOTA: Només activar per COLUMN mode. En BP, l'índex 13 pot contenir
-    # dades de pics (no volums) amb valors que passen el filtre (ex: 400).
+    # Heurístic: columna sense capçalera a posició 13 amb valors numèrics 50-1000.
+    # S'aplica a TOTS els modes (COLUMN i BP). Els volums per injecció són
+    # la font de veritat — si no existeixen, NO suposar cap valor per defecte.
     if volume_col is None and info_volume is None:
-        method = master_data.get("method", "").upper()
-        if method != "BP":
-            col_list = list(df_seq.columns)
-            if len(col_list) > 13:
-                potential_vol_col = col_list[13]
-                try:
-                    sample_vals = df_seq[potential_vol_col].dropna().head(5)
-                    if len(sample_vals) > 0:
-                        numeric_vals = pd.to_numeric(sample_vals, errors='coerce').dropna()
-                        if len(numeric_vals) > 0 and all(50 <= v <= 1000 for v in numeric_vals):
-                            volume_col = potential_vol_col
-                except Exception as e:
-                    logger.debug("Volume column index-13 heuristic failed: %s", e)
+        col_list = list(df_seq.columns)
+        if len(col_list) > 13:
+            potential_vol_col = col_list[13]
+            try:
+                sample_vals = df_seq[potential_vol_col].dropna().head(5)
+                if len(sample_vals) > 0:
+                    numeric_vals = pd.to_numeric(sample_vals, errors='coerce').dropna()
+                    if len(numeric_vals) > 0 and all(50 <= v <= 1000 for v in numeric_vals):
+                        volume_col = potential_vol_col
+                        logger.info("Volume heuristic: columna index-13 '%s' detectada amb valors %s",
+                                    potential_vol_col,
+                                    [float(v) for v in numeric_vals.head(3)])
+            except Exception as e:
+                logger.debug("Volume column index-13 heuristic failed: %s", e)
 
     # --- VALIDACIÓ: columnes obligatòries han de tenir dades ---
     # Detectar si les dades estan desplaçades (columnes .1 amb dades, originals buides)
@@ -1960,7 +1962,9 @@ def parse_injections_from_masterfile(master_data, config=None):
                 else:
                     sample_type = "SAMPLE"
 
-        # Obtenir volum d'injecció (si disponible)
+        # Obtenir volum d'injecció — NO suposar cap valor per defecte
+        # Prioritat: 1) Columna explícita/heurística, 2) 0-INFO global
+        # Si cap font té dades → inj_volume = None (warning emès al final)
         inj_volume = None
         if volume_col is not None:
             try:
@@ -2018,10 +2022,29 @@ def parse_injections_from_masterfile(master_data, config=None):
             "row_data": row.to_dict(),
         })
 
+    # Validar: volums d'injecció
+    inj_without_volume = [inj for inj in injections if inj.get("inj_volume") is None]
+    if inj_without_volume:
+        n_missing = len(inj_without_volume)
+        n_total = len(injections)
+        if n_missing == n_total:
+            warnings.insert(0,
+                f"VOLUM DESCONEGUT: Cap injecció té volum assignat. "
+                f"No s'ha trobat capçalera 'Volume', ni 0-INFO, ni columna index-13 vàlida. "
+                f"Caldrà assignar volums manualment o afegir-los al MasterFile.")
+        else:
+            lines_missing = [str(inj.get("line_num", "?")) for inj in inj_without_volume[:5]]
+            lines_str = ", ".join(lines_missing)
+            if n_missing > 5:
+                lines_str += f"... (+{n_missing - 5})"
+            warnings.insert(0,
+                f"VOLUM PARCIAL: {n_missing}/{n_total} injeccions sense volum (lines: {lines_str}). "
+                f"Revisar MasterFile.")
+
     # Validar: comparar total de files amb Line# vs injeccions processades
     if total_rows_with_line > len(injections):
         missing = total_rows_with_line - len(injections)
-        warnings.insert(0, f"⚠️ ATENCIÓ: {missing} injecció(ns) no processada(es) - revisar MasterFile (files: {skipped_rows})")
+        warnings.insert(0, f"ATENCIÓ: {missing} injecció(ns) no processada(es) - revisar MasterFile (files: {skipped_rows})")
 
     # Validar: files amb cel·les crítiques buides
     if incomplete_rows:
@@ -2827,6 +2850,9 @@ def import_sequence(seq_path, config=None, progress_callback=None):
                 "seq": df_seq,
                 "filepath": master_path,
             }
+
+        # Propagar method a master_data (perquè parse_injections pugui accedir-hi)
+        result["master_data"]["method"] = result["method"]
 
         # Comprovar si llegir_masterfile_nou ha fallat (ex: fitxer obert a Excel)
         if result["master_data"].get("error"):
