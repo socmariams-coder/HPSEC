@@ -623,8 +623,8 @@ def _extract_seq_num_and_suffix(seq_name: str) -> tuple:
     name_upper = seq_name.upper()
     is_bp = '_BP' in name_upper
 
-    # Netejar el nom: treure _SEQ, _BP
-    clean = name_upper.replace('_SEQ', '').replace('_BP', '').strip('_')
+    # Netejar el nom: treure _SEQ, _BP, _CAL i altres sufixos
+    clean = name_upper.replace('_SEQ', '').replace('_BP', '').replace('_CAL', '').strip('_')
 
     # Buscar patró: número + lletra opcional
     match = re.match(r'^(\d+)([A-Z]?)$', clean)
