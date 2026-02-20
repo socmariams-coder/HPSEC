@@ -77,6 +77,10 @@ Mark features as DONE only when code is fully functional end-to-end, not when pl
 - [x] Export: lightweight Excel for BLANK/CONTROL (ID + DOC sheets only) — DONE
 - [x] Export: SUMMARY.xlsx Type column (SAMPLE/PR/BLANK/CONTROL) — DONE
 - [x] Architecture refactor: unify anomaly system (ANOMALY_CATALOG in hpsec_warnings.py) — DONE (0d0b960)
+- [ ] **Import: GUI pregunta volum quan no trobat al v11** — PENDING (IMPORTANT)
+  - Quan `inj_volume_source='default'` o `inj_volume=None`, diàleg confirmació a l'usuari
+  - Validació creuada col13 vs 0-INFO quan ambdós existeixen i discrepan
+  - Icona/tooltip a calibració si volum és estimat (no del manifest)
 - [ ] Architecture refactor: unify detection functions in hpsec_core.py — PENDING
 - [x] Integration: derivative-based peak boundaries (Agilent tangent projection) — DONE (find_peak_boundaries in hpsec_core.py)
 - [x] Integration: re-process all KHP data with new derivative method — DONE (batch re-calibrate 137 SEQs, KHP_History regenerated with 96 entries)
