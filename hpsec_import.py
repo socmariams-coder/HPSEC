@@ -190,11 +190,22 @@ def extract_khp_conc(filename):
     if not match:
         return 0.0
 
-    value = float(match.group(1))
+    raw_str = match.group(1)  # El string numèric original (preserva zeros inicials)
+    value = float(raw_str)
     unit = (match.group(2) or "").upper()
 
     if unit == "PPB":
         value /= 1000.0  # ppb → ppm
+
+    # Convenció zeros inicials sense separador: "KHP01"=0.1, "KHP025"=0.25, "KHP05"=0.5
+    # Detectar: pegat a "KHP" (sense espai/guió), comença per "0", sense punt decimal, sense unitat
+    # Exclou "KHP 01 ppm" (amb espai+unitat) i "KHP0.25" (amb punt)
+    if not unit and '.' not in raw_str and raw_str.startswith('0') and len(raw_str) >= 2:
+        # Verificar que el número va pegat a KHP (sense separador)
+        match_no_sep = re.search(r'KHP(\d)', name, re.IGNORECASE)
+        if match_no_sep:
+            value = float('0.' + raw_str[1:])  # "01"->"0.1", "025"->"0.25", "05"->"0.5"
+            return value
 
     # Sense unitat explícita i valor >= 100: assumir ppb
     # Ex: "KHP 250" en context DOC = 250 ppb = 0.25 ppm

@@ -1,7 +1,7 @@
 {
   "paths": {
-    "data_folder": "./Dades3",
-    "registry_folder": "./Dades3/REGISTRY",
+    "data_folder": "C:/Users/Lequia/Desktop/Dades3",
+    "registry_folder": "C:/Users/Lequia/Desktop/Dades3/REGISTRY",
     "maintenance_excel": ""
   },
   "time_fractions": {
