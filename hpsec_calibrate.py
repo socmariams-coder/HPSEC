@@ -381,6 +381,34 @@ def get_calibration_intercept(signal='direct', mode='column', seq_date=None):
     return float(intercept) if intercept else 0
 
 
+def compute_calibration_fingerprint(calibration=None):
+    """
+    SHA-256[:16] dels paràmetres de calibració que afecten la quantificació.
+
+    Permet detectar si una anàlisi ha quedat obsoleta després d'un canvi de calibració.
+    Segueix el patró de compute_config_fingerprint() de hpsec_config.py.
+
+    Args:
+        calibration: Dict de calibració (None = activa)
+
+    Returns:
+        str: Hash hex de 16 caràcters, o "" si no hi ha calibració
+    """
+    import hashlib
+    if calibration is None:
+        calibration = get_active_global_calibration()
+    if not calibration:
+        return ""
+    # Camps que afecten la quantificació: rf_mass_cal, intercept, id
+    data = {
+        "rf_mass_cal": calibration.get("rf_mass_cal"),
+        "intercept": calibration.get("intercept"),
+        "id": calibration.get("id"),
+    }
+    raw = json.dumps(data, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(raw.encode('utf-8')).hexdigest()[:16]
+
+
 def quantify_with_global_calibration(area, volume_uL, signal='direct', mode='column', seq_date=None):
     """
     Quantifica una mostra usant rf_mass_cal global (Calibration_Reference.json).
@@ -678,6 +706,159 @@ def add_calibration(rf_mass_cal_values, source, valid_from, r2=None, n_points=No
     if save_calibration_reference(ref):
         return cal_id
     return None
+
+
+# =============================================================================
+# REQUANTIFICACIÓ RETROACTIVA
+# =============================================================================
+
+def requantify_analysis_json(json_path, new_rf_direct, new_intercept_direct,
+                              new_rf_uib=None, new_intercept_uib=None,
+                              new_rf_bp=None, new_intercept_bp=None):
+    """
+    Re-quantifica un analysis_result.json amb nous RF/intercept.
+
+    Recalcula NOMES els camps ppm de quantification a partir de les àrees
+    existents (que no canvien). No reprocessa cromatogrames.
+
+    Args:
+        json_path: Path a analysis_result.json
+        new_rf_direct: Nou RF mass cal per direct
+        new_intercept_direct: Nou intercept per direct
+        new_rf_uib: RF per UIB (None = usar same as direct)
+        new_intercept_uib: Intercept per UIB (None = usar same as direct)
+        new_rf_bp: RF per BP direct (None = no tocar si és BP)
+        new_intercept_bp: Intercept per BP (None = 0)
+
+    Returns:
+        dict amb {success, samples_updated, errors, mode}
+    """
+    import json as _json
+    from datetime import datetime
+
+    result = {"success": False, "samples_updated": 0, "errors": [], "mode": ""}
+
+    try:
+        with open(json_path, 'r', encoding='utf-8') as f:
+            data = _json.load(f)
+    except Exception as e:
+        result["errors"].append(f"Error llegint JSON: {e}")
+        return result
+
+    # Determinar mode de la SEQ
+    method = data.get("method", "").upper()
+    is_bp = "BP" in method
+    result["mode"] = "BP" if is_bp else "COLUMN"
+
+    # Seleccionar RF/intercept segons mode
+    if is_bp:
+        rf_direct = new_rf_bp if new_rf_bp is not None else new_rf_direct
+        intercept_direct = new_intercept_bp if new_intercept_bp is not None else 0
+        rf_uib = new_rf_uib or rf_direct
+        intercept_uib = new_intercept_uib if new_intercept_uib is not None else intercept_direct
+    else:
+        rf_direct = new_rf_direct
+        intercept_direct = new_intercept_direct
+        rf_uib = new_rf_uib or rf_direct
+        intercept_uib = new_intercept_uib if new_intercept_uib is not None else intercept_direct
+
+    if rf_direct <= 0:
+        result["errors"].append(f"RF direct invàlid: {rf_direct}")
+        return result
+
+    def _apply_formula(area, rf, intercept):
+        """Calcula ppm des d'àrea: ppm = max(0, area - intercept) * 1000 / (rf * vol)."""
+        area_corrected = max(0, area - intercept)
+        return area_corrected * 1000 / (rf * volume_uL) if volume_uL > 0 and rf > 0 else 0
+
+    samples_grouped = data.get("samples_grouped", {})
+    n_updated = 0
+
+    for sample_name, sg in samples_grouped.items():
+        # Saltar mostres light (BLANK/CONTROL) — no tenen quantificació
+        if sg.get("analysis_type") == "light":
+            continue
+
+        quantification = sg.get("quantification")
+        if not quantification:
+            continue
+
+        # Obtenir rèplica seleccionada per llegir àrees i volum
+        selected = sg.get("selected", {})
+        doc_rep_key = selected.get("doc", "1")
+        if doc_rep_key == "none":
+            continue
+
+        replicas = sg.get("replicas", {})
+        doc_replica = replicas.get(doc_rep_key, {})
+
+        # Àrees DOC direct (no canvien)
+        areas_doc = doc_replica.get("areas", {}).get("DOC", {})
+        area_total = areas_doc.get("total", 0)
+
+        # Volum d'injecció
+        volume_uL = doc_replica.get("inj_volume")
+        if not volume_uL or volume_uL <= 0:
+            volume_uL = 100 if is_bp else 400  # fallback heurístic
+
+        # === Requantificar DOC Direct ===
+        if area_total > 0:
+            ppm_direct = _apply_formula(area_total, rf_direct, intercept_direct)
+            quantification["concentration_ppm"] = float(ppm_direct)
+            quantification["concentration_ppm_direct"] = float(ppm_direct)
+
+            # Fraccions (només COLUMN)
+            if not is_bp:
+                fractions = quantification.get("fractions", {})
+                for frac_name in ["BioP", "HS", "BB", "SB", "LMW"]:
+                    area_frac = areas_doc.get(frac_name, 0)
+                    if area_frac > 0:
+                        fractions[frac_name] = float(_apply_formula(area_frac, rf_direct, intercept_direct))
+                    else:
+                        fractions[frac_name] = 0.0
+                quantification["fractions"] = fractions
+
+        # === Requantificar DOC UIB ===
+        areas_uib = doc_replica.get("areas_uib", {})
+        area_total_uib = areas_uib.get("total", 0)
+
+        if area_total_uib > 0 and rf_uib and rf_uib > 0:
+            ppm_uib = _apply_formula(area_total_uib, rf_uib, intercept_uib)
+            quantification["concentration_ppm_uib"] = float(ppm_uib)
+
+            # Fraccions UIB (només COLUMN)
+            if not is_bp:
+                fractions_uib = quantification.get("fractions_uib", {})
+                for frac_name in ["BioP", "HS", "BB", "SB", "LMW"]:
+                    area_frac = areas_uib.get(frac_name, 0)
+                    if area_frac > 0:
+                        fractions_uib[frac_name] = float(_apply_formula(area_frac, rf_uib, intercept_uib))
+                    else:
+                        fractions_uib[frac_name] = 0.0
+                quantification["fractions_uib"] = fractions_uib
+
+        # Metadata de calibració
+        quantification["rf_mass_cal_used"] = rf_direct
+        quantification["intercept"] = intercept_direct
+        quantification["calibration_source"] = "GLOBAL"
+
+        sg["quantification"] = quantification
+        n_updated += 1
+
+    # Actualitzar fingerprint i timestamp de requantificació
+    data["calibration_fingerprint"] = compute_calibration_fingerprint()
+    data["requantified_at"] = datetime.now().isoformat()
+
+    # Guardar
+    try:
+        with open(json_path, 'w', encoding='utf-8') as f:
+            _json.dump(data, f, indent=2, ensure_ascii=False)
+        result["success"] = True
+        result["samples_updated"] = n_updated
+    except Exception as e:
+        result["errors"].append(f"Error guardant JSON: {e}")
+
+    return result
 
 
 def fit_calibration_from_history(calibrations, mode="COLUMN", signal="direct",

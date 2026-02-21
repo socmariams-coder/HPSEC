@@ -59,8 +59,14 @@ Mark features as DONE only when code is fully functional end-to-end, not when pl
 - [ ] Analyze panel: mostrar bigaussian (R², asym, quality) per BP — PENDING
 - [ ] Analyze panel: mostrar timeouts amb icones/tooltip — PENDING
 - [ ] Analyze backend: detecció deriva baseline DAD per replica selection — PENDING (TODO a hpsec_analyze.py L1210)
-- [x] Calibration: flux renovació calibració global (UI panel + regression) — DONE (GlobalCalibrationPanel)
+- [x] Calibration: flux renovació calibració global (UI panel + regression) — DONE (GlobalCalibrationPanel refactored: 2 vistes CAL+QC)
 - [x] Calibration: auto-fit rf_mass_cal + intercept from KHP history (regression) — DONE (fit_calibration_from_history)
+- [x] Calibration: separació SEQ_CAL vs producció KHP al panell global — DONE
+- [x] Calibration: QC Levey-Jennings chart (desviació % vs recta vigent) — DONE
+- [x] Calibration: requantify_analysis_json() per recalibració retroactiva — DONE
+- [x] Calibration: patch_excel_calibration() per patch Excels existents — DONE
+- [x] Calibration: calibration_fingerprint per detectar canvis (is_cal_stale) — DONE
+- [x] Dashboard: indicador ⟳ calibració obsoleta a columna Analitzar — DONE
 - [x] Calibration: KHP DAD 254nm fallback from MasterFile 3-DAD_KHP in manifest loading — DONE
 - [x] Calibration: clean_khp_history() to remove invalid entries (conc=0, area=0) — DONE
 - [x] Export: PDF analysis report (generate_analysis_report.py) — DONE
@@ -327,6 +333,35 @@ All exploratory scripts and results live in `research/` — NOT part of the prod
 
 **Gràfic històric:**
 - Filtrat `qc_history` per concentració i volum abans de passar a `plot_calibration()`
+
+### Refactor GlobalCalibrationPanel — Recta CAL + QC Monitor (2026-02-21)
+
+**Motivació**: El panell barrejava totes les 250+ entrades KHP per fer regressió. Ara separa:
+- SEQ_CAL (13 entrades) → Tab "Recta de Calibració" per construir/actualitzar calibració
+- Producció (114 entrades) → Tab "Control de Qualitat" amb gràfic Levey-Jennings
+
+**Fitxers modificats:**
+- `hpsec_calibrate.py`: + `compute_calibration_fingerprint()` (SHA-256[:16]), + `requantify_analysis_json()` (recalcula ppm sense reprocessar)
+- `hpsec_analyze.py`: estampa `calibration_fingerprint` al JSON d'anàlisi
+- `hpsec_export.py`: + `patch_excel_calibration()` per patchejar Excels existents
+- `gui/widgets/global_calibration_panel.py`: reescriptura completa (2 vistes: CalibrationLineView + QCMonitorView)
+- `gui/models/sequence_state.py`: + camp `calibration_fingerprint`, + propietat `is_cal_stale`
+- `gui/main_window.py`: connexió senyal `calibration_updated` → dashboard refresh
+- `gui/widgets/dashboard_panel.py`: indicador ✔⟳ (taronja) quan calibració obsoleta
+
+**Funcionalitats noves:**
+- **CalibrationLineView**: selector SEQ_CAL amb checkboxes, regressió, scatter+residuals, stats per conc, comparació amb vigent, aplicar amb opció retroactiva + requantificació automàtica
+- **QCMonitorView**: gràfic Levey-Jennings (desviació % vs recta), línies ±10%/±20%, tendència, indicador EN CONTROL/ATENCIÓ/FORA DE CONTROL
+- **requantify_analysis_json()**: modifica NOMÉS ppm/fraccions als JSONs existents des de les àrees (que no canvien). Verificat: RF+10% → ppm -9.1%, àrees intactes
+- **calibration_fingerprint**: patró idèntic a config_fingerprint — detecta canvi de calibració al dashboard
+
+**Separació _CAL**: per convenció de nom, `"_CAL" in seq_name.upper()`. 13 entrades de 3 SEQs (111_CAL, 113_CAL, 114_CAL, 292_SEQ_CAL, 293_SEQ_CAL).
+
+### Rename batman → irregular_top + fix integració pics irregulars (2026-02-21)
+
+- Commit `9b12b28`: rename detect_batman→detect_irregular_top a 16 fitxers (168 ocurrències)
+- Pre-repair a detect_main_peak: detectar pic irregular → reparar amb paràbola → find_peak_boundaries sobre senyal reparat → integrar sobre senyal original
+- Verificat: KHP1 (1ppm) àrea 96.8→304.7, desviació -71%→-8.3%
 
 ### Canvis sessió 2026-02-21
 - `hpsec_calibrate.py`: fix `get_condition_key()` decimals, fix timeout severity, fix concentration filter tolerance

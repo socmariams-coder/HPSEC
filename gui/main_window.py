@@ -193,6 +193,13 @@ class HPSECSuiteWindow(QMainWindow):
             if attr_name == "process_panel":
                 panel.process_completed.connect(self._on_process_completed)
                 panel.sequence_loaded.connect(self._on_wizard_sequence_loaded)
+            elif attr_name == "global_cal_panel":
+                panel.calibration_updated.connect(self._on_calibration_updated)
+
+    def _on_calibration_updated(self):
+        """Callback quan canvia la calibració global — refrescar dashboard."""
+        if hasattr(self, 'dashboard_panel') and self.dashboard_panel:
+            self.dashboard_panel.refresh_sequences()
 
     def _open_sequence(self):
         """Obre diàleg per seleccionar carpeta SEQ."""

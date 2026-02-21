@@ -2740,6 +2740,13 @@ def analyze_sequence(imported_data, calibration_data=None, config=None, progress
     except Exception as e:
         logger.warning("Config fingerprint computation failed: %s", e)
 
+    # Estampar calibration fingerprint per detectar canvis de calibració
+    try:
+        from hpsec_calibrate import compute_calibration_fingerprint
+        result["calibration_fingerprint"] = compute_calibration_fingerprint()
+    except Exception as e:
+        logger.warning("Calibration fingerprint computation failed: %s", e)
+
     if progress_callback:
         progress_callback("Processing complete", 100)
 
@@ -2813,6 +2820,7 @@ def save_analysis_result(analysis_data, output_path=None):
         "warnings": analysis_data.get("warnings", []),
         "warning_level": analysis_data.get("warning_level", "none"),
         "config_fingerprint": analysis_data.get("config_fingerprint", ""),
+        "calibration_fingerprint": analysis_data.get("calibration_fingerprint", ""),
         "summary": analysis_data.get("summary", {}),
         # Llista de mostres amb info resumida (sense arrays de dades)
         "samples": [],

@@ -94,6 +94,9 @@ class SequenceState:
     # Config fingerprint (per detectar obsolescència)
     config_fingerprint: str = ""
 
+    # Calibration fingerprint (per detectar canvi de calibració global)
+    calibration_fingerprint: str = ""
+
     # Siblings (carpetes germanes com 282B_SEQ, 282C_SEQ)
     siblings: List[str] = field(default_factory=list)  # Paths de siblings
     is_sibling: bool = False  # True si és sibling secundari (282B, 282C...)
@@ -161,7 +164,7 @@ class SequenceState:
             data = {}
             for key in ('success', 'timestamp', 'date', 'method', 'data_mode',
                         'seq_path', 'seq_name', 'warning_level',
-                        'config_fingerprint'):
+                        'config_fingerprint', 'calibration_fingerprint'):
                 pattern = rf'"{key}"\s*:\s*("([^"]*)"|(true|false|null|\d+[\.\d]*))'
                 m = re.search(pattern, head)
                 if m:
@@ -306,6 +309,7 @@ class SequenceState:
                 if wl in ('warning', 'blocker'):
                     self.analyze_warnings = [f"[{wl}]"]
             self.config_fingerprint = data.get('config_fingerprint', '')
+            self.calibration_fingerprint = data.get('calibration_fingerprint', '')
 
     @property
     def info_text(self) -> str:
@@ -331,6 +335,14 @@ class SequenceState:
             return False
         from hpsec_config import get_config
         return self.config_fingerprint != get_config().compute_config_fingerprint()
+
+    @property
+    def is_cal_stale(self) -> bool:
+        """True si la calibració global ha canviat des de l'última anàlisi."""
+        if not self.calibration_fingerprint or not self.analyze_status.completed:
+            return False
+        from hpsec_calibrate import compute_calibration_fingerprint
+        return self.calibration_fingerprint != compute_calibration_fingerprint()
 
     @property
     def has_warnings(self) -> bool:

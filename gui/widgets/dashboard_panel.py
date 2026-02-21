@@ -815,6 +815,12 @@ class DashboardPanel(QWidget):
                         item.setForeground(QColor(COLOR_PENDING))
                         tooltip = f"{phase_name}: Pendent"
 
+                # Indicador calibració obsoleta (sobre columna Analitzar)
+                if col == COL_ANA and state == 'ok' and seq.is_cal_stale:
+                    item.setText("✔⟳")
+                    item.setForeground(QColor("#e67e22"))  # taronja
+                    tooltip += "\n\n⟳ Calibració canviada — requantificació pendent"
+
                 item.setToolTip(tooltip)
                 self.table.setItem(row, col, item)
 
@@ -1627,6 +1633,13 @@ class DashboardPanel(QWidget):
                 item.setText("○")
                 item.setForeground(QColor(COLOR_PENDING))
                 item.setToolTip(f"{phase_name}: Pendent")
+
+            # Indicador calibració obsoleta (sobre columna Analitzar)
+            if col == COL_ANA and state == 'ok' and seq.is_cal_stale:
+                item.setText("✔⟳")
+                item.setForeground(QColor("#e67e22"))
+                tooltip_text = item.toolTip() or ""
+                item.setToolTip(tooltip_text + "\n\n⟳ Calibració canviada — requantificació pendent")
 
             self.table.setItem(row, col, item)
 
