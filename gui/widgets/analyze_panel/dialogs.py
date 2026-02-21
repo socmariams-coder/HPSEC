@@ -105,7 +105,7 @@ class SampleDetailDialog(QDialog):
         # Info general
         stats_layout.addWidget(self._create_info_group())
 
-        # Batman repair button (si la mostra té Batman reparable)
+        # Irregular top repair button (si la mostra té cim irregular reparable)
         repair_group = self._create_repair_group()
         if repair_group:
             stats_layout.addWidget(repair_group)
@@ -218,33 +218,33 @@ class SampleDetailDialog(QDialog):
         return group
 
     # ------------------------------------------------------------------
-    # Batman repair group
+    # Irregular top repair group
     # ------------------------------------------------------------------
 
     def _create_repair_group(self):
-        """Crea grup amb botó de reparació Batman si la mostra té anomalies reparables."""
+        """Crea grup amb botó de reparació cim irregular si la mostra té anomalies reparables."""
         replicas = self.sample_data.get("replicas", {})
-        # Comprovar si alguna rèplica té Batman
-        has_batman = False
-        batman_signals = []
+        # Comprovar si alguna rèplica té cim irregular (jagged/batman)
+        has_irregular = False
+        irregular_signals = []
         for rep_key, rep_data in replicas.items():
             anomalies = rep_data.get("anomalies", [])
-            if has_anomaly(anomalies, "BATMAN_DIRECT"):
-                has_batman = True
-                batman_signals.append(f"R{rep_key} Direct")
-            if has_anomaly(anomalies, "BATMAN_UIB"):
-                has_batman = True
-                batman_signals.append(f"R{rep_key} UIB")
+            if has_anomaly(anomalies, "IRREGULAR_TOP_DIRECT"):
+                has_irregular = True
+                irregular_signals.append(f"R{rep_key} Direct")
+            if has_anomaly(anomalies, "IRREGULAR_TOP_UIB"):
+                has_irregular = True
+                irregular_signals.append(f"R{rep_key} UIB")
             # Ja reparats?
             if any((a.get("repaired") if isinstance(a, dict) else "_REPAIRED" in str(a))
                    for a in anomalies):
-                has_batman = True
-                batman_signals.append(f"R{rep_key} (ja reparat)")
+                has_irregular = True
+                irregular_signals.append(f"R{rep_key} (ja reparat)")
 
-        if not has_batman:
+        if not has_irregular:
             return None
 
-        group = QGroupBox("Reparació Batman")
+        group = QGroupBox("Reparació Cim Irregular")
         layout = QVBoxLayout(group)
         group.setStyleSheet("""
             QGroupBox {
@@ -258,7 +258,7 @@ class SampleDetailDialog(QDialog):
             }
         """)
 
-        info = QLabel(f"Batman detectat a: {', '.join(batman_signals)}")
+        info = QLabel(f"Cim irregular detectat a: {', '.join(irregular_signals)}")
         info.setWordWrap(True)
         info.setStyleSheet("color: #E65100; font-size: 11px;")
         layout.addWidget(info)
@@ -278,10 +278,10 @@ class SampleDetailDialog(QDialog):
             layout.addWidget(desc)
 
             btn_layout = QHBoxLayout()
-            # Botó per cada rèplica amb Batman
+            # Botó per cada rèplica amb cim irregular
             for rep_key, rep_data in replicas.items():
                 anomalies = rep_data.get("anomalies", [])
-                for signal_type, anom_key in [("direct", "BATMAN_DIRECT"), ("uib", "BATMAN_UIB")]:
+                for signal_type, anom_key in [("direct", "IRREGULAR_TOP_DIRECT"), ("uib", "IRREGULAR_TOP_UIB")]:
                     if has_anomaly(anomalies, anom_key):
                         btn = QPushButton(f"Reparar R{rep_key} {signal_type.upper()}")
                         btn.setStyleSheet(
@@ -291,7 +291,7 @@ class SampleDetailDialog(QDialog):
                         )
                         btn.clicked.connect(
                             lambda checked, rk=rep_key, st=signal_type:
-                            self._repair_batman(rk, st)
+                            self._repair_irregular_top(rk, st)
                         )
                         btn_layout.addWidget(btn)
 
@@ -300,10 +300,10 @@ class SampleDetailDialog(QDialog):
 
         return group
 
-    def _repair_batman(self, replica_key, signal_type):
-        """Executa reparació Batman per una rèplica/senyal específic."""
+    def _repair_irregular_top(self, replica_key, signal_type):
+        """Executa reparació cim irregular per una rèplica/senyal específic."""
         try:
-            from hpsec_analyze import repair_batman_in_replica
+            from hpsec_analyze import repair_irregular_top_in_replica
 
             replicas = self.sample_data.get("replicas", {})
             replica_data = replicas.get(replica_key)
@@ -311,7 +311,7 @@ class SampleDetailDialog(QDialog):
                 QMessageBox.warning(self, "Error", f"No s'ha trobat la rèplica R{replica_key}")
                 return
 
-            result = repair_batman_in_replica(replica_data, signal=signal_type)
+            result = repair_irregular_top_in_replica(replica_data, signal=signal_type)
 
             if result.get("repaired"):
                 # Marcar com reparat
@@ -330,23 +330,23 @@ class SampleDetailDialog(QDialog):
                 remaining_anomalies = replica_data.get("anomalies", [])
                 remaining_codes = get_anomaly_codes(remaining_anomalies)
                 still_has_irreparable = bool(remaining_codes & {"NO_PEAK", "TIMEOUT_IN_PEAK"})
-                # Comprovar també Batman no reparat (actiu, no marcat com repaired)
-                still_has_batman = any(
-                    (isinstance(a, dict) and a.get("code") in ("BATMAN_DIRECT", "BATMAN_UIB") and not a.get("repaired"))
-                    or (isinstance(a, str) and a in ("BATMAN_DIRECT", "BATMAN_UIB"))
+                # Comprovar també cim irregular no reparat (actiu, no marcat com repaired)
+                still_has_irregular_top = any(
+                    (isinstance(a, dict) and a.get("code") in ("IRREGULAR_TOP_DIRECT", "IRREGULAR_TOP_UIB") and not a.get("repaired"))
+                    or (isinstance(a, str) and a in ("IRREGULAR_TOP_DIRECT", "IRREGULAR_TOP_UIB"))
                     for a in remaining_anomalies
                 )
-                if not still_has_irreparable and not still_has_batman:
+                if not still_has_irreparable and not still_has_irregular_top:
                     self.sample_data["sample_valid"] = True
                     # Actualitzar recomanació
                     rec = self.sample_data.get("recommendation", {})
                     if rec.get("doc"):
                         rec["doc"]["valid"] = True
-                        rec["doc"]["reason"] = "Batman reparat amb paràbola"
+                        rec["doc"]["reason"] = "Cim irregular reparat amb paràbola"
 
                 QMessageBox.information(
                     self, "Reparació completada",
-                    f"Batman reparat a R{replica_key} {signal_type.upper()}\n\n"
+                    f"Cim irregular reparat a R{replica_key} {signal_type.upper()}\n\n"
                     f"Les àrees s'han recalculat.\n"
                     f"L'original es conserva per traçabilitat."
                 )

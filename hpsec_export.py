@@ -334,13 +334,16 @@ def _build_id_sheet(sample_name, sample_data, calibration_data, mode, is_dual):
             zones_str = "; ".join(f"{zone}: {count}" for zone, count in zone_summary.items())
             rows.append(("Timeout_Zones", zones_str))
 
-    # Batman repair info
-    if sample_data.get("batman_direct_repaired"):
-        rows.append(("Batman_Direct_Repaired", "YES"))
-        repair_info = sample_data.get("batman_direct_repair_info", {})
+    # Irregular top repair info (jagged/batman artifact)
+    irregular_top_repaired = sample_data.get("irregular_top_direct_repaired",
+                                              sample_data.get("batman_direct_repaired"))
+    if irregular_top_repaired:
+        rows.append(("Irregular_Top_Direct_Repaired", "YES"))
+        repair_info = sample_data.get("irregular_top_direct_repair_info",
+                                       sample_data.get("batman_direct_repair_info", {}))
         if repair_info:
-            rows.append(("Batman_Y_Max_Original", repair_info.get("y_max_original", "")))
-            rows.append(("Batman_Y_Max_Theoretical", repair_info.get("y_max_theoretical", "")))
+            rows.append(("Irregular_Top_Y_Max_Original", repair_info.get("y_max_original", "")))
+            rows.append(("Irregular_Top_Y_Max_Theoretical", repair_info.get("y_max_theoretical", "")))
 
     return rows
 

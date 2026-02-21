@@ -13,14 +13,14 @@ Usat per:
 
 Criteris de selecció:
 - COLUMN:
-  1. Anomalies (Batman > Timeout > IRR)
+  1. Anomalies (Irregular Top > Timeout > IRR)
   2. SNR (si diferència > 1.5x)
   3. Pearson entre rèpliques (warning si < 0.990)
   4. Diferència d'àrea (warning si > 15%)
   5. Alçada (tiebreaker)
 
 - BP:
-  1. Anomalies (Batman)
+  1. Anomalies (Irregular Top)
   2. R² status (VALID > CHECK > INVALID)
   3. R² valor
   4. SNR (tiebreaker)
@@ -71,15 +71,15 @@ DAD_NOISE_WARNING = 0.5     # mAU - soroll alt
 DAD_DOC_CORR_MIN = 0.90     # Correlació mínima DOC-DAD
 DAD_DOC_CORR_WARNING = 0.95 # Warning si correlació < 0.95
 
-# Zona húmics (per limitar detecció Batman a Column)
+# Zona humics (per limitar detecció irregular top / jagged/batman artifact a Column)
 HUMIC_ZONE = (18.0, 23.0)   # minuts
 
 # Pesos per score (només informatiu, la selecció usa prioritats)
 SCORE_WEIGHTS = {
-    "batman": 100,      # Penalització per Batman
-    "timeout": 50,      # Penalització per Timeout
-    "irr": 30,          # Penalització per irregularitat
-    "low_signal": 20,   # Penalització per senyal baix
+    "irregular_top": 100,  # Penalització per irregular top (jagged/batman artifact)
+    "timeout": 50,         # Penalització per Timeout
+    "irr": 30,             # Penalització per irregularitat
+    "low_signal": 20,      # Penalització per senyal baix
 }
 
 
@@ -175,7 +175,7 @@ def evaluate_replica(t, y, method="COLUMN", humic_zone=None):
     method : str
         "COLUMN" o "BP"
     humic_zone : tuple, optional
-        (t_start, t_end) per limitar detecció Batman. Default: HUMIC_ZONE
+        (t_start, t_end) per limitar detecció irregular top. Default: HUMIC_ZONE
 
     Returns
     -------
@@ -186,7 +186,7 @@ def evaluate_replica(t, y, method="COLUMN", humic_zone=None):
         - height: float (alçada pic principal)
         - area: float (àrea pic principal)
         - snr: float (signal-to-noise ratio)
-        - batman: bool (té Batman)
+        - irregular_top: bool (té irregular top / jagged/batman artifact)
         - irr: bool (és irregular)
         - timeout: bool (té timeout)
         - timeout_info: dict (detalls timeout)
@@ -219,7 +219,7 @@ def evaluate_replica(t, y, method="COLUMN", humic_zone=None):
             "height": max_signal - bl_stats["percentile_10"],
             "area": 0,
             "snr": 0,
-            "batman": False,
+            "irregular_top": False,
             "irr": False,
             "timeout": False,
             "timeout_info": None,
@@ -246,12 +246,12 @@ def evaluate_replica(t, y, method="COLUMN", humic_zone=None):
     timeout_info = detect_timeout(t, is_bp=is_bp)
     has_timeout = timeout_info.get("n_timeouts", 0) > 0
 
-    # Batman i Irregularitat (via detect_peak_anomaly)
-    has_batman = False
+    # Irregular top (jagged/batman artifact) i Irregularitat (via detect_peak_anomaly)
+    has_irregular_top = False
     has_irr = False
     smoothness = 100.0
 
-    # Per Column, només detectar Batman a zona húmics
+    # Per Column, només detectar irregular top a zona humics
     hz = humic_zone or HUMIC_ZONE
     in_humic_zone = (method == "COLUMN" and hz[0] <= t_peak <= hz[1]) or method == "BP"
 
@@ -269,7 +269,7 @@ def evaluate_replica(t, y, method="COLUMN", humic_zone=None):
                 min_valley_depth=0.05,
                 smoothness_threshold=18.0
             )
-            has_batman = anomaly.get("is_batman", False)
+            has_irregular_top = anomaly.get("is_irregular_top", anomaly.get("is_batman", False))
             has_irr = anomaly.get("is_irregular", False)
             smoothness = anomaly.get("smoothness", 100.0)
 
@@ -299,8 +299,8 @@ def evaluate_replica(t, y, method="COLUMN", humic_zone=None):
 
     # === CALCULAR SCORE ===
     anomaly_score = 0.0
-    if has_batman:
-        anomaly_score += SCORE_WEIGHTS["batman"]
+    if has_irregular_top:
+        anomaly_score += SCORE_WEIGHTS["irregular_top"]
     if has_timeout:
         anomaly_score += SCORE_WEIGHTS["timeout"]
     if has_irr:
@@ -314,7 +314,7 @@ def evaluate_replica(t, y, method="COLUMN", humic_zone=None):
         "t_peak": t_peak,
         "snr": snr,
         "baseline_noise": bl_stats["std"],
-        "batman": has_batman,
+        "irregular_top": has_irregular_top,
         "irr": has_irr,
         "smoothness": smoothness,
         "timeout": has_timeout,
@@ -811,7 +811,7 @@ def select_best_replica(eval1, eval2, method="COLUMN", comparison=None,
 
     Criteris per mètode:
     - COLUMN:
-      1. Anomalies (Batman > Timeout > IRR) - disqualificadores
+      1. Anomalies (Irregular Top > Timeout > IRR) - disqualificadores
       2. DAD quality (si una té POOR i l'altra no)
       3. SNR (si diferència > 1.5x)
       4. Pearson entre rèpliques (warning si < 0.990)
@@ -820,7 +820,7 @@ def select_best_replica(eval1, eval2, method="COLUMN", comparison=None,
       7. Alçada (tiebreaker final)
 
     - BP:
-      1. Anomalies (Batman)
+      1. Anomalies (Irregular Top)
       2. R² status (VALID > CHECK > INVALID)
       3. R² valor (bi-gaussiana, major = millor)
       4. SNR (tiebreaker)
@@ -863,7 +863,7 @@ def select_best_replica(eval1, eval2, method="COLUMN", comparison=None,
         result["best"] = "R2"
         result["reason"] = "Única rèplica disponible"
         result["confidence"] = 0.5
-        if eval2.get("batman") or eval2.get("timeout"):
+        if eval2.get("irregular_top", eval2.get("batman")) or eval2.get("timeout"):
             result["warning"] = "WARNING: Única rèplica amb anomalies"
         return result
 
@@ -871,7 +871,7 @@ def select_best_replica(eval1, eval2, method="COLUMN", comparison=None,
         result["best"] = "R1"
         result["reason"] = "Única rèplica disponible"
         result["confidence"] = 0.5
-        if eval1.get("batman") or eval1.get("timeout"):
+        if eval1.get("irregular_top", eval1.get("batman")) or eval1.get("timeout"):
             result["warning"] = "WARNING: Única rèplica amb anomalies"
         return result
 
@@ -904,7 +904,7 @@ def _select_best_column(eval1, eval2, comparison=None, dad_eval1=None, dad_eval2
     Selecció per COLUMN: Anomalies → DAD → SNR → Àrea/Pearson → Alçada.
 
     Criteris ordenats per prioritat:
-    1. Anomalies disqualificadores (Batman, Timeout, IRR)
+    1. Anomalies disqualificadores (Irregular Top, Timeout, IRR)
     2. DAD quality (si una és POOR i l'altra no)
     3. SNR (si diferència significativa > 1.5x)
     4. Pearson i diferència d'àrea (warnings)
@@ -919,8 +919,8 @@ def _select_best_column(eval1, eval2, comparison=None, dad_eval1=None, dad_eval2
     }
 
     # Extreure flags anomalies
-    r1_batman = eval1.get("batman", False)
-    r2_batman = eval2.get("batman", False)
+    r1_irregular_top = eval1.get("irregular_top", eval1.get("batman", False))
+    r2_irregular_top = eval2.get("irregular_top", eval2.get("batman", False))
     r1_timeout = eval1.get("timeout", False)
     r2_timeout = eval2.get("timeout", False)
     r1_irr = eval1.get("irr", False)
@@ -943,19 +943,19 @@ def _select_best_column(eval1, eval2, comparison=None, dad_eval1=None, dad_eval2
 
     # === CRITERI 1: Anomalies DOC disqualificadores ===
 
-    # 1a. Batman (prioritat màxima)
-    if r1_batman and not r2_batman:
+    # 1a. Irregular top / jagged/batman artifact (prioritat maxima)
+    if r1_irregular_top and not r2_irregular_top:
         result["best"] = "R2"
-        result["reason"] = "R1 té BATMAN"
+        result["reason"] = "R1 té IRREGULAR_TOP"
         return result
 
-    if r2_batman and not r1_batman:
+    if r2_irregular_top and not r1_irregular_top:
         result["best"] = "R1"
-        result["reason"] = "R2 té BATMAN"
+        result["reason"] = "R2 té IRREGULAR_TOP"
         return result
 
-    if r1_batman and r2_batman:
-        warnings.append("Ambdues rèpliques amb BATMAN")
+    if r1_irregular_top and r2_irregular_top:
+        warnings.append("Ambdues rèpliques amb IRREGULAR_TOP")
 
     # 1b. Timeout
     if r1_timeout and not r2_timeout:
@@ -1126,10 +1126,10 @@ def _add_comparison_info(result, comparison, reasons):
 
 def _select_best_bp(eval1, eval2, comparison=None, dad_eval1=None, dad_eval2=None):
     """
-    Selecció per BP: Batman → R² → SNR.
+    Selecció per BP: Irregular Top → R² → SNR.
 
     Criteris ordenats per prioritat:
-    1. Anomalies (Batman)
+    1. Anomalies (Irregular Top)
     2. R² status (VALID > CHECK > INVALID)
     3. R² valor (bi-gaussiana)
     4. SNR (tiebreaker)
@@ -1151,8 +1151,8 @@ def _select_best_bp(eval1, eval2, comparison=None, dad_eval1=None, dad_eval2=Non
     snr_2 = eval2.get("snr", 0) or 0
 
     # Anomalies
-    r1_batman = eval1.get("batman", False)
-    r2_batman = eval2.get("batman", False)
+    r1_irregular_top = eval1.get("irregular_top", eval1.get("batman", False))
+    r2_irregular_top = eval2.get("irregular_top", eval2.get("batman", False))
 
     reasons = []
     warnings = []
@@ -1161,19 +1161,19 @@ def _select_best_bp(eval1, eval2, comparison=None, dad_eval1=None, dad_eval2=Non
     if dad_eval1 or dad_eval2:
         _add_dad_warnings(result, dad_eval1, dad_eval2, warnings)
 
-    # === CRITERI 1: Batman (prioritat màxima) ===
-    if r1_batman and not r2_batman:
+    # === CRITERI 1: Irregular top / jagged/batman artifact (prioritat maxima) ===
+    if r1_irregular_top and not r2_irregular_top:
         result["best"] = "R2"
-        result["reason"] = "R1 té BATMAN"
+        result["reason"] = "R1 té IRREGULAR_TOP"
         return result
 
-    if r2_batman and not r1_batman:
+    if r2_irregular_top and not r1_irregular_top:
         result["best"] = "R1"
-        result["reason"] = "R2 té BATMAN"
+        result["reason"] = "R2 té IRREGULAR_TOP"
         return result
 
-    if r1_batman and r2_batman:
-        warnings.append("Ambdues rèpliques amb BATMAN")
+    if r1_irregular_top and r2_irregular_top:
+        warnings.append("Ambdues rèpliques amb IRREGULAR_TOP")
 
     # === CRITERI 2: R² status ===
     status_order = {"VALID": 0, "CHECK": 1, "INVALID": 2}

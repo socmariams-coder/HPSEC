@@ -213,7 +213,7 @@ def review_sample(replicas, method="COLUMN", config=None):
 
         # Verificar anomalies
         anomalies = rep.get("anomalies", [])
-        has_anomaly = eval_result.get("batman", False) or eval_result.get("timeout", False) or eval_result.get("irr", False)
+        has_anomaly = eval_result.get("irregular_top", eval_result.get("batman", False)) or eval_result.get("timeout", False) or eval_result.get("irr", False)
         if has_anomaly or anomalies:
             result["status"] = "WARNING"
             result["warnings"].append("Rèplica única amb anomalies")
@@ -270,7 +270,7 @@ def review_sample(replicas, method="COLUMN", config=None):
         result["selected"] = "R1"
         result["selected_doc"] = "R1"
         result["selected_dad"] = "R1"
-        has_anomaly = eval1.get("batman", False) or eval1.get("timeout", False) or eval1.get("irr", False)
+        has_anomaly = eval1.get("irregular_top", eval1.get("batman", False)) or eval1.get("timeout", False) or eval1.get("irr", False)
         result["status"] = "WARNING" if has_anomaly else "OK"
         result["recommendation"] = "R1 seleccionada (R2 invàlida)"
         result["recommendation_doc"] = "R1 (R2 invàlida)"
@@ -294,7 +294,7 @@ def review_sample(replicas, method="COLUMN", config=None):
         result["selected"] = "R2"
         result["selected_doc"] = "R2"
         result["selected_dad"] = "R2"
-        has_anomaly = eval2.get("batman", False) or eval2.get("timeout", False) or eval2.get("irr", False)
+        has_anomaly = eval2.get("irregular_top", eval2.get("batman", False)) or eval2.get("timeout", False) or eval2.get("irr", False)
         result["status"] = "WARNING" if has_anomaly else "OK"
         result["recommendation"] = "R2 seleccionada (R1 invàlida)"
         result["recommendation_doc"] = "R2 (R1 invàlida)"
@@ -375,7 +375,7 @@ def review_sample(replicas, method="COLUMN", config=None):
         result["status"] = "CHECK"  # MIXED sempre requereix revisió
     elif pearson < config["pearson_warning"] or area_diff > config["area_diff_critical"]:
         result["status"] = "CHECK"
-    elif eval1.get("batman") or eval2.get("batman") or result["warnings"]:
+    elif eval1.get("irregular_top", eval1.get("batman")) or eval2.get("irregular_top", eval2.get("batman")) or result["warnings"]:
         result["status"] = "WARNING"
     else:
         result["status"] = "OK"
@@ -387,8 +387,8 @@ def review_sample(replicas, method="COLUMN", config=None):
         "area_diff_pct": area_diff,
         "snr_r1": eval1.get("snr"),
         "snr_r2": eval2.get("snr"),
-        "anomaly_r1": eval1.get("batman", False) or eval1.get("timeout", False),
-        "anomaly_r2": eval2.get("batman", False) or eval2.get("timeout", False),
+        "anomaly_r1": eval1.get("irregular_top", eval1.get("batman", False)) or eval1.get("timeout", False),
+        "anomaly_r2": eval2.get("irregular_top", eval2.get("batman", False)) or eval2.get("timeout", False),
         "dad_quality_r1": dad_eval1.get("overall_quality") if dad_eval1 else None,
         "dad_quality_r2": dad_eval2.get("overall_quality") if dad_eval2 else None,
     }

@@ -1214,7 +1214,7 @@ class DashboardPanel(QWidget):
                                     "content": msg[:80],
                                 })
 
-                # 2. ANOMALIES (batman, timeout, etc.) - analysis_result
+                # 2. ANOMALIES (irregular top, timeout, etc.) - analysis_result
                 if filename == "analysis_result.json":
                     from hpsec_warnings import normalize_anomalies, classify_anomalies, ANOMALY_CATALOG
 
@@ -1263,11 +1263,11 @@ class DashboardPanel(QWidget):
                 if filename == "calibration_result.json":
                     cals = data.get("calibrations", [])
                     for cal in cals:
-                        if cal.get("has_batman"):
+                        if cal.get("has_irregular_top", cal.get("has_batman")):
                             notes.append({
                                 "stage": stage_name,
                                 "type": "ANOM",
-                                "content": "KHP amb batman",
+                                "content": "KHP amb cim irregular",
                             })
                         if cal.get("has_timeout"):
                             # Only show as anomaly if timeout severity is WARNING/CRITICAL

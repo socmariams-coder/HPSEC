@@ -1048,7 +1048,7 @@ class AnalyzePanel(QWidget):
 
         # Repairable hint
         if sample_data and sample_data.get("repairable") and not sample_data.get("repaired"):
-            tooltip_parts.append("Batman reparable — Doble-clic per opcions de reparació")
+            tooltip_parts.append("Pic amb cim irregular reparable — Doble-clic per opcions de reparació")
 
         tooltip = "\n".join(tooltip_parts) if tooltip_parts else "OK"
         return status_color, status_text, tooltip

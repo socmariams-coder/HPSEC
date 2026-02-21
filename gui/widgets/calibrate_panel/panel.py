@@ -1527,10 +1527,10 @@ class CalibratePanel(QWidget):
 
         # === CRITERIS INVALIDANTS (+100) ===
 
-        # Pic_J (Batman)
-        if khp.get('has_batman', False):
+        # Pic_J (cim irregular, jagged/batman)
+        if khp.get('has_irregular_top', khp.get('has_batman', False)):
             score += 100
-            issues.append("Pic_J: pic amb vall")
+            issues.append("Pic_J: pic amb cim irregular")
 
         # Múltiples pics en zona ±4 min
         n_pics = self._count_peaks_in_zone(khp, zone_min=4.0)
@@ -1727,12 +1727,12 @@ class CalibratePanel(QWidget):
                 item_r2 = QTableWidgetItem("-")
             self.metrics_table.setItem(row, 11, item_r2)
 
-            # Col 12: Pic_J (antic Batman)
-            has_batman = khp.get('has_batman', False)
-            item_picj = QTableWidgetItem("!" if has_batman else "-")
-            if has_batman:
+            # Col 12: Pic_J (cim irregular, jagged/batman)
+            has_irregular_top = khp.get('has_irregular_top', khp.get('has_batman', False))
+            item_picj = QTableWidgetItem("!" if has_irregular_top else "-")
+            if has_irregular_top:
                 item_picj.setBackground(QColor(255, 150, 150))
-                item_picj.setToolTip("Pic_J: pic amb vall (artefacte) - INVALID")
+                item_picj.setToolTip("Pic_J: pic amb cim irregular (artefacte) - INVALID")
             self.metrics_table.setItem(row, 12, item_picj)
 
             # Col 13: Timeout (color segons si afecta pic o no)

@@ -8,7 +8,7 @@ Single Source of Truth per evitar duplicació de codi.
 
 Funcions principals:
 - Bi-Gaussiana: fit_bigaussian, bigaussian, check_asymmetry
-- Detecció Batman: detect_batman, detect_peak_anomaly, calc_top_smoothness
+- Detecció cim irregular: detect_irregular_top, detect_peak_anomaly, calc_top_smoothness
 - Reparació: repair_with_parabola, find_tangents_and_anchors
 - Timeout TOC: detect_timeout, format_timeout_status (MILLOR MÈTODE: dt intervals)
 - Detecció pics: detect_main_peak, detect_all_peaks
@@ -56,8 +56,8 @@ PEARSON_INTERP_POINTS = 500   # Grid points for interpolated Pearson calculation
 ASYM_MIN = 0.33              # sigma_right/sigma_left minimum
 ASYM_MAX = 3.0               # sigma_right/sigma_left maximum
 
-# Batman detection
-MIN_VALLEY_DEPTH = 0.01      # 1% of peak height to detect Batman
+# Irregular top detection (jagged/batman artifact)
+MIN_VALLEY_DEPTH = 0.01      # 1% of peak height to detect irregular top
 
 # SNR
 THRESH_SNR = 10.0            # Minimum acceptable SNR
@@ -254,15 +254,15 @@ def check_asymmetry(asymmetry):
 
 
 # =============================================================================
-# BATMAN DETECTION
+# IRREGULAR TOP DETECTION (jagged/batman)
 # =============================================================================
 
-def detect_batman(t, y, top_pct=0.20, min_valley_depth=MIN_VALLEY_DEPTH):
+def detect_irregular_top(t, y, top_pct=0.20, min_valley_depth=MIN_VALLEY_DEPTH):
     """
-    Detect if peak has Batman shape (valleys at top = detector artifact).
+    Detect irregular peak top: valleys/jagged artifact from detector (historically "batman").
 
     ESTRICTE: Una vall només compta si té un pic ABANS i un pic DESPRÉS.
-    Patró Batman = pic-vall-pic (les "orelles" del Batman).
+    Patró pic-vall-pic al cim del cromatograma.
 
     Parameters:
         t, y: time and signal arrays (peak segment)
@@ -270,7 +270,7 @@ def detect_batman(t, y, top_pct=0.20, min_valley_depth=MIN_VALLEY_DEPTH):
         min_valley_depth: minimum depth (as fraction of height) to count
 
     Returns:
-        dict with is_batman, n_valleys, max_depth, valley info
+        dict with is_irregular_top, n_valleys, max_depth, valley info
     """
     t = np.asarray(t, dtype=float)
     y = np.asarray(y, dtype=float)
@@ -280,7 +280,7 @@ def detect_batman(t, y, top_pct=0.20, min_valley_depth=MIN_VALLEY_DEPTH):
     height = y_max - baseline
 
     if height <= 0:
-        return {"is_batman": False, "n_valleys": 0, "max_depth": 0, "reason": "no_height"}
+        return {"is_irregular_top": False, "n_valleys": 0, "max_depth": 0, "reason": "no_height"}
 
     # Define TOP region threshold
     threshold = baseline + height * (1 - top_pct)
@@ -291,7 +291,7 @@ def detect_batman(t, y, top_pct=0.20, min_valley_depth=MIN_VALLEY_DEPTH):
     y_top = y[top_mask]
 
     if len(y_top) < 5:
-        return {"is_batman": False, "n_valleys": 0, "max_depth": 0, "reason": "top_too_small"}
+        return {"is_irregular_top": False, "n_valleys": 0, "max_depth": 0, "reason": "top_too_small"}
 
     # Find LOCAL MAXIMA (peaks) in top region
     peaks_top, _ = find_peaks(y_top, distance=2)
@@ -302,7 +302,7 @@ def detect_batman(t, y, top_pct=0.20, min_valley_depth=MIN_VALLEY_DEPTH):
 
     if len(valleys) == 0:
         return {
-            "is_batman": False,
+            "is_irregular_top": False,
             "n_valleys": 0,
             "max_depth": 0,
             "t_top": t_top,
@@ -321,7 +321,7 @@ def detect_batman(t, y, top_pct=0.20, min_valley_depth=MIN_VALLEY_DEPTH):
 
     if len(valid_valleys) == 0:
         return {
-            "is_batman": False,
+            "is_irregular_top": False,
             "n_valleys": 0,
             "max_depth": 0,
             "t_top": t_top,
@@ -337,10 +337,10 @@ def detect_batman(t, y, top_pct=0.20, min_valley_depth=MIN_VALLEY_DEPTH):
     max_depth = max(valley_depths) if valley_depths else 0
     n_significant = sum(d > min_valley_depth for d in valley_depths)
 
-    is_batman = n_significant > 0 and max_depth > min_valley_depth
+    is_irregular_top = n_significant > 0 and max_depth > min_valley_depth
 
     return {
-        "is_batman": is_batman,
+        "is_irregular_top": is_irregular_top,
         "n_valleys": n_significant,
         "max_depth": max_depth,
         "t_top": t_top,
@@ -348,8 +348,12 @@ def detect_batman(t, y, top_pct=0.20, min_valley_depth=MIN_VALLEY_DEPTH):
         "valleys": valid_valleys,  # Només valls amb pic-vall-pic
         "valley_depths": valley_depths,
         "threshold": threshold,
-        "reason": "batman_detected" if is_batman else "valleys_too_shallow"
+        "reason": "irregular_top_detected" if is_irregular_top else "valleys_too_shallow"
     }
+
+
+# Backwards compatibility alias
+detect_batman = detect_irregular_top
 
 
 def calc_top_smoothness(t, y, top_pct=0.30):
@@ -439,18 +443,18 @@ def calc_top_smoothness(t, y, top_pct=0.30):
 
 def detect_peak_anomaly(t, y, top_pct=0.25, min_valley_depth=0.02, smoothness_threshold=70.0):
     """
-    HYBRID detection: Valleys (Batman) + Smoothness.
+    HYBRID detection: Irregular top (jagged/batman) + Smoothness.
 
     Strategy:
-    1. First check for valleys at top (clear Batman pattern)
+    1. First check for valleys at top (clear irregular top pattern)
     2. Then check smoothness (subtler irregularities)
     3. Combine both for final assessment
 
     Parameters:
         t, y: time and signal arrays (peak segment)
         top_pct: fraction of peak to analyze (0.25 = top 25%)
-        min_valley_depth: minimum valley depth to count as Batman
-        smoothness_threshold: below this = irregular
+        min_valley_depth: minimum valley depth to count as irregular top
+        smoothness_threshold: below this = rough top
 
     Returns:
         dict with is_anomaly, anomaly_type, details
@@ -458,25 +462,25 @@ def detect_peak_anomaly(t, y, top_pct=0.25, min_valley_depth=0.02, smoothness_th
     t = np.asarray(t, dtype=float)
     y = np.asarray(y, dtype=float)
 
-    # 1. Check for valleys (Batman)
-    batman = detect_batman(t, y, top_pct=top_pct, min_valley_depth=min_valley_depth)
+    # 1. Check for valleys at top (jagged/batman artifact)
+    irr_top = detect_irregular_top(t, y, top_pct=top_pct, min_valley_depth=min_valley_depth)
 
     # 2. Check smoothness
     smooth = calc_top_smoothness(t, y, top_pct=top_pct)
 
     # 3. Combine results
-    is_batman = batman.get("is_batman", False)
+    is_irregular_top = irr_top.get("is_irregular_top", False)
     smoothness = smooth.get("smoothness", 100.0)
 
-    # IRR: només si smoothness < threshold (ex: 18%)
-    is_irregular = smoothness < smoothness_threshold
+    # Rough top: només si smoothness < threshold
+    is_rough_top = smoothness < smoothness_threshold
 
     # Determine anomaly type
-    if is_batman:
-        anomaly_type = "BATMAN"
+    if is_irregular_top:
+        anomaly_type = "IRREGULAR_TOP"
         is_anomaly = True
-    elif is_irregular:
-        anomaly_type = "IRREGULAR"
+    elif is_rough_top:
+        anomaly_type = "ROUGH_TOP"
         is_anomaly = True
     else:
         anomaly_type = "OK"
@@ -486,11 +490,11 @@ def detect_peak_anomaly(t, y, top_pct=0.25, min_valley_depth=0.02, smoothness_th
         "is_anomaly": is_anomaly,
         "anomaly_type": anomaly_type,
         "smoothness": smoothness,
-        "is_batman": is_batman,
-        "is_irregular": is_irregular,
-        "n_valleys": batman.get("n_valleys", 0),
-        "max_valley_depth": batman.get("max_depth", 0),
-        "batman_info": batman,
+        "is_irregular_top": is_irregular_top,
+        "is_irregular": is_irregular_top or is_rough_top,  # compat: qualsevol irregularitat
+        "n_valleys": irr_top.get("n_valleys", 0),
+        "max_valley_depth": irr_top.get("max_depth", 0),
+        "irregular_top_info": irr_top,
         "smoothness_info": smooth
     }
 
@@ -638,9 +642,9 @@ def fit_parabola(t1, y1, t2, y2, t3, y3):
 
 def repair_with_parabola(t, y, factor=REPAIR_FACTOR):
     """
-    Repair Batman peak using parabola interpolation.
+    Repair irregular peak top (jagged/batman artifact) using parabola interpolation.
 
-    1. Detect Batman pattern
+    1. Detect irregular top pattern
     2. Calculate tangent intersection for theoretical peak
     3. Apply correction factor
     4. Fit parabola through anchors and theoretical max
@@ -656,11 +660,11 @@ def repair_with_parabola(t, y, factor=REPAIR_FACTOR):
     t = np.asarray(t, dtype=float)
     y = np.asarray(y, dtype=float)
 
-    # Detect Batman
-    batman = detect_batman(t, y)
+    # Detect irregular top (jagged/batman)
+    irr_top = detect_irregular_top(t, y)
 
-    if not batman["is_batman"]:
-        return y.copy(), batman, False
+    if not irr_top["is_irregular_top"]:
+        return y.copy(), irr_top, False
 
     # Get tangent info
     tangent = find_tangents_and_anchors(t, y)
@@ -698,7 +702,7 @@ def repair_with_parabola(t, y, factor=REPAIR_FACTOR):
     y_repaired[repair_mask] = np.maximum(y[repair_mask], y_parabola)
 
     repair_info = {
-        "batman": batman,
+        "irregular_top": irr_top,
         "tangent": tangent,
         "t_max": t_max,
         "y_max_theoretical": y_max_theoretical,
@@ -797,8 +801,8 @@ def calibrate_factor(t, y):
     Returns:
         dict with factor and info, or None if not suitable
     """
-    batman = detect_batman(t, y)
-    if batman["is_batman"]:
+    irr_top = detect_irregular_top(t, y)
+    if irr_top["is_irregular_top"]:
         return None
 
     tangent = find_tangents_and_anchors(t, y)
@@ -1334,21 +1338,50 @@ def detect_main_peak(t, y, min_prominence_pct=5.0, is_bp=None):
         n_edge = max(10, n // 10)
         baseline_level = float(min(np.median(y[:n_edge]), np.median(y[-n_edge:])))
 
-    # Trobar límits precisos
+    # =====================================================================
+    # PRE-REPAIR: Detectar i reparar cim irregular ABANS de find_peak_boundaries
+    # Si el cim del pic té artefactes (jagged/batman), la projecció tangent
+    # dóna límits erronis. Reparem primer, integrem sobre senyal reparat.
+    # =====================================================================
+    irregular_top_info = None
+    irregular_top_repaired = False
+    y_for_boundaries = y  # per defecte, senyal original
+
+    # Segment al voltant del pic per detecció (±5 min COLUMN, ±3 min BP)
+    t_peak = float(t[main_peak])
+    half_window = 3.0 if is_bp else 5.0
+    seg_mask = (t >= t_peak - half_window) & (t <= t_peak + half_window)
+    t_seg = t[seg_mask]
+    y_seg = y[seg_mask]
+
+    if len(y_seg) > 20:
+        irregular_top_info = detect_irregular_top(t_seg, y_seg)
+
+        if irregular_top_info.get("is_irregular_top", False):
+            # Intentar reparar amb paràbola
+            y_seg_repaired, repair_info, was_repaired = repair_with_parabola(t_seg, y_seg)
+            if was_repaired:
+                irregular_top_repaired = True
+                # Aplicar reparació al senyal complet per find_peak_boundaries
+                y_for_boundaries = y.copy()
+                y_for_boundaries[seg_mask] = y_seg_repaired
+
+    # Trobar límits precisos (sobre senyal reparat si calia)
     left_idx, right_idx = find_peak_boundaries(
-        t, y, main_peak, baseline_level, threshold_pct=5.0, is_bp=is_bp
+        t, y_for_boundaries, main_peak, baseline_level, threshold_pct=5.0, is_bp=is_bp
     )
 
     left_idx = max(0, left_idx)
     right_idx = min(len(y) - 1, right_idx)
 
-    # Calcular àrea
+    # Calcular àrea sobre senyal ORIGINAL (no reparat) amb els límits correctes
+    # La reparació serveix per trobar els límits, l'àrea és sobre dades originals
     if right_idx > left_idx:
         area = float(trapezoid(y[left_idx:right_idx + 1], t[left_idx:right_idx + 1]))
     else:
         area = 0.0
 
-    return {
+    result = {
         "valid": True,
         "t_max": float(t[main_peak]),
         "t_start": float(t[left_idx]),
@@ -1363,6 +1396,14 @@ def detect_main_peak(t, y, min_prominence_pct=5.0, is_bp=None):
         "baseline_level": baseline_level,
         "fallback": False,
     }
+
+    # Afegir info d'irregular top si detectat
+    if irregular_top_info is not None and irregular_top_info.get("is_irregular_top", False):
+        result["is_irregular_top"] = True
+        result["irregular_top_repaired"] = irregular_top_repaired
+        result["irregular_top_info"] = irregular_top_info
+
+    return result
 
 
 def detect_all_peaks(t, y, min_prominence_pct=5.0):

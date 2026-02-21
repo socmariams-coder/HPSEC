@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 # Import funcions de detecció des de hpsec_core (Single Source of Truth)
 from hpsec_core import (
     detect_timeout,
-    detect_batman,
+    detect_irregular_top,
     detect_peak_anomaly,
     detect_main_peak,
     detect_all_peaks,
@@ -113,9 +113,9 @@ DEFAULT_CONFIG = {
 
     # Processament
     "timeout_min_height_frac": 0.30,
-    "batman_max_sep_min": 0.5,
-    "batman_min_height_pct": 15.0,
-    "batman_min_sigma": 3.0,
+    "irregular_top_max_sep_min": 0.5,   # formerly batman_max_sep_min
+    "irregular_top_min_height_pct": 15.0,  # formerly batman_min_height_pct
+    "irregular_top_min_sigma": 3.0,    # formerly batman_min_sigma
 }
 
 # Volums d'injecció (µL)
@@ -1215,9 +1215,9 @@ def validate_integration_baseline(t, y, left_idx, right_idx, peak_idx, baseline_
         return {"valid": True, "message": f"Error validació: {e}"}
 
 
-# NOTA: detect_batman i detect_timeout ara estan a hpsec_core.py
+# NOTA: detect_irregular_top i detect_timeout ara estan a hpsec_core.py
 # (Single Source of Truth per evitar duplicació)
-# Usar: from hpsec_core import detect_batman, detect_timeout, detect_peak_anomaly
+# Usar: from hpsec_core import detect_irregular_top, detect_timeout, detect_peak_anomaly
 
 
 # =============================================================================
@@ -1468,7 +1468,7 @@ def validate_khp_quality(khp_data, all_peaks, timeout_info, anomaly_info=None, s
     Criteris:
     1. No múltiples pics significatius (>2 pics amb prominència >10%)
     2. No timeout en zona del pic
-    3. No batman/irregular
+    3. No cim irregular
     4. Simetria acceptable (0.5-2.0)
     5. SNR > 50 (KHP ha de ser senyal fort)
     6. Límits no expandits excessivament
@@ -1525,14 +1525,14 @@ def validate_khp_quality(khp_data, all_peaks, timeout_info, anomaly_info=None, s
             quality_score += 100
         # INFO: No penalitzar - timeout en zona segura
 
-    # 3. Anomalia de forma (batman/irregular)
+    # 3. Anomalia de forma (cim irregular / jagged)
     if anomaly_info:
-        if anomaly_info.get('is_batman', False):
-            issues.append("BATMAN: detectat artefacte batman al pic")
+        if anomaly_info.get('is_irregular_top', False):
+            issues.append("IRREGULAR_TOP: detectat cim irregular al pic (jagged/batman)")
             quality_score += 50
-        if anomaly_info.get('is_irregular', False):
+        if anomaly_info.get('is_irregular', False) and not anomaly_info.get('is_irregular_top', False):
             smoothness = anomaly_info.get('smoothness', 100)
-            warnings.append(f"IRREGULAR: smoothness baixa ({smoothness:.0f}%)")
+            warnings.append(f"ROUGH_TOP: smoothness baixa ({smoothness:.0f}%)")
             quality_score += 30
 
     # 4. Simetria (C11: irrellevant per BP)
@@ -1763,7 +1763,7 @@ def validate_khp_quality(khp_data, all_peaks, timeout_info, anomaly_info=None, s
 
 
 def validate_khp_for_alignment(t_doc, y_doc, t_dad, y_a254, t_uib=None, y_uib=None,
-                               method="COLUMN", repair_batman=True,
+                               method="COLUMN", repair_irregular_top=True,
                                seq_path=None, conc_ppm=None, volume_uL=None,
                                doc_mode=None, uib_sensitivity=None):
     """
@@ -1777,7 +1777,7 @@ def validate_khp_for_alignment(t_doc, y_doc, t_dad, y_a254, t_uib=None, y_uib=No
     2. TIMEOUT_HS: timeout detectat a zona HS (18-23 min per COLUMN)
     3. NO_PEAK: no es pot identificar pic clar
     4. INTENSITY_EXTREME: intensitat molt diferent de l'esperat
-    5. BATMAN: pic amb valley al cim (artefacte detector)
+    5. IRREGULAR_TOP: pic amb cim irregular (jagged/batman, artefacte detector)
     6. HISTORICAL_DEVIATION: àrea desvia significativament de l'històric
 
     Args:
@@ -1785,7 +1785,7 @@ def validate_khp_for_alignment(t_doc, y_doc, t_dad, y_a254, t_uib=None, y_uib=No
         t_dad, y_a254: Senyal A254
         t_uib, y_uib: Senyal UIB (opcional)
         method: "COLUMN" o "BP"
-        repair_batman: Si True, repara pics Batman per millorar precisió t_max
+        repair_irregular_top: Si True, repara pics amb cim irregular per millorar precisió t_max
         seq_path: Path de la SEQ (per comparació històrica)
         conc_ppm: Concentració KHP en ppm (per comparació històrica)
         volume_uL: Volum d'injecció en µL (per comparació històrica)
@@ -1796,8 +1796,8 @@ def validate_khp_for_alignment(t_doc, y_doc, t_dad, y_a254, t_uib=None, y_uib=No
             - issues: list de problemes detectats
             - warnings: list d'avisos
             - metrics: dict amb mètriques calculades
-            - y_doc_clean: senyal DOC netejat (si Batman reparat)
-            - t_max_corrected: t_max corregit si Batman reparat
+            - y_doc_clean: senyal DOC netejat (si irregular top reparat)
+            - t_max_corrected: t_max corregit si irregular top reparat
     """
     result = {
         "valid": True,
@@ -1824,7 +1824,7 @@ def validate_khp_for_alignment(t_doc, y_doc, t_dad, y_a254, t_uib=None, y_uib=No
     y_doc = np.asarray(y_doc, dtype=float)
     y_a254 = np.asarray(y_a254, dtype=float)
 
-    # === 0. DETECTAR I REPARAR BATMAN (si activat) ===
+    # === 0. DETECTAR I REPARAR CIM IRREGULAR (jagged/batman, si activat) ===
     if method == "COLUMN":
         peak_zone = (t_doc >= 15) & (t_doc <= 30)
     else:
@@ -1833,34 +1833,34 @@ def validate_khp_for_alignment(t_doc, y_doc, t_dad, y_a254, t_uib=None, y_uib=No
     t_peak_zone = t_doc[peak_zone]
     y_peak_zone = y_doc[peak_zone]
 
-    batman_info = None
+    irregular_top_info = None
     y_doc_working = y_doc.copy()
 
     if len(t_peak_zone) > 20:
-        batman_info = detect_batman(t_peak_zone, y_peak_zone, top_pct=0.20, min_valley_depth=0.02)
-        result["metrics"]["batman_detected"] = batman_info.get("is_batman", False)
+        irregular_top_info = detect_irregular_top(t_peak_zone, y_peak_zone, top_pct=0.20, min_valley_depth=0.02)
+        result["metrics"]["irregular_top_detected"] = irregular_top_info.get("is_irregular_top", False)
 
-        if batman_info.get("is_batman", False):
+        if irregular_top_info.get("is_irregular_top", False):
             result["warnings"].append(
-                f"BATMAN: Detectat patró pic-vall-pic (profunditat {batman_info.get('max_depth', 0)*100:.1f}%)"
+                f"IRREGULAR_TOP: Detectat cim irregular (profunditat {irregular_top_info.get('max_depth', 0)*100:.1f}%)"
             )
 
-            if repair_batman:
+            if repair_irregular_top:
                 try:
                     y_repaired, repair_info, was_repaired = repair_with_parabola(t_peak_zone, y_peak_zone)
                     if was_repaired:
                         y_doc_working[peak_zone] = y_repaired
                         result["y_doc_clean"] = y_doc_working
-                        result["metrics"]["batman_repaired"] = True
-                        result["warnings"].append("BATMAN_REPAIRED: Pic reparat amb paràbola")
+                        result["metrics"]["irregular_top_repaired"] = True
+                        result["warnings"].append("IRREGULAR_TOP_REPAIRED: Pic reparat amb paràbola")
 
                         idx_max_repaired = np.argmax(y_repaired)
                         t_max_corrected = t_peak_zone[idx_max_repaired]
                         result["t_max_corrected"] = float(t_max_corrected)
                 except Exception as e:
-                    result["metrics"]["batman_repair_error"] = str(e)
+                    result["metrics"]["irregular_top_repair_error"] = str(e)
 
-    # Trobar pics - usar y_doc_working (reparat si Batman)
+    # Trobar pics - usar y_doc_working (reparat si cim irregular)
     idx_max_doc = np.argmax(y_doc_working)
     idx_max_a254 = np.argmax(y_a254)
     t_max_doc = t_doc[idx_max_doc]
@@ -1889,7 +1889,7 @@ def validate_khp_for_alignment(t_doc, y_doc, t_dad, y_a254, t_uib=None, y_uib=No
         t_start = max(0, t_max_doc - 1)
         t_end = t_max_doc + 2
 
-    # Àrea DOC - usar y_doc_working (reparat si Batman)
+    # Àrea DOC - usar y_doc_working (reparat si cim irregular)
     mask_doc = (t_doc >= t_start) & (t_doc <= t_end)
     if np.sum(mask_doc) > 5:
         baseline_doc = np.percentile(y_doc_working[mask_doc], 5)
@@ -1986,7 +1986,7 @@ def validate_khp_for_alignment(t_doc, y_doc, t_dad, y_a254, t_uib=None, y_uib=No
     if seq_path and conc_ppm is not None and volume_uL is not None:
         try:
             # Calcular àrea del pic principal per comparar
-            # Usar y_doc_working (reparat si Batman)
+            # Usar y_doc_working (reparat si cim irregular)
             area_doc = result["metrics"].get("area_doc", 0)
             area_total = np.trapezoid(np.maximum(y_doc_working - np.percentile(y_doc_working, 5), 0), t_doc) if len(y_doc_working) > 5 else 0
             concentration_ratio = area_doc / area_total if area_total > 0 else 0
@@ -2600,25 +2600,25 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
     timeout_severity = timeout_info.get('severity', 'OK')
     has_timeout = timeout_info['n_timeouts'] > 0 and timeout_severity in ('WARNING', 'CRITICAL')
 
-    # Batman/Anomalies
+    # Cim irregular (jagged/batman) / Anomalies
     t_peak_seg = t_doc[left_idx:right_idx+1]
     y_peak_seg = y_doc_net[left_idx:right_idx+1]
     anomaly_info = detect_peak_anomaly(t_peak_seg, y_peak_seg)
-    has_batman = anomaly_info.get('is_batman', False)
+    has_irregular_top = anomaly_info.get('is_irregular_top', False)
     has_irregular = anomaly_info.get('is_irregular', False)
     smoothness = anomaly_info.get('smoothness', 100.0)
 
-    # Batman repair: intentar reparar amb paràbola si detectat
-    batman_repaired = False
+    # Reparació cim irregular: intentar reparar amb paràbola si detectat
+    irregular_top_repaired = False
     repair_info = None
     area_original = peak_info['area']
-    if has_batman:
+    if has_irregular_top:
         try:
             y_repaired_seg, repair_info, was_repaired = repair_with_parabola(
                 t_peak_seg, y_peak_seg
             )
             if was_repaired:
-                batman_repaired = True
+                irregular_top_repaired = True
                 # Recalcular àrea amb senyal reparat
                 area_repaired = float(trapezoid(y_repaired_seg, t_peak_seg))
                 peak_info['area_original'] = area_original
@@ -2628,7 +2628,7 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
                 y_doc_net_repaired = y_doc_net.copy()
                 y_doc_net_repaired[left_idx:right_idx+1] = y_repaired_seg
         except Exception:
-            batman_repaired = False
+            irregular_top_repaired = False
 
     # DAD 254nm: ratio DOC/254
     a254_doc_ratio = peak_info['area'] / a254_area if a254_area > 0 else 0.0
@@ -2704,9 +2704,9 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
     if snr < 10:
         quality_score += 20
         quality_issues.append(f"SNR baix ({snr:.1f})")
-    if has_batman:
+    if has_irregular_top:
         quality_score += 100
-        quality_issues.append("Doble pic (Batman)")
+        quality_issues.append("Pic amb cim irregular (jagged/batman)")
     # Timeout: només penalitza si afecta l'interval d'integració del pic
     if has_timeout:
         peak_timeout = timeout_affects_peak(timeout_info, t_doc, left_idx, right_idx)
@@ -2811,7 +2811,7 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
         't_dad_max': t_max_254,  # 254nm és la referència temporal
         't_doc': t_doc,
         'y_doc': y_doc_net,
-        'y_doc_repaired': y_doc_net_repaired if batman_repaired else None,
+        'y_doc_repaired': y_doc_net_repaired if irregular_top_repaired else None,
         't_dad': t_dad,
         'y_dad_254': dad_254,
         'symmetry': symmetry,
@@ -2821,10 +2821,10 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
         'all_peaks': all_peaks,
         'quality_score': quality_score,
         'quality_issues': quality_issues,
-        'has_batman': has_batman,
-        'batman_repaired': batman_repaired,
+        'has_irregular_top': has_irregular_top,
+        'irregular_top_repaired': irregular_top_repaired,
         'repair_info': repair_info,
-        'area_original': area_original if batman_repaired else None,
+        'area_original': area_original if irregular_top_repaired else None,
         'has_timeout': has_timeout,
         'timeout_info': timeout_info,
         'timeout_severity': timeout_severity,
@@ -2954,7 +2954,7 @@ def register_calibration(seq_path, khp_data, khp_source, mode="COLUMN"):
     2. GLOBAL (KHP_History.json) - Una entrada per SEQ per comparacions
 
     VALIDACIÓ COMPLETA amb validate_khp_quality():
-    - valid_for_shift: Pic clar, sense timeout crític, batman reparat
+    - valid_for_shift: Pic clar, sense timeout crític, cim irregular reparat
     - valid_for_calibration: Tots els criteris de qualitat (8 criteris)
     """
     seq_name = os.path.basename(seq_path)
@@ -3041,7 +3041,7 @@ def register_calibration(seq_path, khp_data, khp_source, mode="COLUMN"):
 
     # =========================================================================
     # VALIDACIÓ COMPLETA amb validate_khp_quality()
-    # Criteris: multi-pic, timeout, batman, simetria, SNR, límits, CR, històric
+    # Criteris: multi-pic, timeout, cim irregular, simetria, SNR, límits, CR, històric
     # =========================================================================
     all_peaks = khp_data.get('all_peaks', [])
     timeout_info = khp_data.get('timeout_info', {})
@@ -3077,8 +3077,8 @@ def register_calibration(seq_path, khp_data, khp_source, mode="COLUMN"):
         valid_for_shift = False
         shift_issues.append("Timeout crític a zona pic")
 
-    if khp_data.get('has_batman', False) and not khp_data.get('batman_repaired', False):
-        shift_issues.append("Batman no reparat (shift imprecís)")
+    if khp_data.get('has_irregular_top', False) and not khp_data.get('irregular_top_repaired', False):
+        shift_issues.append("Cim irregular no reparat (shift imprecís)")
 
     # Alias per compatibilitat
     is_outlier = not valid_for_calibration
@@ -3171,7 +3171,7 @@ def register_calibration(seq_path, khp_data, khp_source, mode="COLUMN"):
         "replica_comparison": khp_data.get('replica_comparison', {}),
         "quality_score": quality_score,
         "quality_issues": quality_issues,
-        "has_batman": khp_data.get('has_batman', False),
+        "has_irregular_top": khp_data.get('has_irregular_top', False),
         "has_timeout": khp_data.get('has_timeout', False),
 
         # =====================================================================
@@ -3623,15 +3623,16 @@ def _generate_calibration_warnings(result: dict, method: str = "COLUMN") -> list
                     condition_key=condition_key,
                 ))
 
-        # Batman (doble pic)
-        batman_info = cal.get("batman_info", {}) or cal.get("anomalies", {}).get("batman", {})
-        if batman_info.get("is_batman", False):
+        # Cim irregular (jagged/batman)
+        irr_top_info = (cal.get("irregular_top_info") or cal.get("anomalies", {}).get("irregular_top")
+                        or cal.get("batman_info", {}) or cal.get("anomalies", {}).get("batman", {}))
+        if irr_top_info and irr_top_info.get("is_irregular_top", irr_top_info.get("is_batman", False)):
             warnings.append(create_warning(
-                code="CAL_BATMAN",
+                code="CAL_IRREGULAR_TOP",
                 stage="calibrate",
                 condition_key=condition_key,
                 details={
-                    "valley_depth": batman_info.get("max_depth", 0),
+                    "valley_depth": irr_top_info.get("max_depth", 0),
                 },
             ))
 
@@ -4199,11 +4200,11 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
             for issue in r.get('quality_issues', []):
                 if issue not in all_quality_issues:
                     all_quality_issues.append(issue)
-        group_has_batman = any(r.get('has_batman', False) for r in replicas)
+        group_has_irregular_top = any(r.get('has_irregular_top', False) for r in replicas)
         group_has_irregular = any(r.get('has_irregular', False) for r in replicas)
         group_has_timeout = any(r.get('has_timeout', False) for r in replicas)
         group_smoothness = min((r.get('smoothness', 100.0) for r in replicas), default=100.0)
-        group_batman_repaired = any(r.get('batman_repaired', False) for r in replicas)
+        group_irregular_top_repaired = any(r.get('irregular_top_repaired', False) for r in replicas)
 
         # Determinar mètode de selecció
         if manual_selection:
@@ -4304,7 +4305,7 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
             # Anomalies i qualitat (pitjor cas de totes les rèpliques)
             'quality_score': max_quality_score,
             'quality_issues': all_quality_issues,
-            'has_batman': group_has_batman,
+            'has_irregular_top': group_has_irregular_top,
             'has_irregular': group_has_irregular,
             'has_timeout': group_has_timeout,
             'timeout_severity': max(
@@ -4313,7 +4314,7 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
                 default='OK'
             ),
             'smoothness': group_smoothness,
-            'batman_repaired': group_batman_repaired,
+            'irregular_top_repaired': group_irregular_top_repaired,
 
             # Estadístiques globals
             'n_replicas': len(replicas),

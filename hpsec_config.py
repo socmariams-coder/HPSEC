@@ -135,9 +135,9 @@ DEFAULT_CONFIG = {
 
     # --- DETECCIÓ ANOMALIES ---
     "detection": {
-        "batman_max_sep_min": 0.5,
-        "batman_drop_min": 0.05,
-        "batman_drop_max": 0.50,
+        "irregular_top_max_sep_min": 0.5,  # formerly batman_max_sep_min
+        "irregular_top_drop_min": 0.05,  # formerly batman_drop_min
+        "irregular_top_drop_max": 0.50,  # formerly batman_drop_max
         "timeout_min_duration": 5.0,  # segons
         "timeout_major": 74.0,  # segons (recàrrega xeringa)
         "ears_threshold": 0.10,  # 10% height
@@ -232,11 +232,25 @@ class ConfigManager:
     def _migrate_config(self, config):
         """Migra claus obsoletes a les noves."""
         det = config.get("detection", {})
-        # batman_max_sep → batman_max_sep_min
-        if "batman_max_sep" in det and "batman_max_sep_min" in det:
+        # batman_max_sep → batman_max_sep_min → irregular_top_max_sep_min
+        if "batman_max_sep" in det:
+            if "irregular_top_max_sep_min" not in det:
+                det["irregular_top_max_sep_min"] = det["batman_max_sep"]
             del det["batman_max_sep"]
-        elif "batman_max_sep" in det:
-            det["batman_max_sep_min"] = det.pop("batman_max_sep")
+        if "batman_max_sep_min" in det:
+            if "irregular_top_max_sep_min" not in det:
+                det["irregular_top_max_sep_min"] = det["batman_max_sep_min"]
+            del det["batman_max_sep_min"]
+        # batman_drop_min → irregular_top_drop_min
+        if "batman_drop_min" in det:
+            if "irregular_top_drop_min" not in det:
+                det["irregular_top_drop_min"] = det["batman_drop_min"]
+            del det["batman_drop_min"]
+        # batman_drop_max → irregular_top_drop_max
+        if "batman_drop_max" in det:
+            if "irregular_top_drop_max" not in det:
+                det["irregular_top_drop_max"] = det["batman_drop_max"]
+            del det["batman_drop_max"]
         return config
 
     def compute_config_fingerprint(self):

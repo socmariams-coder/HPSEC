@@ -348,12 +348,12 @@ class ConfigPanel(QWidget):
         g = sec_det.content_layout
         row = 0
 
-        row = self._add_double_spin(g, row, "detection.batman_max_sep_min",
-            "Separació màx. Batman (min):", 0.1, 2.0, 0.5, 2)
-        row = self._add_double_spin(g, row, "detection.batman_drop_min",
-            "Caiguda mín. Batman:", 0.01, 0.50, 0.05, 2)
-        row = self._add_double_spin(g, row, "detection.batman_drop_max",
-            "Caiguda màx. Batman:", 0.10, 1.00, 0.50, 2)
+        row = self._add_double_spin(g, row, "detection.irregular_top_max_sep_min",
+            "Separació màx. cim irregular (min):", 0.1, 2.0, 0.5, 2)
+        row = self._add_double_spin(g, row, "detection.irregular_top_drop_min",
+            "Caiguda mín. cim irregular:", 0.01, 0.50, 0.05, 2)
+        row = self._add_double_spin(g, row, "detection.irregular_top_drop_max",
+            "Caiguda màx. cim irregular:", 0.10, 1.00, 0.50, 2)
         row = self._add_double_spin(g, row, "detection.timeout_min_duration",
             "Durada mín. timeout (s):", 1.0, 30.0, 5.0, 1)
         row = self._add_double_spin(g, row, "detection.timeout_major",

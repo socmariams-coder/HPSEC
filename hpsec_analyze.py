@@ -39,7 +39,7 @@ __version_date__ = "2026-02-05"
 #         - analyze_sequence() ara genera samples_grouped amb tot
 # v1.4.0: Nova funció unificada analyze_signal() per qualsevol tipus de senyal
 #         Nova funció analyze_signal_comparison() per comparar dos senyals
-# v1.3.0: Afegides mètriques DUAL/COLUMN: batman_uib, pearson_direct_uib,
+# v1.3.0: Afegides mètriques DUAL/COLUMN: irregular_top_uib, pearson_direct_uib,
 #         area_diff_pct, sb_hs_ratio, doc_254_ratio, n_peaks_254_HS
 # v1.2.0: Afegit càlcul FWHM i simetria del pic (usat calculate_fwhm de hpsec_core)
 
@@ -60,7 +60,7 @@ from hpsec_core import (
     format_timeout_status,
     TIMEOUT_CONFIG,
     calc_snr,
-    detect_batman,
+    detect_irregular_top,
     detect_main_peak,
     find_peak_boundaries,
     calculate_fwhm,
@@ -703,8 +703,8 @@ def analyze_signal(t, y, signal_type="DOC", mode="COLUMN", timeout_positions=Non
             - loq: Limit of Quantification = 10 × noise (mAU)
 
             Anomalies:
-            - is_batman: Bool si detectat patró Batman
-            - batman_info: Dict amb detalls Batman (si detectat)
+            - is_irregular_top: Bool si detectat cim irregular (jagged/batman)
+            - irregular_top_info: Dict amb detalls (si detectat)
             - anomalies: Llista d'anomalies detectades
 
             Timeouts (només DOC):
@@ -800,13 +800,15 @@ def analyze_signal(t, y, signal_type="DOC", mode="COLUMN", timeout_positions=Non
         result["symmetry"] = symmetry
 
         # =====================================================================
-        # BATMAN DETECTION
+        # IRREGULAR TOP DETECTION (jagged/batman — from detect_main_peak pre-repair)
         # =====================================================================
-        batman_result = detect_batman(t, y_smooth)
-        result["is_batman"] = batman_result.get("is_batman", False)
-        if result["is_batman"]:
-            result["batman_info"] = batman_result
-            result["anomalies"].append(create_anomaly("BATMAN", details=batman_result))
+        if peak_info.get("is_irregular_top", False):
+            result["is_irregular_top"] = True
+            result["irregular_top_info"] = peak_info.get("irregular_top_info", {})
+            result["irregular_top_repaired"] = peak_info.get("irregular_top_repaired", False)
+            result["anomalies"].append(create_anomaly("IRREGULAR_TOP", details=result["irregular_top_info"]))
+        else:
+            result["is_irregular_top"] = False
 
         # =====================================================================
         # SNR / LOD / LOQ
@@ -1182,8 +1184,8 @@ def recommend_replica(r1_result, r2_result, comparison, mode="COLUMN"):
         # Ambdues tenen anomalies crítiques
         has_irreparable1 = bool(codes1 & irreparable_codes)
         has_irreparable2 = bool(codes2 & irreparable_codes)
-        has_batman1 = bool(codes1 & repairable_codes)
-        has_batman2 = bool(codes2 & repairable_codes)
+        has_repairable1 = bool(codes1 & repairable_codes)
+        has_repairable2 = bool(codes2 & repairable_codes)
 
         if has_irreparable1 and has_irreparable2:
             # Ambdues amb anomalies no reparables → mostra no vàlida
@@ -1195,28 +1197,28 @@ def recommend_replica(r1_result, r2_result, comparison, mode="COLUMN"):
                 result["doc"] = {"replica": "1", "score": 0.3,
                                  "reason": "Ambdues amb anomalies no reparables",
                                  "valid": False}
-        elif has_batman1 or has_batman2:
-            # Almenys una té Batman (reparable) → triar la millor, suggerir reparació
+        elif has_repairable1 or has_repairable2:
+            # Almenys una té cim irregular (reparable) → triar la millor, suggerir reparació
             repairable = []
-            if has_batman1 and not has_irreparable1:
+            if has_repairable1 and not has_irreparable1:
                 repairable.append("1")
-            if has_batman2 and not has_irreparable2:
+            if has_repairable2 and not has_irreparable2:
                 repairable.append("2")
 
             if len(repairable) == 2:
                 # Ambdues reparables, triar per SNR
                 chosen = "2" if snr2 > snr1 else "1"
                 result["doc"] = {"replica": chosen, "score": 0.4,
-                                 "reason": "Ambdues amb Batman (reparable), triar per SNR",
+                                 "reason": "Ambdues amb cim irregular (reparable), triar per SNR",
                                  "repairable": True,
                                  "repairable_replicas": repairable}
             elif len(repairable) == 1:
                 result["doc"] = {"replica": repairable[0], "score": 0.4,
-                                 "reason": f"R{repairable[0]} amb Batman (reparable)",
+                                 "reason": f"R{repairable[0]} amb cim irregular (reparable)",
                                  "repairable": True,
                                  "repairable_replicas": repairable}
             else:
-                # Cap reparable (p.ex. ambdues amb irreparable + batman)
+                # Cap reparable (p.ex. ambdues amb irreparable + cim irregular)
                 if snr2 > snr1:
                     result["doc"] = {"replica": "2", "score": 0.3,
                                      "reason": "Ambdues amb anomalies crítiques",
@@ -1226,7 +1228,7 @@ def recommend_replica(r1_result, r2_result, comparison, mode="COLUMN"):
                                      "reason": "Ambdues amb anomalies crítiques",
                                      "valid": False}
         else:
-            # Anomalies crítiques sense Batman → no vàlida
+            # Anomalies crítiques sense cim irregular → no vàlida
             if snr2 > snr1:
                 result["doc"] = {"replica": "2", "score": 0.3,
                                  "reason": "Ambdues amb anomalies crítiques",
@@ -1277,9 +1279,9 @@ def recommend_replica(r1_result, r2_result, comparison, mode="COLUMN"):
     return result
 
 
-def repair_batman_in_replica(sample_result, signal="direct"):
+def repair_irregular_top_in_replica(sample_result, signal="direct"):
     """
-    Repara Batman en una rèplica usant repair_with_parabola().
+    Repara cim irregular (jagged/batman) en una rèplica usant repair_with_parabola().
 
     Modifica in-place el sample_result: actualitza y_doc_net (o y_doc_uib_net),
     recalcula àrees, i guarda traçabilitat de la reparació.
@@ -1306,15 +1308,13 @@ def repair_batman_in_replica(sample_result, signal="direct"):
 
     if signal == "direct":
         y_key = "y_doc_net"
-        anom_key = "BATMAN_DIRECT"
-        batman_key = "batman_direct"
-        batman_info_key = "batman_direct_info"
+        anom_key = "IRREGULAR_TOP_DIRECT"
+        irr_key = "irregular_top_direct"
         areas_key = "areas"
     else:
         y_key = "y_doc_uib_net"
-        anom_key = "BATMAN_UIB"
-        batman_key = "batman_uib"
-        batman_info_key = "batman_uib_info"
+        anom_key = "IRREGULAR_TOP_UIB"
+        irr_key = "irregular_top_uib"
         areas_key = "areas_uib"
 
     y_original = np.asarray(sample_result.get(y_key, []))
@@ -1336,16 +1336,18 @@ def repair_batman_in_replica(sample_result, signal="direct"):
     sample_result[y_key] = y_repaired.tolist()
     sample_result[f"{y_key}_original"] = y_original.tolist()  # Backup
 
-    # Marcar anomalia Batman com a reparada
+    # Marcar anomalia cim irregular com a reparada
     anomalies = sample_result.get("anomalies", [])
     if not mark_repaired(anomalies, anom_key, repair_info=repair_info):
         # Fallback per strings antics (backward compat)
-        if anom_key in anomalies:
-            anomalies.remove(anom_key)
-            anomalies.append(f"{anom_key}_REPAIRED")
-    sample_result[batman_key] = False
-    sample_result[f"{batman_key}_repaired"] = True
-    sample_result[f"{batman_key}_repair_info"] = {
+        for old_key in [anom_key, "BATMAN_DIRECT" if signal == "direct" else "BATMAN_UIB"]:
+            if old_key in anomalies:
+                anomalies.remove(old_key)
+                anomalies.append(f"{anom_key}_REPAIRED")
+                break
+    sample_result[irr_key] = False
+    sample_result[f"{irr_key}_repaired"] = True
+    sample_result[f"{irr_key}_repair_info"] = {
         "t_max": repair_info.get("t_max"),
         "y_max_original": repair_info.get("y_max_original"),
         "y_max_theoretical": repair_info.get("y_max_theoretical"),
@@ -1372,6 +1374,10 @@ def repair_batman_in_replica(sample_result, signal="direct"):
     }
 
     return repair_result
+
+
+# Backwards compatibility alias
+repair_batman_in_replica = repair_irregular_top_in_replica
 
 
 def quantify_sample(sample_result, calibration_data, mode="COLUMN", seq_date=None):
@@ -1569,8 +1575,8 @@ def analyze_sample(sample_data, calibration_data=None, config=None):
             - fwhm_doc: FWHM del pic DOC (minuts)
             - symmetry_doc: Simetria del pic DOC (ratio)
             - fwhm_uib: FWHM del pic UIB (minuts, només si DUAL)
-            - batman_direct: Bool si detectat Batman a Direct
-            - batman_uib: Bool si detectat Batman a UIB (només DUAL)
+            - irregular_top_direct: Bool si detectat cim irregular a Direct
+            - irregular_top_uib: Bool si detectat cim irregular a UIB (només DUAL)
             - areas: Dict amb àrees per fraccions (DOC + DAD)
             - areas_uib: Dict àrees UIB per fraccions (només DUAL)
             - tmax_signals: Dict amb tmax per senyal
@@ -1751,29 +1757,28 @@ def analyze_sample(sample_data, calibration_data=None, config=None):
     if not peak_info.get("valid"):
         result["anomalies"].append(create_anomaly("NO_PEAK"))
     else:
-        # Detectar Batman DOC Direct
-        batman_result = detect_batman(t_doc, y_smooth)
-        if batman_result.get("is_batman"):
-            result["anomalies"].append(create_anomaly("BATMAN_DIRECT", details=batman_result))
-            result["batman_direct"] = True
-            result["batman_direct_info"] = batman_result
-            # Log per dev notes (si actiu)
-            _log_detection_issue(seq_name, sample_name, "batman", "direct", batman_result)
+        # Cim irregular DOC Direct (ja detectat per detect_main_peak pre-repair)
+        if peak_info.get("is_irregular_top", False):
+            irr_info = peak_info.get("irregular_top_info", {})
+            result["anomalies"].append(create_anomaly("IRREGULAR_TOP_DIRECT", details=irr_info))
+            result["irregular_top_direct"] = True
+            result["irregular_top_direct_info"] = irr_info
+            result["irregular_top_direct_repaired"] = peak_info.get("irregular_top_repaired", False)
+            _log_detection_issue(seq_name, sample_name, "irregular_top", "direct", irr_info)
         else:
-            result["batman_direct"] = False
+            result["irregular_top_direct"] = False
 
-    # Detectar Batman UIB (si DUAL)
+    # Detectar cim irregular UIB (si DUAL)
     if is_dual and y_doc_uib_net is not None and len(y_doc_uib_net) > 0:
         y_uib_smooth = apply_smoothing(y_doc_uib_net)
-        batman_uib_result = detect_batman(t_doc, y_uib_smooth)
-        if batman_uib_result.get("is_batman"):
-            result["anomalies"].append(create_anomaly("BATMAN_UIB", details=batman_uib_result))
-            result["batman_uib"] = True
-            result["batman_uib_info"] = batman_uib_result
-            # Log per dev notes (si actiu)
-            _log_detection_issue(seq_name, sample_name, "batman", "uib", batman_uib_result)
+        irr_uib_result = detect_irregular_top(t_doc, y_uib_smooth)
+        if irr_uib_result.get("is_irregular_top"):
+            result["anomalies"].append(create_anomaly("IRREGULAR_TOP_UIB", details=irr_uib_result))
+            result["irregular_top_uib"] = True
+            result["irregular_top_uib_info"] = irr_uib_result
+            _log_detection_issue(seq_name, sample_name, "irregular_top", "uib", irr_uib_result)
         else:
-            result["batman_uib"] = False
+            result["irregular_top_uib"] = False
 
     result["peak_info"] = peak_info
 
@@ -2862,7 +2867,7 @@ def save_analysis_result(analysis_data, output_path=None):
             "timeout_info": sample.get("timeout_info", {}),
             "snr_info": sample.get("snr_info", {}),
             "snr_info_dad": sample.get("snr_info_dad", {}),
-            "batman_uib": sample.get("batman_uib"),
+            "irregular_top_uib": sample.get("irregular_top_uib"),
             "pearson_direct_uib": sample.get("pearson_direct_uib"),
             "area_diff_pct": sample.get("area_diff_pct"),
             # --- Camps escalars nous ---
@@ -2871,8 +2876,8 @@ def save_analysis_result(analysis_data, output_path=None):
             "n_peaks_per_wl": sample.get("n_peaks_per_wl", {}),
             "is_bp": sample.get("is_bp", False),
             "is_dual": sample.get("is_dual", False),
-            "batman_direct": sample.get("batman_direct"),
-            "batman_direct_info": sample.get("batman_direct_info"),
+            "irregular_top_direct": sample.get("irregular_top_direct"),
+            "irregular_top_direct_info": sample.get("irregular_top_direct_info"),
             "bigaussian_doc": sample.get("bigaussian_doc"),
             "bigaussian_254": sample.get("bigaussian_254"),
             "fwhm_doc": sample.get("fwhm_doc"),

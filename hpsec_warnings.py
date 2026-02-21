@@ -65,7 +65,7 @@ WARNING_DEFINITIONS = {
     "CAL_NO_KHP": (WarningLevel.BLOCKER, "No s'ha trobat cap KHP", False),
     "CAL_ALL_REPLICAS_INVALID": (WarningLevel.BLOCKER, "Totes les rèpliques són invàlides", False),
     "CAL_TIMEOUT": (WarningLevel.BLOCKER, "Timeout detectat en KHP: {details}", False),
-    "CAL_BATMAN": (WarningLevel.BLOCKER, "Pic Batman detectat (doble pic)", False),
+    "CAL_IRREGULAR_TOP": (WarningLevel.BLOCKER, "Pic irregular detectat (doble pic)", False),  # formerly CAL_BATMAN
     "CAL_RSD_HIGH": (WarningLevel.WARNING, "RSD de rèpliques alt ({rsd:.1f}% > {threshold}%)", True),
     "CAL_GLOBAL_ONLY": (WarningLevel.INFO, "Sense KHP local - usant calibració global ({msg})", True),
     "CAL_DEVIATION_HIGH": (WarningLevel.WARNING, "Desviació històrica alta ({dev:.1f}% > 15%)", True),
@@ -86,7 +86,7 @@ WARNING_DEFINITIONS = {
     # === ANALITZAR ===
     "ANA_NO_CALIBRATION": (WarningLevel.BLOCKER, "No hi ha calibració disponible", False),
     "ANA_TIMEOUT": (WarningLevel.BLOCKER, "Timeout detectat en mostra {sample}", False),
-    "ANA_BATMAN": (WarningLevel.WARNING, "Pic Batman en mostra {sample}", True),  # WARNING en anàlisi
+    "ANA_IRREGULAR_TOP": (WarningLevel.WARNING, "Pic irregular en mostra {sample}", True),  # WARNING en anàlisi; formerly ANA_BATMAN
     "ANA_NO_PEAK": (WarningLevel.WARNING, "No s'ha detectat pic DOC en {sample}", True),
     "ANA_SNR_LOW": (WarningLevel.WARNING, "SNR baix en {sample} ({snr:.1f} < 10)", True),
     "ANA_AREA_NEGATIVE": (WarningLevel.WARNING, "Àrea negativa en {sample}", True),
@@ -285,7 +285,8 @@ def migrate_legacy_warning(legacy_warning: str, stage: str = "unknown") -> dict:
     patterns = [
         # Calibrar
         ("TIMEOUT", "CAL_TIMEOUT" if stage == "calibrate" else "ANA_TIMEOUT"),
-        ("BATMAN", "CAL_BATMAN" if stage == "calibrate" else "ANA_BATMAN"),
+        ("BATMAN", "CAL_IRREGULAR_TOP" if stage == "calibrate" else "ANA_IRREGULAR_TOP"),  # legacy batman pattern
+        ("IRREGULAR_TOP", "CAL_IRREGULAR_TOP" if stage == "calibrate" else "ANA_IRREGULAR_TOP"),
         ("MULTI", "CAL_MULTI_PEAK"),
         ("LOW_SNR", "CAL_SNR_LOW" if stage == "calibrate" else "ANA_SNR_LOW"),
         ("SNR", "CAL_SNR_LOW" if stage == "calibrate" else "ANA_SNR_LOW"),
@@ -376,27 +377,27 @@ def normalize_warnings(warnings: list, stage: str = "unknown") -> list:
 
 ANOMALY_CATALOG = {
     # === Anomalies d'anàlisi (per rèplica) ===
-    "BATMAN_DIRECT": {
+    "IRREGULAR_TOP_DIRECT": {  # formerly BATMAN_DIRECT — jagged/batman artifact
         "severity": WarningLevel.BLOCKER,
-        "label": "Batman Direct",
+        "label": "Irregular Top Direct",
         "icon": "B",
         "description": "Doble pic detectat en senyal DOC Direct",
         "stage": "analyze",
         "repairable": True,
         "invalidates": False,
     },
-    "BATMAN_UIB": {
+    "IRREGULAR_TOP_UIB": {  # formerly BATMAN_UIB — jagged/batman artifact
         "severity": WarningLevel.BLOCKER,
-        "label": "Batman UIB",
+        "label": "Irregular Top UIB",
         "icon": "B",
         "description": "Doble pic detectat en senyal DOC UIB",
         "stage": "analyze",
         "repairable": True,
         "invalidates": False,
     },
-    "BATMAN": {
+    "IRREGULAR_TOP": {  # formerly BATMAN — jagged/batman artifact
         "severity": WarningLevel.BLOCKER,
-        "label": "Batman",
+        "label": "Irregular Top",
         "icon": "B",
         "description": "Doble pic detectat",
         "stage": "analyze",
@@ -672,12 +673,12 @@ def create_warnings_from_timeout_info(timeout_info: dict, stage: str = "calibrat
     return warnings
 
 
-def create_warnings_from_batman_info(batman_info: dict, stage: str = "calibrate", sample: str = None) -> list:
+def create_warnings_from_irregular_top_info(irregular_top_info: dict, stage: str = "calibrate", sample: str = None) -> list:
     """
-    Crea avisos estructurats a partir de la info de batman de hpsec_core.detect_batman().
+    Crea avisos estructurats a partir de la info d'irregular top (jagged/batman artifact).
 
     Args:
-        batman_info: Dict retornat per hpsec_core.detect_batman()
+        irregular_top_info: Dict retornat per hpsec_core.detect_irregular_top()
         stage: "calibrate" o "analyze"
         sample: Nom de la mostra (opcional)
 
@@ -686,18 +687,27 @@ def create_warnings_from_batman_info(batman_info: dict, stage: str = "calibrate"
     """
     warnings = []
 
-    if not batman_info or not batman_info.get("is_batman", False):
+    # Support both new key "is_irregular_top" and legacy key "is_batman"
+    is_detected = irregular_top_info.get("is_irregular_top", False) if irregular_top_info else False
+    if not is_detected:
+        is_detected = irregular_top_info.get("is_batman", False) if irregular_top_info else False
+
+    if not is_detected:
         return warnings
 
-    code = "CAL_BATMAN" if stage == "calibrate" else "ANA_BATMAN"
+    code = "CAL_IRREGULAR_TOP" if stage == "calibrate" else "ANA_IRREGULAR_TOP"
     warnings.append(create_warning(
         code=code,
         stage=stage,
         sample=sample,
         details={
-            "valley_depth": batman_info.get("max_depth", 0),
-            "n_valleys": batman_info.get("n_valleys", 0),
+            "valley_depth": irregular_top_info.get("max_depth", 0),
+            "n_valleys": irregular_top_info.get("n_valleys", 0),
         },
     ))
 
     return warnings
+
+
+# Backwards compatibility alias
+create_warnings_from_batman_info = create_warnings_from_irregular_top_info

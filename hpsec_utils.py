@@ -13,7 +13,7 @@ NOTA (2026-02-03): Les funcions de baseline s'han mogut a hpsec_core.py:
   - mode_robust
   Importar des de hpsec_core en lloc d'aquí.
 
-NOTA: detect_main_peak i detect_batman s'han mogut a hpsec_core.py (2026-01-29)
+NOTA: detect_main_peak i detect_irregular_top (formerly detect_batman) s'han mogut a hpsec_core.py (2026-01-29)
 NOTA: obtenir_seq, is_khp, extract_khp_conc, normalize_key s'han mogut a hpsec_import.py (2026-01-29)
 """
 

@@ -108,8 +108,8 @@ class KHPReplicaGraphWidget(QWidget):
             ax.fill_between(t_doc[li:ri+1], 0, y_doc[li:ri+1],
                            alpha=0.15, color=color_direct)
 
-        # Batman: show original if repaired
-        if rep_direct.get('batman_repaired') and rep_direct.get('y_doc_repaired') is not None:
+        # Cim irregular: show original if repaired (jagged/batman)
+        if rep_direct.get('irregular_top_repaired', rep_direct.get('batman_repaired')) and rep_direct.get('y_doc_repaired') is not None:
             y_repaired = np.asarray(rep_direct['y_doc_repaired'])
             if len(y_repaired) == len(t_doc):
                 ax.plot(t_doc, y_repaired, color='#E74C3C', linewidth=0.8,
@@ -247,9 +247,9 @@ class KHPReplicaGraphWidget(QWidget):
                 tag = 'OK' if status == 'VALID' else ('!!' if status in ('CHECK', 'INVALID') else '')
                 lines.append(f"R\u00B2={r2:.4f} {tag}")
 
-        # Anomalies
-        if rep.get('has_batman'):
-            lines.append("BATMAN" + (" (rep)" if rep.get('batman_repaired') else " !!"))
+        # Anomalies — cim irregular (jagged/batman)
+        if rep.get('has_irregular_top', rep.get('has_batman')):
+            lines.append("Pic_J" + (" (rep)" if rep.get('irregular_top_repaired', rep.get('batman_repaired')) else " !!"))
         qs = rep.get('quality_score', 0)
         if qs > 0:
             lines.append(f"QS={qs}")
