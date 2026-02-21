@@ -2453,13 +2453,30 @@ class CalibratePanel(QWidget):
 
             # Gràfic de recta de calibració (PROMINENT, a dalt)
             try:
-                qc_history = load_qc_history()
+                qc_history_raw = load_qc_history()
                 config = get_config()
                 rf_mass_col = get_rf_mass_cal(signal='direct', mode='column')
                 rf_mass_bp = get_rf_mass_cal(signal='direct', mode='bp')
                 rf_mass_val = rf_mass_col or rf_mass_bp or 682
                 intercept_col = get_calibration_intercept(signal='direct', mode='column')
                 intercept_bp = get_calibration_intercept(signal='direct', mode='bp')
+
+                # Filtrar QC history per concentració i volum actuals
+                qc_history = []
+                for entry in qc_history_raw:
+                    m = entry.get('measured', {})
+                    entry_conc = m.get('khp_conc_ppm', entry.get('khp_conc_ppm', 0))
+                    entry_vol = m.get('volume_uL', entry.get('volume_uL', 0))
+                    # Filtre concentració: tolerància relativa 10%
+                    if khp_conc and entry_conc:
+                        tol = max(0.01, khp_conc * 0.1)
+                        if abs(entry_conc - khp_conc) > tol:
+                            continue
+                    # Filtre volum: exacte si disponible
+                    if current_volume and entry_vol and entry_vol != current_volume:
+                        continue
+                    qc_history.append(entry)
+
                 self.cal_line_group.setTitle("Recta de calibració")
                 self.cal_line_group.setVisible(True)
                 self.calibration_line_graph.plot_calibration(

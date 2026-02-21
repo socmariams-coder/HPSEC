@@ -1511,19 +1511,19 @@ def validate_khp_quality(khp_data, all_peaks, timeout_info, anomaly_info=None, s
             issues.append(f"MULTI_PEAK: {len(significant_peaks)} pics significatius detectats")
             quality_score += 30 * (len(significant_peaks) - 2)
 
-    # 2. Timeout
-    # NOTA: Timeout INFO (zona segura) NO és warning - només CRITICAL i WARNING compten
+    # 2. Timeout — severity WARNING o CRITICAL invalida directament (+100)
+    # INFO: timeout en zona segura, no penalitza
     if timeout_info:
         severity = timeout_info.get('severity', 'OK')
         if severity == 'CRITICAL':
             issues.append(f"TIMEOUT_CRITICAL: timeout en zona HS")
-            quality_score += 150
+            quality_score += 100
         elif severity == 'WARNING':
             zones = timeout_info.get('zone_summary', {})
             affected = [z for z in zones.keys() if zones[z] > 0]
-            warnings.append(f"TIMEOUT_WARNING: timeout en {', '.join(affected)}")
-            quality_score += 50
-        # INFO: No afegir warning ni penalitzar - timeout en zona segura és acceptable
+            issues.append(f"TIMEOUT_WARNING: timeout en {', '.join(affected)}")
+            quality_score += 100
+        # INFO: No penalitzar - timeout en zona segura
 
     # 3. Anomalia de forma (batman/irregular)
     if anomaly_info:
