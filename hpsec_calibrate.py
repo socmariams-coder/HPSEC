@@ -1270,10 +1270,11 @@ def get_historical_khp_stats(seq_path, mode="COLUMN", conc_ppm=None, volume_uL=N
             continue
         if cal.get('area', 0) <= 0:
             continue
-        # Filtrar per concentració si s'especifica
+        # Filtrar per concentració si s'especifica (tolerància relativa 10%)
         if conc_ppm is not None:
             cal_conc = cal.get('conc_ppm', 0)
-            if abs(cal_conc - conc_ppm) > 0.5:  # Tolerància de 0.5 ppm
+            tol = max(0.01, conc_ppm * 0.1)
+            if abs(cal_conc - conc_ppm) > tol:
                 continue
         # Filtrar per volum si s'especifica
         if volume_uL is not None:

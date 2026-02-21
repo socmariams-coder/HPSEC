@@ -380,7 +380,7 @@ class HistoryPanel(QWidget):
         for cal in self._all_calibrations:
             conc = cal.get('conc_ppm', 0)
             if conc > 0:
-                concs.add(int(round(conc)))
+                concs.add(conc)
 
             vol = cal.get('volume_uL', 0)
             if vol > 0:
@@ -396,7 +396,7 @@ class HistoryPanel(QWidget):
         self.conc_filter.clear()
         self.conc_filter.addItem("Totes", None)
         for c in sorted(concs):
-            self.conc_filter.addItem(f"{c} ppm", c)
+            self.conc_filter.addItem(f"{c:g} ppm", c)
         if current_conc is not None:
             idx = self.conc_filter.findData(current_conc)
             if idx >= 0:
@@ -444,9 +444,12 @@ class HistoryPanel(QWidget):
             if mode_filter and cal.get('mode', 'COLUMN') != mode_filter:
                 continue
 
-            # Filtre concentració
-            if conc_filter and abs(cal.get('conc_ppm', 0) - conc_filter) >= 1:
-                continue
+            # Filtre concentració (tolerància relativa 10% per agrupar valors similars)
+            if conc_filter:
+                cal_conc = cal.get('conc_ppm', 0)
+                tol = max(0.01, conc_filter * 0.1)
+                if abs(cal_conc - conc_filter) > tol:
+                    continue
 
             # Filtre volum
             if vol_filter and cal.get('volume_uL', 0) != vol_filter:
@@ -503,7 +506,7 @@ class HistoryPanel(QWidget):
 
             # Col 3: KHP conc
             conc = cal.get('conc_ppm', 0)
-            self.history_table.setItem(row, 3, QTableWidgetItem(f"{conc:.0f}"))
+            self.history_table.setItem(row, 3, QTableWidgetItem(f"{conc:g}"))
 
             # Col 4: Volum
             vol = cal.get('volume_uL', 0)
@@ -1246,7 +1249,7 @@ class HistoryPanel(QWidget):
             ("Seqüència", cal.get('seq_name', 'N/A')),
             ("Data", cal.get('date_processed', 'N/A')[:19].replace('T', ' ')),
             ("Mode", cal.get('mode', 'N/A')),
-            ("KHP", f"{cal.get('conc_ppm', 0)} ppm"),
+            ("KHP", f"{cal.get('conc_ppm', 0):g} ppm"),
             ("Volum", f"{cal.get('volume_uL', 0)} µL"),
             ("Font", cal.get('khp_source', 'LOCAL')),
         ]

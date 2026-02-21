@@ -327,7 +327,7 @@ class AnalyzePanel(QWidget):
             color = "#E67E22" if is_alt else "#27AE60"
             icon = "⚠" if is_alt else "✓"
 
-            khp_label = f"KHP {khp_conc:.0f}ppm"
+            khp_label = f"KHP {khp_conc:g}ppm"
             if volume_uL > 0:
                 khp_label += f" @ {volume_uL:.0f}µL"
 

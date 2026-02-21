@@ -191,7 +191,7 @@ class CalibratePanel(QWidget):
 
             # Format llegible: "KHP 2ppm @ 50µL" o "BP_50_2"
             if volume > 0 and conc > 0:
-                label = f"KHP {conc:.0f}ppm @ {volume:.0f}µL"
+                label = f"KHP {conc:g}ppm @ {volume:.0f}µL"
                 if mode:
                     label = f"{mode}: {label}"
             else:
@@ -1205,7 +1205,7 @@ class CalibratePanel(QWidget):
 
         # Concentració KHP
         khp_conc = result.get("khp_conc", 0)
-        self.result_labels["khp_conc"].setText(f"{khp_conc:.0f} ppm" if khp_conc > 0 else "-")
+        self.result_labels["khp_conc"].setText(f"{khp_conc:g} ppm" if khp_conc > 0 else "-")
 
         # Volum injecció
         khp_data_main = result.get("khp_data_direct") or result.get("khp_data_uib")
@@ -2385,10 +2385,11 @@ class CalibratePanel(QWidget):
                 cal_conc = cal.get('conc_ppm', 0)
                 cal_vol = cal.get('volume_uL', current_volume)
 
-                # Filtres: mode exacte, conc ±1, volum exacte (o si no hi ha volum registrat)
+                # Filtres: mode exacte, conc ±10%, volum exacte (o si no hi ha volum registrat)
                 if cal_mode != method:
                     continue
-                if abs(cal_conc - khp_conc) >= 1:
+                tol = max(0.01, khp_conc * 0.1)
+                if abs(cal_conc - khp_conc) > tol:
                     continue
                 if cal_vol and current_volume and cal_vol != current_volume:
                     continue
@@ -2414,7 +2415,7 @@ class CalibratePanel(QWidget):
             # Mostrar filtres aplicats
             outlier_text = " (amb outliers)" if include_outliers else ""
             self.history_filters_label.setText(
-                f"<b>Filtres:</b> {method} · KHP{khp_conc:.0f}ppm · {int(current_volume)}µL{outlier_text} ({len(filtered_history)})"
+                f"<b>Filtres:</b> {method} · KHP{khp_conc:g}ppm · {int(current_volume)}µL{outlier_text} ({len(filtered_history)})"
             )
 
             self._history_data = filtered_history
@@ -2590,7 +2591,7 @@ i determina el time shift necessari per a la quantificació.</p>
         current_seq = os.path.basename(seq_path) if seq_path else "-"
         self.result_labels["seq_name"].setText(current_seq)
         self.result_labels["mode"].setText(cal.get('doc_mode', cal.get('mode', 'N/A')))
-        self.result_labels["khp_conc"].setText(f"{conc:.0f} ppm")
+        self.result_labels["khp_conc"].setText(f"{conc:g} ppm")
         self.result_labels["volume"].setText(f"{cal.get('volume_uL', '-')} µL" if cal.get('volume_uL') else "-")
         n_rep = cal.get('n_replicas', 1)
         self.result_labels["n_replicas"].setText(f"{n_rep} (alternatiu)")
@@ -2817,7 +2818,8 @@ i determina el time shift necessari per a la quantificació.</p>
 
             if cal_mode != current_method:
                 continue
-            if abs(cal_conc - current_conc) >= 1:
+            tol = max(0.01, current_conc * 0.1)
+            if abs(cal_conc - current_conc) > tol:
                 continue
             if cal_vol and current_volume and cal_vol != current_volume:
                 continue
@@ -2849,7 +2851,7 @@ i determina el time shift necessari per a la quantificació.</p>
         reply = QMessageBox.question(
             self, "Usar Mitjana Històrica",
             f"Calibrar amb mitjana de {len(valid_cals)} calibracions vàlides:\n\n"
-            f"Condicions: {current_method} · KHP{current_conc:.0f} · {int(current_volume)}µL\n\n"
+            f"Condicions: {current_method} · KHP{current_conc:g} · {int(current_volume)}µL\n\n"
             f"Àrea mitjana: {mean_area:.0f} ± {std_area:.0f}\n"
             f"RF (Àrea/ppm): {rf:.0f}\n"
             f"Shift mitjà: {mean_shift:.1f} s ({mean_shift/60:.3f} min)\n"

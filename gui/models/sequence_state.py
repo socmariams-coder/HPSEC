@@ -350,7 +350,7 @@ class SequenceState:
         for cal in self.active_calibrations:
             conc = cal.get('conc_ppm', 0)
             vol = cal.get('volume_uL', 0)
-            conditions.append(f"KHP{int(conc)}@{int(vol)}µL")
+            conditions.append(f"KHP{conc:g}@{int(vol)}µL")
 
         return ", ".join(conditions)
 
