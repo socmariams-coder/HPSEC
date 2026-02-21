@@ -3863,7 +3863,8 @@ def load_manifest(seq_path):
     return None
 
 
-def import_from_manifest(seq_path, manifest=None, config=None, progress_callback=None):
+def import_from_manifest(seq_path, manifest=None, config=None, progress_callback=None,
+                         load_data=True):
     """
     Reimporta dades guiat pel manifest (molt més ràpid).
 
@@ -3877,6 +3878,11 @@ def import_from_manifest(seq_path, manifest=None, config=None, progress_callback
         manifest: Manifest carregat (si None, el carrega)
         config: Configuració
         progress_callback: Funció callback(pct, msg)
+        load_data: Si True (defecte), llegeix MasterFile i fitxers CSV per obtenir
+                   cromatogrames. Si False, només carrega metadades del manifest
+                   (molt més ràpid, per mostrar la taula d'importació sense les
+                   dades crues). Les dades es poden completar després amb
+                   ensure_data_loaded().
 
     Returns:
         dict equivalent a import_sequence()
@@ -3951,32 +3957,36 @@ def import_from_manifest(seq_path, manifest=None, config=None, progress_callback
         if master_path_new:
             master_path = master_path_new
             result["master_file"] = master_path
-        else:
+        elif load_data:
             result["errors"].append("MasterFile no trobat")
             return result
 
-    report_progress(10, "Llegint MasterFile...")
-
     # Llegir MasterFile per obtenir dades DOC Direct + DAD KHP
-    try:
-        toc_df = None
-        master_khp_data = None
-        xl = pd.ExcelFile(master_path, engine="openpyxl")
-        if "2-TOC" in xl.sheet_names:
-            toc_df = pd.read_excel(xl, sheet_name="2-TOC", header=6, engine="openpyxl")
-        # FIX F2.2: Llegir 3-DAD_KHP per KHP samples (abans no es llegia des de manifest)
-        if "3-DAD_KHP" in xl.sheet_names:
-            master_khp_data = pd.read_excel(xl, sheet_name="3-DAD_KHP", engine="openpyxl")
-            logger.debug("3-DAD_KHP sheet loaded (%d rows)", len(master_khp_data))
-    except PermissionError:
-        result["errors"].append(
-            f"No es pot llegir el MasterFile: el fitxer està obert a Excel o sense permisos. "
-            f"Tancar '{os.path.basename(master_path)}' i tornar a importar."
-        )
-        return result
-    except Exception as e:
-        result["errors"].append(f"Error llegint MasterFile: {e}")
-        return result
+    # Quan load_data=False, saltem la lectura (molt més ràpid per mostrar la taula)
+    toc_df = None
+    master_khp_data = None
+
+    if load_data:
+        report_progress(10, "Llegint MasterFile...")
+        try:
+            xl = pd.ExcelFile(master_path, engine="openpyxl")
+            if "2-TOC" in xl.sheet_names:
+                toc_df = pd.read_excel(xl, sheet_name="2-TOC", header=6, engine="openpyxl")
+            # FIX F2.2: Llegir 3-DAD_KHP per KHP samples (abans no es llegia des de manifest)
+            if "3-DAD_KHP" in xl.sheet_names:
+                master_khp_data = pd.read_excel(xl, sheet_name="3-DAD_KHP", engine="openpyxl")
+                logger.debug("3-DAD_KHP sheet loaded (%d rows)", len(master_khp_data))
+        except PermissionError:
+            result["errors"].append(
+                f"No es pot llegir el MasterFile: el fitxer està obert a Excel o sense permisos. "
+                f"Tancar '{os.path.basename(master_path)}' i tornar a importar."
+            )
+            return result
+        except Exception as e:
+            result["errors"].append(f"Error llegint MasterFile: {e}")
+            return result
+    else:
+        report_progress(10, "Carregant manifest...")
 
     report_progress(20, "Processant mostres del manifest...")
 
@@ -4039,11 +4049,12 @@ def import_from_manifest(seq_path, manifest=None, config=None, progress_callback
                     "baseline": None,
                 }
 
-                # Diagnòstic DOC Direct
-                if toc_df is None:
-                    result["warnings"].append(f"⚠️ {sample_name} R{rep_num}: No s'ha pogut llegir 2-TOC del MasterFile")
-                elif row_start is None or row_end is None:
-                    result["warnings"].append(f"⚠️ {sample_name} R{rep_num}: Fila DOC no definida al manifest")
+                # Diagnòstic DOC Direct (només quan load_data=True, sinó és esperat que no hi hagi dades)
+                if load_data:
+                    if toc_df is None:
+                        result["warnings"].append(f"⚠️ {sample_name} R{rep_num}: No s'ha pogut llegir 2-TOC del MasterFile")
+                    elif row_start is None or row_end is None:
+                        result["warnings"].append(f"⚠️ {sample_name} R{rep_num}: Fila DOC no definida al manifest")
 
                 # Intentar llegir les dades reals si tenim MasterFile
                 if toc_df is not None and row_start is not None and row_end is not None:
@@ -4098,8 +4109,8 @@ def import_from_manifest(seq_path, manifest=None, config=None, progress_callback
                     "manual_assignment": uib_info.get("manual_assignment", False),
                 }
 
-                if uib_file:
-                    # Buscar fitxer UIB
+                if uib_file and load_data:
+                    # Buscar fitxer UIB (només si load_data=True)
                     uib_path = os.path.join(seq_path, "CSV", uib_file)
                     if not os.path.exists(uib_path):
                         # Provar altres ubicacions
@@ -4142,8 +4153,22 @@ def import_from_manifest(seq_path, manifest=None, config=None, progress_callback
                 dad_source = dad_info.get("source", "export3d")
                 rep_data["dad_source"] = dad_source
 
+                # Quan load_data=False, preservar metadades sense carregar fitxers
+                if not load_data:
+                    # Guardar info DAD del manifest per la taula
+                    dad_file = dad_info.get("manual_file") or dad_info.get("file", "")
+                    if dad_file:
+                        rep_data["dad"] = {
+                            "df": None,
+                            "path": dad_file,
+                            "file": dad_file,
+                            "n_points": dad_info.get("n_points", 0),
+                        }
+                        rep_data["dad_source"] = dad_source
+                        rep_data["has_data"] = True
+
                 # FIX F2.2: Si DAD ve de 3-DAD_KHP (source="masterfile"), llegir del MasterFile
-                if dad_source == "masterfile" and master_khp_data is not None:
+                elif dad_source == "masterfile" and master_khp_data is not None:
                     original_name = sample_info.get("original_name", sample_name)
                     inj_num = rep_info.get("injection", {}).get("inj_num", rep_num) if rep_info.get("injection") else rep_num
                     dad_result, dad_src = _match_khp_dad_from_masterfile(
@@ -4156,10 +4181,11 @@ def import_from_manifest(seq_path, manifest=None, config=None, progress_callback
                         logger.debug("3-DAD_KHP manifest: loaded %d rows for %s", len(dad_result["df"]), sample_name)
 
                 # Prioritzar manual_file si existeix (assignació manual de l'usuari)
-                manual_dad_file = dad_info.get("manual_file")
-                dad_file_from_manifest = dad_info.get("file", "")
+                # (només quan load_data=True — quan False, ja s'han guardat metadades a dalt)
+                manual_dad_file = dad_info.get("manual_file") if load_data else None
+                dad_file_from_manifest = dad_info.get("file", "") if load_data else ""
 
-                # Si ja carregat des de masterfile (3-DAD_KHP), no cal buscar més
+                # Si ja carregat des de masterfile (3-DAD_KHP) o metadades, no cal buscar més
                 dad_loaded = rep_data.get("dad") is not None
 
                 # 1. Intentar carregar des de manual_file
@@ -4222,8 +4248,8 @@ def import_from_manifest(seq_path, manifest=None, config=None, progress_callback
                             except Exception as e:
                                 logger.debug("DAD manifest export3d load failed for %s: %s", test_path, e)
 
-                # 3. Fallback: buscar per nom de mostra (comportament original)
-                if not dad_loaded and dad_source == "export3d":
+                # 3. Fallback: buscar per nom de mostra (comportament original, només amb load_data)
+                if load_data and not dad_loaded and dad_source == "export3d":
                     path_3d = os.path.join(seq_path, "Export3d")
                     if not os.path.isdir(path_3d):
                         path_3d = os.path.join(seq_path, "Export3D")
@@ -4367,9 +4393,228 @@ def import_from_manifest(seq_path, manifest=None, config=None, progress_callback
     }
 
     result["success"] = True
-    report_progress(100, "Importació des de manifest completada")
+    result["data_deferred"] = not load_data  # True quan les dades crues no s'han carregat
+
+    if load_data:
+        report_progress(100, "Importació des de manifest completada")
+    else:
+        report_progress(100, "Manifest carregat (dades diferides)")
 
     return result
+
+
+def ensure_data_loaded(imported_data, config=None, progress_callback=None):
+    """
+    Completa les dades crues d'un resultat d'importació amb data_deferred=True.
+
+    Quan import_from_manifest() es crida amb load_data=False, les metadades es
+    carreguen del manifest però els cromatogrames (DOC Direct, UIB, DAD) no es
+    llegeixen del disc. Aquesta funció fa la lectura diferida quan les dades
+    realment es necessiten (p.ex. abans d'analitzar).
+
+    Modifica imported_data in-place i retorna el mateix dict.
+
+    Args:
+        imported_data: dict retornat per import_from_manifest(load_data=False)
+        config: Configuració (opcional)
+        progress_callback: Funció callback(pct, msg)
+
+    Returns:
+        imported_data actualitzat amb dades crues carregades
+    """
+    if not imported_data or not imported_data.get("data_deferred"):
+        return imported_data  # Ja té les dades carregades
+
+    config = config or get_config()
+
+    def report_progress(pct, msg):
+        if progress_callback:
+            progress_callback(pct, msg)
+
+    report_progress(5, "Carregant dades des del MasterFile...")
+
+    seq_path = imported_data.get("seq_path", "")
+    method = imported_data.get("method", "COLUMN")
+    mode = "BP" if method == "BP" else "COLUMN"
+
+    # Llegir MasterFile
+    master_path = imported_data.get("master_file", "")
+    if master_path and not os.path.isabs(master_path):
+        master_path = os.path.join(seq_path, master_path)
+    if not master_path or not os.path.exists(master_path):
+        master_path_new, _ = trobar_excel_mestre(seq_path)
+        if master_path_new:
+            master_path = master_path_new
+            imported_data["master_file"] = master_path
+        else:
+            logger.error("ensure_data_loaded: MasterFile no trobat per %s", seq_path)
+            return imported_data
+
+    toc_df = None
+    master_khp_data = None
+    try:
+        xl = pd.ExcelFile(master_path, engine="openpyxl")
+        if "2-TOC" in xl.sheet_names:
+            toc_df = pd.read_excel(xl, sheet_name="2-TOC", header=6, engine="openpyxl")
+        if "3-DAD_KHP" in xl.sheet_names:
+            master_khp_data = pd.read_excel(xl, sheet_name="3-DAD_KHP", engine="openpyxl")
+    except Exception as e:
+        logger.error("ensure_data_loaded: Error llegint MasterFile: %s", e)
+        return imported_data
+
+    report_progress(20, "Completant dades de mostres...")
+
+    samples = imported_data.get("samples", {})
+    total = len(samples)
+
+    for i, (sample_name, sample_data) in enumerate(samples.items()):
+        pct = 20 + int((i / total) * 70) if total > 0 else 90
+        report_progress(pct, f"Carregant {sample_name}...")
+
+        sample_type = sample_data.get("type", "SAMPLE")
+
+        for rep_num, rep_data in sample_data.get("replicas", {}).items():
+            # === DOC Direct ===
+            direct = rep_data.get("direct")
+            if direct and direct.get("t") is None and direct.get("row_start") is not None:
+                row_start = direct["row_start"]
+                row_end = direct["row_end"]
+                if toc_df is not None and row_start is not None and row_end is not None:
+                    try:
+                        max_dur = config.get("max_duration_min", 80.0)
+                        df_doc, timeout_info = extract_doc_from_masterfile(
+                            toc_df, row_start, row_end,
+                            t_start=None, detect_timeouts=True,
+                            max_duration_min=max_dur
+                        )
+                        if df_doc is not None and not df_doc.empty:
+                            t_direct = df_doc["time (min)"].values
+                            y_direct = df_doc["DOC"].values
+                            baseline = get_baseline_value(t_direct, y_direct, mode=mode)
+                            y_net = np.array(y_direct) - baseline
+
+                            rep_data["direct"] = {
+                                "path": f"MasterFile:2-TOC",
+                                "df": df_doc,
+                                "t": t_direct,
+                                "y": y_direct,
+                                "row_start": row_start,
+                                "row_end": row_end,
+                                "n_points": len(t_direct),
+                                "timeout_info": timeout_info,
+                                "y_net": y_net,
+                                "baseline": baseline,
+                            }
+                            rep_data["has_data"] = True
+                    except Exception as e:
+                        logger.warning("ensure_data_loaded: %s R%s Direct: %s", sample_name, rep_num, e)
+
+            # === DOC UIB ===
+            uib = rep_data.get("uib")
+            if uib and uib.get("t") is None:
+                uib_file = uib.get("file", "")
+                if uib_file:
+                    uib_path = os.path.join(seq_path, "CSV", uib_file)
+                    if not os.path.exists(uib_path):
+                        for subdir in ["", "CSV", "csv"]:
+                            test_path = os.path.join(seq_path, subdir, uib_file) if subdir else os.path.join(seq_path, uib_file)
+                            if os.path.exists(test_path):
+                                uib_path = test_path
+                                break
+                    if os.path.exists(uib_path):
+                        try:
+                            df_uib, status = llegir_doc_uib(uib_path)
+                            if not df_uib.empty and "OK" in status:
+                                t_uib = df_uib["time (min)"].values
+                                y_uib = df_uib["DOC"].values
+                                baseline = get_baseline_value(t_uib, y_uib, mode=mode)
+                                y_net = np.array(y_uib) - baseline
+                                rep_data["uib"] = {
+                                    "path": uib_path,
+                                    "df": df_uib,
+                                    "t": t_uib,
+                                    "y": y_uib,
+                                    "file": uib_file,
+                                    "n_points": len(t_uib),
+                                    "y_net": y_net,
+                                    "baseline": baseline,
+                                    "manual_assignment": uib.get("manual_assignment", False),
+                                }
+                                rep_data["has_data"] = True
+                        except Exception as e:
+                            logger.warning("ensure_data_loaded: %s R%s UIB: %s", sample_name, rep_num, e)
+
+            # === DAD ===
+            dad = rep_data.get("dad")
+            if dad and dad.get("df") is None:
+                dad_source = rep_data.get("dad_source", "export3d")
+                dad_file = dad.get("file", "")
+
+                # Intentar des de 3-DAD_KHP per KHP
+                if dad_source == "masterfile" and master_khp_data is not None:
+                    original_name = sample_data.get("original_name", sample_name)
+                    inj_info = rep_data.get("injection_info", {})
+                    inj_num = inj_info.get("inj_num", rep_num) if inj_info else rep_num
+                    dad_result, dad_src = _match_khp_dad_from_masterfile(
+                        sample_name, original_name, inj_num, master_khp_data
+                    )
+                    if dad_result is not None:
+                        rep_data["dad"] = dad_result
+                        rep_data["dad_source"] = dad_src
+                        rep_data["has_data"] = True
+                        continue
+
+                # Intentar des de fitxer DAD
+                if dad_file:
+                    dad_dirs = ["Export3d", "Export3D", "CSV", "csv", ""]
+                    for subdir in dad_dirs:
+                        test_path = os.path.join(seq_path, subdir, dad_file) if subdir else os.path.join(seq_path, dad_file)
+                        if os.path.exists(test_path):
+                            try:
+                                df_dad, status = llegir_dad_export3d(test_path)
+                                if df_dad is not None and status.startswith("OK"):
+                                    rep_data["dad"] = {
+                                        "df": df_dad,
+                                        "path": test_path,
+                                        "file": dad_file,
+                                        "manual_assignment": dad.get("manual_assignment", False),
+                                    }
+                                    rep_data["dad_source"] = "export3d"
+                                    rep_data["has_data"] = True
+                                    break
+                            except Exception:
+                                pass
+                            try:
+                                df_dad, status = llegir_dad_1a(test_path)
+                                if df_dad is not None and status.startswith("OK"):
+                                    rep_data["dad"] = {
+                                        "df": df_dad,
+                                        "path": test_path,
+                                        "file": dad_file,
+                                        "manual_assignment": dad.get("manual_assignment", False),
+                                    }
+                                    rep_data["dad_source"] = "dad1a"
+                                    rep_data["has_data"] = True
+                                    break
+                            except Exception:
+                                pass
+
+            # KHP fallback DAD
+            if sample_type == "KHP" and rep_data.get("dad") is None and master_khp_data is not None:
+                original_name = sample_data.get("original_name", sample_name)
+                inj_info = rep_data.get("injection_info", {})
+                inj_num = inj_info.get("inj_num", rep_num) if inj_info else rep_num
+                dad_result, dad_src = _match_khp_dad_from_masterfile(
+                    sample_name, original_name, inj_num, master_khp_data
+                )
+                if dad_result is not None:
+                    rep_data["dad"] = dad_result
+                    rep_data["dad_source"] = dad_src
+                    rep_data["has_data"] = True
+
+    imported_data["data_deferred"] = False
+    report_progress(100, "Dades carregades")
+    return imported_data
 
 
 # =============================================================================
@@ -4435,4 +4680,5 @@ __all__ = [
     "save_import_manifest",
     "load_manifest",
     "import_from_manifest",
+    "ensure_data_loaded",
 ]

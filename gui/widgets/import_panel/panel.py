@@ -408,16 +408,19 @@ class ImportPanel(QWidget):
         pass
 
     def _auto_load_from_manifest(self):
-        """Carrega automàticament des del manifest existent."""
+        """Carrega automàticament des del manifest existent (sense llegir MasterFile)."""
         self._loaded_from_manifest = True
         self.main_window.show_progress(0)
-        self.placeholder.setText("Carregant dades importades...")
+        self.placeholder.setText("Carregant manifest...")
         self.placeholder.setVisible(True)
 
+        # load_data=False: només metadades, NO llegeix MasterFile ni fitxers CSV/DAD
+        # Les dades crues es carregaran quan es necessitin (ensure_data_loaded)
         self.worker = ImportWorker(
             self.seq_path,
             use_manifest=True,
-            manifest=self.existing_manifest
+            manifest=self.existing_manifest,
+            load_data=False
         )
         self.worker.progress.connect(self._on_progress)
         self.worker.finished.connect(self._on_import_finished)
@@ -1680,6 +1683,13 @@ class ImportPanel(QWidget):
                     break
 
             if sample_data:
+                # Assegurar que les dades crues estan carregades per mostrar cromatogrames
+                if self.imported_data and self.imported_data.get("data_deferred"):
+                    from hpsec_import import ensure_data_loaded
+                    self.main_window.set_status("Carregant cromatogrames...")
+                    ensure_data_loaded(self.imported_data)
+                    self.main_window.set_status("Dades carregades", 3000)
+
                 try:
                     replica = int(rep_text) if rep_text.isdigit() else 1
                 except:

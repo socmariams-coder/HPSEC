@@ -127,9 +127,9 @@ All exploratory scripts and results live in `research/` — NOT part of the prod
 
 ## Known bugs (pendents de fix)
 
-- **Import re-llegeix masterfile quan ja existeix manifest JSON**: Quan una SEQ ja té import_manifest.json,
-  el panell d'importar hauria de carregar directament del JSON sense tornar a parsejar el masterfile.
-  Actualment ho re-llegeix sempre.
+- **Import re-llegeix masterfile quan ja existeix manifest JSON**: FIXED — `import_from_manifest(load_data=False)`
+  carrega metadades del manifest sense llegir MasterFile/CSV/DAD. `ensure_data_loaded()` completa les
+  dades crues quan realment es necessiten (anàlisi, calibració, preview cromatograma). Speedup: 10s → 1ms.
 - **072_SEQ: dades DAD KHP no detectades al carregar, però sí al refer**: FIXED — El manifest de seqs
   antigues (pre-FIX F2.2) no tenia `dad` info per KHP. Afegit fallback a 3-DAD_KHP del MasterFile quan
   el manifest no conté DAD per KHP samples.
@@ -363,7 +363,24 @@ All exploratory scripts and results live in `research/` — NOT part of the prod
 - Pre-repair a detect_main_peak: detectar pic irregular → reparar amb paràbola → find_peak_boundaries sobre senyal reparat → integrar sobre senyal original
 - Verificat: KHP1 (1ppm) àrea 96.8→304.7, desviació -71%→-8.3%
 
-### Canvis sessió 2026-02-21
+### Canvis sessió 2026-02-21 (continuació)
+- **GlobalCalibrationPanel refactor**: 2 vistes (CalibrationLineView + QCMonitorView)
+  - `hpsec_calibrate.py`: `compute_calibration_fingerprint()`, `requantify_analysis_json()`
+  - `hpsec_export.py`: `patch_excel_calibration()` (openpyxl cell-level patching)
+  - `gui/widgets/global_calibration_panel.py`: reescriptura completa (~700 línies)
+  - `gui/models/sequence_state.py`: `calibration_fingerprint`, `is_cal_stale`
+  - `gui/main_window.py`: `calibration_updated` signal → dashboard refresh
+  - `gui/widgets/dashboard_panel.py`: indicador ✔⟳ per SEQs amb calibració obsoleta
+  - Commit: `2b43eb0`
+- **Fix import re-read MasterFile**: `import_from_manifest(load_data=False)` per auto-load
+  - `hpsec_import.py`: param `load_data`, funció `ensure_data_loaded()`
+  - `gui/widgets/import_panel/worker.py`: `load_data` param
+  - `gui/widgets/import_panel/panel.py`: `_auto_load_from_manifest()` amb `load_data=False`
+  - `gui/widgets/analyze_panel/panel.py`: `ensure_data_loaded()` abans d'analitzar
+  - `gui/widgets/calibrate_panel/panel.py`: `ensure_data_loaded()` en 3 punts
+  - Speedup: 10s → 1ms (factor 10000x) per auto-load SEQs ja importades
+
+### Canvis sessió 2026-02-21 (inici)
 - `hpsec_calibrate.py`: fix `get_condition_key()` decimals, fix timeout severity, fix concentration filter tolerance
 - `gui/models/sequence_state.py`: `:g` format per concentracions
 - `gui/widgets/calibrate_panel/panel.py`: `:g` formats (5 llocs), tolerància relativa (2 llocs), filtre qc_history

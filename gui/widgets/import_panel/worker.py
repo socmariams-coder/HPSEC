@@ -16,11 +16,12 @@ class ImportWorker(QThread):
     finished = Signal(dict)
     error = Signal(str)
 
-    def __init__(self, seq_path, use_manifest=False, manifest=None):
+    def __init__(self, seq_path, use_manifest=False, manifest=None, load_data=True):
         super().__init__()
         self.seq_path = seq_path
         self.use_manifest = use_manifest
         self.manifest = manifest
+        self.load_data = load_data
 
     def run(self):
         try:
@@ -31,7 +32,8 @@ class ImportWorker(QThread):
                 result = import_from_manifest(
                     self.seq_path,
                     manifest=self.manifest,
-                    progress_callback=progress_cb
+                    progress_callback=progress_cb,
+                    load_data=self.load_data
                 )
             else:
                 result = import_sequence(

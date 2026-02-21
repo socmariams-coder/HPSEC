@@ -414,6 +414,15 @@ class AnalyzePanel(QWidget):
             if imported_data and imported_data.get('success'):
                 self.main_window.imported_data = imported_data
 
+        # Assegurar que les dades crues estan carregades (pot venir amb data_deferred=True)
+        if imported_data and imported_data.get("data_deferred"):
+            from hpsec_import import ensure_data_loaded
+            self.main_window.set_status("Carregant cromatogrames...")
+            try:
+                ensure_data_loaded(imported_data)
+            except Exception as e:
+                logger.warning(f"Error carregant dades diferides: {e}")
+
         if not calibration_data and seq_path:
             import json
             cal_path = Path(seq_path) / "CHECK" / "data" / "calibration_result.json"

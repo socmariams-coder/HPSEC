@@ -239,6 +239,10 @@ class CalibratePanel(QWidget):
 
         # Intentar carregar senyals des de imported_data (en memòria)
         imported_data = getattr(self.main_window, 'imported_data', None)
+        # Assegurar que les dades crues estan carregades
+        if imported_data and imported_data.get("data_deferred"):
+            from hpsec_import import ensure_data_loaded
+            ensure_data_loaded(imported_data)
         if imported_data and imported_data.get('success'):
             samples = imported_data.get('samples', {})
             khp_names = imported_data.get('khp_samples', [])
@@ -332,6 +336,10 @@ class CalibratePanel(QWidget):
         imported_data = getattr(self.main_window, 'imported_data', None)
         if not imported_data or not imported_data.get('success'):
             return None
+        # Assegurar que les dades crues estan carregades
+        if imported_data.get("data_deferred"):
+            from hpsec_import import ensure_data_loaded
+            ensure_data_loaded(imported_data)
 
         samples = imported_data.get('samples', {})
         khp_names = imported_data.get('khp_samples', [])
@@ -889,6 +897,13 @@ class CalibratePanel(QWidget):
                 if imported_data and imported_data.get('success'):
                     self.main_window.imported_data = imported_data
                     self.main_window.set_status("Dades carregades", 1000)
+
+        # Assegurar que les dades crues estan carregades
+        if imported_data and imported_data.get("data_deferred"):
+            from hpsec_import import ensure_data_loaded
+            self.main_window.set_status("Carregant cromatogrames...")
+            ensure_data_loaded(imported_data)
+            self.main_window.set_status("Dades carregades", 1000)
 
         if not imported_data:
             from PySide6.QtWidgets import QMessageBox
