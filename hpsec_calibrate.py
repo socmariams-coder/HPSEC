@@ -864,8 +864,12 @@ def get_condition_key(mode: str, volume_uL: int, conc_ppm: float = None) -> str:
         Ex: "COLUMN_400_5", "BP_100_2", "BP_50_2"
     """
     vol = int(volume_uL) if volume_uL else 0
-    conc = int(conc_ppm) if conc_ppm else 0
-    return f"{mode}_{vol}_{conc}"
+    # Usar precisió decimal per distingir 0.1/0.25/0.5/1/2/5 ppm
+    if conc_ppm and conc_ppm != int(conc_ppm):
+        conc_str = f"{conc_ppm:.2f}".rstrip('0').rstrip('.')
+    else:
+        conc_str = str(int(conc_ppm)) if conc_ppm else "0"
+    return f"{mode}_{vol}_{conc_str}"
 
 
 def get_cr_thresholds(is_bp, volume_uL):
