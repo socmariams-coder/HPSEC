@@ -96,6 +96,10 @@ Mark features as DONE only when code is fully functional end-to-end, not when pl
 - [x] Config backend: config fingerprint (SHA-256 16 chars) per detectar obsolescència — DONE
 - [x] Config backend: migració batman_max_sep → batman_max_sep_min — DONE
 - [x] Config backend: REPROCESS_SECTIONS/FUTURE_SECTIONS/IMMEDIATE_SECTIONS constants — DONE
+- [x] Wizard: Rename step 2 "Calibrar" → "Verificar" (TAB_NAMES + tab_names) — DONE
+- [x] Wizard: Delay diagnostic tool at step 2 (shift indicator, slider, impact preview, reimport) — DONE
+- [x] Wizard: SEQ_CAL detection at step 2 (CalibratePanel) + regression moved to step 3 (AnalyzePanel) — DONE
+- [ ] Wizard: Apply calibration at step 4 (Revisar) + retroactive requantification + SEQ list — PENDING
 
 ## Research / Exploration (not integrated into Suite)
 

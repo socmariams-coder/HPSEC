@@ -639,6 +639,24 @@ class CalibratePanel(QWidget):
         # === SECCIÓN: Diagnòstic Delay HPLC↔TOC ===
         self._build_delay_diagnostic_section(content_layout)
 
+        # === SECCIÓN: SEQ_CAL info (quan detecta calibració) ===
+        self._seq_cal_info_group = QGroupBox("Seqüència de Calibració (SEQ_CAL)")
+        self._seq_cal_info_group.setVisible(False)
+        self._seq_cal_info_group.setStyleSheet(
+            "QGroupBox { font-weight: bold; color: #1A5276; border: 2px solid #27AE60; "
+            "border-radius: 6px; margin-top: 8px; padding-top: 14px; }"
+            "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 6px; }"
+        )
+        seq_cal_info_layout = QVBoxLayout(self._seq_cal_info_group)
+        self._seq_cal_info_label = QLabel()
+        self._seq_cal_info_label.setWordWrap(True)
+        self._seq_cal_info_label.setStyleSheet(
+            "background: #EBF5FB; border-radius: 4px; padding: 12px; "
+            "color: #1A5276; font-size: 13px;"
+        )
+        seq_cal_info_layout.addWidget(self._seq_cal_info_label)
+        content_layout.addWidget(self._seq_cal_info_group)
+
         # === SECCIÓN: Gràfic recta calibració global (PROMINENT) ===
         self.cal_line_group = QGroupBox("Recta de calibració")
         self.cal_line_group.setVisible(False)
@@ -911,6 +929,7 @@ class CalibratePanel(QWidget):
         # Limpiar resultados anteriores
         self.summary_group.setVisible(False)
         self.delay_group.setVisible(False)
+        self._seq_cal_info_group.setVisible(False)
         self.cal_line_group.setVisible(False)
         self.graphs_group.setVisible(False)
         self.metrics_group.setVisible(False)
@@ -945,35 +964,63 @@ class CalibratePanel(QWidget):
         self.calibration_data = result
         self.main_window.calibration_data = result
 
-        # Mostrar resultados
-        for fn in [self._update_summary, self._update_delay_diagnostic,
-                   self._update_graphs,
-                   self._update_metrics_table, self._update_replica_selection,
-                   self._update_validation, self._update_history]:
+        # Detectar si és SEQ_CAL (regressió multi-concentració)
+        is_seq_cal = self._detect_seq_cal(result)
+
+        if is_seq_cal:
+            # SEQ_CAL: amagar UI normal, mostrar info + delay diagnostic
+            self.placeholder.setVisible(False)
+            self.condition_selector_frame.setVisible(False)
+            self.summary_group.setVisible(False)
+            self.cal_line_group.setVisible(False)
+            self.graphs_group.setVisible(False)
+            self.metrics_group.setVisible(False)
+            self.replica_selection_group.setVisible(False)
+            self.validation_group.setVisible(False)
+            self.history_group.setVisible(False)
+
+            # Mostrar secció SEQ_CAL info
+            self._seq_cal_info_group.setVisible(True)
+
+            # Delay diagnostic (útil per a SEQ_CAL BP també)
             try:
-                fn(result)
+                self._update_delay_diagnostic(result)
             except Exception as e:
-                logger.warning(f"Error a {fn.__name__}: {e}")
-                import traceback; traceback.print_exc()
+                logger.warning(f"Error a _update_delay_diagnostic: {e}")
+        else:
+            # SEQ normal: flux habitual
+            self._seq_cal_info_group.setVisible(False)
+            for fn in [self._update_summary, self._update_delay_diagnostic,
+                       self._update_graphs,
+                       self._update_metrics_table, self._update_replica_selection,
+                       self._update_validation, self._update_history]:
+                try:
+                    fn(result)
+                except Exception as e:
+                    logger.warning(f"Error a {fn.__name__}: {e}")
+                    import traceback; traceback.print_exc()
 
-        # Auto-generar PDF de QA/QC
-        try:
-            from generate_calibration_report import generate_calibration_report
-            seq_path = self.main_window.seq_path
-            if seq_path:
-                pdf = generate_calibration_report(seq_path)
-                if pdf:
-                    logger.info(f"Report QA/QC: {pdf}")
-        except Exception as e:
-            logger.warning(f"No s'ha pogut generar report de QA/QC: {e}")
+            # Auto-generar PDF de QA/QC
+            try:
+                from generate_calibration_report import generate_calibration_report
+                seq_path = self.main_window.seq_path
+                if seq_path:
+                    pdf = generate_calibration_report(seq_path)
+                    if pdf:
+                        logger.info(f"Report QA/QC: {pdf}")
+            except Exception as e:
+                logger.warning(f"No s'ha pogut generar report de QA/QC: {e}")
 
-        # Recarregar el selector de condicions (potser s'han creat noves calibracions)
-        self._reload_condition_selector()
+            # Recarregar el selector de condicions
+            self._reload_condition_selector()
 
         # Nota: Els avisos es gestionen des del wizard header
 
         self.main_window.enable_tab(2)
-        self.main_window.set_status("QA/QC KHP completat", 5000)
+        self.main_window.set_status(
+            "SEQ_CAL verificada — regressió al pas Analitzar" if is_seq_cal
+            else "QA/QC KHP completat", 5000
+        )
 
         # Emetre senyal per notificar al wizard
         self.calibration_completed.emit(result)
@@ -2532,6 +2579,114 @@ class CalibratePanel(QWidget):
             )
         else:
             self.toggle_outlier_btn.setText("Marcar Outlier")
+
+    # =========================================================================
+    # SEQ_CAL DETECTION
+    # =========================================================================
+
+    def _detect_seq_cal(self, result):
+        """Detecta si la SEQ és de calibració i prepara les dades per l'AnalyzePanel.
+
+        Criteri:
+        - Nom conté _CAL, O
+        - ≥3 calibracions amb ≥2 concentracions
+
+        Si és SEQ_CAL, prepara cal_entries i les guarda a result['seq_cal_data']
+        perquè l'AnalyzePanel les pugui utilitzar per la regressió.
+
+        Returns:
+            bool: True si és SEQ_CAL
+        """
+        import os
+
+        # Obtenir calibracions directes
+        cals_direct = result.get('calibrations_direct', [])
+        cals_uib = result.get('calibrations_uib', [])
+        cals = cals_direct or cals_uib or result.get('calibrations', [])
+
+        if not cals or len(cals) < 3:
+            result['is_seq_cal'] = False
+            return False
+
+        # Criteri 1: nom conté _CAL
+        seq_path = self.main_window.seq_path or ""
+        seq_name = os.path.basename(seq_path).upper()
+        name_has_cal = "_CAL" in seq_name
+
+        # Criteri 2: ≥3 condicions amb ≥2 concentracions
+        concs = set()
+        for cal in cals:
+            c = cal.get('conc_ppm', 0)
+            if c > 0:
+                concs.add(round(c, 4))
+        auto_detect = len(cals) >= 3 and len(concs) >= 2
+
+        if not name_has_cal and not auto_detect:
+            result['is_seq_cal'] = False
+            return False
+
+        # Activar mode SEQ_CAL
+        result['is_seq_cal'] = True
+        logger.info(f"SEQ_CAL detectada: {len(cals)} calibracions, "
+                     f"{len(concs)} concentracions ({sorted(concs)})")
+
+        # Determinar mode (BP o COLUMN)
+        method = "COLUMN"
+        if any(c.get('is_bp', False) for c in cals):
+            method = "BP"
+        elif self.main_window.imported_data:
+            if self.main_window.imported_data.get("method", "").upper() == "BP":
+                method = "BP"
+        if "_BP" in seq_name:
+            method = "BP"
+
+        # Preparar entrades per la regressió
+        cal_entries = []
+        for cal in cals:
+            conc = cal.get('conc_ppm', 0)
+            vol = cal.get('volume_uL', 0)
+            area = cal.get('area', 0)
+            if conc <= 0 or vol <= 0 or area <= 0:
+                continue
+            cal_entries.append({
+                'seq_name': os.path.basename(seq_path),
+                'mode': method,
+                'conc_ppm': conc,
+                'volume_uL': vol,
+                'area': area,
+                'is_outlier': False,
+                'valid_for_calibration': True,
+                'condition_key': cal.get('condition_key', f"KHP{conc:g}@{vol}µL"),
+                'rf_mass': cal.get('rf_mass', 0),
+                'quality_score': cal.get('quality_score', 0),
+                'name_full': cal.get('name_full', ''),
+            })
+
+        # Guardar dades per l'AnalyzePanel
+        result['seq_cal_data'] = {
+            'entries': cal_entries,
+            'method': method,
+            'concs': sorted(concs),
+            'n_entries': len(cal_entries),
+        }
+
+        # Actualitzar info label
+        conc_str = ", ".join(f"{c:g}" for c in sorted(concs))
+        self._seq_cal_info_label.setText(
+            f"<b>Seqüència de calibració detectada</b><br><br>"
+            f"<b>Mode:</b> {method} &nbsp;|&nbsp; "
+            f"<b>Punts:</b> {len(cal_entries)} &nbsp;|&nbsp; "
+            f"<b>Concentracions:</b> {conc_str} ppm<br><br>"
+            f"La <b>regressió de calibració</b> es realitzarà al pas "
+            f"<b>Analitzar</b> (pas 3).<br>"
+            f"L'<b>aplicació</b> de la calibració es farà al pas "
+            f"<b>Revisar</b> (pas 4)."
+        )
+
+        # Propagar al main_window
+        self.main_window.calibration_data = result
+
+        return True
 
     # =========================================================================
     # DELAY DIAGNOSTIC SECTION
