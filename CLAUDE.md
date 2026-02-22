@@ -411,6 +411,33 @@ All exploratory scripts and results live in `research/` — NOT part of the prod
 - Aplicació moguda de pas 2 a pas 4 (ReviewSummaryPanel)
 - GlobalCalibrationPanel: consulta-only (sense aplicar/requantificar)
 
+### Redisseny Wizard — Sessió 2026-02-22
+
+**Fase 1: Rename Calibrar → Verificar (COMPLETAT)**
+- `process_wizard_panel.py`: TAB_NAMES, tab_names dict
+- `dashboard_panel.py`: STAGE_NAMES, columna headers, context menus
+- `sequence_state.py`: Phase.CALIBRATE display
+- `main_window.py`: comentari
+- Commit: `0358c31`
+
+**Fase 2: Delay diagnostic tool (COMPLETAT)**
+- `hpsec_delay.py`: NOU — backend per gestió delay HPLC↔TOC
+  - `read_current_delay(mf_path)`: llegeix 0-INFO B12
+  - `estimate_delay_impact(mf_path, old_delay, new_delay)`: quantes files canvien
+  - `update_masterfile_delay(mf_path, net_delay_min)`: actualitza + regenera 4-TOC_CALC + backup
+- `gui/widgets/calibrate_panel/panel.py`: secció diagnòstic delay
+  - `_build_delay_diagnostic_section()`: UI amb indicador shift, slider, spinbox, impacte, botó
+  - `_update_delay_diagnostic(result)`: mostra per BP (sempre) o COLUMN (shift > 2 min)
+  - `_on_delay_slider_changed/_on_delay_spin_changed`: sincronitzats bidireccional
+  - `_update_delay_impact(new_delay)`: preview en temps real (quantes files canvien)
+  - `_delay_apply_and_reimport()`: aplica delay → reimporta → re-verifica
+  - Indicador qualitat: verd < 0.5 min, taronja 0.5-2 min, vermell > 2 min
+  - Slider: ±15 min, pas 0.1 min
+  - Integrat a _on_finished (normal + error path)
+
+**Fase 3: Moure regressió SEQ_CAL al pas 3 — COMPLETAT** (merged)
+**Fase 4: Aplicar calibració al pas 4 — COMPLETAT** (merged)
+
 ### Canvis sessió 2026-02-21 (continuació)
 - **GlobalCalibrationPanel refactor**: 2 vistes (CalibrationLineView + QCMonitorView)
   - `hpsec_calibrate.py`: `compute_calibration_fingerprint()`, `requantify_analysis_json()`
