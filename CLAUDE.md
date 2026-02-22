@@ -59,8 +59,14 @@ Mark features as DONE only when code is fully functional end-to-end, not when pl
 - [ ] Analyze panel: mostrar bigaussian (R², asym, quality) per BP — PENDING
 - [ ] Analyze panel: mostrar timeouts amb icones/tooltip — PENDING
 - [ ] Analyze backend: detecció deriva baseline DAD per replica selection — PENDING (TODO a hpsec_analyze.py L1210)
-- [x] Calibration: flux renovació calibració global (UI panel + regression) — DONE (GlobalCalibrationPanel)
+- [x] Calibration: flux renovació calibració global (UI panel + regression) — DONE (GlobalCalibrationPanel refactored: 2 vistes CAL+QC)
 - [x] Calibration: auto-fit rf_mass_cal + intercept from KHP history (regression) — DONE (fit_calibration_from_history)
+- [x] Calibration: separació SEQ_CAL vs producció KHP al panell global — DONE
+- [x] Calibration: QC Levey-Jennings chart (desviació % vs recta vigent) — DONE
+- [x] Calibration: requantify_analysis_json() per recalibració retroactiva — DONE
+- [x] Calibration: patch_excel_calibration() per patch Excels existents — DONE
+- [x] Calibration: calibration_fingerprint per detectar canvis (is_cal_stale) — DONE
+- [x] Dashboard: indicador ⟳ calibració obsoleta a columna Analitzar — DONE
 - [x] Calibration: KHP DAD 254nm fallback from MasterFile 3-DAD_KHP in manifest loading — DONE
 - [x] Calibration: clean_khp_history() to remove invalid entries (conc=0, area=0) — DONE
 - [x] Export: PDF analysis report (generate_analysis_report.py) — DONE
@@ -155,7 +161,7 @@ All exploratory scripts and results live in `research/` — NOT part of the prod
 
 ## Working notes
 
-> Last updated: 2026-02-20
+> Last updated: 2026-02-21
 
 ### Revisió calibració KHP (EN CURS)
 
@@ -276,7 +282,97 @@ All exploratory scripts and results live in `research/` — NOT part of the prod
 - **PENDENT**: els MasterFiles BP existents (generats amb l'antic hardcode BP=100) poden tenir
   volums incorrectes. Cal regenerar els afectats (especialment 107, i qualsevol BP amb v≠100).
 
-### Canvis sessió actual (2026-02-20)
+### Comparació calibracions BP: 292 vs 152 (2026-02-21)
+
+**292_SEQ_CAL_BP** (referència nova, 6 conc ben distribuïdes):
+- slope=647, intercept=2.8, R²=0.9987, n=6 (0.1, 0.25, 0.5, 1, 2, 5 ppm)
+- RF_mass molt consistent, intercept ≈ 0
+
+**152_SEQ_BP** (referència antiga):
+- slope=812, intercept=14.2, R²=0.9994, n=4 (0.25, 1, 3, 5 ppm)
+- RF_mass inconsistent per concentració: 1334 a 0.25ppm vs 834 a 5ppm → suggereix offset de fons
+
+**Comparació directa**: 292 dóna -20.3% menys RF que 152
+- A 0.25ppm: 152 àrea=230 vs 292 àrea=174 → 152 inflada per possible offset DOC
+- La 292 (6 punts, R²=0.999, bona distribució) és més fiable que la 152 (4 punts, offset)
+
+**Evolució temporal RF:**
+- BP: tendència -1.5 RF/SEQ, alta variabilitat (CV ~30%)
+- COLUMN: pràcticament estable (tendència ~0/SEQ)
+
+**PENDENT**: Actualitzar `Calibration_Reference.json` BP RF de 817 a ~650 (ref 292)
+- L'usuari ha dit "de moment prenem nota, queda pendent d'actualitzar"
+
+### Anàlisi 293_SEQ_CAL COLUMN (2026-02-21)
+
+**Històric COLUMN (pre-293):**
+- Global clean (30 entrades, 400µL, 0.25-5ppm): slope=785, intercept=3, R²=0.980
+- Recent (>250): slope=751, intercept=40, R²=0.967
+- 2ppm only (més estable): RF=797±42
+
+**293_SEQ_CAL COLUMN:**
+- 3 entrades (0.1, 0.25, 0.5 ppm a 400µL) — només concentracions baixes
+- slope=620, intercept=41.3, R²=0.9982
+- **vs referència actual (RF=628, intercept=81): -1.3%** — pràcticament idèntic!
+- vs històric global (RF=785): -21.1%
+- vs històric recent (RF=751): -17.5%
+- **Conclusió**: la referència actual (RF=628+intercept=81) és correcta per COLUMN
+
+### Bugs fixats sessió 2026-02-21
+
+**Concentracions decimals (0.1, 0.25, 0.5 ppm):**
+- `get_condition_key()`: `int(conc_ppm)` truncava 0.1→0, 0.25→0, 0.5→0
+  → Fix: format decimal amb trailing zero stripping
+- 8+ llocs GUI amb `:.0f` o `int(conc)` → tot canviat a `:g`
+- Filtres concentració: tolerància absoluta ±1 ppm → relativa 10% (`max(0.01, conc*0.1)`)
+- KHP_History.json: netejat entrada antiga amb conc=25.0, fixats 19 condition_keys truncats
+
+**Timeout en KHP:**
+- `validate_khp_quality()`: timeout WARNING ara → issues +100 (era: warnings +50)
+- Simplificat: INFO=OK, WARNING/CRITICAL=outlier (no cal UI addicional)
+
+**Gràfic històric:**
+- Filtrat `qc_history` per concentració i volum abans de passar a `plot_calibration()`
+
+### Refactor GlobalCalibrationPanel — Recta CAL + QC Monitor (2026-02-21)
+
+**Motivació**: El panell barrejava totes les 250+ entrades KHP per fer regressió. Ara separa:
+- SEQ_CAL (13 entrades) → Tab "Recta de Calibració" per construir/actualitzar calibració
+- Producció (114 entrades) → Tab "Control de Qualitat" amb gràfic Levey-Jennings
+
+**Fitxers modificats:**
+- `hpsec_calibrate.py`: + `compute_calibration_fingerprint()` (SHA-256[:16]), + `requantify_analysis_json()` (recalcula ppm sense reprocessar)
+- `hpsec_analyze.py`: estampa `calibration_fingerprint` al JSON d'anàlisi
+- `hpsec_export.py`: + `patch_excel_calibration()` per patchejar Excels existents
+- `gui/widgets/global_calibration_panel.py`: reescriptura completa (2 vistes: CalibrationLineView + QCMonitorView)
+- `gui/models/sequence_state.py`: + camp `calibration_fingerprint`, + propietat `is_cal_stale`
+- `gui/main_window.py`: connexió senyal `calibration_updated` → dashboard refresh
+- `gui/widgets/dashboard_panel.py`: indicador ✔⟳ (taronja) quan calibració obsoleta
+
+**Funcionalitats noves:**
+- **CalibrationLineView**: selector SEQ_CAL amb checkboxes, regressió, scatter+residuals, stats per conc, comparació amb vigent, aplicar amb opció retroactiva + requantificació automàtica
+- **QCMonitorView**: gràfic Levey-Jennings (desviació % vs recta), línies ±10%/±20%, tendència, indicador EN CONTROL/ATENCIÓ/FORA DE CONTROL
+- **requantify_analysis_json()**: modifica NOMÉS ppm/fraccions als JSONs existents des de les àrees (que no canvien). Verificat: RF+10% → ppm -9.1%, àrees intactes
+- **calibration_fingerprint**: patró idèntic a config_fingerprint — detecta canvi de calibració al dashboard
+
+**Separació _CAL**: per convenció de nom, `"_CAL" in seq_name.upper()`. 13 entrades de 3 SEQs (111_CAL, 113_CAL, 114_CAL, 292_SEQ_CAL, 293_SEQ_CAL).
+
+### Rename batman → irregular_top + fix integració pics irregulars (2026-02-21)
+
+- Commit `9b12b28`: rename detect_batman→detect_irregular_top a 16 fitxers (168 ocurrències)
+- Pre-repair a detect_main_peak: detectar pic irregular → reparar amb paràbola → find_peak_boundaries sobre senyal reparat → integrar sobre senyal original
+- Verificat: KHP1 (1ppm) àrea 96.8→304.7, desviació -71%→-8.3%
+
+### Canvis sessió 2026-02-21
+- `hpsec_calibrate.py`: fix `get_condition_key()` decimals, fix timeout severity, fix concentration filter tolerance
+- `gui/models/sequence_state.py`: `:g` format per concentracions
+- `gui/widgets/calibrate_panel/panel.py`: `:g` formats (5 llocs), tolerància relativa (2 llocs), filtre qc_history
+- `gui/widgets/analyze_panel/panel.py`: `:g` format KHP display
+- `gui/widgets/history_panel.py`: `concs.add(conc)` float, `:g` formats (3 llocs), tolerància relativa
+- `gen_cal_analysis.py`: script diagnòstic 4 pàgines PDF (292 vs 152 BP + temporal RF)
+- Commits: `faa98f2` (decimal display), `2afdc14` (timeout + history filter)
+
+### Canvis sessió anterior (2026-02-20)
 - `Calibration_Reference.json`: BP rf=817, R²=0.999, n=10 (ref: 152_SEQ_BP tangent)
 - `hpsec_migrate_master.py`: volum de col N del v11 (no hardcoded), warning si absent
 - `hpsec_import.py`: eliminat BP guard volum, warning si cap injecció té volum, propagació method
@@ -290,8 +386,6 @@ All exploratory scripts and results live in `research/` — NOT part of the prod
 - `fix_masterfile_delay.py`: 45/53 SEQs amb delay mesurat aplicat
 - `khp_reintegrate_doc.py`: lectura directa MasterFile, mode _CAL
 - `hpsec_config.py`, `hpsec_import.py`, `hpsec_migrate_master.py`: pre-margin 1.5 min
-
-### Sessions anteriors (resum)
 - Pipeline 254→DOC: `analizar_khp_data()` reescrit, recalibrate_all_khp.py, calibration_review.py
 - validate_khp_quality: 5 nous checks (bigaussian, t_ret, mismatch, no_dad)
 - fit_calibration_from_history: mode="ALL", signal="254"
