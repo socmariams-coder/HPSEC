@@ -274,6 +274,8 @@ class AnalyzePanel(QWidget):
             # Comprovar si és SEQ_CAL
             self._check_and_show_seq_cal()
             self._populate_table()
+            self.empty_state.setVisible(False)
+            self.info_frame.setVisible(False)
             self.status_frame.setVisible(False)
             self.results_frame.setVisible(True)
             self.main_window.set_status("Anàlisi carregada des de fitxer existent", 3000)
@@ -292,21 +294,24 @@ class AnalyzePanel(QWidget):
             return
 
         self.empty_state.setVisible(False)
-        self.info_frame.setVisible(True)
+        # Si ja hi ha resultats carregats, amagar info_frame (redundant)
+        self.info_frame.setVisible(not bool(self.samples_grouped))
         self.status_frame.setVisible(False)
 
-        # Use analyzed sample count if available, else imported
+        # Use analyzed sample count if available, else imported injections
         if self.samples_grouped:
-            n_samples = len(self.samples_grouped)
+            n_items = len(self.samples_grouped)
+            item_label = "mostres"
         else:
             samples = imported_data.get("samples", {})
-            n_samples = len(samples)
+            n_items = len(samples)
+            item_label = "injeccions"
         method = imported_data.get("method", "-")
         data_mode = imported_data.get("data_mode", "-")
 
         self.import_info.setText(
             f"<span style='color: #6c757d; font-size: 10px;'>DADES</span><br>"
-            f"<b style='font-size: 13px;'>{n_samples}</b> <span style='color: #495057;'>mostres</span><br>"
+            f"<b style='font-size: 13px;'>{n_items}</b> <span style='color: #495057;'>{item_label}</span><br>"
             f"<span style='color: #6c757d; font-size: 10px;'>{method} / {data_mode}</span>"
         )
 
@@ -425,14 +430,8 @@ class AnalyzePanel(QWidget):
             if imported_data and imported_data.get('success'):
                 self.main_window.imported_data = imported_data
 
-        # Assegurar que les dades crues estan carregades (pot venir amb data_deferred=True)
-        if imported_data and imported_data.get("data_deferred"):
-            from hpsec_import import ensure_data_loaded
-            self.main_window.set_status("Carregant cromatogrames...")
-            try:
-                ensure_data_loaded(imported_data)
-            except Exception as e:
-                logger.warning(f"Error carregant dades diferides: {e}")
+        # ensure_data_loaded() es fa dins del AnalyzeWorker (thread)
+        # per no bloquejar la UI si cal llegir MasterFile + CSV + Export3D
 
         if not calibration_data and seq_path:
             import json
@@ -485,11 +484,13 @@ class AnalyzePanel(QWidget):
 
         if not imported_data:
             QMessageBox.warning(self, "Avís", "No s'han trobat dades d'importació.")
+            self.analyze_completed.emit({'success': False, 'errors': ["No hi ha dades d'importació"]})
             return
 
         samples = imported_data.get("samples", {})
         if not samples:
             QMessageBox.warning(self, "Avís", "No s'han trobat mostres a les dades importades.")
+            self.analyze_completed.emit({'success': False, 'errors': ["No hi ha mostres a les dades"]})
             return
 
         self.analyze_btn.setEnabled(False)

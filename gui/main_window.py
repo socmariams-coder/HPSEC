@@ -193,14 +193,6 @@ class HPSECSuiteWindow(QMainWindow):
             if attr_name == "process_panel":
                 panel.process_completed.connect(self._on_process_completed)
                 panel.sequence_loaded.connect(self._on_wizard_sequence_loaded)
-            elif attr_name == "global_cal_panel":
-                # Nota: calibration_updated ja no existeix (panell és consulta-only)
-                pass
-
-    def _on_calibration_updated(self):
-        """Callback quan canvia la calibració global — refrescar dashboard."""
-        if hasattr(self, 'dashboard_panel') and self.dashboard_panel:
-            self.dashboard_panel.refresh_sequences()
 
     def _open_sequence(self):
         """Obre diàleg per seleccionar carpeta SEQ."""
@@ -249,7 +241,7 @@ class HPSECSuiteWindow(QMainWindow):
     def go_to_process_step(self, step_index):
         """
         Navega a una etapa específica del process wizard.
-        0=Importar, 1=Verificar, 2=Analitzar, 3=Revisar
+        0=Importar, 1=Calibrar, 2=Analitzar, 3=Consolidar
         """
         # Assegurar que estem al tab de Processar
         self._ensure_panel(1)
@@ -316,15 +308,18 @@ class HPSECSuiteWindow(QMainWindow):
         import os
         seq_name = os.path.basename(seq_path)
 
-        self.set_status(f"Carregant {seq_name}...")
-        self.load_sequence(seq_path)
+        try:
+            self.set_status(f"Carregant {seq_name}...")
+            self.load_sequence(seq_path)
 
-        # Anar al wizard - la navegació interna la gestiona el ProcessWizardPanel
-        # que detecta automàticament la primera etapa que necessita atenció (warning o pending)
-        self.tab_widget.setCurrentIndex(1)
+            # Anar al wizard - la navegació interna la gestiona el ProcessWizardPanel
+            # que detecta automàticament la primera etapa que necessita atenció (warning o pending)
+            self.tab_widget.setCurrentIndex(1)
 
-        self.set_status(f"{seq_name} carregat", 3000)
-        self.dashboard_panel.hide_loading_overlay()
+            self.set_status(f"{seq_name} carregat", 3000)
+        finally:
+            # Sempre restaurar cursor i overlay, fins i tot si hi ha error
+            self.dashboard_panel.hide_loading_overlay()
 
     def _on_wizard_sequence_loaded(self, seq_path):
         """Callback quan el wizard carrega una seqüència."""

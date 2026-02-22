@@ -2083,6 +2083,47 @@ def parse_injections_from_masterfile(master_data, config=None):
     return injections, warnings, total_rows_with_line
 
 
+def _save_toc_calc_to_masterfile(master_path, toc_calc_df):
+    """
+    Guarda el 4-TOC_CALC calculat al MasterFile.
+
+    Si el full ja existeix, el sobreescriu. Si no, el crea al final.
+    """
+    import openpyxl
+
+    try:
+        wb = openpyxl.load_workbook(str(master_path))
+
+        # Eliminar full existent si existeix
+        if '4-TOC_CALC' in wb.sheetnames:
+            del wb['4-TOC_CALC']
+
+        ws = wb.create_sheet('4-TOC_CALC')
+
+        # Escriure capçaleres
+        headers = list(toc_calc_df.columns)
+        for col_idx, header in enumerate(headers, 1):
+            ws.cell(row=1, column=col_idx, value=header)
+
+        # Escriure dades
+        for row_idx, (_, row) in enumerate(toc_calc_df.iterrows(), 2):
+            for col_idx, header in enumerate(headers, 1):
+                val = row[header]
+                # Convertir numpy types a Python natiu
+                if hasattr(val, 'item'):
+                    val = val.item()
+                elif pd.isna(val):
+                    val = None
+                ws.cell(row=row_idx, column=col_idx, value=val)
+
+        wb.save(str(master_path))
+        wb.close()
+        logger.info(f"4-TOC_CALC guardat al MasterFile ({len(toc_calc_df)} files)")
+
+    except Exception as e:
+        logger.warning(f"No s'ha pogut guardar 4-TOC_CALC al MasterFile: {e}")
+
+
 def compute_toc_calc(master_data, toc_df):
     """
     Calcula 4-TOC_CALC in-memory quan no existeix al MasterFile (ex: plantilla).
@@ -2361,6 +2402,99 @@ def _match_khp_dad_from_masterfile(sample_name, original_name, inj_num, master_k
     return None, None
 
 
+def _validate_toc_assignments(result):
+    """
+    Valida assignacions TOC: detecta solapaments entre injeccions i injeccions sense DOC.
+
+    Afegeix warnings al result quan:
+    - Dues injeccions comparteixen el mateix rang de files TOC
+    - Una injecció no té dades DOC Direct assignades
+    """
+    # Recopilar (sample, rep, row_start, row_end) de totes les rèpliques
+    assignments = []
+    no_doc_injections = []
+
+    for sample_name, sample_data in result.get("samples", {}).items():
+        for rep_key, rep_data in sample_data.get("replicas", {}).items():
+            direct = rep_data.get("direct")
+            if direct and direct.get("row_start") and direct.get("row_end"):
+                assignments.append({
+                    "sample": sample_name,
+                    "rep": rep_key,
+                    "row_start": direct["row_start"],
+                    "row_end": direct["row_end"],
+                    "line_num": rep_data.get("injection_info", {}).get("line_num", 0),
+                })
+            else:
+                line_num = rep_data.get("injection_info", {}).get("line_num", "?")
+                no_doc_injections.append(f"{sample_name}_R{rep_key} (línia {line_num})")
+
+    # Detectar injeccions sense DOC Direct
+    if no_doc_injections:
+        n = len(no_doc_injections)
+        if n <= 5:
+            names = ", ".join(no_doc_injections)
+        else:
+            names = ", ".join(no_doc_injections[:5]) + f"... (+{n-5} més)"
+        result["warnings"].append(
+            f"⚠️ {n} injeccions sense DOC Direct (no assignades al 4-TOC_CALC): {names}"
+        )
+
+    # Detectar solapaments
+    if len(assignments) < 2:
+        return
+
+    # Ordenar per row_start
+    assignments.sort(key=lambda a: a["row_start"])
+
+    overlaps = []
+    for i in range(len(assignments) - 1):
+        a = assignments[i]
+        b = assignments[i + 1]
+        # Solapament si b comença abans que a acabi
+        if b["row_start"] <= a["row_end"]:
+            overlap_rows = a["row_end"] - b["row_start"] + 1
+            # Solapament petit (1-2 files) pot ser normal (fronteres)
+            if overlap_rows > 5:
+                overlaps.append(
+                    f"{a['sample']}_R{a['rep']} [{a['row_start']}-{a['row_end']}] ↔ "
+                    f"{b['sample']}_R{b['rep']} [{b['row_start']}-{b['row_end']}] "
+                    f"({overlap_rows} files solapades)"
+                )
+
+    # Detectar rangs idèntics (dues injeccions amb exactament el mateix rang)
+    from collections import Counter
+    range_counts = Counter((a["row_start"], a["row_end"]) for a in assignments)
+    duplicate_ranges = {rng: cnt for rng, cnt in range_counts.items() if cnt > 1}
+
+    if duplicate_ranges:
+        for (rs, re_), cnt in duplicate_ranges.items():
+            affected = [
+                f"{a['sample']}_R{a['rep']}"
+                for a in assignments
+                if a["row_start"] == rs and a["row_end"] == re_
+            ]
+            if len(affected) <= 5:
+                names = ", ".join(affected)
+            else:
+                names = ", ".join(affected[:5]) + f"... (+{len(affected)-5} més)"
+            result["warnings"].append(
+                f"⚠️ CRÍTIC: {cnt} injeccions comparteixen el mateix rang TOC "
+                f"[{rs}-{re_}]: {names}. "
+                f"Probable error d'assignació — les dades DOC seran idèntiques!"
+            )
+
+    if overlaps and not duplicate_ranges:
+        n = len(overlaps)
+        if n <= 3:
+            detail = "; ".join(overlaps)
+        else:
+            detail = "; ".join(overlaps[:3]) + f"... (+{n-3} més)"
+        result["warnings"].append(
+            f"⚠️ {n} solapaments TOC detectats: {detail}"
+        )
+
+
 def find_data_for_injection(injection, seq_path, uib_files, dad_files, dad_csv_files,
                             master_khp_data, used_files, config=None,
                             toc_df=None, toc_calc_df=None,
@@ -2411,29 +2545,53 @@ def find_data_for_injection(injection, seq_path, uib_files, dad_files, dad_csv_f
             # Format nou: 4-TOC_CALC amb Sample, TOC_Row, Inj_Index
             # Prioritzar cerca per line_num (Inj_Index) que és més fiable per controls
             mask = None
+            match_method = None
 
             # 1. Primer intentar per Inj_Index (line_num) - més fiable
             if "Inj_Index" in toc_calc_df.columns:
                 mask = (toc_calc_df["Inj_Index"] == line_num)
                 if not mask.any():
                     mask = None
+                else:
+                    match_method = "inj_index"
 
             # 2. Si no, intentar per nom exacte amb rèplica
             if mask is None:
                 sample_key_r = f"{original_name}_R{inj_num_original}"
                 mask = (toc_calc_df["Sample"] == sample_key_r)
                 if not mask.any():
-                    # 3. Fallback: nom parcial + line_num
+                    # 3. Fallback: nom parcial (RESTRINGIT)
                     # Treure sufixos _1, _2 del original_name per matching més flexible
                     original_base = re.sub(r'[_\-]?\d+$', '', original_name).strip()
-                    mask = (toc_calc_df["Sample"].astype(str).str.contains(original_base, case=False, na=False))
+                    if original_base and len(original_base) >= 3:
+                        mask = (toc_calc_df["Sample"].astype(str).str.contains(
+                            original_base, case=False, na=False))
+                        match_method = "fallback_partial"
+                    else:
+                        mask = None
+                else:
+                    match_method = "exact_name"
 
             sample_rows = toc_calc_df[mask] if mask is not None else pd.DataFrame()
             if not sample_rows.empty:
                 toc_rows = sample_rows["TOC_Row"].dropna()
                 if len(toc_rows) > 0:
-                    row_start = int(toc_rows.min())
-                    row_end = int(toc_rows.max())
+                    candidate_start = int(toc_rows.min())
+                    candidate_end = int(toc_rows.max())
+                    row_span = candidate_end - candidate_start
+
+                    # Validació: si el rang és excessiu (>2500 files ≈ 2x normal),
+                    # el fallback ha assignat files d'altres injeccions → descartar
+                    MAX_REASONABLE_ROWS = 2500  # ~1200 normal, 2x marge
+                    if match_method == "fallback_partial" and row_span > MAX_REASONABLE_ROWS:
+                        logger.warning(
+                            f"TOC fallback massa ampli per {sample_name} (line {line_num}): "
+                            f"rows {candidate_start}-{candidate_end} ({row_span} files). Descartant."
+                        )
+                        # No assignar — millor no tenir DOC que tenir-lo erroni
+                    else:
+                        row_start = candidate_start
+                        row_end = candidate_end
 
         elif is_old_format:
             # Format antic: 4-SEQ_DATA amb SAMPLE_ID, Row initial, Row Final
@@ -2938,14 +3096,17 @@ def import_sequence(seq_path, config=None, progress_callback=None):
         except Exception as e:
             logger.warning(f"Error llegint fulls addicionals del MasterFile: {e}")
 
-        # Si 4-TOC_CALC no existeix, calcular in-memory (plantilla o MasterFile incomplet)
+        # Si 4-TOC_CALC no existeix, calcular i guardar al MasterFile
         if toc_calc_df is None or (hasattr(toc_calc_df, 'empty') and toc_calc_df.empty):
             if toc_df is not None:
                 result["warnings"].append(
                     "4-TOC_CALC no trobat al MasterFile, calculant automàticament..."
                 )
                 toc_calc_df = compute_toc_calc(result["master_data"], toc_df)
-                if toc_calc_df is None or toc_calc_df.empty:
+                if toc_calc_df is not None and not toc_calc_df.empty:
+                    # Guardar 4-TOC_CALC al MasterFile per a futures importacions
+                    _save_toc_calc_to_masterfile(master_path, toc_calc_df)
+                else:
                     result["warnings"].append(
                         "⚠️ No s'ha pogut calcular 4-TOC_CALC. DOC Direct no disponible."
                     )
@@ -3060,6 +3221,9 @@ def import_sequence(seq_path, config=None, progress_callback=None):
                     "inj_date": inj.get("inj_date", ""),
                 },
             }
+
+        # 5b. Validar assignacions TOC: detectar solapaments i injeccions sense DOC
+        _validate_toc_assignments(result)
 
         report_progress(90, "Verificant fitxers orfes...")
 
@@ -3939,7 +4103,7 @@ def import_from_manifest(seq_path, manifest=None, config=None, progress_callback
         "valid_samples": [],
         "orphan_files": {"uib": [], "dad": []},
         "errors": [],
-        "warnings": ["Importat des de manifest existent"],
+        "warnings": [],
         "from_manifest": True,
         "manifest_date": manifest.get("generated_at", ""),
         "orphan_warning_dismissed": manifest.get("orphan_warning_dismissed", False),

@@ -27,6 +27,20 @@ class AnalyzeWorker(QThread):
             def progress_cb(msg, pct):
                 self.progress.emit(msg, int(pct))
 
+            # Assegurar dades carregades (pot venir amb data_deferred=True
+            # des del preload de metadades). FER-HO AL THREAD per no
+            # bloquejar la UI.
+            if self.imported_data and self.imported_data.get("data_deferred"):
+                from hpsec_import import ensure_data_loaded
+                progress_cb("Carregant senyals des del disc...", 2)
+                ensure_data_loaded(
+                    self.imported_data,
+                    config=self.config,
+                    progress_callback=lambda pct, msg: progress_cb(
+                        msg, 2 + int(pct * 0.15)
+                    ),
+                )
+
             result = analyze_sequence(
                 self.imported_data,
                 self.calibration_data,

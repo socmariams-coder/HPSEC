@@ -94,9 +94,6 @@ class SequenceState:
     # Config fingerprint (per detectar obsolescència)
     config_fingerprint: str = ""
 
-    # Calibration fingerprint (per detectar canvi de calibració global)
-    calibration_fingerprint: str = ""
-
     # Siblings (carpetes germanes com 282B_SEQ, 282C_SEQ)
     siblings: List[str] = field(default_factory=list)  # Paths de siblings
     is_sibling: bool = False  # True si és sibling secundari (282B, 282C...)
@@ -164,7 +161,7 @@ class SequenceState:
             data = {}
             for key in ('success', 'timestamp', 'date', 'method', 'data_mode',
                         'seq_path', 'seq_name', 'warning_level',
-                        'config_fingerprint', 'calibration_fingerprint'):
+                        'config_fingerprint'):
                 pattern = rf'"{key}"\s*:\s*("([^"]*)"|(true|false|null|\d+[\.\d]*))'
                 m = re.search(pattern, head)
                 if m:
@@ -182,8 +179,13 @@ class SequenceState:
             if m_warn:
                 content = m_warn.group(1).strip()
                 if content != ']':
-                    # Hi ha warnings — marcar amb placeholder
-                    data['warnings'] = ['[metadata-only]']
+                    # Hi ha warnings reals al JSON → parsejar-les si es pot
+                    # (Intentar extreure el primer warning com a preview)
+                    m_first = re.search(r'"warnings"\s*:\s*\[\s*"([^"]{1,100})"', head)
+                    if m_first:
+                        data['warnings'] = [m_first.group(1)]
+                    else:
+                        data['warnings'] = ['[metadata-only]']
                 else:
                     data['warnings'] = []
             return data
@@ -238,10 +240,15 @@ class SequenceState:
             if import_errors:
                 self.import_status.errors = import_errors
 
-            # Warnings = resta (no errors, no "manifest existent")
+            # Warnings = resta (no errors, no trivials)
+            _trivial_import = {
+                'manifest existent',
+                '4-toc_calc no trobat',
+                'calculant automàticament',
+            }
             self.import_warnings = [
                 w for w in raw_warnings
-                if 'manifest existent' not in w.lower()
+                if not any(t in w.lower() for t in _trivial_import)
                 and not w.upper().startswith('ERROR:')
             ]
             # Comptadors del summary
@@ -302,14 +309,21 @@ class SequenceState:
         # De l'anàlisi
         if self.analyze_status.data:
             data = self.analyze_status.data
-            self.analyze_warnings = data.get('warnings', [])
-            # Fallback: si warning_level indica problemes (JSONs nous o metadata-only)
-            if not self.analyze_warnings:
-                wl = data.get('warning_level', 'none')
-                if wl in ('warning', 'blocker'):
-                    self.analyze_warnings = [f"[{wl}]"]
+            raw_analyze_warnings = data.get('warnings', [])
+            # Filtrar warnings trivials (metadata-only placeholders)
+            if isinstance(raw_analyze_warnings, list):
+                self.analyze_warnings = [
+                    w for w in raw_analyze_warnings
+                    if isinstance(w, str) and w.strip()
+                    and w != '[metadata-only]'
+                ]
+            else:
+                self.analyze_warnings = []
+            # NO usar warning_level com a fallback per al triangle:
+            # warning_level reflecteix anomalies per-mostra (IRREGULAR_TOP, etc.)
+            # que es mostren dins l'anàlisi. El triangle del dashboard ha de
+            # reservar-se per avisos reals de nivell superior (ex: "Missing DOC data").
             self.config_fingerprint = data.get('config_fingerprint', '')
-            self.calibration_fingerprint = data.get('calibration_fingerprint', '')
 
     @property
     def info_text(self) -> str:
@@ -337,14 +351,6 @@ class SequenceState:
         return self.config_fingerprint != get_config().compute_config_fingerprint()
 
     @property
-    def is_cal_stale(self) -> bool:
-        """True si la calibració global ha canviat des de l'última anàlisi."""
-        if not self.calibration_fingerprint or not self.analyze_status.completed:
-            return False
-        from hpsec_calibrate import compute_calibration_fingerprint
-        return self.calibration_fingerprint != compute_calibration_fingerprint()
-
-    @property
     def has_warnings(self) -> bool:
         """Indica si hi ha warnings o problemes."""
         return self.calibrate_status.completed and not self.has_khp
@@ -362,7 +368,7 @@ class SequenceState:
         for cal in self.active_calibrations:
             conc = cal.get('conc_ppm', 0)
             vol = cal.get('volume_uL', 0)
-            conditions.append(f"KHP{conc:g}@{int(vol)}µL")
+            conditions.append(f"KHP{int(conc)}@{int(vol)}µL")
 
         return ", ".join(conditions)
 
@@ -409,7 +415,7 @@ class SequenceState:
     @property
     def calibrate_state(self) -> str:
         """
-        Estat de la fase Verificar per determinar color.
+        Estat de la fase Calibrar per determinar color.
         - ok: KHP local (SEQ/DIRECT/UIB/DUAL)
         - warning: KHP sibling o sense KHP (shift no verificable, però quantificació OK)
         - error: Error real de calibració
@@ -487,7 +493,7 @@ class SequenceState:
             return "Completat"
         actions = {
             Phase.IMPORT: "Importar",
-            Phase.CALIBRATE: "Verificar",
+            Phase.CALIBRATE: "Calibrar",
             Phase.ANALYZE: "Analitzar",
             Phase.REVIEW: "Revisar",
         }

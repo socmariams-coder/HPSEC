@@ -1055,6 +1055,131 @@ def format_timeout_status(timeout_info):
     return f"{severity}: {n_timeouts} timeout(s)"
 
 
+def estimate_timeout_for_uib(direct_timeout_info=None, sample_num=None,
+                              t0=None, sample_duration=None, is_bp=False):
+    """
+    Estima la posició de timeouts per al senyal UIB.
+
+    El timeout (recàrrega xeringa Sievers) afecta el DOC tant Direct com UIB,
+    però UIB no té gaps temporals detectables (CSV per-injecció amb temps relatiu).
+    L'anomalia UIB dura ~1.8 min (pic espuri + estabilització).
+
+    Estratègia:
+    1. Si DOC Direct disponible: transferir t_positions directament
+    2. Si no: usar model predictiu (hpsec_planner) amb T0 i sample_duration
+
+    Args:
+        direct_timeout_info: timeout_info de DOC Direct (si disponible)
+        sample_num: Número de mostra a la seqüència (1-based, per predicció)
+        t0: Temps del primer timeout (min), estimat o del planner
+        sample_duration: Duració de cada mostra (min)
+        is_bp: Mode BP
+
+    Returns:
+        dict compatible amb timeout_info, amb camp extra 'estimated': True
+    """
+    # Durada de l'anomalia UIB (verificat: ~1.8 min, des de -0.1 a +1.7 min)
+    ANOMALY_PRE_MIN = 0.2    # UIB comença a desviar-se just abans del gap DOC
+    ANOMALY_POST_MIN = 1.8   # Pic espuri + estabilització
+
+    zones = TIMEOUT_CONFIG["bp_zones"] if is_bp else TIMEOUT_CONFIG["zones"]
+    severity_map = TIMEOUT_CONFIG["severity"]
+
+    def _classify_position(pos):
+        """Classifica una posició de timeout per zona i severitat."""
+        for zone_name, (z_start, z_end) in zones.items():
+            if z_start <= pos < z_end:
+                return zone_name, severity_map.get(zone_name, "OK")
+        return "POST_RUN", "OK"
+
+    # --- Font 1: Transferir des de DOC Direct ---
+    if direct_timeout_info and direct_timeout_info.get("n_timeouts", 0) > 0:
+        t_positions = direct_timeout_info.get("t_positions", [])
+        if t_positions:
+            # Construir timeout_info per UIB amb les mateixes posicions
+            timeouts = []
+            zone_counts = {}
+            max_sev_order = {"OK": 0, "INFO": 1, "WARNING": 2, "CRITICAL": 3}
+            max_severity = "OK"
+
+            for t_pos in t_positions:
+                zone, sev = _classify_position(t_pos)
+                timeouts.append({
+                    "position_min": round(t_pos, 2),
+                    "zone": zone,
+                    "severity": sev,
+                    "affected_start": round(t_pos - ANOMALY_PRE_MIN, 2),
+                    "affected_end": round(t_pos + ANOMALY_POST_MIN, 2),
+                })
+                zone_counts[zone] = zone_counts.get(zone, 0) + 1
+                if max_sev_order.get(sev, 0) > max_sev_order.get(max_severity, 0):
+                    max_severity = sev
+
+            return {
+                "estimated": True,
+                "source": "direct_transfer",
+                "n_timeouts": len(t_positions),
+                "n_major_timeouts": len(t_positions),  # Tots són recàrrega
+                "timeouts": timeouts,
+                "t_positions": [round(p, 2) for p in t_positions],
+                "zone_summary": {k: v for k, v in zone_counts.items() if v > 0},
+                "severity": max_severity,
+                "anomaly_duration_min": ANOMALY_PRE_MIN + ANOMALY_POST_MIN,
+                "warning_message": (
+                    f"Timeout estimat (de DOC Direct): {len(t_positions)} "
+                    f"timeout(s), severitat {max_severity}"
+                ),
+            }
+
+    # --- Font 2: Model predictiu (planner) ---
+    if sample_num is not None and t0 is not None:
+        if sample_duration is None:
+            sample_duration = 12.0 if is_bp else 78.65  # Durades típiques
+
+        try:
+            from hpsec_planner import predict_timeout_position
+            pos = predict_timeout_position(sample_num, t0, sample_duration)
+        except ImportError:
+            pos = None
+
+        if pos is not None:
+            zone, sev = _classify_position(pos)
+            return {
+                "estimated": True,
+                "source": "planner_prediction",
+                "n_timeouts": 1,
+                "n_major_timeouts": 1,
+                "timeouts": [{
+                    "position_min": round(pos, 2),
+                    "zone": zone,
+                    "severity": sev,
+                    "affected_start": round(pos - ANOMALY_PRE_MIN, 2),
+                    "affected_end": round(pos + ANOMALY_POST_MIN, 2),
+                }],
+                "t_positions": [round(pos, 2)],
+                "zone_summary": {zone: 1},
+                "severity": sev,
+                "anomaly_duration_min": ANOMALY_PRE_MIN + ANOMALY_POST_MIN,
+                "warning_message": (
+                    f"Timeout predit (model planner): t={pos:.1f} min, "
+                    f"zona {zone} ({sev})"
+                ),
+            }
+
+    # Sense informació suficient
+    return {
+        "estimated": True,
+        "source": "unknown",
+        "n_timeouts": 0,
+        "n_major_timeouts": 0,
+        "timeouts": [],
+        "t_positions": [],
+        "zone_summary": {},
+        "severity": "OK",
+        "warning_message": "",
+    }
+
+
 # =============================================================================
 # PEAK DETECTION
 # =============================================================================

@@ -464,6 +464,26 @@ class ImportPanel(QWidget):
             errors = result.get("errors", ["Error desconegut"])
             error_msg = "\n\n".join(errors)
             QMessageBox.critical(self, "Error d'Importació", error_msg)
+            # Guardar JSON amb error per persistència entre sessions
+            try:
+                seq_path = result.get("seq_path") or self.seq_path
+                if seq_path:
+                    import json, os
+                    from datetime import datetime
+                    data_folder = os.path.join(seq_path, "CHECK", "data")
+                    os.makedirs(data_folder, exist_ok=True)
+                    error_json = {
+                        "manifest_version": "1.0",
+                        "generated_at": datetime.now().isoformat(),
+                        "success": False,
+                        "errors": errors,
+                        "warnings": [],
+                    }
+                    with open(os.path.join(data_folder, "import_manifest.json"), "w",
+                              encoding="utf-8") as f:
+                        json.dump(error_json, f, indent=2, ensure_ascii=False)
+            except Exception as e:
+                logger.warning(f"No s'ha pogut guardar JSON d'error: {e}")
             self.import_completed.emit({'success': False, 'errors': errors})
             return
 

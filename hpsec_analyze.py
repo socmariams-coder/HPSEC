@@ -1750,6 +1750,16 @@ def analyze_sample(sample_data, calibration_data=None, config=None):
     if timeout_info.get("n_timeouts", 0) > 0:
         result["timeout_info"] = timeout_info
 
+    # Estimar timeout per UIB (si DUAL)
+    if is_dual:
+        from hpsec_core import estimate_timeout_for_uib
+        uib_timeout = estimate_timeout_for_uib(
+            direct_timeout_info=timeout_info if timeout_info.get("n_timeouts", 0) > 0 else None,
+            is_bp=is_bp,
+        )
+        if uib_timeout and uib_timeout.get("n_timeouts", 0) > 0:
+            result["timeout_info_uib"] = uib_timeout
+
     # Detectar pic principal
     y_smooth = apply_smoothing(y_doc_net)
     peak_info = detect_main_peak(t_doc, y_smooth, config.get("peak_min_prominence_pct", 5.0), is_bp=is_bp)
@@ -2388,6 +2398,138 @@ def _analyze_light_sample(sample):
     return result
 
 
+def _estimate_uib_timeouts_from_sequence(result, is_bp=False):
+    """
+    Estima timeouts UIB per injeccions sense DOC Direct, a partir del patró
+    observat a les injeccions que SÍ tenen DOC Direct.
+
+    El timeout del Sievers (recàrrega xeringues) ocorre cada ~77.2 min i afecta
+    tant DOC Direct com UIB. DOC Direct el detecta per gap temporal; UIB no,
+    però el patró anòmal és idèntic (pic espuri ~1.8 min).
+
+    Estratègia:
+    1. Recollir t_positions de totes les injeccions amb DOC Direct timeout
+    2. Calcular T0 (primer timeout) i deriva (Δt per injecció)
+    3. Extrapolar per a les injeccions sense DOC Direct
+    4. Assignar timeout_info_uib estimat
+    """
+    from hpsec_core import estimate_timeout_for_uib
+
+    all_samples = result.get("samples", []) + result.get("khp_samples", [])
+    if not all_samples:
+        return
+
+    # 1. Recollir patró de timeouts des de DOC Direct
+    # Cada sample té un 'line_num' (número d'injecció a la seqüència)
+    observed = []  # (inj_num, t_position)
+    no_direct = []  # (inj_num, sample_ref)
+    is_dual = any(s.get("is_dual") for s in all_samples)
+
+    if not is_dual:
+        return  # Sense UIB, no cal estimar
+
+    for sample in all_samples:
+        inj_num = (sample.get("injection_index")
+                   or sample.get("injection_num")
+                   or sample.get("line_num"))
+        if inj_num is None:
+            continue
+
+        ti = sample.get("timeout_info")
+        if ti and ti.get("n_timeouts", 0) > 0 and ti.get("t_positions"):
+            for t_pos in ti["t_positions"]:
+                observed.append((int(inj_num), t_pos))
+        elif sample.get("is_dual") and not sample.get("timeout_info_uib"):
+            # Injecció DUAL sense timeout detectat i sense estimació UIB
+            no_direct.append((int(inj_num), sample))
+
+    if not observed or not no_direct:
+        return  # No cal estimar (totes tenen DOC Direct o cap timeout)
+
+    # 2. Calcular T0 i deriva
+    # Ordenar per inj_num
+    observed.sort(key=lambda x: x[0])
+
+    if len(observed) >= 2:
+        # Calcular T0 absolut (primer timeout a la primera injecció)
+        # T_absolut = inj_num * sample_duration + t_position_dins_injecció
+        # Però no necessitem sample_duration: podem fer regressió lineal
+        # t_position(inj) = T0 + (inj - 1) * drift
+        # on drift = sample_duration - 77.2 (negatiu si dur > 77.2)
+        import numpy as np
+        inj_nums = np.array([x[0] for x in observed])
+        t_positions = np.array([x[1] for x in observed])
+
+        # Regressió lineal: t_pos = a + b * inj_num
+        # (robust: eliminar outliers amb |residual| > 3 min, típicament salts per blancs)
+        coeffs = np.polyfit(inj_nums, t_positions, 1)
+        drift_per_inj = coeffs[0]   # pendent (negatiu = timeout es desplaça enrere)
+        t0_intercept = coeffs[1]    # t_pos a inj=0
+
+        # Residuals
+        predicted = np.polyval(coeffs, inj_nums)
+        residuals = t_positions - predicted
+        mask_ok = np.abs(residuals) < 3.0  # Tolerar fins a 3 min de desviació
+
+        if mask_ok.sum() >= 2:
+            # Recalcular sense outliers
+            coeffs = np.polyfit(inj_nums[mask_ok], t_positions[mask_ok], 1)
+            drift_per_inj = coeffs[0]
+            t0_intercept = coeffs[1]
+
+        logger.info(
+            f"Timeout UIB estimation: {len(observed)} observed, "
+            f"drift={drift_per_inj:.3f} min/inj, "
+            f"t0_intercept={t0_intercept:.1f} min, "
+            f"{len(no_direct)} to estimate"
+        )
+
+        # 3. Extrapolar per injeccions sense DOC Direct
+        for inj_num, sample in no_direct:
+            estimated_pos = t0_intercept + drift_per_inj * inj_num
+
+            # Només assignar si la posició és raonable (0 < pos < durada cromatograma)
+            max_t = 80.0 if not is_bp else 12.0
+            if 0 < estimated_pos < max_t:
+                uib_timeout = estimate_timeout_for_uib(
+                    direct_timeout_info={
+                        "n_timeouts": 1,
+                        "t_positions": [estimated_pos],
+                    },
+                    is_bp=is_bp,
+                )
+                if uib_timeout.get("n_timeouts", 0) > 0:
+                    uib_timeout["source"] = "sequence_extrapolation"
+                    uib_timeout["extrapolation_info"] = {
+                        "drift_per_inj": round(drift_per_inj, 3),
+                        "t0_intercept": round(t0_intercept, 1),
+                        "n_observed": len(observed),
+                        "inj_num": inj_num,
+                    }
+                    sample["timeout_info_uib"] = uib_timeout
+
+    elif len(observed) == 1:
+        # Només una observació: usar com a referència sense drift
+        ref_inj, ref_pos = observed[0]
+        for inj_num, sample in no_direct:
+            # Aproximar: drift = -1.45 min/inj (teòric per COLUMN 78.65 min)
+            typical_drift = -0.20 if is_bp else -1.45
+            estimated_pos = ref_pos + typical_drift * (inj_num - ref_inj)
+
+            max_t = 80.0 if not is_bp else 12.0
+            if 0 < estimated_pos < max_t:
+                uib_timeout = estimate_timeout_for_uib(
+                    direct_timeout_info={
+                        "n_timeouts": 1,
+                        "t_positions": [estimated_pos],
+                    },
+                    is_bp=is_bp,
+                )
+                if uib_timeout.get("n_timeouts", 0) > 0:
+                    uib_timeout["source"] = "single_ref_extrapolation"
+                    sample["timeout_info_uib"] = uib_timeout
+
+
 # =============================================================================
 # FUNCIÓ PRINCIPAL: PROCESSAR SEQÜÈNCIA
 # =============================================================================
@@ -2688,6 +2830,14 @@ def analyze_sequence(imported_data, calibration_data=None, config=None, progress
             "selected": {"doc": sorted(replicas.keys())[0]},
             "sample_valid": True,
         }
+
+    # =========================================================================
+    # ESTIMAR TIMEOUTS UIB (post-processat de seqüència)
+    # =========================================================================
+    # Per les injeccions sense DOC Direct (timeout_info buit), estimar la
+    # posició del timeout UIB a partir del patró observat a les injeccions
+    # amb DOC Direct. El cicle de recàrrega TOC és predictible (~77.2 min).
+    _estimate_uib_timeouts_from_sequence(result, is_bp)
 
     # =========================================================================
     # GENERAR RESUM

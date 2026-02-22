@@ -58,6 +58,7 @@ Mark features as DONE only when code is fully functional end-to-end, not when pl
 - [x] Export: HCI + HCI_Character columns in SUMMARY.xlsx — DONE
 - [ ] Analyze panel: mostrar bigaussian (R², asym, quality) per BP — PENDING
 - [ ] Analyze panel: mostrar timeouts amb icones/tooltip — PENDING
+- [x] Analyze backend: UIB timeout estimation from DOC Direct pattern — DONE (estimate_timeout_for_uib + _estimate_uib_timeouts_from_sequence)
 - [ ] Analyze backend: detecció deriva baseline DAD per replica selection — PENDING (TODO a hpsec_analyze.py L1210)
 - [x] Calibration: flux renovació calibració global (UI panel + regression) — DONE (GlobalCalibrationPanel → consulta-only)
 - [x] Calibration: auto-fit rf_mass_cal + intercept from KHP history (regression) — DONE (fit_calibration_from_history)
@@ -174,7 +175,7 @@ All exploratory scripts and results live in `research/` — NOT part of the prod
 
 ## Working notes
 
-> Last updated: 2026-02-21
+> Last updated: 2026-02-22
 
 ### Revisió calibració KHP (EN CURS)
 
@@ -437,6 +438,47 @@ All exploratory scripts and results live in `research/` — NOT part of the prod
 
 **Fase 3: Moure regressió SEQ_CAL al pas 3 — COMPLETAT** (merged)
 **Fase 4: Aplicar calibració al pas 4 — COMPLETAT** (merged)
+
+### Sessió 2026-02-22 (continuació) — UIB timeouts + fixes wizard
+
+**Bug: Suite penjada al passar a Verificar (ensure_data_loaded al UI thread):**
+- Símptoma: "al reimportar la 288 i passar a verificar cursor ocupat [...] (no respon)"
+- Causa: `ensure_data_loaded()` bloquejava el thread principal (carregar MasterFile+CSV+DAD és lent)
+- Fix: Mogut `ensure_data_loaded()` dins dels workers (threads):
+  - `calibrate_panel/worker.py`: CalibrateWorker.run() crida ensure_data_loaded si data_deferred
+  - `analyze_panel/worker.py`: AnalyzeWorker.run() crida ensure_data_loaded si data_deferred
+  - `calibrate_panel/panel.py`: eliminat ensure_data_loaded del UI thread (L926-932)
+  - `analyze_panel/panel.py`: eliminat ensure_data_loaded del UI thread (L433-440)
+
+**Bug: Preload manifest camps incorrectes (process_wizard_panel.py):**
+- `_preload_completed_stages()` creava `imported_data` amb:
+  - `manifest.get("method")` → None (hauria de ser `manifest["sequence"]["method"]`)
+  - `manifest.get("samples")` → **llista** no dict (crash a `ensure_data_loaded()` que espera `.items()`)
+  - `manifest.get("masterfile_path")` → None (hauria de ser `manifest["master_file"]["path"]`)
+- Fix: Reescrit per extreure de l'estructura anidada + convertir samples llista→dict
+- Afecta a: totes les SEQs al carregar automàticament des del manifest (auto-load)
+
+**UIB timeout estimation (NOU — hpsec_core.py + hpsec_analyze.py):**
+- **Context**: El timeout del TOC (recàrrega xeringues Sievers M9e, ~74s cada ~77.2 min)
+  afecta tant DOC Direct (gap temporal) com UIB (patró anòmal sense gap temporal).
+  UIB mostra un pic espuri (~1.8 min durada, fins +75% sobre baseline) al mateix temps que el timeout Direct.
+- **Problema**: No es pot detectar el timeout a UIB per gaps temporals (CSV continu).
+  Cal estimar-lo des de DOC Direct o des del model predictiu.
+- **Implementació 3 nivells**:
+  1. `estimate_timeout_for_uib()` a `hpsec_core.py`: transfereix posicions timeout de DOC Direct a UIB,
+     o usa model predictiu (`hpsec_planner.py`) amb T0 i sample_duration
+  2. Integrat a `analyze_sample()` a `hpsec_analyze.py`: per cada mostra DUAL, estima UIB timeouts
+  3. `_estimate_uib_timeouts_from_sequence()` a `hpsec_analyze.py`: post-processa tota la seqüència
+     per extrapolar timeouts a injeccions sense DOC Direct via regressió lineal sobre patró observat
+- **Verificació 288_SEQ**: drift consistent -1.4 min/inj (teòric -1.45 per COLUMN 78.65 min)
+- **hpsec_planner.py**: mòdul existent (418 línies) amb model complet de predicció timeout, mai usat.
+  Constants: TOC_CYCLE_MIN=77.2, TOC_TIMEOUT_SEC=74, SAMPLE_DURATION_CURRENT=78.65
+- Zona d'anomalia UIB: t_timeout - 0.2 min a t_timeout + 1.8 min (pre/post marges)
+
+**Investigació 288_SEQ Export3D:**
+- Primera importació no reconeixia DAD → reimportació correcta
+- Causa: manifest antic sense info DAD; reimportació regenera manifest amb Export3D detectat
+- 33 fitxers Export3D correctament detectats al reimportar (dad_source=export3d)
 
 ### Canvis sessió 2026-02-21 (continuació)
 - **GlobalCalibrationPanel refactor**: 2 vistes (CalibrationLineView + QCMonitorView)

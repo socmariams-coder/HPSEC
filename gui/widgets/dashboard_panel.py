@@ -293,7 +293,7 @@ class BatchWorker(QThread):
                     return run_import(seq.seq_path, self.default_uib_sensitivity, siblings)
                 runner = import_runner
             elif phase == Phase.CALIBRATE:
-                phase_name = "Verificar"
+                phase_name = "Calibrar"
                 runner = lambda seq: run_calibrate(seq.seq_path)
             elif phase == Phase.ANALYZE:
                 phase_name = "Analitzar"
@@ -330,7 +330,7 @@ class DashboardPanel(QWidget):
     sequence_selected = Signal(str, str)
 
     # Noms de les etapes
-    STAGE_NAMES = ["Importar", "Verificar", "Analitzar", "Consolidar"]
+    STAGE_NAMES = ["Importar", "Calibrar", "Analitzar", "Consolidar"]
 
     def __init__(self, main_window):
         super().__init__()
@@ -341,6 +341,7 @@ class DashboardPanel(QWidget):
         self.single_worker = None
 
         self._loading_overlay = None
+        self._is_loading = False  # Evita doble-clic mentre carrega
         self._setup_ui()
         # Defer: carregar seqüències DESPRÉS que la finestra sigui visible
         from PySide6.QtCore import QTimer
@@ -480,7 +481,7 @@ class DashboardPanel(QWidget):
         self.table.setColumnCount(NUM_COLS)
         self.table.setHorizontalHeaderLabels([
             "", "#", "Seqüència", "Data", "Tipus", "Mode", "M", "PC", "PR", "Inj",
-            "Importar", "Verificar", "Analitzar", "Consolidar", "Notes"
+            "Importar", "Calibrar", "Analitzar", "Consolidar", "Notes"
         ])
 
         # Tooltips per capçaleres
@@ -745,7 +746,7 @@ class DashboardPanel(QWidget):
             # Fases (Importar, Calibrar, Analitzar, Consolidar)
             phases_data = [
                 (seq.import_status, seq.import_state, "Importar", seq.import_warnings),
-                (seq.calibrate_status, seq.calibrate_state, "Verificar", []),
+                (seq.calibrate_status, seq.calibrate_state, "Calibrar", []),
                 (seq.analyze_status, seq.analyze_state, "Analitzar", seq.analyze_warnings),
                 (seq.review_status, seq.review_state, "Consolidar", []),
             ]
@@ -787,7 +788,7 @@ class DashboardPanel(QWidget):
                 elif state == 'warning':
                     item.setText("⚠")
                     item.setForeground(QColor(COLOR_WARNING))
-                    if phase_name == "Verificar":
+                    if phase_name == "Calibrar":
                         tooltip = f"{phase_name}: KHP sibling ({seq.khp_source})"
                     elif phase_warnings:
                         tooltip = f"{phase_name}: Avisos\n" + "\n".join(phase_warnings[:3])
@@ -800,7 +801,7 @@ class DashboardPanel(QWidget):
                     item.setForeground(QColor(COLOR_ERROR))
                     if phase_name == "Importar":
                         tooltip = f"{phase_name}: Error MasterFile"
-                    elif phase_name == "Verificar" and not seq.has_khp:
+                    elif phase_name == "Calibrar" and not seq.has_khp:
                         tooltip = f"{phase_name}: Només històric!"
                     elif status.errors:
                         tooltip = f"{phase_name}: Error\n" + "\n".join(status.errors)
@@ -814,12 +815,6 @@ class DashboardPanel(QWidget):
                     else:
                         item.setForeground(QColor(COLOR_PENDING))
                         tooltip = f"{phase_name}: Pendent"
-
-                # Indicador calibració obsoleta (sobre columna Analitzar)
-                if col == COL_ANA and state == 'ok' and seq.is_cal_stale:
-                    item.setText("✔⟳")
-                    item.setForeground(QColor("#e67e22"))  # taronja
-                    tooltip += "\n\n⟳ Calibració canviada — requantificació pendent"
 
                 item.setToolTip(tooltip)
                 self.table.setItem(row, col, item)
@@ -1032,6 +1027,10 @@ class DashboardPanel(QWidget):
 
     def _on_double_click(self, row, col):
         """Doble-clic obre directament al wizard o edita notes."""
+        # Bloquejar doble-clic mentre s'està carregant
+        if self._is_loading:
+            return
+
         item_name = self.table.item(row, COL_NAME)
         if not item_name:
             return
@@ -1199,7 +1198,10 @@ class DashboardPanel(QWidget):
                     data = json.load(f)
 
                 # 1. WARNINGS pendents (filtrar trivials)
-                _skip_warnings = {"Importat des de manifest existent"}
+                _skip_warnings = {
+                    "Importat des de manifest existent",
+                    "4-TOC_CALC no trobat al MasterFile, calculant automàticament...",
+                }
                 warnings = data.get("warnings", [])
                 if isinstance(warnings, list):
                     for w in warnings[:3]:  # Màxim 3 per etapa
@@ -1220,7 +1222,7 @@ class DashboardPanel(QWidget):
                                     "content": msg[:80],
                                 })
 
-                # 2. ANOMALIES (irregular top, timeout, etc.) - analysis_result
+                # 2. ANOMALIES (batman, timeout, etc.) - analysis_result
                 if filename == "analysis_result.json":
                     from hpsec_warnings import normalize_anomalies, classify_anomalies, ANOMALY_CATALOG
 
@@ -1269,11 +1271,11 @@ class DashboardPanel(QWidget):
                 if filename == "calibration_result.json":
                     cals = data.get("calibrations", [])
                     for cal in cals:
-                        if cal.get("has_irregular_top", cal.get("has_batman")):
+                        if cal.get("has_batman"):
                             notes.append({
                                 "stage": stage_name,
                                 "type": "ANOM",
-                                "content": "KHP amb cim irregular",
+                                "content": "KHP amb batman",
                             })
                         if cal.get("has_timeout"):
                             # Only show as anomaly if timeout severity is WARNING/CRITICAL
@@ -1340,8 +1342,10 @@ class DashboardPanel(QWidget):
 
     def _open_in_wizard(self, seq: SequenceState):
         """Obre la seqüència al wizard per processar/revisar."""
+        self._is_loading = True
         self._show_loading_overlay(seq.seq_name)
         from PySide6.QtWidgets import QApplication
+        QApplication.setOverrideCursor(Qt.WaitCursor)
         QApplication.processEvents()
         self.sequence_selected.emit(seq.seq_path, seq.current_phase.value)
 
@@ -1355,15 +1359,18 @@ class DashboardPanel(QWidget):
                 "color: #2E86AB; font-size: 16px; font-weight: bold;"
                 "border-radius: 8px;"
             )
-        self._loading_overlay.setText(f"Carregant {seq_name}...")
+        self._loading_overlay.setText(f"⏳ Carregant {seq_name}...")
         self._loading_overlay.setGeometry(self.table.rect())
         self._loading_overlay.raise_()
         self._loading_overlay.show()
 
     def hide_loading_overlay(self):
-        """Amaga l'overlay de càrrega."""
+        """Amaga l'overlay de càrrega i restaura cursor."""
+        self._is_loading = False
         if self._loading_overlay is not None:
             self._loading_overlay.hide()
+        from PySide6.QtWidgets import QApplication
+        QApplication.restoreOverrideCursor()
 
     def _process_single(self, seq: SequenceState):
         # Construir missatge amb info de siblings
@@ -1465,7 +1472,7 @@ class DashboardPanel(QWidget):
             op_name = "Pipeline complet"
         else:
             phases = [phase]
-            op_name = {Phase.IMPORT: "Importar", Phase.CALIBRATE: "Verificar", Phase.ANALYZE: "Analitzar"}.get(phase, str(phase))
+            op_name = {Phase.IMPORT: "Importar", Phase.CALIBRATE: "Calibrar", Phase.ANALYZE: "Analitzar"}.get(phase, str(phase))
 
         # Confirmació
         seq_names = [s.seq_name for s in target_seqs[:8]]
@@ -1584,7 +1591,7 @@ class DashboardPanel(QWidget):
 
         phases_data = [
             (seq.import_status, seq.import_state, "Importar", seq.import_warnings),
-            (seq.calibrate_status, seq.calibrate_state, "Verificar", []),
+            (seq.calibrate_status, seq.calibrate_state, "Calibrar", []),
             (seq.analyze_status, seq.analyze_state, "Analitzar", seq.analyze_warnings),
             (seq.review_status, seq.review_state, "Consolidar", []),
         ]
@@ -1633,13 +1640,6 @@ class DashboardPanel(QWidget):
                 item.setText("○")
                 item.setForeground(QColor(COLOR_PENDING))
                 item.setToolTip(f"{phase_name}: Pendent")
-
-            # Indicador calibració obsoleta (sobre columna Analitzar)
-            if col == COL_ANA and state == 'ok' and seq.is_cal_stale:
-                item.setText("✔⟳")
-                item.setForeground(QColor("#e67e22"))
-                tooltip_text = item.toolTip() or ""
-                item.setToolTip(tooltip_text + "\n\n⟳ Calibració canviada — requantificació pendent")
 
             self.table.setItem(row, col, item)
 

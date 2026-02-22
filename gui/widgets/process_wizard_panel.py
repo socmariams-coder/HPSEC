@@ -508,7 +508,7 @@ class ProcessWizardPanel(QWidget):
             # Netejar dades pre-carregades perquè reimporti realment del MasterFile
             self.main_window.imported_data = None
             self.import_panel._run_import(force_reimport=force_redo)
-        elif current_idx == 1:  # Verificar
+        elif current_idx == 1:  # Calibrar
             if hasattr(self.calibrate_panel, '_run_calibrate'):
                 self.calibrate_panel._run_calibrate()
         elif current_idx == 2:  # Analitzar
@@ -721,7 +721,7 @@ class ProcessWizardPanel(QWidget):
         self._show_executing_state(stage_name)
 
         try:
-            if stage_idx == 1:  # Verificar
+            if stage_idx == 1:  # Calibrar
                 if hasattr(self.calibrate_panel, '_run_calibrate'):
                     self.calibrate_panel._run_calibrate()
             elif stage_idx == 2:  # Analitzar
@@ -1383,7 +1383,7 @@ class ProcessWizardPanel(QWidget):
                 # Importar
                 data = self.main_window.imported_data
             elif stage_idx == 1:
-                # Verificar
+                # Calibrar
                 data = self.main_window.calibration_data
             elif stage_idx == 2:
                 # Analitzar
@@ -1624,7 +1624,7 @@ class ProcessWizardPanel(QWidget):
             if hasattr(self.import_panel, '_run_import'):
                 self._show_executing_state("Importar")
                 self.import_panel._run_import(force_reimport=True)
-        elif stage_idx == 1:  # Verificar
+        elif stage_idx == 1:  # Calibrar
             self._execute_stage(1)
         elif stage_idx == 2:  # Analitzar
             self._execute_stage(2)
@@ -1663,23 +1663,74 @@ class ProcessWizardPanel(QWidget):
         if not data_path.exists():
             return
 
-        # Import: carregar dades per a etapes posteriors (cal/ana necessiten imported_data)
-        # OPTIMITZACIÓ: Si etapes posteriors (cal/ana) ja estan completades,
-        # defer la càrrega de imported_data fins que es necessiti realment
-        # (import_panel.load_from_dashboard ja la carregarà si cal).
-        # Només pre-carregar si cal/ana estan pendents i necessiten imported_data.
-        needs_imported_data = any(
-            self.tab_states[i] in ("pending", "current")
-            for i in [1, 2]  # calibrar, analitzar
-        )
-        if self.tab_states[0] in ("ok", "warning") and not self.main_window.imported_data and needs_imported_data:
+        # Import: carregar metadades del manifest per a la info_frame
+        # dels panels posteriors (cal/ana/review necessiten method, data_mode, samples, etc.)
+        if self.tab_states[0] in ("ok", "warning") and not self.main_window.imported_data:
             manifest_path = data_path / "import_manifest.json"
             if manifest_path.exists():
                 try:
-                    from hpsec_import import import_from_manifest
-                    imported = import_from_manifest(seq_path)
-                    if imported and imported.get("success"):
-                        self.main_window.imported_data = imported
+                    with open(manifest_path, 'r', encoding='utf-8') as f:
+                        manifest = json.load(f)
+                    if manifest.get("success") or manifest.get("samples"):
+                        # Extreure metadades correctament del manifest
+                        seq_info = manifest.get("sequence", {})
+                        mf_info = manifest.get("master_file", {})
+                        method = (manifest.get("method")
+                                  or seq_info.get("method", "COLUMN"))
+                        data_mode = (manifest.get("data_mode")
+                                     or seq_info.get("data_mode", "DUAL"))
+                        master_path = (manifest.get("masterfile_path")
+                                       or mf_info.get("path", ""))
+
+                        # Convertir samples de llista (format manifest) a dict
+                        # (format import_sequence) per compatibilitat amb
+                        # ensure_data_loaded() i la resta del pipeline
+                        manifest_samples = manifest.get("samples", [])
+                        samples_dict = {}
+                        if isinstance(manifest_samples, list):
+                            for s_info in manifest_samples:
+                                s_name = s_info.get("name", "")
+                                if not s_name:
+                                    continue
+                                reps_dict = {}
+                                for r_info in s_info.get("replicas", []):
+                                    r_num = str(r_info.get("replica",
+                                                r_info.get("rep_num", "1")))
+                                    reps_dict[r_num] = {
+                                        "direct": r_info.get("direct"),
+                                        "uib": r_info.get("uib"),
+                                        "dad": r_info.get("dad"),
+                                        "dad_source": (r_info.get("dad", {}) or {}).get("source"),
+                                        "has_data": False,
+                                        "injection_info": r_info.get("injection"),
+                                    }
+                                samples_dict[s_name] = {
+                                    "type": s_info.get("type", "SAMPLE"),
+                                    "original_name": s_info.get("original_name", s_name),
+                                    "replicas": reps_dict,
+                                }
+                        elif isinstance(manifest_samples, dict):
+                            samples_dict = manifest_samples
+
+                        # Construir imported_data lleuger (metadades only)
+                        self.main_window.imported_data = {
+                            "success": True,
+                            "seq_path": seq_path,
+                            "seq_name": seq_info.get("name",
+                                        os.path.basename(seq_path)),
+                            "method": method,
+                            "data_mode": data_mode,
+                            "uib_sensitivity": seq_info.get("uib_sensitivity"),
+                            "samples": samples_dict,
+                            "master_file": master_path,
+                            "khp_samples": [s.get("name", "") for s in manifest_samples
+                                            if isinstance(s, dict) and s.get("type") == "KHP"]
+                                           if isinstance(manifest_samples, list) else [],
+                            "control_samples": [s.get("name", "") for s in manifest_samples
+                                                if isinstance(s, dict) and s.get("type") == "CONTROL"]
+                                               if isinstance(manifest_samples, list) else [],
+                            "data_deferred": True,
+                        }
                 except Exception as e:
                     logger.warning(f"Error pre-carregant import: {e}")
 
@@ -1792,14 +1843,26 @@ class ProcessWizardPanel(QWidget):
 
         return states
 
+    # Warnings trivials que no mostren triangle (resolts automàticament)
+    _TRIVIAL_WARNINGS = {
+        'importat des de manifest existent',
+        '4-toc_calc no trobat al masterfile, calculant automàticament...',
+    }
+
     def _check_has_warnings(self, data: dict, warning_fields: list) -> bool:
-        """Comprova si les dades tenen warnings significatius."""
+        """Comprova si les dades tenen warnings significatius (no trivials)."""
         for field in warning_fields:
             value = data.get(field)
             if value:
-                # Si és una llista, comprovar si té elements
+                # Si és una llista, comprovar si té elements no trivials
                 if isinstance(value, list) and len(value) > 0:
-                    return True
+                    real_warnings = [
+                        w for w in value
+                        if isinstance(w, dict)
+                        or (isinstance(w, str) and w.strip().lower() not in self._TRIVIAL_WARNINGS)
+                    ]
+                    if real_warnings:
+                        return True
                 # Si és un dict (com orphan_files), comprovar si té contingut
                 elif isinstance(value, dict):
                     for v in value.values():
@@ -1874,7 +1937,7 @@ class ProcessWizardPanel(QWidget):
 
     def _load_existing_data_for_tab(self, index: int):
         """Carrega dades existents al panel quan es navega a una etapa completada."""
-        if index == 1:  # Verificar
+        if index == 1:  # Calibrar
             if hasattr(self.calibrate_panel, '_check_existing_calibration'):
                 self.calibrate_panel._check_existing_calibration()
         elif index == 2:  # Analitzar
@@ -1921,11 +1984,11 @@ class ProcessWizardPanel(QWidget):
 
         if data:
             if data.get('success'):
-                # Usar warning_level del backend per determinar estat
+                # Si la calibració ha tingut èxit, l'estat és OK o warning (MAI error).
+                # warning_level ve de la validació KHP (anomalies individuals),
+                # no indica fallada de la calibració.
                 warning_level = data.get('warning_level', 'none')
-                if warning_level == 'blocker':
-                    self._set_tab_state(1, "error")
-                elif warning_level == 'warning':
+                if warning_level in ('blocker', 'warning'):
                     self._set_tab_state(1, "warning")
                 else:
                     self._set_tab_state(1, "ok")
@@ -1946,11 +2009,11 @@ class ProcessWizardPanel(QWidget):
         self.action_btn.setEnabled(True)
 
         if data and data.get('success'):
-            # Usar warning_level del backend per determinar estat
+            # Si l'anàlisi ha tingut èxit, l'estat és OK o warning (MAI error).
+            # warning_level ve de les anomalies per-mostra (IRREGULAR_TOP, etc.),
+            # no indica fallada de l'anàlisi sinó avisos de qualitat individual.
             warning_level = data.get('warning_level', 'none')
-            if warning_level == 'blocker':
-                self._set_tab_state(2, "error")
-            elif warning_level == 'warning':
+            if warning_level in ('blocker', 'warning'):
                 self._set_tab_state(2, "warning")
             else:
                 self._set_tab_state(2, "ok")
