@@ -59,7 +59,7 @@ Mark features as DONE only when code is fully functional end-to-end, not when pl
 - [ ] Analyze panel: mostrar bigaussian (R², asym, quality) per BP — PENDING
 - [ ] Analyze panel: mostrar timeouts amb icones/tooltip — PENDING
 - [ ] Analyze backend: detecció deriva baseline DAD per replica selection — PENDING (TODO a hpsec_analyze.py L1210)
-- [x] Calibration: flux renovació calibració global (UI panel + regression) — DONE (GlobalCalibrationPanel refactored: 2 vistes CAL+QC)
+- [x] Calibration: flux renovació calibració global (UI panel + regression) — DONE (GlobalCalibrationPanel → consulta-only)
 - [x] Calibration: auto-fit rf_mass_cal + intercept from KHP history (regression) — DONE (fit_calibration_from_history)
 - [x] Calibration: separació SEQ_CAL vs producció KHP al panell global — DONE
 - [x] Calibration: QC Levey-Jennings chart (desviació % vs recta vigent) — DONE
@@ -67,6 +67,12 @@ Mark features as DONE only when code is fully functional end-to-end, not when pl
 - [x] Calibration: patch_excel_calibration() per patch Excels existents — DONE
 - [x] Calibration: calibration_fingerprint per detectar canvis (is_cal_stale) — DONE
 - [x] Dashboard: indicador ⟳ calibració obsoleta a columna Analitzar — DONE
+- [x] Wizard SEQ_CAL: detecció automàtica (≥3 KHP, ≥2 conc) + nom _CAL — DONE
+- [x] Wizard SEQ_CAL: regressió al pas 2 amb taula punts, scatter, comparació vigent — DONE
+- [x] Wizard SEQ_CAL: botó "Aplicar com a Nova Calibració" al pas 2 — DONE
+- [x] Wizard SEQ_CAL: validació ppm_obs vs ppm_teòric al pas 3 (AnalyzePanel) — DONE
+- [x] Wizard SEQ_CAL: resum regressió al pas 4 (ReviewSummaryPanel) — DONE
+- [x] GlobalCalibrationPanel: convertit a consulta-only (sense aplicar/requantificar) — DONE
 - [x] Calibration: KHP DAD 254nm fallback from MasterFile 3-DAD_KHP in manifest loading — DONE
 - [x] Calibration: clean_khp_history() to remove invalid entries (conc=0, area=0) — DONE
 - [x] Export: PDF analysis report (generate_analysis_report.py) — DONE
@@ -362,6 +368,43 @@ All exploratory scripts and results live in `research/` — NOT part of the prod
 - Commit `9b12b28`: rename detect_batman→detect_irregular_top a 16 fitxers (168 ocurrències)
 - Pre-repair a detect_main_peak: detectar pic irregular → reparar amb paràbola → find_peak_boundaries sobre senyal reparat → integrar sobre senyal original
 - Verificat: KHP1 (1ppm) àrea 96.8→304.7, desviació -71%→-8.3%
+
+### Wizard SEQ_CAL — Regressió al wizard (2026-02-21)
+
+**Implementat flux complet per SEQ_CAL al wizard:**
+- **Detecció automàtica**: `_detect_and_run_seq_cal()` al CalibratePanel
+  - Criteri 1: nom conté `_CAL` (convenció existent)
+  - Criteri 2: ≥3 calibracions amb ≥2 concentracions (detecció automàtica)
+  - Flag `is_seq_cal=True` propagat al `calibration_data`
+- **Pas 2 (CalibratePanel)**: nova secció "Regressió de Calibració (SEQ_CAL)"
+  - Taula de punts amb checkboxes per excloure punts
+  - Regressió via `fit_calibration_from_history()` amb dades locals
+  - Resultats: RF, intercept, R², n_punts, RMS residuals
+  - Comparació HTML "Vigent vs Nova" amb Δ% i colors
+  - Gràfic scatter amb recta
+  - Botó "Recalcular" (per excloure punts) + "Aplicar com a Nova Calibració"
+  - Aplicar: crida `add_calibration()`, manté l'altra branca (COLUMN/BP)
+- **Pas 3 (AnalyzePanel)**: KHP validació
+  - Columnes 4-6: ppm_observat, ppm_teòric, desviació %
+  - `ppm = (area - intercept) * 1000 / (RF * vol)` amb la regressió nova
+  - Colors: verd ≤5%, taronja ≤15%, vermell >15%
+  - Separator "KHP VALIDACIÓ CALIBRACIÓ" (vs "KHP STANDARDS" per no-CAL)
+- **Pas 4 (ReviewSummaryPanel)**: secció "REGRESSIÓ SEQ_CAL"
+  - Resum: RF, intercept, R², mode, estat (aplicada/pendent)
+- **Tab 5 (GlobalCalibrationPanel)**: convertit a consulta-only
+  - Eliminats: `_apply_calibration()`, `_run_retroactive_requantification()`
+  - Eliminats: `btn_apply`, `chk_retroactive`, `date_retroactive`
+  - Eliminat: `calibration_updated` Signal
+  - Mantingut: "Recalcular" per previsualització, gràfics, comparació
+  - Nota informativa: "Per aplicar, processar SEQ_CAL pel wizard"
+
+**Fitxers modificats:**
+- `gui/widgets/calibrate_panel/panel.py`: imports, `_is_seq_cal`, `_seq_cal_regression`,
+  secció UI (QGroupBox, taula, labels, gràfic, botons), 6 mètodes nous
+- `gui/widgets/analyze_panel/panel.py`: validació ppm als KHP (cols 4-6)
+- `gui/widgets/review_summary_panel.py`: secció REGRESSIÓ SEQ_CAL a qualitat card
+- `gui/widgets/global_calibration_panel.py`: eliminat apply+retroactive, consulta-only
+- `gui/main_window.py`: eliminat `calibration_updated` signal connection
 
 ### Canvis sessió 2026-02-21 (continuació)
 - **GlobalCalibrationPanel refactor**: 2 vistes (CalibrationLineView + QCMonitorView)

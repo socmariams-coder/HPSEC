@@ -409,7 +409,7 @@ class SequenceState:
     @property
     def calibrate_state(self) -> str:
         """
-        Estat de la fase Calibrar per determinar color.
+        Estat de la fase Verificar per determinar color.
         - ok: KHP local (SEQ/DIRECT/UIB/DUAL)
         - warning: KHP sibling o sense KHP (shift no verificable, però quantificació OK)
         - error: Error real de calibració
@@ -487,7 +487,7 @@ class SequenceState:
             return "Completat"
         actions = {
             Phase.IMPORT: "Importar",
-            Phase.CALIBRATE: "Calibrar",
+            Phase.CALIBRATE: "Verificar",
             Phase.ANALYZE: "Analitzar",
             Phase.REVIEW: "Revisar",
         }

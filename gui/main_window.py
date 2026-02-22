@@ -194,7 +194,8 @@ class HPSECSuiteWindow(QMainWindow):
                 panel.process_completed.connect(self._on_process_completed)
                 panel.sequence_loaded.connect(self._on_wizard_sequence_loaded)
             elif attr_name == "global_cal_panel":
-                panel.calibration_updated.connect(self._on_calibration_updated)
+                # Nota: calibration_updated ja no existeix (panell és consulta-only)
+                pass
 
     def _on_calibration_updated(self):
         """Callback quan canvia la calibració global — refrescar dashboard."""
@@ -248,7 +249,7 @@ class HPSECSuiteWindow(QMainWindow):
     def go_to_process_step(self, step_index):
         """
         Navega a una etapa específica del process wizard.
-        0=Importar, 1=Calibrar, 2=Analitzar, 3=Consolidar
+        0=Importar, 1=Verificar, 2=Analitzar, 3=Revisar
         """
         # Assegurar que estem al tab de Processar
         self._ensure_panel(1)

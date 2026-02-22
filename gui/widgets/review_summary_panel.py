@@ -410,6 +410,41 @@ class ReviewSummaryPanel(QWidget):
 
         lines.append("<br>")
 
+        # --- SEQ_CAL: REGRESSIÓ ---
+        is_seq_cal = cal_data.get('is_seq_cal', False) if cal_data else False
+        if is_seq_cal:
+            # Buscar regressió al calibrate panel (via wizard)
+            wizard = getattr(self.main_window, 'process_panel', None)
+            cal_panel = getattr(wizard, 'calibrate_panel', None) if wizard else None
+            seq_cal_reg = getattr(cal_panel, '_seq_cal_regression', None) if cal_panel else None
+            # Fallback: buscar al calibration_data
+            if not seq_cal_reg:
+                seq_cal_reg = cal_data.get('seq_cal_regression') if cal_data else None
+            if seq_cal_reg and seq_cal_reg.get('success'):
+                rf_new = seq_cal_reg.get('rf_mass_cal', 0)
+                intercept_new = seq_cal_reg.get('intercept', 0)
+                r2 = seq_cal_reg.get('r2', 0)
+                n_pts = seq_cal_reg.get('n_points', 0)
+
+                # Color R²
+                if r2 >= 0.99:
+                    r2_color = COLOR_SUCCESS
+                elif r2 >= 0.95:
+                    r2_color = COLOR_WARNING
+                else:
+                    r2_color = COLOR_ERROR
+
+                method_mode = processed_data.get("method", "COLUMN")
+                applied = cal_data.get('seq_cal_applied', False)
+                applied_icon = f"<span style='color:{COLOR_SUCCESS}'>&#10003; Aplicada</span>" if applied else "<span style='color:#7F8C8D'>Pendent</span>"
+
+                lines.append("<b>REGRESSIÓ SEQ_CAL</b><br>")
+                lines.append(f"&nbsp;&nbsp;Mode: {method_mode} | Punts: {n_pts}<br>")
+                lines.append(f"&nbsp;&nbsp;RF: <b>{rf_new:.1f}</b> | Intercept: {intercept_new:.1f}<br>")
+                lines.append(f"&nbsp;&nbsp;R²: <span style='color:{r2_color}'><b>{r2:.6f}</b></span><br>")
+                lines.append(f"&nbsp;&nbsp;Estat: {applied_icon}<br>")
+                lines.append("<br>")
+
         # --- KHP vs CALIBRACIÓ ---
         khp_samples = processed_data.get("khp_samples", [])
         if khp_samples and cal_data:

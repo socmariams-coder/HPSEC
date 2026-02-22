@@ -1,27 +1,26 @@
 """
-HPSEC Suite - Global Calibration Panel (Refactored)
-=====================================================
+HPSEC Suite - Global Calibration Panel (Consulta)
+===================================================
 
-Panell amb dues vistes:
-- Tab 0: Recta de Calibració — des de SEQ_CAL dedicades
+Panell de CONSULTA amb dues vistes:
+- Tab 0: Recta de Calibració — previsualització des de SEQ_CAL dedicades
 - Tab 1: Control de Qualitat — Levey-Jennings per KHP de producció
 
-La separació és per convenció de nom: SEQs amb "_CAL" al nom són calibracions
-dedicades (multi-concentració). La resta són KHP de verificació (producció).
+Les accions (aplicar nova calibració) es fan des del wizard (CalibratePanel).
+Aquí l'usuari pot veure i comparar regressions, però no aplicar-les.
 """
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QGroupBox,
     QGridLayout, QTableWidget, QTableWidgetItem, QHeaderView,
     QComboBox, QMessageBox, QSplitter, QRadioButton, QButtonGroup,
-    QInputDialog, QSizePolicy, QCheckBox, QTabWidget, QListWidget,
-    QListWidgetItem, QProgressDialog, QDateEdit, QFrame
+    QSizePolicy, QCheckBox, QTabWidget, QListWidget,
+    QListWidgetItem, QFrame
 )
-from PySide6.QtCore import Qt, Signal, QDate
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont, QColor
 
 from pathlib import Path
-from datetime import datetime, timedelta
 import sys
 import os
 import json
@@ -33,10 +32,8 @@ from hpsec_calibrate import (
     get_active_global_calibration,
     load_khp_history,
     fit_calibration_from_history,
-    add_calibration,
     load_calibration_reference,
     compute_calibration_fingerprint,
-    requantify_analysis_json,
 )
 
 import matplotlib
@@ -49,9 +46,11 @@ logger = logging.getLogger(__name__)
 
 
 class GlobalCalibrationPanel(QWidget):
-    """Panell de calibració global amb dues vistes: Recta CAL + QC Monitor."""
+    """Panell de calibració global: consulta de calibracions vigents i historial.
 
-    calibration_updated = Signal()
+    Les accions (aplicar nova calibració) es fan des del wizard (CalibratePanel).
+    Aquest panell és de consulta i previsualització.
+    """
 
     def __init__(self, main_window):
         super().__init__()
@@ -344,37 +343,18 @@ class CalibrationLineView(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
 
         self.btn_recalculate = QPushButton("Recalcular")
+        self.btn_recalculate.setToolTip("Recalcular regressió per previsualització (no aplica canvis)")
         self.btn_recalculate.clicked.connect(self._recalculate_regression)
         layout.addWidget(self.btn_recalculate)
 
-        layout.addSpacing(8)
-
-        # Requantificació retroactiva
-        self.chk_retroactive = QCheckBox("Requantificar des de:")
-        self.chk_retroactive.setChecked(False)
-        layout.addWidget(self.chk_retroactive)
-
-        self.date_retroactive = QDateEdit()
-        self.date_retroactive.setCalendarPopup(True)
-        self.date_retroactive.setDate(QDate.currentDate().addMonths(-1))
-        self.date_retroactive.setEnabled(False)
-        self.date_retroactive.setFixedWidth(110)
-        layout.addWidget(self.date_retroactive)
-
-        self.chk_retroactive.toggled.connect(self.date_retroactive.setEnabled)
-
         layout.addStretch()
 
-        self.btn_apply = QPushButton("Aplicar Nova Calibració")
-        self.btn_apply.setStyleSheet(
-            "QPushButton { background-color: #28a745; color: white; "
-            "font-weight: bold; padding: 8px 16px; border-radius: 4px; }"
-            "QPushButton:hover { background-color: #218838; }"
-            "QPushButton:disabled { background-color: #ccc; color: #666; }"
+        # Nota informativa: accions es fan des del wizard
+        info_label = QLabel(
+            "<i style='color: #7F8C8D;'>Per aplicar una nova calibració, "
+            "processar una SEQ_CAL pel wizard</i>"
         )
-        self.btn_apply.setEnabled(False)
-        self.btn_apply.clicked.connect(self._apply_calibration)
-        layout.addWidget(self.btn_apply)
+        layout.addWidget(info_label)
 
         return widget
 
@@ -622,13 +602,12 @@ class CalibrationLineView(QWidget):
             self.res_npoints_label.setText(str(result['n_points']))
             rms = result.get('residuals_rms')
             self.res_rms_label.setText(f"{rms:.2f}" if rms is not None else "—")
-            self.btn_apply.setEnabled(True)
+            pass  # Consulta: no s'aplica, només previsualització
         else:
             for lbl in (self.res_rf_label, self.res_intercept_label,
                         self.res_r2_label, self.res_rms_label):
                 lbl.setText("—")
             self.res_npoints_label.setText(str(result.get('n_points', 0)))
-            self.btn_apply.setEnabled(False)
 
         self._update_stats_table(selected)
         self._update_preview_graph(result)
@@ -890,204 +869,8 @@ class CalibrationLineView(QWidget):
 
     # ---- Aplicar calibració ----
 
-    def _apply_calibration(self):
-        """Aplica la nova calibració al JSON global."""
-        result = self._last_result
-        if not result or not result.get('success'):
-            return
-
-        mode = self._get_mode()
-        signal = self._get_signal()
-        model = self._get_model()
-        is_retroactive = self.chk_retroactive.isChecked()
-
-        # Confirmació
-        retro_text = ""
-        if is_retroactive:
-            date_from = self.date_retroactive.date().toString("yyyy-MM-dd")
-            retro_text = f"\n\n⚠ RETROACTIU: requantificarà SEQs des de {date_from}"
-
-        reply = QMessageBox.question(
-            self,
-            "Aplicar nova calibració",
-            f"Vols aplicar la nova calibració?\n\n"
-            f"Mode: {mode}, Senyal: {signal}, Model: {model}\n"
-            f"RF_mass_cal: {result['rf_mass_cal']:.1f}\n"
-            f"Intercept: {result['intercept']:.1f}\n"
-            f"R²: {result['r2']:.4f}, n={result['n_points']}"
-            f"{retro_text}\n\n"
-            f"Això crearà una nova entrada i tancarà l'anterior.",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No
-        )
-        if reply != QMessageBox.Yes:
-            return
-
-        # Motiu
-        reason, ok = QInputDialog.getText(
-            self, "Motiu del canvi",
-            "Descriu el motiu del canvi de calibració:"
-        )
-        if not ok:
-            return
-
-        # Construir rf_mass_cal i intercept preservant existents
-        cal = get_active_global_calibration()
-
-        if cal and isinstance(cal.get('rf_mass_cal'), dict):
-            rf_values = {}
-            for sig in ['direct', 'uib']:
-                old = cal['rf_mass_cal'].get(sig, {})
-                rf_values[sig] = dict(old) if isinstance(old, dict) else {}
-        else:
-            rf_values = {'direct': {'column': 0, 'bp': 0}, 'uib': {'column': 0, 'bp': 0}}
-
-        rf_values[signal.lower()][mode.lower()] = round(result['rf_mass_cal'], 1)
-
-        if cal and isinstance(cal.get('intercept'), dict):
-            int_values = {}
-            for sig in ['direct', 'uib']:
-                old = cal['intercept'].get(sig, {})
-                int_values[sig] = dict(old) if isinstance(old, dict) else {}
-        else:
-            int_values = {'direct': {'column': 0, 'bp': 0}, 'uib': {'column': 0, 'bp': 0}}
-
-        if model == "origin":
-            int_values[signal.lower()][mode.lower()] = 0
-        else:
-            int_values[signal.lower()][mode.lower()] = round(result['intercept'], 1)
-
-        # R² i n_points
-        r2_dict = dict(cal.get('r2', {})) if cal and isinstance(cal.get('r2'), dict) else {}
-        np_dict = dict(cal.get('n_points', {})) if cal and isinstance(cal.get('n_points'), dict) else {}
-        r2_dict[mode.lower()] = round(result['r2'], 4)
-        np_dict[mode.lower()] = result['n_points']
-
-        # Source
-        seq_refs = list({p['seq_name'] for p in result.get('points', [])})
-        source = {
-            'type': 'regression_from_cal_sequences',
-            'description': (
-                f"Regressió {mode} {signal} ({model}) des de SEQ_CAL: "
-                f"RF={result['rf_mass_cal']:.1f}, Int={result['intercept']:.1f}, "
-                f"R²={result['r2']:.4f}, n={result['n_points']}"
-            ),
-            'seq_references': seq_refs,
-        }
-
-        valid_from = datetime.now().strftime('%Y-%m-%d')
-
-        cal_id = add_calibration(
-            rf_mass_cal_values=rf_values,
-            source=source,
-            valid_from=valid_from,
-            r2=r2_dict,
-            n_points=np_dict,
-            reason=reason,
-            intercept_values=int_values
-        )
-
-        if not cal_id:
-            QMessageBox.warning(self, "Error", "No s'ha pogut guardar la nova calibració.")
-            return
-
-        # Requantificació retroactiva (si seleccionada)
-        if is_retroactive:
-            self._run_retroactive_requantification(
-                result['rf_mass_cal'], result['intercept'],
-                mode, signal, model
-            )
-
-        QMessageBox.information(
-            self,
-            "Calibració aplicada",
-            f"Nova calibració creada: {cal_id}"
-        )
-
-        # Recarregar
-        self.parent_panel._load_all_data()
-        self.parent_panel.calibration_updated.emit()
-
-    def _run_retroactive_requantification(self, new_rf, new_intercept, mode, signal, model):
-        """Requantifica SEQs afectades retroactivament."""
-        from gui.models.sequence_state import get_all_sequences
-        from hpsec_config import get_config
-
-        date_from = self.date_retroactive.date().toString("yyyy-MM-dd")
-        data_folder = get_config().get("paths", "data_folder")
-
-        if not data_folder or not os.path.isdir(data_folder):
-            QMessageBox.warning(self, "Error", "Carpeta de dades no trobada.")
-            return
-
-        sequences = get_all_sequences(data_folder)
-
-        # Filtrar SEQs amb anàlisi completada
-        to_requantify = []
-        for seq in sequences:
-            if not seq.analyze_status.completed:
-                continue
-            # Filtrar per mode (només SEQs del mode afectat)
-            if mode.upper() == "COLUMN" and "BP" in seq.method.upper():
-                continue
-            if mode.upper() == "BP" and "BP" not in seq.method.upper():
-                continue
-
-            json_path = os.path.join(seq.seq_path, "CHECK", "data", "analysis_result.json")
-            if os.path.exists(json_path):
-                to_requantify.append((seq, json_path))
-
-        if not to_requantify:
-            QMessageBox.information(self, "Info", "No hi ha SEQs per requantificar.")
-            return
-
-        # Progress dialog
-        progress = QProgressDialog(
-            f"Requantificant {len(to_requantify)} SEQs...",
-            "Cancel·lar", 0, len(to_requantify), self
-        )
-        progress.setWindowTitle("Requantificació retroactiva")
-        progress.setMinimumDuration(0)
-
-        n_ok = 0
-        n_err = 0
-        errors = []
-
-        mode_key = mode.lower()
-        for i, (seq, json_path) in enumerate(to_requantify):
-            if progress.wasCanceled():
-                break
-
-            progress.setValue(i)
-            progress.setLabelText(f"Requantificant {seq.seq_name}...")
-
-            # Determinar RF/intercept segons mode
-            if mode_key == "bp":
-                res = requantify_analysis_json(
-                    json_path, new_rf, new_intercept,
-                    new_rf_bp=new_rf, new_intercept_bp=new_intercept
-                )
-            else:
-                res = requantify_analysis_json(
-                    json_path, new_rf, new_intercept
-                )
-
-            if res["success"]:
-                n_ok += 1
-            else:
-                n_err += 1
-                errors.extend(res.get("errors", []))
-
-        progress.setValue(len(to_requantify))
-
-        msg = f"Requantificació completada:\n\n✓ {n_ok} SEQs actualitzades"
-        if n_err > 0:
-            msg += f"\n✗ {n_err} errors"
-            if errors:
-                msg += f"\n\nErrors: {'; '.join(errors[:5])}"
-        msg += "\n\nNota: els Excels de RESULTATS cal regenerar-los manualment."
-
-        QMessageBox.information(self, "Requantificació", msg)
+    # Nota: _apply_calibration i _run_retroactive_requantification
+    # s'han eliminat. Les accions es fan des del wizard (CalibratePanel).
 
 
 # =============================================================================
