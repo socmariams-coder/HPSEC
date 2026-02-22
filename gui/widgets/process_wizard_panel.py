@@ -5,7 +5,7 @@ HPSEC Suite - Process Wizard Panel v2.0
 
 Panel per processar seqüències amb pestanyes per cada fase:
 1. Importar - Llegir dades RAW
-2. Calibrar - Validar KHP i calcular factors
+2. Verificar - QA/QC KHP i diagnòstic delay
 3. Analitzar - Detectar anomalies i calcular àrees
 4. Revisar - Revisió de qualitat i generació de resultats
 
@@ -256,7 +256,7 @@ class ProcessWizardPanel(QWidget):
     process_completed = Signal(dict)
     sequence_loaded = Signal(str)
 
-    TAB_NAMES = ["1. Importar", "2. Calibrar", "3. Analitzar", "4. Revisar"]
+    TAB_NAMES = ["1. Importar", "2. Verificar", "3. Analitzar", "4. Revisar"]
     TAB_ICONS = {
         "pending": "○",
         "current": "►",
@@ -525,7 +525,7 @@ class ProcessWizardPanel(QWidget):
         """
         # Comprovar si hi ha etapes posteriors completades
         later_completed = []
-        stage_names = {0: "Importar", 1: "Calibrar", 2: "Analitzar", 3: "Revisar"}
+        stage_names = {0: "Importar", 1: "Verificar", 2: "Analitzar", 3: "Revisar"}
 
         for i in range(current_idx + 1, 4):
             if self.tab_states[i] in ("ok", "warning"):
@@ -598,7 +598,7 @@ class ProcessWizardPanel(QWidget):
         if tab_idx < 0:
             return
 
-        stage_names = {0: "Importar", 1: "Calibrar", 2: "Analitzar", 3: "Revisar"}
+        stage_names = {0: "Importar", 1: "Verificar", 2: "Analitzar", 3: "Revisar"}
         menu = QMenu(self)
         action = menu.addAction(f"↺ Reset des de '{stage_names[tab_idx]}'")
         action.triggered.connect(lambda: self._reset_from_stage(tab_idx))
@@ -907,12 +907,12 @@ class ProcessWizardPanel(QWidget):
             self._notes_dialog = None
 
         current_idx = self.tab_widget.currentIndex()
-        stage_names = {0: "Importar", 1: "Calibrar", 2: "Analitzar", 3: "Revisar"}
+        stage_names = {0: "Importar", 1: "Verificar", 2: "Analitzar", 3: "Revisar"}
         stage_name = stage_names.get(current_idx, "Etapa")
 
         # Carregar totes les notes
         existing_notes = self._load_existing_notes()
-        stage_labels = {"import": "Importar", "calibrate": "Calibrar",
+        stage_labels = {"import": "Importar", "calibrate": "Verificar",
                        "analyze": "Analitzar", "export": "Revisar"}
 
         dialog = QDialog(self)
@@ -1161,7 +1161,7 @@ class ProcessWizardPanel(QWidget):
     def _collect_warnings(self, data: dict, warning_fields: list, stage_idx: int) -> list:
         """Recull els avisos del JSON en format llegible per guardar com a notes."""
         notes = []
-        stage_names = {0: "Importar", 1: "Calibrar", 2: "Analitzar", 3: "Revisar"}
+        stage_names = {0: "Importar", 1: "Verificar", 2: "Analitzar", 3: "Revisar"}
 
         for field in warning_fields:
             value = data.get(field)
@@ -1236,7 +1236,7 @@ class ProcessWizardPanel(QWidget):
         Layout ESTABLE: status_indicator + note_btn + action_btn + next_step_btn.
         Tots sempre visibles. Només canvien: enabled/disabled, text, color/estil, tooltip.
         """
-        tab_names = {0: "Importar", 1: "Calibrar", 2: "Analitzar", 3: "Revisar"}
+        tab_names = {0: "Importar", 1: "Verificar", 2: "Analitzar", 3: "Revisar"}
         base_name = tab_names.get(index, "Executar")
         state = self.tab_states[index]
         has_confirmed = self._has_confirmed_warnings(index)
@@ -1468,7 +1468,7 @@ class ProcessWizardPanel(QWidget):
 
     def _show_error_details(self, stage_idx: int):
         """Mostra els detalls d'un error en un diàleg."""
-        stage_names = {0: "Importar", 1: "Calibrar", 2: "Analitzar", 3: "Revisar"}
+        stage_names = {0: "Importar", 1: "Verificar", 2: "Analitzar", 3: "Revisar"}
         stage_name = stage_names.get(stage_idx, "Desconegut")
 
         # Intentar llegir errors del JSON

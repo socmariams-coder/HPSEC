@@ -99,7 +99,7 @@ Mark features as DONE only when code is fully functional end-to-end, not when pl
 - [x] Wizard: Rename step 2 "Calibrar" → "Verificar" (TAB_NAMES + tab_names) — DONE
 - [x] Wizard: Delay diagnostic tool at step 2 (shift indicator, slider, impact preview, reimport) — DONE
 - [x] Wizard: SEQ_CAL detection at step 2 (CalibratePanel) + regression moved to step 3 (AnalyzePanel) — DONE
-- [ ] Wizard: Apply calibration at step 4 (Revisar) + retroactive requantification + SEQ list — PENDING
+- [x] Wizard: Apply calibration at step 4 (Revisar) + retroactive requantification + SEQ list — DONE
 
 ## Research / Exploration (not integrated into Suite)
 
