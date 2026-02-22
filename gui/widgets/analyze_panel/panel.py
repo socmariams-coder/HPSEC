@@ -11,7 +11,8 @@ Panel per la fase 3: Anàlisi de mostres.
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTableWidget, QTableWidgetItem, QHeaderView, QComboBox,
-    QFrame, QAbstractItemView, QProgressBar, QMessageBox, QDialog
+    QFrame, QAbstractItemView, QProgressBar, QMessageBox, QDialog,
+    QGroupBox, QGridLayout, QCheckBox, QScrollArea
 )
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QBrush, QFont
@@ -136,6 +137,9 @@ class AnalyzePanel(QWidget):
         progress_layout.addWidget(self.progress_bar)
         layout.addWidget(self.progress_frame)
 
+        # === SEQ_CAL REGRESSION SECTION ===
+        self._build_seq_cal_regression_section(layout)
+
         # === RESULTS FRAME ===
         self.results_frame = QFrame()
         self.results_frame.setVisible(False)
@@ -230,8 +234,13 @@ class AnalyzePanel(QWidget):
         self._selected_sample = None
         self._sample_row_map = {}
         self._status_initialized = False
+        self._is_seq_cal = False
+        self._seq_cal_regression = None
+        self._seq_cal_entries = []
+        self._seq_cal_excluded = set()
 
         self.results_table.setRowCount(0)
+        self.seq_cal_group.setVisible(False)
 
         self.empty_state.setVisible(True)
         self.info_frame.setVisible(False)
@@ -262,6 +271,8 @@ class AnalyzePanel(QWidget):
                                 or result.get("samples_analyzed", {}))
         if self.samples_grouped:
             self.main_window.processed_data = result  # B1: needed for method/seq_path
+            # Comprovar si és SEQ_CAL
+            self._check_and_show_seq_cal()
             self._populate_table()
             self.status_frame.setVisible(False)
             self.results_frame.setVisible(True)
@@ -516,6 +527,10 @@ class AnalyzePanel(QWidget):
         self.samples_grouped = result.get("samples_grouped", {})
 
         save_analysis_result(result)
+
+        # Comprovar si és SEQ_CAL i mostrar regressió
+        self._check_and_show_seq_cal()
+
         self._populate_table()
         self.results_frame.setVisible(True)
         self.analyze_completed.emit(result)
@@ -528,8 +543,454 @@ class AnalyzePanel(QWidget):
         self.analyze_completed.emit({"success": False, "error": error_msg})
 
     # ------------------------------------------------------------------
-    # Warnings bar
+    # SEQ_CAL Regression (Fase 3)
     # ------------------------------------------------------------------
+
+    def _build_seq_cal_regression_section(self, parent_layout):
+        """Construeix la secció de regressió SEQ_CAL (visible només si is_seq_cal)."""
+        self.seq_cal_group = QGroupBox("Regressió de Calibració (SEQ_CAL)")
+        self.seq_cal_group.setVisible(False)
+        self.seq_cal_group.setStyleSheet(
+            "QGroupBox { font-weight: bold; color: #1A5276; border: 2px solid #27AE60; "
+            "border-radius: 6px; margin-top: 8px; padding-top: 14px; }"
+            "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 6px; }"
+        )
+        seq_cal_layout = QVBoxLayout(self.seq_cal_group)
+        seq_cal_layout.setSpacing(10)
+
+        # Info detecció
+        self.seq_cal_info = QLabel()
+        self.seq_cal_info.setWordWrap(True)
+        self.seq_cal_info.setStyleSheet(
+            "background: #EBF5FB; border-radius: 4px; padding: 8px; "
+            "color: #1A5276; font-weight: normal;"
+        )
+        seq_cal_layout.addWidget(self.seq_cal_info)
+
+        # Taula de punts de calibració
+        self.seq_cal_points_table = QTableWidget()
+        self.seq_cal_points_table.setColumnCount(8)
+        self.seq_cal_points_table.setHorizontalHeaderLabels([
+            "Sel", "Condició", "Conc (ppm)", "Vol (µL)", "µg DOC",
+            "Àrea", "RF_mass", "Status"
+        ])
+        self.seq_cal_points_table.horizontalHeaderItem(0).setToolTip("Incloure punt a la regressió")
+        self.seq_cal_points_table.horizontalHeaderItem(4).setToolTip("µg DOC injectat = ppm × µL / 1000")
+        self.seq_cal_points_table.horizontalHeaderItem(6).setToolTip("RF_mass = Àrea × 1000 / (ppm × µL)")
+        self.seq_cal_points_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        self.seq_cal_points_table.setAlternatingRowColors(True)
+        self.seq_cal_points_table.setMaximumHeight(220)
+        self.seq_cal_points_table.verticalHeader().setVisible(False)
+        seq_cal_layout.addWidget(self.seq_cal_points_table)
+
+        # Resultats regressió
+        reg_results_frame = QFrame()
+        reg_results_frame.setStyleSheet(
+            "QFrame { background: #F8F9FA; border: 1px solid #DEE2E6; "
+            "border-radius: 4px; padding: 8px; }"
+        )
+        reg_grid = QGridLayout(reg_results_frame)
+        reg_grid.setSpacing(6)
+
+        self.seq_cal_labels = {}
+        reg_items = [
+            ("rf", "RF (slope):", 0, 0),
+            ("intercept", "Intercept:", 0, 2),
+            ("r2", "R²:", 1, 0),
+            ("n_points", "Punts:", 1, 2),
+            ("rms", "RMS residuals:", 2, 0),
+            ("model", "Model:", 2, 2),
+        ]
+        for key, label_text, row, col in reg_items:
+            lbl = QLabel(label_text)
+            lbl.setStyleSheet("font-weight: bold; color: #2C3E50;")
+            reg_grid.addWidget(lbl, row, col)
+            val = QLabel("-")
+            val.setStyleSheet("font-size: 13px;")
+            self.seq_cal_labels[key] = val
+            reg_grid.addWidget(val, row, col + 1)
+
+        seq_cal_layout.addWidget(reg_results_frame)
+
+        # Comparació amb calibració vigent
+        self.seq_cal_comparison = QLabel()
+        self.seq_cal_comparison.setWordWrap(True)
+        self.seq_cal_comparison.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.seq_cal_comparison.setStyleSheet(
+            "padding: 8px; font-size: 12px; background: #FEFEFE; "
+            "border: 1px solid #E0E0E0; border-radius: 4px;"
+        )
+        seq_cal_layout.addWidget(self.seq_cal_comparison)
+
+        # Gràfic scatter amb matplotlib
+        try:
+            import matplotlib
+            matplotlib.use('QtAgg')
+            from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+            from matplotlib.figure import Figure
+            self._seq_cal_figure = Figure(figsize=(8, 4), dpi=100)
+            self._seq_cal_figure.set_facecolor("#FAFAFA")
+            self.seq_cal_graph = FigureCanvas(self._seq_cal_figure)
+            self.seq_cal_graph.setMinimumHeight(320)
+            seq_cal_layout.addWidget(self.seq_cal_graph)
+            self._has_seq_cal_mpl = True
+        except Exception:
+            self._has_seq_cal_mpl = False
+            self.seq_cal_graph = QLabel("(Gràfic no disponible — instal·lar matplotlib)")
+            seq_cal_layout.addWidget(self.seq_cal_graph)
+
+        # Botó recalcular
+        seq_cal_buttons = QHBoxLayout()
+        seq_cal_buttons.addStretch()
+
+        self.seq_cal_recalc_btn = QPushButton("Recalcular")
+        self.seq_cal_recalc_btn.setToolTip("Recalcular regressió amb els punts seleccionats")
+        self.seq_cal_recalc_btn.clicked.connect(self._on_seq_cal_recalculate)
+        self.seq_cal_recalc_btn.setStyleSheet(
+            "QPushButton { background: #3498DB; color: white; border: none; "
+            "border-radius: 4px; padding: 8px 16px; font-weight: bold; }"
+            "QPushButton:hover { background: #2980B9; }"
+        )
+        seq_cal_buttons.addWidget(self.seq_cal_recalc_btn)
+
+        seq_cal_layout.addLayout(seq_cal_buttons)
+
+        # State
+        self._is_seq_cal = False
+        self._seq_cal_regression = None
+        self._seq_cal_entries = []
+        self._seq_cal_method = "COLUMN"
+        self._seq_cal_excluded = set()
+
+        parent_layout.addWidget(self.seq_cal_group)
+
+    def _check_and_show_seq_cal(self):
+        """Comprova si és SEQ_CAL i mostra la secció de regressió."""
+        cal_data = self.main_window.calibration_data
+        if not cal_data or not cal_data.get('is_seq_cal'):
+            self.seq_cal_group.setVisible(False)
+            self._is_seq_cal = False
+            return
+
+        seq_cal_data = cal_data.get('seq_cal_data', {})
+        entries = seq_cal_data.get('entries', [])
+        method = seq_cal_data.get('method', 'COLUMN')
+        concs = seq_cal_data.get('concs', [])
+
+        if not entries:
+            self.seq_cal_group.setVisible(False)
+            return
+
+        self._is_seq_cal = True
+        self._seq_cal_entries = entries
+        self._seq_cal_method = method
+        self._seq_cal_excluded = set()
+
+        # Info text
+        conc_str = ", ".join(f"{c:g}" for c in concs)
+        self.seq_cal_info.setText(
+            f"<b>Seqüència de calibració</b> — "
+            f"{len(entries)} punts, {len(concs)} concentracions "
+            f"({conc_str} ppm), mode {method}"
+        )
+
+        # Executar regressió
+        self._run_seq_cal_regression(entries, method)
+
+        self.seq_cal_group.setVisible(True)
+
+    def _run_seq_cal_regression(self, cal_entries, method):
+        """Executa la regressió i actualitza la UI."""
+        from hpsec_calibrate import fit_calibration_from_history
+
+        # Filtrar per punts habilitats
+        enabled = []
+        for i, entry in enumerate(cal_entries):
+            if i in self._seq_cal_excluded:
+                continue
+            enabled.append(entry)
+
+        if len(enabled) < 2:
+            self.seq_cal_info.setText(
+                f"<b>⚠ Insuficients punts ({len(enabled)})</b> — "
+                "Mínim 2 punts per la regressió."
+            )
+            return
+
+        reg_result = fit_calibration_from_history(
+            enabled, mode=method, signal="direct", model="intercept"
+        )
+
+        self._seq_cal_regression = reg_result
+
+        # Guardar al calibration_data perquè ReviewPanel hi accedeixi
+        if self.main_window.calibration_data:
+            self.main_window.calibration_data['seq_cal_regression'] = reg_result
+
+        # Actualitzar UI
+        self._update_seq_cal_ui(cal_entries, reg_result, method)
+
+    def _update_seq_cal_ui(self, cal_entries, reg_result, method):
+        """Actualitza tots els elements de la secció SEQ_CAL."""
+        # Taula de punts
+        self._populate_seq_cal_table(cal_entries)
+
+        # Resultats regressió
+        if reg_result and reg_result.get('success'):
+            rf = reg_result['rf_mass_cal']
+            intercept = reg_result['intercept']
+            r2 = reg_result['r2']
+            n_pts = reg_result['n_points']
+            rms = reg_result.get('residuals_rms', 0)
+
+            self.seq_cal_labels['rf'].setText(f"<b>{rf:.1f}</b>")
+            self.seq_cal_labels['intercept'].setText(f"{intercept:.1f}")
+            r2_color = '#27AE60' if r2 >= 0.99 else '#E67E22' if r2 >= 0.95 else '#E74C3C'
+            self.seq_cal_labels['r2'].setText(f"<b style='color: {r2_color}'>{r2:.6f}</b>")
+            self.seq_cal_labels['n_points'].setText(f"{n_pts}")
+            self.seq_cal_labels['rms'].setText(f"{rms:.2f}")
+            self.seq_cal_labels['model'].setText("intercept (lliure)")
+
+            # Comparació amb calibració vigent
+            self._update_seq_cal_comparison(rf, intercept, r2, method)
+
+            # Gràfic
+            self._update_seq_cal_graph(reg_result, method)
+        else:
+            error = reg_result.get('error', 'Error desconegut') if reg_result else 'No result'
+            for key in self.seq_cal_labels:
+                self.seq_cal_labels[key].setText("-")
+            self.seq_cal_comparison.setText(
+                f"<i style='color: #E74C3C;'>Regressió fallida: {error}</i>"
+            )
+
+    def _populate_seq_cal_table(self, cal_entries):
+        """Omple la taula de punts de la regressió SEQ_CAL."""
+        self.seq_cal_points_table.setRowCount(len(cal_entries))
+
+        for i, entry in enumerate(cal_entries):
+            conc = entry.get('conc_ppm', 0)
+            vol = entry.get('volume_uL', 0)
+            area = entry.get('area', 0)
+            ug_doc = conc * vol / 1000.0
+            rf_mass = entry.get('rf_mass', area / ug_doc if ug_doc > 0 else 0)
+
+            # Status
+            issues = entry.get('quality_issues', [])
+            has_severe = any('MULTI_PEAK' in str(iss) and 'MILD' not in str(iss) for iss in issues)
+            if area <= 0 or conc <= 0 or vol <= 0:
+                status_text, status_color = "INVALID", "#E74C3C"
+            elif has_severe:
+                status_text, status_color = "CHECK", "#E67E22"
+            elif rf_mass > 0 and (rf_mass < 100 or rf_mass > 3000):
+                status_text, status_color = "CHECK", "#E67E22"
+            else:
+                status_text, status_color = "OK", "#27AE60"
+
+            # Checkbox
+            cb = QCheckBox()
+            cb.setChecked(i not in self._seq_cal_excluded)
+            cb.stateChanged.connect(lambda state, idx=i: self._on_seq_cal_point_toggled(idx, state))
+            cb_widget = QWidget()
+            cb_layout = QHBoxLayout(cb_widget)
+            cb_layout.addWidget(cb)
+            cb_layout.setAlignment(Qt.AlignCenter)
+            cb_layout.setContentsMargins(0, 0, 0, 0)
+            self.seq_cal_points_table.setCellWidget(i, 0, cb_widget)
+
+            # Dades
+            items = [
+                (1, entry.get('name_full', entry.get('condition_key', ''))),
+                (2, f"{conc:g}"),
+                (3, f"{vol:.0f}"),
+                (4, f"{ug_doc:.3f}"),
+                (5, f"{area:.1f}"),
+                (6, f"{rf_mass:.0f}"),
+                (7, status_text),
+            ]
+            for col, text in items:
+                item = QTableWidgetItem(str(text))
+                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                if col == 7:
+                    item.setForeground(QColor(status_color))
+                self.seq_cal_points_table.setItem(i, col, item)
+
+    def _on_seq_cal_point_toggled(self, idx, state):
+        """Quan l'usuari marca/desmarca un punt de la regressió."""
+        if state == 0:  # Unchecked
+            self._seq_cal_excluded.add(idx)
+        else:
+            self._seq_cal_excluded.discard(idx)
+
+    def _on_seq_cal_recalculate(self):
+        """Recalcula la regressió amb els punts seleccionats."""
+        if self._seq_cal_entries and self._seq_cal_method:
+            self._run_seq_cal_regression(self._seq_cal_entries, self._seq_cal_method)
+
+    def _update_seq_cal_comparison(self, new_rf, new_intercept, new_r2, method):
+        """Mostra la comparació entre calibració vigent i la nova."""
+        from hpsec_calibrate import get_active_global_calibration
+        current_cal = get_active_global_calibration()
+        if not current_cal:
+            self.seq_cal_comparison.setText("<i>No hi ha calibració vigent per comparar</i>")
+            return
+
+        rf_cal = current_cal.get('rf_mass_cal', {})
+        intercept_cal = current_cal.get('intercept', 0)
+
+        if isinstance(rf_cal, dict):
+            current_rf = rf_cal.get('direct', {}).get(method.lower(), 0)
+        else:
+            current_rf = float(rf_cal) if rf_cal else 0
+
+        if isinstance(intercept_cal, dict):
+            current_intercept = intercept_cal.get('direct', {}).get(method.lower(), 0)
+        else:
+            current_intercept = float(intercept_cal) if intercept_cal else 0
+
+        current_r2 = current_cal.get('r2', {})
+        if isinstance(current_r2, dict):
+            current_r2_val = current_r2.get(method.lower(), 0) or 0
+        else:
+            current_r2_val = float(current_r2) if current_r2 else 0
+
+        delta_rf_pct = (new_rf - current_rf) / current_rf * 100 if current_rf > 0 else 0
+        delta_intercept = new_intercept - current_intercept
+
+        html = f"""
+        <table style='border-collapse: collapse; width: 100%;'>
+        <tr style='background: #E8F8F5;'>
+            <th style='padding: 4px 8px; text-align: left;'>Paràmetre</th>
+            <th style='padding: 4px 8px; text-align: center;'>Vigent ({method})</th>
+            <th style='padding: 4px 8px; text-align: center;'>Nova</th>
+            <th style='padding: 4px 8px; text-align: center;'>Diferència</th>
+        </tr>
+        <tr>
+            <td style='padding: 4px 8px; font-weight: bold;'>RF (slope)</td>
+            <td style='padding: 4px 8px; text-align: center;'>{current_rf:.1f}</td>
+            <td style='padding: 4px 8px; text-align: center; font-weight: bold;'>{new_rf:.1f}</td>
+            <td style='padding: 4px 8px; text-align: center; color: {"#E74C3C" if abs(delta_rf_pct) > 15 else "#E67E22" if abs(delta_rf_pct) > 5 else "#27AE60"};'>
+                {delta_rf_pct:+.1f}%
+            </td>
+        </tr>
+        <tr style='background: #FAFAFA;'>
+            <td style='padding: 4px 8px; font-weight: bold;'>Intercept</td>
+            <td style='padding: 4px 8px; text-align: center;'>{current_intercept:.1f}</td>
+            <td style='padding: 4px 8px; text-align: center;'>{new_intercept:.1f}</td>
+            <td style='padding: 4px 8px; text-align: center;'>{delta_intercept:+.1f}</td>
+        </tr>
+        <tr>
+            <td style='padding: 4px 8px; font-weight: bold;'>R²</td>
+            <td style='padding: 4px 8px; text-align: center;'>{current_r2_val:.4f}</td>
+            <td style='padding: 4px 8px; text-align: center;'>{new_r2:.6f}</td>
+            <td style='padding: 4px 8px; text-align: center;'>—</td>
+        </tr>
+        </table>
+        """
+        self.seq_cal_comparison.setText(html)
+
+    def _update_seq_cal_graph(self, reg_result, method):
+        """Actualitza el gràfic scatter de regressió SEQ_CAL."""
+        if not getattr(self, '_has_seq_cal_mpl', False):
+            return
+        try:
+            import numpy as np
+
+            points = reg_result.get('points', [])
+            if not points:
+                self._seq_cal_figure.clear()
+                self.seq_cal_graph.draw()
+                return
+
+            self._seq_cal_figure.clear()
+            gs = self._seq_cal_figure.add_gridspec(1, 2, width_ratios=[3, 1], wspace=0.35)
+            ax_main = self._seq_cal_figure.add_subplot(gs[0])
+            ax_res = self._seq_cal_figure.add_subplot(gs[1])
+
+            excluded = self._seq_cal_excluded
+            x_all, y_all, x_inc, y_inc, x_exc, y_exc = [], [], [], [], [], []
+            labels = []
+            for i, p in enumerate(points):
+                conc = p.get('conc_ppm', 0)
+                vol = p.get('volume_uL', 0)
+                x_val = conc * vol / 1000.0
+                y_val = p.get('area', 0)
+                x_all.append(x_val)
+                y_all.append(y_val)
+                labels.append(f"{conc:g} ppm")
+                if i in excluded:
+                    x_exc.append(x_val)
+                    y_exc.append(y_val)
+                else:
+                    x_inc.append(x_val)
+                    y_inc.append(y_val)
+
+            ax_main.scatter(x_inc, y_inc, c='#2980B9', s=60, zorder=5,
+                            edgecolors='white', linewidths=0.8, label='Inclosos')
+            if x_exc:
+                ax_main.scatter(x_exc, y_exc, c='#E74C3C', s=50, marker='x',
+                                zorder=4, linewidths=1.5, label='Exclosos')
+
+            for xi, yi, lbl in zip(x_all, y_all, labels):
+                ax_main.annotate(lbl, (xi, yi), textcoords="offset points",
+                                 xytext=(5, 6), fontsize=7, color='#555')
+
+            new_rf = reg_result.get('rf_mass_cal', 0)
+            new_intercept = reg_result.get('intercept', 0)
+            r2 = reg_result.get('r2', 0)
+            x_max = max(x_all) * 1.1 if x_all else 1
+            x_line = np.linspace(0, x_max, 100)
+            y_line = new_rf * x_line + new_intercept
+            ax_main.plot(x_line, y_line, '-', color='#27AE60', linewidth=2,
+                         label=f'Nova: RF={new_rf:.0f}, int={new_intercept:.1f}, R²={r2:.4f}')
+
+            from hpsec_calibrate import get_rf_mass_cal, get_calibration_intercept
+            current_rf = get_rf_mass_cal(signal='direct', mode=method.lower()) or 0
+            current_intercept = get_calibration_intercept(signal='direct', mode=method.lower()) or 0
+            if current_rf > 0:
+                y_current = current_rf * x_line + current_intercept
+                ax_main.plot(x_line, y_current, '--', color='#E67E22', linewidth=1.5, alpha=0.7,
+                             label=f'Vigent: RF={current_rf:.0f}, int={current_intercept:.1f}')
+
+            ax_main.set_xlabel('µg DOC injectat', fontsize=9)
+            ax_main.set_ylabel('Àrea DOC', fontsize=9)
+            ax_main.set_title(f'Recta de Calibració {method}', fontsize=10, fontweight='bold')
+            ax_main.legend(fontsize=7, loc='upper left')
+            ax_main.set_xlim(left=0)
+            ax_main.set_ylim(bottom=min(0, min(y_all) - 10) if y_all else 0)
+            ax_main.grid(True, alpha=0.3)
+            ax_main.tick_params(labelsize=8)
+
+            # Residuals
+            residuals = []
+            for i, p in enumerate(points):
+                if i in excluded:
+                    continue
+                x_val = p.get('conc_ppm', 0) * p.get('volume_uL', 0) / 1000.0
+                y_val = p.get('area', 0)
+                y_pred = new_rf * x_val + new_intercept
+                residuals.append(y_val - y_pred)
+
+            if residuals:
+                colors = ['#27AE60' if abs(r) < 20 else '#E67E22' if abs(r) < 50 else '#E74C3C'
+                          for r in residuals]
+                ax_res.bar(range(len(residuals)), residuals, color=colors, alpha=0.8, edgecolor='white')
+                ax_res.axhline(y=0, color='#333', linewidth=0.8)
+                ax_res.set_title('Residuals', fontsize=9, fontweight='bold')
+                ax_res.set_ylabel('Àrea obs - pred', fontsize=8)
+                ax_res.tick_params(labelsize=7)
+                ax_res.grid(True, alpha=0.2, axis='y')
+
+            self._seq_cal_figure.tight_layout()
+            self.seq_cal_graph.draw()
+
+        except Exception as e:
+            logger.warning(f"Error actualitzant gràfic SEQ_CAL: {e}")
+            try:
+                self._seq_cal_figure.clear()
+                self.seq_cal_graph.draw()
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------
     # Populate unified table

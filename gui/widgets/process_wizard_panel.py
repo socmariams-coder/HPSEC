@@ -5,7 +5,7 @@ HPSEC Suite - Process Wizard Panel v2.0
 
 Panel per processar seqüències amb pestanyes per cada fase:
 1. Importar - Llegir dades RAW
-2. Verificar - QA/QC KHP i validar shift/delay
+2. Verificar - QA/QC KHP i diagnòstic delay
 3. Analitzar - Detectar anomalies i calcular àrees
 4. Revisar - Revisió de qualitat i generació de resultats
 

@@ -68,11 +68,14 @@ Mark features as DONE only when code is fully functional end-to-end, not when pl
 - [x] Calibration: calibration_fingerprint per detectar canvis (is_cal_stale) — DONE
 - [x] Dashboard: indicador ⟳ calibració obsoleta a columna Analitzar — DONE
 - [x] Wizard SEQ_CAL: detecció automàtica (≥3 KHP, ≥2 conc) + nom _CAL — DONE
-- [x] Wizard SEQ_CAL: regressió al pas 2 amb taula punts, scatter, comparació vigent — DONE
-- [x] Wizard SEQ_CAL: botó "Aplicar com a Nova Calibració" al pas 2 — DONE
+- [x] Wizard SEQ_CAL: regressió al pas 3 (AnalyzePanel) amb taula punts, scatter, comparació vigent — DONE
+- [x] Wizard SEQ_CAL: botó "Aplicar com a Nova Calibració" al pas 4 (ReviewSummaryPanel) — DONE
 - [x] Wizard SEQ_CAL: validació ppm_obs vs ppm_teòric al pas 3 (AnalyzePanel) — DONE
 - [x] Wizard SEQ_CAL: resum regressió al pas 4 (ReviewSummaryPanel) — DONE
 - [x] GlobalCalibrationPanel: convertit a consulta-only (sense aplicar/requantificar) — DONE
+- [x] Wizard: Rename step 2 "Calibrar" → "Verificar" (TAB_NAMES + tab_names) — DONE
+- [x] Wizard: Delay diagnostic tool at step 2 (shift indicator, slider, impact preview, reimport) — DONE
+- [x] Wizard: Apply calibration at step 4 (Revisar) + retroactive requantification + SEQ list — DONE
 - [x] Calibration: KHP DAD 254nm fallback from MasterFile 3-DAD_KHP in manifest loading — DONE
 - [x] Calibration: clean_khp_history() to remove invalid entries (conc=0, area=0) — DONE
 - [x] Export: PDF analysis report (generate_analysis_report.py) — DONE
@@ -102,6 +105,10 @@ Mark features as DONE only when code is fully functional end-to-end, not when pl
 - [x] Config backend: config fingerprint (SHA-256 16 chars) per detectar obsolescència — DONE
 - [x] Config backend: migració batman_max_sep → batman_max_sep_min — DONE
 - [x] Config backend: REPROCESS_SECTIONS/FUTURE_SECTIONS/IMMEDIATE_SECTIONS constants — DONE
+- [x] Wizard: Rename step 2 "Calibrar" → "Verificar" (TAB_NAMES + tab_names) — DONE
+- [x] Wizard: Delay diagnostic tool at step 2 (shift indicator, slider, impact preview, reimport) — DONE
+- [x] Wizard: SEQ_CAL detection at step 2 (CalibratePanel) + regression moved to step 3 (AnalyzePanel) — DONE
+- [x] Wizard: Apply calibration at step 4 (Revisar) + retroactive requantification + SEQ list — DONE
 
 ## Research / Exploration (not integrated into Suite)
 
@@ -369,42 +376,40 @@ All exploratory scripts and results live in `research/` — NOT part of the prod
 - Pre-repair a detect_main_peak: detectar pic irregular → reparar amb paràbola → find_peak_boundaries sobre senyal reparat → integrar sobre senyal original
 - Verificat: KHP1 (1ppm) àrea 96.8→304.7, desviació -71%→-8.3%
 
+### Redisseny Wizard — 4 Fases (2026-02-22)
+
+**Implementat en worktree `claude/serene-williamson`, merged a main:**
+
+**Fase 1: Renaming Calibrar → Verificar**
+- `process_wizard_panel.py`: TAB_NAMES, tab_names, comments — totes les ocurrències
+
+**Fase 2: Delay diagnostic tool (pas 2 Verificar)**
+- `hpsec_delay.py`: backend Net delay (read, estimate impact, update MasterFile)
+- `calibrate_panel/panel.py`: secció delay amb indicador shift (colors), slider ±15min,
+  spinbox sincronitzat, preview "X files reassignades", botó "Aplicar i Reimportar"
+- Cached timestamps per resposta instantània del slider
+
+**Fase 3: Moure regressió SEQ_CAL del pas 2 al pas 3**
+- `calibrate_panel/panel.py`: `_detect_seq_cal()` marca `is_seq_cal`, amaga UI normal,
+  mostra `_seq_cal_info_group` + delay diagnostic. NO fa regressió (va al pas 3)
+- `analyze_panel/panel.py`: secció completa regressió amb taula punts (checkboxes),
+  scatter+residuals (matplotlib), RF/intercept/R²/RMS, comparació vigent, recalcular
+- NO botó "Aplicar" (va al pas 4)
+
+**Fase 4: Aplicar calibració al pas 4 (Revisar)**
+- `review_summary_panel.py`: secció "APLICAR CALIBRACIÓ (SEQ_CAL)" amb:
+  - Resum regressió, comparació HTML vigent vs nova, scatter miniatura
+  - DateEdit valid_from, checkbox retroactiu, llista SEQs amb checkboxes
+  - Botó "Aplicar com a Nova Calibració" → `add_calibration()` + `requantify_analysis_json()`
+  - Dashboard refresh automàtic
+
 ### Wizard SEQ_CAL — Regressió al wizard (2026-02-21)
 
-**Implementat flux complet per SEQ_CAL al wizard:**
-- **Detecció automàtica**: `_detect_and_run_seq_cal()` al CalibratePanel
-  - Criteri 1: nom conté `_CAL` (convenció existent)
-  - Criteri 2: ≥3 calibracions amb ≥2 concentracions (detecció automàtica)
-  - Flag `is_seq_cal=True` propagat al `calibration_data`
-- **Pas 2 (CalibratePanel)**: nova secció "Regressió de Calibració (SEQ_CAL)"
-  - Taula de punts amb checkboxes per excloure punts
-  - Regressió via `fit_calibration_from_history()` amb dades locals
-  - Resultats: RF, intercept, R², n_punts, RMS residuals
-  - Comparació HTML "Vigent vs Nova" amb Δ% i colors
-  - Gràfic scatter amb recta
-  - Botó "Recalcular" (per excloure punts) + "Aplicar com a Nova Calibració"
-  - Aplicar: crida `add_calibration()`, manté l'altra branca (COLUMN/BP)
-- **Pas 3 (AnalyzePanel)**: KHP validació
-  - Columnes 4-6: ppm_observat, ppm_teòric, desviació %
-  - `ppm = (area - intercept) * 1000 / (RF * vol)` amb la regressió nova
-  - Colors: verd ≤5%, taronja ≤15%, vermell >15%
-  - Separator "KHP VALIDACIÓ CALIBRACIÓ" (vs "KHP STANDARDS" per no-CAL)
-- **Pas 4 (ReviewSummaryPanel)**: secció "REGRESSIÓ SEQ_CAL"
-  - Resum: RF, intercept, R², mode, estat (aplicada/pendent)
-- **Tab 5 (GlobalCalibrationPanel)**: convertit a consulta-only
-  - Eliminats: `_apply_calibration()`, `_run_retroactive_requantification()`
-  - Eliminats: `btn_apply`, `chk_retroactive`, `date_retroactive`
-  - Eliminat: `calibration_updated` Signal
-  - Mantingut: "Recalcular" per previsualització, gràfics, comparació
-  - Nota informativa: "Per aplicar, processar SEQ_CAL pel wizard"
-
-**Fitxers modificats:**
-- `gui/widgets/calibrate_panel/panel.py`: imports, `_is_seq_cal`, `_seq_cal_regression`,
-  secció UI (QGroupBox, taula, labels, gràfic, botons), 6 mètodes nous
-- `gui/widgets/analyze_panel/panel.py`: validació ppm als KHP (cols 4-6)
-- `gui/widgets/review_summary_panel.py`: secció REGRESSIÓ SEQ_CAL a qualitat card
-- `gui/widgets/global_calibration_panel.py`: eliminat apply+retroactive, consulta-only
-- `gui/main_window.py`: eliminat `calibration_updated` signal connection
+**Implementat flux complet per SEQ_CAL al wizard (versió original, ara refactored):**
+- Detecció automàtica: `_detect_seq_cal()` (refactored from `_detect_and_run_seq_cal`)
+- Regressió moguda de pas 2 a pas 3 (AnalyzePanel)
+- Aplicació moguda de pas 2 a pas 4 (ReviewSummaryPanel)
+- GlobalCalibrationPanel: consulta-only (sense aplicar/requantificar)
 
 ### Canvis sessió 2026-02-21 (continuació)
 - **GlobalCalibrationPanel refactor**: 2 vistes (CalibrationLineView + QCMonitorView)

@@ -10,7 +10,8 @@ determina el time shift necessari i mostra mètriques i històric.
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QPushButton, QGroupBox,
     QGridLayout, QFrame, QHBoxLayout, QTableWidget, QTableWidgetItem,
-    QHeaderView, QSplitter, QScrollArea, QSizePolicy, QComboBox
+    QHeaderView, QSplitter, QScrollArea, QSizePolicy, QComboBox,
+    QSlider, QDoubleSpinBox
 )
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont, QColor
@@ -492,7 +493,8 @@ class CalibratePanel(QWidget):
                     break
 
         # Mostrar resultats (TOTS els mètodes, igual que _on_finished)
-        for fn in [self._update_summary, self._update_graphs,
+        for fn in [self._update_summary, self._update_delay_diagnostic,
+                   self._update_graphs,
                    self._update_metrics_table, self._update_replica_selection,
                    self._update_validation, self._update_history]:
             try:
@@ -650,6 +652,27 @@ class CalibratePanel(QWidget):
         summary_main_layout.addWidget(self.uib_group)
 
         content_layout.addWidget(self.summary_group)
+
+        # === SECCIÓN: Diagnòstic Delay HPLC↔TOC ===
+        self._build_delay_diagnostic_section(content_layout)
+
+        # === SECCIÓN: SEQ_CAL info (quan detecta calibració) ===
+        self._seq_cal_info_group = QGroupBox("Seqüència de Calibració (SEQ_CAL)")
+        self._seq_cal_info_group.setVisible(False)
+        self._seq_cal_info_group.setStyleSheet(
+            "QGroupBox { font-weight: bold; color: #1A5276; border: 2px solid #27AE60; "
+            "border-radius: 6px; margin-top: 8px; padding-top: 14px; }"
+            "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 6px; }"
+        )
+        seq_cal_info_layout = QVBoxLayout(self._seq_cal_info_group)
+        self._seq_cal_info_label = QLabel()
+        self._seq_cal_info_label.setWordWrap(True)
+        self._seq_cal_info_label.setStyleSheet(
+            "background: #EBF5FB; border-radius: 4px; padding: 12px; "
+            "color: #1A5276; font-size: 13px;"
+        )
+        seq_cal_info_layout.addWidget(self._seq_cal_info_label)
+        content_layout.addWidget(self._seq_cal_info_group)
 
         # === SECCIÓN: Gràfic recta calibració global (PROMINENT) ===
         self.cal_line_group = QGroupBox("Recta de calibració")
@@ -1057,6 +1080,8 @@ class CalibratePanel(QWidget):
 
         # Limpiar resultados anteriores
         self.summary_group.setVisible(False)
+        self.delay_group.setVisible(False)
+        self._seq_cal_info_group.setVisible(False)
         self.cal_line_group.setVisible(False)
         self.graphs_group.setVisible(False)
         self.metrics_group.setVisible(False)
@@ -1094,19 +1119,34 @@ class CalibratePanel(QWidget):
         self.calibration_data = result
         self.main_window.calibration_data = result
 
-        # PRIMER: detectar si és SEQ_CAL ABANS de mostrar la UI normal
-        # Així evitem flash visual (mostrar i amagar tot seguit)
-        is_seq_cal = False
-        try:
-            self._detect_and_run_seq_cal(result)
-            is_seq_cal = self._is_seq_cal
-        except Exception as e:
-            logger.warning(f"Error a _detect_and_run_seq_cal: {e}")
-            import traceback; traceback.print_exc()
+        # Detectar si és SEQ_CAL (regressió multi-concentració)
+        is_seq_cal = self._detect_seq_cal(result)
 
-        if not is_seq_cal:
-            # Mostrar resultats normals (QA/QC individual per condició)
-            for fn in [self._update_summary, self._update_graphs,
+        if is_seq_cal:
+            # SEQ_CAL: amagar UI normal, mostrar info + delay diagnostic
+            self.placeholder.setVisible(False)
+            self.condition_selector_frame.setVisible(False)
+            self.summary_group.setVisible(False)
+            self.cal_line_group.setVisible(False)
+            self.graphs_group.setVisible(False)
+            self.metrics_group.setVisible(False)
+            self.replica_selection_group.setVisible(False)
+            self.validation_group.setVisible(False)
+            self.history_group.setVisible(False)
+
+            # Mostrar secció SEQ_CAL info
+            self._seq_cal_info_group.setVisible(True)
+
+            # Delay diagnostic (útil per a SEQ_CAL BP també)
+            try:
+                self._update_delay_diagnostic(result)
+            except Exception as e:
+                logger.warning(f"Error a _update_delay_diagnostic: {e}")
+        else:
+            # SEQ normal: flux habitual
+            self._seq_cal_info_group.setVisible(False)
+            for fn in [self._update_summary, self._update_delay_diagnostic,
+                       self._update_graphs,
                        self._update_metrics_table, self._update_replica_selection,
                        self._update_validation, self._update_history]:
                 try:
@@ -1128,14 +1168,11 @@ class CalibratePanel(QWidget):
 
             # Recarregar el selector de condicions
             self._reload_condition_selector()
-        else:
-            # SEQ_CAL: amagar placeholder
-            self.placeholder.setVisible(False)
 
         self.main_window.enable_tab(2)
         self.main_window.set_status(
-            "Regressio SEQ_CAL completada" if is_seq_cal else "QA/QC KHP completat",
-            5000
+            "SEQ_CAL verificada — regressió al pas Analitzar" if is_seq_cal
+            else "QA/QC KHP completat", 5000
         )
 
         # Emetre senyal per notificar al wizard
@@ -1252,6 +1289,12 @@ class CalibratePanel(QWidget):
         # Hide signal sections
         self.direct_group.setVisible(False)
         self.uib_group.setVisible(False)
+
+        # Mostrar delay diagnostic també en cas d'error (especialment BP)
+        try:
+            self._update_delay_diagnostic(self.calibration_data)
+        except Exception as e:
+            logger.warning(f"Error a _update_delay_diagnostic (error path): {e}")
 
         # Guardar avisos estructurats perquè el wizard els llegeixi
         # (validation_group ja no es mostra, avisos van al header)
@@ -2707,6 +2750,604 @@ class CalibratePanel(QWidget):
             )
         else:
             self.toggle_outlier_btn.setText("Marcar Outlier")
+
+    # =========================================================================
+    # SEQ_CAL DETECTION
+    # =========================================================================
+
+    def _detect_seq_cal(self, result):
+        """Detecta si la SEQ és de calibració i prepara les dades per l'AnalyzePanel.
+
+        Criteri:
+        - Nom conté _CAL, O
+        - ≥3 calibracions amb ≥2 concentracions
+
+        Si és SEQ_CAL, prepara cal_entries i les guarda a result['seq_cal_data']
+        perquè l'AnalyzePanel les pugui utilitzar per la regressió.
+
+        Returns:
+            bool: True si és SEQ_CAL
+        """
+        import os
+
+        # Obtenir calibracions directes
+        cals_direct = result.get('calibrations_direct', [])
+        cals_uib = result.get('calibrations_uib', [])
+        cals = cals_direct or cals_uib or result.get('calibrations', [])
+
+        if not cals or len(cals) < 3:
+            result['is_seq_cal'] = False
+            return False
+
+        # Criteri 1: nom conté _CAL
+        seq_path = self.main_window.seq_path or ""
+        seq_name = os.path.basename(seq_path).upper()
+        name_has_cal = "_CAL" in seq_name
+
+        # Criteri 2: ≥3 condicions amb ≥2 concentracions
+        concs = set()
+        for cal in cals:
+            c = cal.get('conc_ppm', 0)
+            if c > 0:
+                concs.add(round(c, 4))
+        auto_detect = len(cals) >= 3 and len(concs) >= 2
+
+        if not name_has_cal and not auto_detect:
+            result['is_seq_cal'] = False
+            return False
+
+        # Activar mode SEQ_CAL
+        result['is_seq_cal'] = True
+        logger.info(f"SEQ_CAL detectada: {len(cals)} calibracions, "
+                     f"{len(concs)} concentracions ({sorted(concs)})")
+
+        # Determinar mode (BP o COLUMN)
+        method = "COLUMN"
+        if any(c.get('is_bp', False) for c in cals):
+            method = "BP"
+        elif self.main_window.imported_data:
+            if self.main_window.imported_data.get("method", "").upper() == "BP":
+                method = "BP"
+        if "_BP" in seq_name:
+            method = "BP"
+
+        # Preparar entrades per la regressió
+        cal_entries = []
+        for cal in cals:
+            conc = cal.get('conc_ppm', 0)
+            vol = cal.get('volume_uL', 0)
+            area = cal.get('area', 0)
+            if conc <= 0 or vol <= 0 or area <= 0:
+                continue
+            cal_entries.append({
+                'seq_name': os.path.basename(seq_path),
+                'mode': method,
+                'conc_ppm': conc,
+                'volume_uL': vol,
+                'area': area,
+                'is_outlier': False,
+                'valid_for_calibration': True,
+                'condition_key': cal.get('condition_key', f"KHP{conc:g}@{vol}µL"),
+                'rf_mass': cal.get('rf_mass', 0),
+                'quality_score': cal.get('quality_score', 0),
+                'name_full': cal.get('name_full', ''),
+            })
+
+        # Guardar dades per l'AnalyzePanel
+        result['seq_cal_data'] = {
+            'entries': cal_entries,
+            'method': method,
+            'concs': sorted(concs),
+            'n_entries': len(cal_entries),
+        }
+
+        # Actualitzar info label
+        conc_str = ", ".join(f"{c:g}" for c in sorted(concs))
+        self._seq_cal_info_label.setText(
+            f"<b>Seqüència de calibració detectada</b><br><br>"
+            f"<b>Mode:</b> {method} &nbsp;|&nbsp; "
+            f"<b>Punts:</b> {len(cal_entries)} &nbsp;|&nbsp; "
+            f"<b>Concentracions:</b> {conc_str} ppm<br><br>"
+            f"La <b>regressió de calibració</b> es realitzarà al pas "
+            f"<b>Analitzar</b> (pas 3).<br>"
+            f"L'<b>aplicació</b> de la calibració es farà al pas "
+            f"<b>Revisar</b> (pas 4)."
+        )
+
+        # Propagar al main_window
+        self.main_window.calibration_data = result
+
+        return True
+
+    # =========================================================================
+    # DELAY DIAGNOSTIC SECTION
+    # =========================================================================
+
+    def _build_delay_diagnostic_section(self, parent_layout):
+        """Construeix la secció de diagnòstic delay HPLC↔TOC.
+
+        Visible per a TOTES les seqüències (especialment BP).
+        Mostra: indicador shift, delay actual, slider per ajustar,
+        preview impacte, botó reimportar.
+        """
+        self.delay_group = QGroupBox("Diagnòstic Delay HPLC↔TOC")
+        self.delay_group.setVisible(False)
+        self.delay_group.setStyleSheet(
+            "QGroupBox { font-weight: bold; color: #1A5276; border: 2px solid #E67E22; "
+            "border-radius: 6px; margin-top: 8px; padding-top: 12px; }"
+            "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; }"
+        )
+        delay_main = QVBoxLayout(self.delay_group)
+        delay_main.setSpacing(8)
+
+        # --- Fila 1: Indicador shift KHP + Delay actual ---
+        info_frame = QFrame()
+        info_frame.setStyleSheet(
+            "QFrame { background-color: #FAFAFA; border: 1px solid #DDD; "
+            "border-radius: 4px; padding: 8px; }"
+        )
+        info_layout = QGridLayout(info_frame)
+        info_layout.setSpacing(6)
+
+        # Shift KHP mesurat (DOC vs DAD 254nm)
+        info_layout.addWidget(QLabel("<b>Shift KHP (DOC↔254nm):</b>"), 0, 0)
+        self.delay_shift_label = QLabel("-")
+        self.delay_shift_label.setStyleSheet("font-size: 13px;")
+        info_layout.addWidget(self.delay_shift_label, 0, 1)
+
+        # Delay actual del MasterFile
+        info_layout.addWidget(QLabel("<b>Net delay actual (MasterFile):</b>"), 0, 2)
+        self.delay_current_label = QLabel("-")
+        self.delay_current_label.setStyleSheet("font-size: 13px;")
+        info_layout.addWidget(self.delay_current_label, 0, 3)
+
+        # Mode
+        info_layout.addWidget(QLabel("<b>Mode:</b>"), 1, 0)
+        self.delay_mode_label = QLabel("-")
+        info_layout.addWidget(self.delay_mode_label, 1, 1)
+
+        # Nombre injeccions / files TOC
+        info_layout.addWidget(QLabel("<b>Injeccions / Files TOC:</b>"), 1, 2)
+        self.delay_counts_label = QLabel("-")
+        info_layout.addWidget(self.delay_counts_label, 1, 3)
+
+        delay_main.addWidget(info_frame)
+
+        # --- Fila 2: Indicador visual de qualitat del shift ---
+        self.delay_quality_frame = QFrame()
+        self.delay_quality_frame.setStyleSheet(
+            "QFrame { border-radius: 4px; padding: 6px; }"
+        )
+        quality_layout = QHBoxLayout(self.delay_quality_frame)
+        quality_layout.setContentsMargins(8, 4, 8, 4)
+        self.delay_quality_icon = QLabel("●")
+        self.delay_quality_icon.setStyleSheet("font-size: 18px;")
+        quality_layout.addWidget(self.delay_quality_icon)
+        self.delay_quality_text = QLabel("-")
+        self.delay_quality_text.setWordWrap(True)
+        quality_layout.addWidget(self.delay_quality_text, 1)
+        delay_main.addWidget(self.delay_quality_frame)
+
+        # --- Fila 3: Slider + SpinBox per ajustar delay ---
+        adjust_frame = QFrame()
+        adjust_frame.setStyleSheet(
+            "QFrame { background-color: #F8F9FA; border: 1px solid #E0E0E0; "
+            "border-radius: 4px; padding: 8px; }"
+        )
+        adjust_layout = QVBoxLayout(adjust_frame)
+
+        adjust_header = QHBoxLayout()
+        adjust_header.addWidget(QLabel("<b>Ajustar Net delay:</b>"))
+        adjust_header.addStretch()
+        self.delay_reset_btn = QPushButton("Reset")
+        self.delay_reset_btn.setFixedWidth(60)
+        self.delay_reset_btn.setToolTip("Restaurar delay original")
+        self.delay_reset_btn.clicked.connect(self._delay_reset)
+        adjust_header.addWidget(self.delay_reset_btn)
+        adjust_layout.addLayout(adjust_header)
+
+        slider_layout = QHBoxLayout()
+
+        self.delay_spin = QDoubleSpinBox()
+        self.delay_spin.setRange(-15.0, 15.0)
+        self.delay_spin.setDecimals(2)
+        self.delay_spin.setSingleStep(0.1)
+        self.delay_spin.setSuffix(" min")
+        self.delay_spin.setMinimumWidth(100)
+        self.delay_spin.valueChanged.connect(self._on_delay_spin_changed)
+        slider_layout.addWidget(self.delay_spin)
+
+        self.delay_slider = QSlider(Qt.Horizontal)
+        self.delay_slider.setRange(-1500, 1500)  # ±15 min en centèsimes
+        self.delay_slider.setSingleStep(10)       # 0.1 min
+        self.delay_slider.setPageStep(100)        # 1 min
+        self.delay_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self.delay_slider.setTickInterval(100)    # Cada minut
+        self.delay_slider.valueChanged.connect(self._on_delay_slider_changed)
+        slider_layout.addWidget(self.delay_slider, 1)
+
+        adjust_layout.addLayout(slider_layout)
+
+        # --- Fila 4: Preview impacte ---
+        impact_layout = QHBoxLayout()
+        self.delay_impact_label = QLabel("")
+        self.delay_impact_label.setStyleSheet("color: #555; font-size: 12px;")
+        self.delay_impact_label.setWordWrap(True)
+        impact_layout.addWidget(self.delay_impact_label, 1)
+        adjust_layout.addLayout(impact_layout)
+
+        delay_main.addWidget(adjust_frame)
+
+        # --- Fila 5: Botó aplicar ---
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+
+        self.delay_apply_btn = QPushButton("📝 Aplicar i Reimportar")
+        self.delay_apply_btn.setToolTip(
+            "Actualitza el Net delay al MasterFile, regenera 4-TOC_CALC,\n"
+            "reimporta la seqüència i re-executa la verificació."
+        )
+        self.delay_apply_btn.setStyleSheet(
+            "QPushButton { background-color: #E67E22; color: white; "
+            "font-weight: bold; padding: 8px 16px; border-radius: 4px; }"
+            "QPushButton:hover { background-color: #D35400; }"
+            "QPushButton:disabled { background-color: #CCC; color: #999; }"
+        )
+        self.delay_apply_btn.setEnabled(False)
+        self.delay_apply_btn.clicked.connect(self._delay_apply_and_reimport)
+        btn_layout.addWidget(self.delay_apply_btn)
+        delay_main.addLayout(btn_layout)
+
+        # State
+        self._delay_original = None     # Delay original del MasterFile
+        self._delay_mf_path = None      # Path al MasterFile
+        self._delay_is_bp = False        # Si la SEQ és BP
+        self._delay_slider_updating = False  # Flag per evitar recursions spin↔slider
+        self._delay_cached_data = None   # Cache de timestamps per evitar llegir MasterFile cada cop
+
+        parent_layout.addWidget(self.delay_group)
+
+    def _update_delay_diagnostic(self, result):
+        """Actualitza la secció de diagnòstic delay amb les dades de calibració.
+
+        Mostra la secció per SEQs BP (sempre) o COLUMN amb shift gran.
+        """
+        import os
+
+        # Determinar mode
+        method = (result.get("mode") or "COLUMN").upper()
+        imported_data = self.main_window.imported_data or {}
+        if not method or method == "-":
+            method = imported_data.get("method", "COLUMN").upper()
+        is_bp = method == "BP"
+        self._delay_is_bp = is_bp
+
+        # Obtenir shift KHP mesurat (en minuts)
+        shift_min = result.get("shift_direct", 0)
+        shift_abs = abs(shift_min)
+
+        # Decidir si mostrar la secció:
+        # - BP: SEMPRE (delay crític per assignació TOC)
+        # - COLUMN: només si shift > 2 min (normalment no importa)
+        show_delay = is_bp or shift_abs > 2.0
+
+        if not show_delay:
+            self.delay_group.setVisible(False)
+            return
+
+        # Obtenir path al MasterFile
+        mf_path = imported_data.get("master_file")
+        if not mf_path:
+            # Intentar trobar-lo
+            seq_path = self.main_window.seq_path
+            if seq_path:
+                from pathlib import Path
+                candidates = list(Path(seq_path).glob("*MasterFile*.xlsx"))
+                candidates = [c for c in candidates if 'backup' not in c.name.lower()]
+                if candidates:
+                    mf_path = str(candidates[0])
+
+        if not mf_path or not os.path.exists(str(mf_path)):
+            self.delay_group.setVisible(False)
+            return
+
+        self._delay_mf_path = str(mf_path)
+
+        # Llegir delay actual del MasterFile i cachejar dades per slider
+        try:
+            from hpsec_delay import read_current_delay
+            current_delay = read_current_delay(mf_path)
+        except Exception as e:
+            logger.warning(f"Error llegint delay: {e}")
+            current_delay = None
+
+        if current_delay is None:
+            current_delay = 0.0
+
+        self._delay_original = current_delay
+
+        # Cachejar timestamps per evitar llegir MasterFile a cada moviment del slider
+        try:
+            self._delay_cache_timestamps(mf_path)
+            n_injections = len(self._delay_cached_data['hplc_times']) if self._delay_cached_data else 0
+            n_toc = len(self._delay_cached_data['toc_rows']) if self._delay_cached_data else 0
+        except Exception:
+            n_injections = 0
+            n_toc = 0
+
+        # Actualitzar labels
+        self.delay_mode_label.setText(f"<b>{method}</b>")
+
+        shift_sec = shift_min * 60
+        self.delay_shift_label.setText(f"{shift_sec:.1f} s ({shift_min:.2f} min)")
+
+        self.delay_current_label.setText(f"{current_delay:.3f} min")
+        self.delay_counts_label.setText(f"{n_injections} inj / {n_toc} files TOC")
+
+        # Indicador qualitat: basat en shift
+        if is_bp:
+            if shift_abs < 0.5:
+                color = "#27AE60"  # Verd
+                icon_style = f"color: {color}; font-size: 18px;"
+                bg = "#E8F8F5"
+                text = "Shift KHP petit — delay probablement correcte."
+            elif shift_abs < 2.0:
+                color = "#E67E22"  # Taronja
+                icon_style = f"color: {color}; font-size: 18px;"
+                bg = "#FEF9E7"
+                text = (f"Shift KHP moderat ({shift_min:.2f} min). "
+                        "Pot indicar un delay imprecís. Revisar el cromatograma DOC.")
+            else:
+                color = "#E74C3C"  # Vermell
+                icon_style = f"color: {color}; font-size: 18px;"
+                bg = "#FDEDEC"
+                text = (f"Shift KHP gran ({shift_min:.2f} min). "
+                        "Les files TOC poden estar mal assignades. "
+                        "Es recomana ajustar el delay i reimportar.")
+        else:
+            # COLUMN: shift > 2 min
+            color = "#E67E22"
+            icon_style = f"color: {color}; font-size: 18px;"
+            bg = "#FEF9E7"
+            text = (f"Shift KHP gran per COLUMN ({shift_min:.2f} min). "
+                    "Normalment no afecta l'anàlisi però pot indicar un problema.")
+
+        self.delay_quality_icon.setStyleSheet(icon_style)
+        self.delay_quality_frame.setStyleSheet(
+            f"QFrame {{ background-color: {bg}; border: 1px solid {color}; "
+            f"border-radius: 4px; padding: 6px; }}"
+        )
+        self.delay_quality_text.setText(text)
+
+        # Inicialitzar slider al delay actual
+        self._delay_slider_updating = True
+        self.delay_spin.setValue(current_delay)
+        self.delay_slider.setValue(int(current_delay * 100))
+        self._delay_slider_updating = False
+
+        # Impacte inicial (0 canvis perquè delay = actual)
+        self.delay_impact_label.setText(
+            f"Delay actual: {current_delay:.3f} min — sense canvis."
+        )
+        self.delay_apply_btn.setEnabled(False)
+
+        # Mostrar secció
+        self.delay_group.setVisible(True)
+
+    def _delay_cache_timestamps(self, mf_path):
+        """Cachejar timestamps HPLC i TOC per evitar llegir el MasterFile repetidament."""
+        import openpyxl
+        try:
+            wb = openpyxl.load_workbook(str(mf_path), read_only=True, data_only=True)
+            from hpsec_delay import _read_hplc_timestamps, _read_toc_timestamps
+            hplc_times, hplc_samples = _read_hplc_timestamps(wb)
+            toc_rows = _read_toc_timestamps(wb)
+            wb.close()
+            self._delay_cached_data = {
+                'hplc_times': hplc_times,
+                'hplc_samples': hplc_samples,
+                'toc_rows': toc_rows,
+            }
+        except Exception as e:
+            logger.warning(f"Error cachejant timestamps: {e}")
+            self._delay_cached_data = None
+
+    def _estimate_impact_cached(self, old_delay, new_delay, pre_margin_min=1.5):
+        """Estimació d'impacte usant dades cachejades (ràpid, sense I/O)."""
+        if not self._delay_cached_data:
+            return {'n_total': 0, 'n_changed': 0, 'n_injections': 0}
+
+        from hpsec_delay import _assign_toc_rows
+        hplc_times = self._delay_cached_data['hplc_times']
+        toc_rows = self._delay_cached_data['toc_rows']
+
+        if not hplc_times or not toc_rows:
+            return {'n_total': len(toc_rows), 'n_changed': 0, 'n_injections': len(hplc_times)}
+
+        old_assign = _assign_toc_rows(hplc_times, toc_rows, old_delay, pre_margin_min)
+        new_assign = _assign_toc_rows(hplc_times, toc_rows, new_delay, pre_margin_min)
+
+        n_changed = 0
+        for old_a, new_a in zip(old_assign, new_assign):
+            if old_a['inj_index'] != new_a['inj_index']:
+                n_changed += 1
+
+        return {
+            'n_total': len(toc_rows),
+            'n_changed': n_changed,
+            'n_injections': len(hplc_times),
+        }
+
+    def _on_delay_slider_changed(self, value):
+        """Handler quan l'slider de delay canvia."""
+        if self._delay_slider_updating:
+            return
+        new_delay = value / 100.0
+        self._delay_slider_updating = True
+        self.delay_spin.setValue(new_delay)
+        self._delay_slider_updating = False
+        self._update_delay_impact(new_delay)
+
+    def _on_delay_spin_changed(self, value):
+        """Handler quan el spinbox de delay canvia."""
+        if self._delay_slider_updating:
+            return
+        self._delay_slider_updating = True
+        self.delay_slider.setValue(int(value * 100))
+        self._delay_slider_updating = False
+        self._update_delay_impact(value)
+
+    def _update_delay_impact(self, new_delay):
+        """Actualitza el preview d'impacte quan canvia el delay."""
+        if self._delay_mf_path is None or self._delay_original is None:
+            return
+
+        delta = new_delay - self._delay_original
+        if abs(delta) < 0.005:
+            self.delay_impact_label.setText(
+                f"Delay actual: {self._delay_original:.3f} min — sense canvis."
+            )
+            self.delay_impact_label.setStyleSheet("color: #555; font-size: 12px;")
+            self.delay_apply_btn.setEnabled(False)
+            return
+
+        try:
+            impact = self._estimate_impact_cached(self._delay_original, new_delay)
+            n_changed = impact.get('n_changed', 0)
+            n_total = impact.get('n_total', 0)
+            n_injections = impact.get('n_injections', 0)
+
+            if n_changed == 0:
+                style = "color: #27AE60; font-size: 12px; font-weight: bold;"
+                text = (f"Nou delay: {new_delay:.3f} min (Δ={delta:+.3f}) — "
+                        f"Cap fila TOC canvia d'assignació ({n_total} files, {n_injections} inj).")
+            elif n_changed <= 3:
+                style = "color: #E67E22; font-size: 12px; font-weight: bold;"
+                text = (f"Nou delay: {new_delay:.3f} min (Δ={delta:+.3f}) — "
+                        f"<b>{n_changed}</b> files TOC canvien d'assignació "
+                        f"(de {n_total}, {n_injections} inj).")
+            else:
+                style = "color: #E74C3C; font-size: 12px; font-weight: bold;"
+                pct = n_changed / n_total * 100 if n_total > 0 else 0
+                text = (f"Nou delay: {new_delay:.3f} min (Δ={delta:+.3f}) — "
+                        f"<b>{n_changed}</b> files TOC canvien d'assignació "
+                        f"({pct:.0f}% de {n_total}, {n_injections} inj).")
+
+            self.delay_impact_label.setStyleSheet(style)
+            self.delay_impact_label.setText(text)
+            self.delay_apply_btn.setEnabled(True)
+
+        except Exception as e:
+            self.delay_impact_label.setText(f"Error estimant impacte: {e}")
+            self.delay_impact_label.setStyleSheet("color: #E74C3C; font-size: 12px;")
+            self.delay_apply_btn.setEnabled(False)
+
+    def _delay_reset(self):
+        """Restaura el slider al delay original."""
+        if self._delay_original is not None:
+            self._delay_slider_updating = True
+            self.delay_spin.setValue(self._delay_original)
+            self.delay_slider.setValue(int(self._delay_original * 100))
+            self._delay_slider_updating = False
+            self._update_delay_impact(self._delay_original)
+
+    def _delay_apply_and_reimport(self):
+        """Aplica el nou delay al MasterFile, reimporta i re-verifica."""
+        from PySide6.QtWidgets import QMessageBox
+
+        new_delay = self.delay_spin.value()
+        old_delay = self._delay_original
+        mf_path = self._delay_mf_path
+
+        if mf_path is None:
+            QMessageBox.warning(self, "Error", "No s'ha trobat el MasterFile.")
+            return
+
+        # Confirmar
+        delta = new_delay - old_delay if old_delay else new_delay
+        reply = QMessageBox.question(
+            self,
+            "Aplicar nou delay",
+            f"Es modificarà el MasterFile:\n\n"
+            f"  Net delay: {old_delay:.3f} → {new_delay:.3f} min (Δ={delta:+.3f})\n\n"
+            f"  Es crearà backup del MasterFile.\n"
+            f"  Es regenerarà 4-TOC_CALC.\n"
+            f"  Es reimportarà la seqüència.\n"
+            f"  Es re-executarà la verificació.\n\n"
+            f"Continuar?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+
+        if reply != QMessageBox.Yes:
+            return
+
+        self.delay_apply_btn.setEnabled(False)
+        self.delay_apply_btn.setText("⏳ Aplicant...")
+        from PySide6.QtWidgets import QApplication
+        QApplication.processEvents()
+
+        try:
+            # 1. Actualitzar MasterFile
+            from hpsec_delay import update_masterfile_delay
+            update_result = update_masterfile_delay(
+                mf_path, new_delay, backup=True
+            )
+
+            if not update_result.get('success'):
+                error_msg = update_result.get('error', 'Error desconegut')
+                QMessageBox.critical(
+                    self, "Error",
+                    f"Error actualitzant MasterFile:\n{error_msg}"
+                )
+                return
+
+            n_assigned = update_result.get('n_assigned', 0)
+            n_total = update_result.get('n_total', 0)
+            backup_path = update_result.get('backup_path', '')
+
+            logger.info(f"Delay actualitzat: {old_delay:.3f} → {new_delay:.3f}, "
+                        f"{n_assigned}/{n_total} files, backup: {backup_path}")
+
+            # Netejar cache (el MasterFile ha canviat)
+            self._delay_cached_data = None
+
+            # 2. Reimportar seqüència
+            self.delay_apply_btn.setText("⏳ Reimportant...")
+            QApplication.processEvents()
+
+            seq_path = self.main_window.seq_path
+            if seq_path:
+                from hpsec_import import import_from_manifest
+                imported_data = import_from_manifest(seq_path)
+                if imported_data and imported_data.get('success'):
+                    self.main_window.imported_data = imported_data
+                    logger.info("Reimportació completada")
+                else:
+                    logger.warning("Reimportació fallida, intentant import complet")
+                    from hpsec_import import import_sequence
+                    imported_data = import_sequence(seq_path)
+                    if imported_data:
+                        self.main_window.imported_data = imported_data
+
+            # 3. Re-executar verificació (calibrate)
+            self.delay_apply_btn.setText("⏳ Re-verificant...")
+            QApplication.processEvents()
+
+            self._run_calibrate()
+
+            # El _on_finished actualitzarà tota la UI incloent el delay diagnostic
+
+        except Exception as e:
+            logger.error(f"Error aplicant delay: {e}")
+            import traceback; traceback.print_exc()
+            QMessageBox.critical(
+                self, "Error",
+                f"Error durant l'aplicació del delay:\n{e}"
+            )
+        finally:
+            self.delay_apply_btn.setText("📝 Aplicar i Reimportar")
+            self.delay_apply_btn.setEnabled(True)
 
     def _show_history_legend(self):
         """Mostra diàleg amb llegenda i detalls del gràfic d'històric (C16)."""
