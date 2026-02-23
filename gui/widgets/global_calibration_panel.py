@@ -75,6 +75,23 @@ class GlobalCalibrationPanel(QWidget):
         subtitle.setStyleSheet("color: #666;")
         layout.addWidget(subtitle)
 
+        # Botó generar informe PDF
+        report_row = QHBoxLayout()
+        report_row.addStretch()
+        self._report_btn = QPushButton("📄 Generar Informe Calibració (PDF)")
+        self._report_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #2980B9; color: white;
+                border: none; border-radius: 6px;
+                padding: 8px 20px; font-size: 12px; font-weight: bold;
+            }
+            QPushButton:hover { background-color: #3498DB; }
+        """)
+        self._report_btn.clicked.connect(self._on_generate_report)
+        report_row.addWidget(self._report_btn)
+        report_row.addStretch()
+        layout.addLayout(report_row)
+
         # Tabs
         self.tabs = QTabWidget()
         self.cal_view = CalibrationLineView(self)
@@ -103,6 +120,42 @@ class GlobalCalibrationPanel(QWidget):
 
         self.cal_view.set_data(cal_entries)
         self.qc_view.set_data(prod_entries)
+
+    def _on_generate_report(self):
+        """Genera informe PDF de la calibració activa."""
+        try:
+            from hpsec_reports import generate_calibration_report
+
+            cal = get_active_global_calibration()
+            if not cal:
+                QMessageBox.warning(self, "Avís", "No hi ha calibració activa.")
+                return
+
+            if not cal.get('regression_data'):
+                QMessageBox.information(
+                    self, "Info",
+                    "La calibració activa no té dades de regressió emmagatzemades.\n"
+                    "L'informe es generarà amb les dades disponibles\n"
+                    "(pàgines 1, 3, 4 i 5 — sense scatter de regressió)."
+                )
+
+            pdf_path = generate_calibration_report(cal)
+            if pdf_path and os.path.exists(pdf_path):
+                QMessageBox.information(
+                    self, "Informe generat",
+                    f"Informe de calibració generat:\n{pdf_path}"
+                )
+                # Obrir el PDF
+                try:
+                    os.startfile(pdf_path)
+                except AttributeError:
+                    import subprocess
+                    subprocess.Popen(['xdg-open', pdf_path])
+            else:
+                QMessageBox.warning(self, "Error", "No s'ha pogut generar l'informe.")
+        except Exception as e:
+            logger.error(f"Error generant informe calibració: {e}")
+            QMessageBox.critical(self, "Error", f"Error generant informe:\n{e}")
 
 
 # =============================================================================

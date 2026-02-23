@@ -22,6 +22,7 @@ from PySide6.QtGui import QFont, QColor
 
 import json as _json
 import logging
+import os
 
 import numpy as np
 from pathlib import Path
@@ -701,6 +702,25 @@ class ReviewSummaryPanel(QWidget):
         self._cal_apply_status.setStyleSheet("font-size: 11px; border: none;")
         layout.addWidget(self._cal_apply_status)
 
+        # Botó generar informe PDF (visible després d'aplicar)
+        report_row = QHBoxLayout()
+        report_row.addStretch()
+        self._cal_report_btn = QPushButton("📄 Generar Informe Calibració (PDF)")
+        self._cal_report_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #2980B9; color: white;
+                border: none; border-radius: 6px;
+                padding: 8px 20px; font-size: 12px; font-weight: bold;
+            }
+            QPushButton:hover { background-color: #3498DB; }
+            QPushButton:disabled { background-color: #BDC3C7; }
+        """)
+        self._cal_report_btn.setVisible(False)
+        self._cal_report_btn.clicked.connect(self._on_generate_cal_report)
+        report_row.addWidget(self._cal_report_btn)
+        report_row.addStretch()
+        layout.addLayout(report_row)
+
         self.content_layout.addWidget(self.seq_cal_apply_group)
 
         # State
@@ -1144,6 +1164,7 @@ class ReviewSummaryPanel(QWidget):
             self._cal_apply_status.setText("".join(status_parts))
             self._cal_apply_btn.setEnabled(False)
             self._cal_applied = True
+            self._cal_report_btn.setVisible(True)
 
             # Refrescar dashboard si existeix
             if hasattr(self.main_window, 'dashboard_panel') and self.main_window.dashboard_panel:
@@ -1158,6 +1179,44 @@ class ReviewSummaryPanel(QWidget):
                 f"<span style='color:{COLOR_ERROR}'>Error: {e}</span>"
             )
             self._cal_apply_btn.setEnabled(True)
+
+    def _on_generate_cal_report(self):
+        """Genera informe PDF de la calibració activa."""
+        try:
+            from hpsec_reports import generate_calibration_report
+            from hpsec_calibrate import get_active_global_calibration
+
+            cal = get_active_global_calibration()
+            if not cal:
+                QMessageBox.warning(self, "Avís", "No hi ha calibració activa.")
+                return
+
+            if not cal.get('regression_data'):
+                QMessageBox.information(
+                    self, "Info",
+                    "La calibració activa no té dades de regressió emmagatzemades.\n"
+                    "Les calibracions aplicades abans d'aquesta actualització no inclouen\n"
+                    "les dades de regressió necessàries per l'informe complet."
+                )
+                return
+
+            pdf_path = generate_calibration_report(cal)
+            if pdf_path and os.path.exists(pdf_path):
+                QMessageBox.information(
+                    self, "Informe generat",
+                    f"Informe de calibració generat:\n{pdf_path}"
+                )
+                # Obrir el PDF
+                import subprocess
+                try:
+                    os.startfile(pdf_path)
+                except AttributeError:
+                    subprocess.Popen(['xdg-open', pdf_path])
+            else:
+                QMessageBox.warning(self, "Error", "No s'ha pogut generar l'informe.")
+        except Exception as e:
+            logger.error(f"Error generant informe calibració: {e}")
+            QMessageBox.critical(self, "Error", f"Error generant informe:\n{e}")
 
     # ------------------------------------------------------------------
     # Charts
