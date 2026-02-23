@@ -1039,7 +1039,7 @@ class AnalyzePanel(QWidget):
             self.seq_cal_points_table.setCellWidget(i, 11, badge_w)
 
     def _on_seq_cal_row_clicked(self, row, col):
-        """Mostra preview cromatograma quan l'usuari clica una fila de la taula."""
+        """Mostra preview cromatograma amb R1+R2 superposades i àrees ombrejades."""
         if not getattr(self, '_has_seq_cal_chrom', False):
             return
         if row < 0 or row >= len(self._seq_cal_entries):
@@ -1058,54 +1058,89 @@ class AnalyzePanel(QWidget):
             fig.clear()
             ax = fig.add_subplot(111)
 
-            # Usar la primera rèplica (o la seleccionada)
-            rep = replicas[0]
+            # Colors per rèplica
+            doc_colors = ['#2196F3', '#1565C0']  # blau clar, blau fosc
+            doc_styles = ['-', '--']
+            fill_colors = ['#2196F3', '#1565C0']
+            dad_colors = ['#9B59B6', '#8E44AD']
+            dad_styles = ['-', ':']
 
-            # DOC signal
-            t_doc = rep.get('t_doc')
-            y_doc = rep.get('y_doc')
-            y_repaired = rep.get('y_doc_repaired')
+            ax2 = None  # eix secundari per 254nm
 
-            if t_doc is not None and y_doc is not None:
-                t_doc = np.asarray(t_doc)
-                y_doc = np.asarray(y_doc)
-                ax.plot(t_doc, y_doc, color='#2196F3', linewidth=1.2,
-                        label='DOC', alpha=0.8)
-                if y_repaired is not None:
-                    y_repaired = np.asarray(y_repaired)
-                    ax.plot(t_doc, y_repaired, color='#E74C3C', linewidth=1,
-                            linestyle='--', label='Reparat', alpha=0.7)
+            for r_idx, rep in enumerate(replicas[:2]):  # màxim 2 rèpliques
+                r_label = f"R{r_idx + 1}"
+                color = doc_colors[r_idx]
+                style = doc_styles[r_idx]
 
-                # Marcar límits del pic si disponibles
-                peak_info = rep.get('peak_info', {})
-                if peak_info.get('t_start') and peak_info.get('t_end'):
-                    ax.axvline(peak_info['t_start'], color='gray', linewidth=0.5,
-                              linestyle=':', alpha=0.6)
-                    ax.axvline(peak_info['t_end'], color='gray', linewidth=0.5,
-                              linestyle=':', alpha=0.6)
+                # DOC signal
+                t_doc = rep.get('t_doc')
+                y_doc = rep.get('y_doc')
+                y_repaired = rep.get('y_doc_repaired')
 
-            # 254nm signal (eix secundari)
-            t_dad = rep.get('t_dad')
-            y_254 = rep.get('y_dad_254')
-            if t_dad is not None and y_254 is not None:
-                t_dad = np.asarray(t_dad)
-                y_254 = np.asarray(y_254)
-                ax2 = ax.twinx()
-                ax2.plot(t_dad, y_254, color='#9B59B6', linewidth=0.8,
-                        label='254nm', alpha=0.6)
-                ax2.set_ylabel('254nm', color='#9B59B6', fontsize=9)
-                ax2.tick_params(axis='y', labelcolor='#9B59B6', labelsize=8)
+                if t_doc is not None and y_doc is not None:
+                    t_doc = np.asarray(t_doc)
+                    y_doc = np.asarray(y_doc)
+                    ax.plot(t_doc, y_doc, color=color, linewidth=1.2,
+                            linestyle=style, label=f'{r_label} DOC',
+                            alpha=0.9 if r_idx == 0 else 0.6)
+
+                    if y_repaired is not None:
+                        y_repaired = np.asarray(y_repaired)
+                        ax.plot(t_doc, y_repaired, color='#E74C3C', linewidth=1,
+                                linestyle='--', label=f'{r_label} Reparat',
+                                alpha=0.7 if r_idx == 0 else 0.4)
+
+                    # Ombrejat àrea d'integració
+                    peak_info = rep.get('peak_info', {})
+                    t_start = peak_info.get('t_start')
+                    t_end = peak_info.get('t_end')
+                    if t_start is not None and t_end is not None:
+                        mask = (t_doc >= t_start) & (t_doc <= t_end)
+                        if np.any(mask):
+                            y_fill = y_repaired[mask] if y_repaired is not None else y_doc[mask]
+                            ax.fill_between(t_doc[mask], 0, y_fill,
+                                           color=fill_colors[r_idx], alpha=0.12)
+                        # Línies límits (només per R1)
+                        if r_idx == 0:
+                            ax.axvline(t_start, color='gray', linewidth=0.5,
+                                      linestyle=':', alpha=0.6)
+                            ax.axvline(t_end, color='gray', linewidth=0.5,
+                                      linestyle=':', alpha=0.6)
+
+                # 254nm signal (eix secundari compartit)
+                t_dad = rep.get('t_dad')
+                y_254 = rep.get('y_dad_254')
+                if t_dad is not None and y_254 is not None:
+                    t_dad = np.asarray(t_dad)
+                    y_254 = np.asarray(y_254)
+                    if ax2 is None:
+                        ax2 = ax.twinx()
+                        ax2.set_ylabel('254nm', color='#9B59B6', fontsize=9)
+                        ax2.tick_params(axis='y', labelcolor='#9B59B6', labelsize=8)
+                    ax2.plot(t_dad, y_254, color=dad_colors[r_idx], linewidth=0.8,
+                            linestyle=dad_styles[r_idx],
+                            label=f'{r_label} 254nm',
+                            alpha=0.6 if r_idx == 0 else 0.35)
 
             # Format
             conc = entry.get('conc_ppm', 0)
             name = entry.get('name_full', entry.get('condition_key', ''))
-            ax.set_title(f"{name} ({conc:g} ppm)", fontsize=10, fontweight='bold')
+            n_rep = min(len(replicas), 2)
+            ax.set_title(f"{name} ({conc:g} ppm) — {n_rep} rèpliques",
+                        fontsize=10, fontweight='bold')
             ax.set_xlabel('Temps (min)', fontsize=9)
             ax.set_ylabel('Senyal DOC', fontsize=9, color='#2196F3')
             ax.tick_params(labelsize=8)
-            ax.legend(loc='upper right', fontsize=8)
-            fig.tight_layout()
 
+            # Llegenda combinada (DOC + DAD)
+            lines, labels = ax.get_legend_handles_labels()
+            if ax2:
+                lines2, labels2 = ax2.get_legend_handles_labels()
+                lines += lines2
+                labels += labels2
+            ax.legend(lines, labels, loc='upper right', fontsize=7, ncol=2)
+
+            fig.tight_layout()
             self.seq_cal_chrom_canvas.setVisible(True)
             self.seq_cal_chrom_canvas.draw()
         except Exception as e:
