@@ -4591,6 +4591,7 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
         else:  # best_quality
             sorted_replicas = sorted(replicas, key=lambda x: x.get('quality_score', 0))
             best = sorted_replicas[0]
+            best_quality = best.get('quality_score', 0)
             selected_area = best['area']
             selected_area_original = best.get('area_original') or best['area']
             selected_shift_min = best['shift_min']
@@ -4598,7 +4599,12 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
             selected_a254_ratio = best.get('a254_doc_ratio', 0)
             selected_a254_area = best.get('a254_area', 0)
             selected_replicas = [best.get('replica_num', 1)]
-            status = f"Millor qualitat R{selected_replicas[0]} (RSD {rsd:.1f}%)"
+            if best_quality >= 100:
+                # Totes les rèpliques invàlides — no seleccionar cap
+                selection_reason = f"all_replicas_invalid (best QS={best_quality})"
+                status = f"Cap rèplica vàlida (millor QS={best_quality})"
+            else:
+                status = f"Millor qualitat R{selected_replicas[0]} (RSD {rsd:.1f}%)"
 
         # Bigaussian: agafar de la primera rèplica seleccionada (o millor qualitat)
         # Sempre propagar, encara que sigui INVALID (info QC valuosa)

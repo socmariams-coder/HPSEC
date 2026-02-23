@@ -1328,10 +1328,10 @@ class CalibratePanel(QWidget):
             # SNR, t_max, FWHM, RF_MASS Direct (de les rèpliques)
             replicas_direct = khp_data_direct.get('replicas') or [khp_data_direct]
             if replicas_direct:
-                snr_vals = [r.get('snr', 0) for r in replicas_direct if r.get('snr')]
+                snr_vals = [r['snr'] for r in replicas_direct if r.get('snr') is not None and r['snr'] > 0]
                 tmax_vals = [r.get('t_retention', 0) or r.get('t_doc_max', 0) for r in replicas_direct]
                 tmax_vals = [t for t in tmax_vals if t > 0]
-                fwhm_vals = [r.get('fwhm_doc', 0) for r in replicas_direct if r.get('fwhm_doc')]
+                fwhm_vals = [r['fwhm_doc'] for r in replicas_direct if r.get('fwhm_doc') is not None and r['fwhm_doc'] > 0]
                 rf_mass_vals = [r.get('rf_mass_doc', 0) or r.get('rf_mass', 0) for r in replicas_direct]
                 rf_mass_vals = [v for v in rf_mass_vals if v > 0]
                 # Fallback: rf_mass top-level del khp_data
@@ -1368,10 +1368,10 @@ class CalibratePanel(QWidget):
             # SNR, t_max, FWHM, RF_MASS UIB (de les rèpliques)
             replicas_uib = khp_data_uib.get('replicas') or [khp_data_uib]
             if replicas_uib:
-                snr_vals = [r.get('snr', 0) for r in replicas_uib if r.get('snr')]
+                snr_vals = [r['snr'] for r in replicas_uib if r.get('snr') is not None and r['snr'] > 0]
                 tmax_vals = [r.get('t_retention', 0) or r.get('t_doc_max', 0) for r in replicas_uib]
                 tmax_vals = [t for t in tmax_vals if t > 0]
-                fwhm_vals = [r.get('fwhm_doc', 0) for r in replicas_uib if r.get('fwhm_doc')]
+                fwhm_vals = [r['fwhm_doc'] for r in replicas_uib if r.get('fwhm_doc') is not None and r['fwhm_doc'] > 0]
                 rf_mass_vals = [r.get('rf_mass_doc', 0) or r.get('rf_mass', 0) for r in replicas_uib]
                 rf_mass_vals = [v for v in rf_mass_vals if v > 0]
                 if not rf_mass_vals:
@@ -1398,6 +1398,9 @@ class CalibratePanel(QWidget):
                     rf_mass_measured = np.mean(rf_vals)
                 elif khp_data_qc.get('rf_mass', 0) > 0:
                     rf_mass_measured = khp_data_qc['rf_mass']
+            # Fallback: rf_mass del result top-level
+            if rf_mass_measured <= 0:
+                rf_mass_measured = result.get('rf_mass', 0) or result.get('rf_mass_doc', 0) or 0
 
             if rf_mass_measured > 0:
                 mode_str = result.get('mode', 'COLUMN').lower()
@@ -1851,8 +1854,8 @@ class CalibratePanel(QWidget):
             elif quality > 50:
                 status = "CHECK"
                 color = QColor(255, 200, 100)
-            elif quality > 20:
-                status = "INFO"
+            elif quality > 20 or len(issues) > 0:
+                status = f"INFO ({len(issues)})" if issues else "INFO"
                 color = QColor(255, 255, 150)
             else:
                 status = "OK"
@@ -2283,8 +2286,19 @@ class CalibratePanel(QWidget):
         """
         import re
 
-        warnings_structured = list(result.get("warnings_structured", []))
+        raw_warnings = list(result.get("warnings_structured", []))
         errors = result.get("errors", [])
+
+        # Enriquir warnings del backend amb nom KHP si no el tenen
+        khp_name = result.get("khp_name", "KHP")
+        warnings_structured = []
+        for w in raw_warnings:
+            if not w.get("sample") and w.get("condition_key"):
+                w = dict(w)
+                w["sample"] = f"{khp_name}"
+                if "message" in w and khp_name not in w["message"]:
+                    w["message"] = f"{khp_name}: {w['message']}"
+            warnings_structured.append(w)
 
         # Recopilar quality_issues PER SENYAL I RÈPLICA
         issues_by_signal = {"Direct": {}, "UIB": {}}
