@@ -4227,42 +4227,6 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
                     khp_result_uib["doc_source"] = "uib"
                     khp_data_uib_list.append(khp_result_uib)
 
-            # Cross-signal: si UIB detecta jagged i Direct no, propagar reparació
-            # L'artefacte del detector TOC afecta ambdós senyals
-            if (khp_result_uib and khp_result_direct
-                    and khp_result_uib.get('irregular_top_repaired')
-                    and not khp_result_direct.get('irregular_top_repaired')):
-                # Re-analitzar Direct forçant detecció amb thresholds més baixos
-                try:
-                    from hpsec_core import detect_peak_anomaly, repair_with_parabola
-                    t_d = khp_result_direct.get('t_doc')
-                    y_d = khp_result_direct.get('y_doc')
-                    pi = khp_result_direct.get('peak_info', {})
-                    li = khp_result_direct.get('peak_left_idx', 0)
-                    ri = khp_result_direct.get('peak_right_idx', len(y_d)-1 if y_d is not None else 0)
-                    if t_d is not None and y_d is not None and li < ri:
-                        t_seg = np.asarray(t_d)[li:ri+1]
-                        y_seg = np.asarray(y_d)[li:ri+1]
-                        # Intentar reparació directament (forçar si UIB ho va detectar)
-                        y_rep, rep_info, was_rep = repair_with_parabola(t_seg, y_seg)
-                        if was_rep:
-                            area_orig = khp_result_direct['area']
-                            area_rep = float(np.trapz(y_rep, t_seg))
-                            khp_result_direct['area_original'] = area_orig
-                            khp_result_direct['area'] = area_rep
-                            khp_result_direct['area_repaired'] = area_rep
-                            khp_result_direct['irregular_top_repaired'] = True
-                            khp_result_direct['has_irregular'] = True
-                            khp_result_direct['repair_info'] = rep_info
-                            # Senyal reparat per visualització
-                            y_full_rep = np.asarray(y_d).copy()
-                            y_full_rep[li:ri+1] = y_rep
-                            khp_result_direct['y_doc_repaired'] = y_full_rep
-                            logger.info(f"Cross-signal repair: Direct reparat per {khp_name} "
-                                       f"R{rep_num} (àrea {area_orig:.1f} → {area_rep:.1f})")
-                except Exception as e:
-                    logger.warning(f"Cross-signal repair failed for {khp_name} R{rep_num}: {e}")
-
     # Warnings per concentració i DAD 254
     for khp_result in khp_data_direct_list + khp_data_uib_list:
         kname = khp_result.get('name', 'KHP')
