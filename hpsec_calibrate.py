@@ -2353,11 +2353,17 @@ def ensure_local_data_folder(seq_path):
 
 
 
+_local_cal_cache = None
+_local_cal_mtime = 0
+_local_cal_path = None
+
+
 def load_local_calibrations(seq_path):
     """
-    Carrega l'historial LOCAL de calibracions d'una SEQ.
+    Carrega l'historial LOCAL de calibracions d'una SEQ (amb cache mtime).
     Ubicació: CHECK/data/calibration_result.json
     """
+    global _local_cal_cache, _local_cal_mtime, _local_cal_path
     data_path = get_local_data_path(seq_path)
     if not data_path:
         return []
@@ -2367,9 +2373,16 @@ def load_local_calibrations(seq_path):
         return []
 
     try:
+        mtime = os.path.getmtime(filepath)
+        if _local_cal_cache is not None and mtime == _local_cal_mtime and filepath == _local_cal_path:
+            return _local_cal_cache
         with open(filepath, 'r', encoding='utf-8') as f:
             data = json.load(f)
-            return data.get("calibrations", [])
+        cals = data.get("calibrations", [])
+        _local_cal_cache = cals
+        _local_cal_mtime = mtime
+        _local_cal_path = filepath
+        return cals
     except Exception as e:
         logger.error(f"Error carregant calibracions: {e}")
         return []
@@ -2379,6 +2392,7 @@ def save_local_calibrations(seq_path, calibrations):
     """
     Guarda l'historial LOCAL de calibracions d'una SEQ a CHECK/data/.
     """
+    global _local_cal_cache, _local_cal_mtime, _local_cal_path
     data_path = ensure_local_data_folder(seq_path)
     if not data_path:
         return False
@@ -2394,6 +2408,9 @@ def save_local_calibrations(seq_path, calibrations):
         }
         with open(filepath, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2, ensure_ascii=False, cls=NumpyEncoder)
+        _local_cal_cache = None  # Invalidar cache
+        _local_cal_mtime = 0
+        _local_cal_path = None
         return True
     except Exception as e:
         logger.error(f"Error guardant CHECK/data: {e}")
