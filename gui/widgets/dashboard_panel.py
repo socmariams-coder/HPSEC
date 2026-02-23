@@ -54,6 +54,8 @@ COLOR_WARNING = "#F39C12"  # Taronja
 COLOR_ERROR = "#E74C3C"    # Vermell
 COLOR_PENDING = "#BDC3C7"  # Gris
 COLOR_CURRENT = "#2E86AB"  # Blau (fase actual)
+COLOR_CAL_BG = "#E8F0FE"   # Fons blau suau per SEQ_CAL
+COLOR_CAL_TEXT = "#1A56DB"  # Blau fosc per text CAL
 
 # Constants de columna (amb checkbox a col 0)
 COL_CHECK = 0
@@ -620,10 +622,15 @@ class DashboardPanel(QWidget):
             row = self.table.rowCount()
             self.table.insertRow(row)
 
+            is_cal = "_CAL" in seq.seq_name.upper()
+            cal_bg = QColor(COLOR_CAL_BG) if is_cal else None
+
             # Col CHECK: checkbox
             item_check = QTableWidgetItem()
             item_check.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
             item_check.setCheckState(Qt.Unchecked)
+            if cal_bg:
+                item_check.setBackground(cal_bg)
             self.table.setItem(row, COL_CHECK, item_check)
 
             # Col NUM: # (per ordenar numèricament)
@@ -631,15 +638,25 @@ class DashboardPanel(QWidget):
             item_num.setData(Qt.UserRole, idx)
             item_num.setTextAlignment(Qt.AlignCenter)
             item_num.setFlags(item_num.flags() & ~Qt.ItemIsEditable)
+            if cal_bg:
+                item_num.setBackground(cal_bg)
             self.table.setItem(row, COL_NUM, item_num)
 
             # Col NAME: Nom (amb indicador de siblings si n'hi ha)
             display_name = seq.seq_name
             if seq.siblings:
                 display_name = f"{seq.seq_name} [+{len(seq.siblings)}]"
+            if is_cal:
+                display_name = f"[CAL] {display_name}"
             item_name = QTableWidgetItem(display_name)
             item_name.setData(Qt.UserRole, seq.seq_path)
             item_name.setFlags(item_name.flags() & ~Qt.ItemIsEditable)
+            if is_cal:
+                item_name.setForeground(QColor(COLOR_CAL_TEXT))
+                font = item_name.font()
+                font.setBold(True)
+                item_name.setFont(font)
+                item_name.setBackground(cal_bg)
             # Tooltip amb detall de siblings
             if seq.siblings:
                 sibling_names = [os.path.basename(s) for s in seq.siblings]
@@ -652,6 +669,8 @@ class DashboardPanel(QWidget):
             item_date.setTextAlignment(Qt.AlignCenter)
             item_date.setForeground(QColor("#666"))
             item_date.setFlags(item_date.flags() & ~Qt.ItemIsEditable)
+            if cal_bg:
+                item_date.setBackground(cal_bg)
             # Guardar data en format ordenable (YYYYMMDD)
             if seq.seq_date and seq.seq_date != "-":
                 try:
@@ -673,6 +692,8 @@ class DashboardPanel(QWidget):
             item_tipus.setTextAlignment(Qt.AlignCenter)
             item_tipus.setForeground(QColor("#666"))
             item_tipus.setFlags(item_tipus.flags() & ~Qt.ItemIsEditable)
+            if cal_bg:
+                item_tipus.setBackground(cal_bg)
             self.table.setItem(row, COL_TYPE, item_tipus)
 
             # Col MODE: Mode
@@ -680,6 +701,8 @@ class DashboardPanel(QWidget):
             item_mode.setTextAlignment(Qt.AlignCenter)
             item_mode.setForeground(QColor("#666"))
             item_mode.setFlags(item_mode.flags() & ~Qt.ItemIsEditable)
+            if cal_bg:
+                item_mode.setBackground(cal_bg)
             self.table.setItem(row, COL_MODE, item_mode)
 
             # Col M: Mostres
@@ -689,6 +712,8 @@ class DashboardPanel(QWidget):
             item_m.setTextAlignment(Qt.AlignCenter)
             item_m.setFlags(item_m.flags() & ~Qt.ItemIsEditable)
             item_m.setToolTip(f"Mostres: {n_samples}")
+            if cal_bg:
+                item_m.setBackground(cal_bg)
             self.table.setItem(row, COL_M, item_m)
 
             # Col PC: Patrons Calibració
@@ -698,6 +723,8 @@ class DashboardPanel(QWidget):
             item_pc.setTextAlignment(Qt.AlignCenter)
             item_pc.setFlags(item_pc.flags() & ~Qt.ItemIsEditable)
             item_pc.setToolTip(f"Patrons de Calibració (KHP): {n_khp}")
+            if cal_bg:
+                item_pc.setBackground(cal_bg)
             self.table.setItem(row, COL_PC, item_pc)
 
             # Col PR: Patrons Referència
@@ -707,6 +734,8 @@ class DashboardPanel(QWidget):
             item_pr.setTextAlignment(Qt.AlignCenter)
             item_pr.setFlags(item_pr.flags() & ~Qt.ItemIsEditable)
             item_pr.setToolTip(f"Patrons de Referència: {n_pr}")
+            if cal_bg:
+                item_pr.setBackground(cal_bg)
             self.table.setItem(row, COL_PR, item_pr)
 
             # Col INJ: Injeccions (importades/masterfile)
@@ -741,6 +770,8 @@ class DashboardPanel(QWidget):
                 font = item_inj.font()
                 font.setBold(True)
                 item_inj.setFont(font)
+            if cal_bg:
+                item_inj.setBackground(cal_bg)
             self.table.setItem(row, COL_INJ, item_inj)
 
             # Fases (Importar, Verificar, Analitzar, Revisar)
@@ -769,14 +800,24 @@ class DashboardPanel(QWidget):
                 font.setPointSize(11)
                 item.setFont(font)
 
+                if is_cal and col_offset > 0:
+                    # SEQ_CAL: fases 2-4 no apliquen (flux calibració directe)
+                    item.setText("—")
+                    item.setForeground(QColor(COLOR_PENDING))
+                    item.setToolTip("Flux calibració (sense wizard)")
+                    if cal_bg:
+                        item.setBackground(cal_bg)
                 # Determinar icona, color i tooltip segons estat
-                if state == 'ok':
+                elif state == 'ok':
                     item.setText("✔")
                     item.setForeground(QColor(COLOR_OK))
                     timestamp = status.timestamp[:16] if status.timestamp else ""
                     tooltip = f"{phase_name}: Completat"
                     if timestamp:
                         tooltip += f"\n{timestamp}"
+                    item.setToolTip(tooltip)
+                    if cal_bg:
+                        item.setBackground(cal_bg)
                 elif state == 'incomplete':
                     item.setText("½")
                     item.setForeground(QColor(COLOR_ERROR))
@@ -785,6 +826,9 @@ class DashboardPanel(QWidget):
                     tooltip = (f"{phase_name}: INCOMPLETA\n"
                                f"{n_imp}/{n_mst} injeccions importades\n"
                                f"Falten {n_mst - n_imp} injeccions")
+                    item.setToolTip(tooltip)
+                    if cal_bg:
+                        item.setBackground(cal_bg)
                 elif state == 'warning':
                     item.setText("⚠")
                     item.setForeground(QColor(COLOR_WARNING))
@@ -796,6 +840,9 @@ class DashboardPanel(QWidget):
                             tooltip += f"\n... i {len(phase_warnings)-3} més"
                     else:
                         tooltip = f"{phase_name}: Avisos"
+                    item.setToolTip(tooltip)
+                    if cal_bg:
+                        item.setBackground(cal_bg)
                 elif state == 'error':
                     item.setText("×")
                     item.setForeground(QColor(COLOR_ERROR))
@@ -807,6 +854,9 @@ class DashboardPanel(QWidget):
                         tooltip = f"{phase_name}: Error\n" + "\n".join(status.errors)
                     else:
                         tooltip = f"{phase_name}: Error"
+                    item.setToolTip(tooltip)
+                    if cal_bg:
+                        item.setBackground(cal_bg)
                 else:  # pending
                     item.setText("○")
                     if current_phase_idx == col_offset:
@@ -815,8 +865,10 @@ class DashboardPanel(QWidget):
                     else:
                         item.setForeground(QColor(COLOR_PENDING))
                         tooltip = f"{phase_name}: Pendent"
+                    item.setToolTip(tooltip)
+                    if cal_bg:
+                        item.setBackground(cal_bg)
 
-                item.setToolTip(tooltip)
                 self.table.setItem(row, col, item)
 
             # Col NOTES: Notes (JSON + manuals, doble-clic per veure/editar)
@@ -891,6 +943,8 @@ class DashboardPanel(QWidget):
             item_notes.setToolTip(tooltip)
             item_notes.setForeground(color)
             item_notes.setFlags(item_notes.flags() & ~Qt.ItemIsEditable)
+            if cal_bg:
+                item_notes.setBackground(cal_bg)
             self.table.setItem(row, COL_NOTES, item_notes)
 
         # Reactivar sorting i signals
@@ -1577,6 +1631,9 @@ class DashboardPanel(QWidget):
 
     def _update_table_row(self, row, seq: SequenceState):
         """Actualitza una sola fila de la taula amb l'estat actual de la seqüència."""
+        is_cal = "_CAL" in seq.seq_name.upper()
+        cal_bg = QColor(COLOR_CAL_BG) if is_cal else None
+
         # Actualitzar comptadors M, PC, PR
         n_samples = seq.n_samples if seq.n_samples else 0
         n_khp = seq.n_khp if seq.n_khp else 0
@@ -1613,7 +1670,11 @@ class DashboardPanel(QWidget):
             font.setPointSize(11)
             item.setFont(font)
 
-            if state == 'ok':
+            if is_cal and col_offset > 0:
+                item.setText("—")
+                item.setForeground(QColor(COLOR_PENDING))
+                item.setToolTip("Flux calibració (sense wizard)")
+            elif state == 'ok':
                 item.setText("✔")
                 item.setForeground(QColor(COLOR_OK))
                 item.setToolTip(f"{phase_name}: Completat")
@@ -1641,6 +1702,8 @@ class DashboardPanel(QWidget):
                 item.setForeground(QColor(COLOR_PENDING))
                 item.setToolTip(f"{phase_name}: Pendent")
 
+            if cal_bg:
+                item.setBackground(cal_bg)
             self.table.setItem(row, col, item)
 
         # Actualitzar notes
