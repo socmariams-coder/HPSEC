@@ -583,6 +583,35 @@ class AnalyzePanel(QWidget):
         )
         seq_cal_layout.addWidget(self.seq_cal_info)
 
+        # Selector senyal Direct/UIB
+        signal_frame = QFrame()
+        signal_frame.setStyleSheet(
+            "QFrame { background: #EBF5FB; border-radius: 4px; padding: 6px; }"
+        )
+        signal_layout = QHBoxLayout(signal_frame)
+        signal_layout.setContentsMargins(8, 4, 8, 4)
+
+        signal_label = QLabel("Senyal de calibració:")
+        signal_label.setStyleSheet(
+            "font-weight: bold; color: #1A5276; font-size: 11px;"
+        )
+        signal_layout.addWidget(signal_label)
+
+        self.seq_cal_signal_combo = QComboBox()
+        self.seq_cal_signal_combo.setMaximumWidth(220)
+        self.seq_cal_signal_combo.setStyleSheet(
+            "QComboBox { background: white; border: 1px solid #BDC3C7; "
+            "border-radius: 3px; padding: 4px 8px; font-size: 11px; }"
+        )
+        self.seq_cal_signal_combo.currentIndexChanged.connect(
+            self._on_seq_cal_signal_changed
+        )
+        signal_layout.addWidget(self.seq_cal_signal_combo)
+        signal_layout.addStretch()
+
+        self.seq_cal_signal_frame = signal_frame
+        seq_cal_layout.addWidget(signal_frame)
+
         # Taula de punts de calibració
         self.seq_cal_points_table = QTableWidget()
         self.seq_cal_points_table.setColumnCount(8)
@@ -684,7 +713,10 @@ class AnalyzePanel(QWidget):
         self._is_seq_cal = False
         self._seq_cal_regression = None
         self._seq_cal_entries = []
+        self._seq_cal_entries_direct = []
+        self._seq_cal_entries_uib = []
         self._seq_cal_method = "COLUMN"
+        self._seq_cal_signal = "direct"
         self._seq_cal_excluded = set()
 
         parent_layout.addWidget(self.seq_cal_group)
@@ -711,18 +743,44 @@ class AnalyzePanel(QWidget):
         # Amagar botó report d'anàlisi per SEQ_CAL (l'informe es genera des del pas 4)
         self.report_btn.setVisible(False)
         self._seq_cal_entries = entries
+        self._seq_cal_entries_direct = seq_cal_data.get('entries_direct', [])
+        self._seq_cal_entries_uib = seq_cal_data.get('entries_uib', [])
         self._seq_cal_method = method
         self._seq_cal_excluded = set()
 
+        # Configurar selector senyal Direct/UIB
+        has_direct = seq_cal_data.get('has_direct', len(self._seq_cal_entries_direct) > 0)
+        has_uib = seq_cal_data.get('has_uib', len(self._seq_cal_entries_uib) > 0)
+
+        self.seq_cal_signal_combo.blockSignals(True)
+        self.seq_cal_signal_combo.clear()
+        if has_direct:
+            self.seq_cal_signal_combo.addItem("DOC Direct", "direct")
+        if has_uib:
+            self.seq_cal_signal_combo.addItem("DOC UIB", "uib")
+        # Default: direct si disponible
+        self._seq_cal_signal = "direct" if has_direct else "uib"
+        self.seq_cal_signal_combo.setCurrentIndex(0)
+        self.seq_cal_signal_combo.blockSignals(False)
+
+        # Mostrar selector només si hi ha ambdós senyals
+        self.seq_cal_signal_frame.setVisible(has_direct and has_uib)
+
         # Info text
         conc_str = ", ".join(f"{c:g}" for c in concs)
+        signals_str = []
+        if has_direct:
+            signals_str.append(f"Direct ({len(self._seq_cal_entries_direct)})")
+        if has_uib:
+            signals_str.append(f"UIB ({len(self._seq_cal_entries_uib)})")
         self.seq_cal_info.setText(
             f"<b>Seqüència de calibració</b> — "
             f"{len(entries)} punts, {len(concs)} concentracions "
-            f"({conc_str} ppm), mode {method}"
+            f"({conc_str} ppm), mode {method}<br>"
+            f"Senyals disponibles: {', '.join(signals_str)}"
         )
 
-        # Executar regressió
+        # Executar regressió amb el senyal seleccionat
         self._run_seq_cal_regression(entries, method)
 
         self.seq_cal_group.setVisible(True)
@@ -746,8 +804,10 @@ class AnalyzePanel(QWidget):
             return
 
         reg_result = fit_calibration_from_history(
-            enabled, mode=method, signal="direct", model="intercept"
+            enabled, mode=method, signal=self._seq_cal_signal, model="intercept"
         )
+        # Guardar senyal seleccionat al resultat per ReviewPanel
+        reg_result['signal'] = self._seq_cal_signal
 
         self._seq_cal_regression = reg_result
 
@@ -867,6 +927,27 @@ class AnalyzePanel(QWidget):
         else:
             self._seq_cal_excluded.discard(idx)
 
+    def _on_seq_cal_signal_changed(self, index):
+        """Quan l'usuari canvia el senyal (Direct/UIB) del selector."""
+        if index < 0:
+            return
+        signal = self.seq_cal_signal_combo.itemData(index)
+        if not signal or signal == self._seq_cal_signal:
+            return
+
+        self._seq_cal_signal = signal
+        self._seq_cal_excluded = set()  # Reset exclusions al canviar senyal
+
+        # Swap entries segons senyal seleccionat
+        if signal == "uib" and self._seq_cal_entries_uib:
+            self._seq_cal_entries = self._seq_cal_entries_uib
+        elif signal == "direct" and self._seq_cal_entries_direct:
+            self._seq_cal_entries = self._seq_cal_entries_direct
+
+        # Re-run regressió
+        if self._seq_cal_entries and self._seq_cal_method:
+            self._run_seq_cal_regression(self._seq_cal_entries, self._seq_cal_method)
+
     def _on_seq_cal_recalculate(self):
         """Recalcula la regressió amb els punts seleccionats."""
         if self._seq_cal_entries and self._seq_cal_method:
@@ -882,16 +963,19 @@ class AnalyzePanel(QWidget):
             self.seq_cal_comparison.setText("<i>No hi ha calibració vigent per comparar</i>")
             return
 
+        # Usar el senyal seleccionat per la comparació
+        signal = self._seq_cal_signal  # "direct" o "uib"
+
         rf_cal = current_cal.get('rf_mass_cal', {})
         intercept_cal = current_cal.get('intercept', 0)
 
         if isinstance(rf_cal, dict):
-            current_rf = rf_cal.get('direct', {}).get(method.lower(), 0)
+            current_rf = rf_cal.get(signal, {}).get(method.lower(), 0)
         else:
             current_rf = float(rf_cal) if rf_cal else 0
 
         if isinstance(intercept_cal, dict):
-            current_intercept = intercept_cal.get('direct', {}).get(method.lower(), 0)
+            current_intercept = intercept_cal.get(signal, {}).get(method.lower(), 0)
         else:
             current_intercept = float(intercept_cal) if intercept_cal else 0
 

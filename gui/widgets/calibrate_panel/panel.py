@@ -2666,44 +2666,61 @@ class CalibratePanel(QWidget):
         if "_BP" in seq_name:
             method = "BP"
 
-        # Preparar entrades per la regressió
-        cal_entries = []
-        for cal in cals:
-            conc = cal.get('conc_ppm', 0)
-            vol = cal.get('volume_uL', 0)
-            area = cal.get('area', 0)
-            if conc <= 0 or vol <= 0 or area <= 0:
-                continue
-            cal_entries.append({
-                'seq_name': os.path.basename(seq_path),
-                'mode': method,
-                'conc_ppm': conc,
-                'volume_uL': vol,
-                'area': area,
-                'is_outlier': False,
-                'valid_for_calibration': True,
-                'condition_key': cal.get('condition_key', f"KHP{conc:g}@{vol}µL"),
-                'rf_mass': cal.get('rf_mass', 0),
-                'quality_score': cal.get('quality_score', 0),
-                'name_full': cal.get('name_full', ''),
-                # Dades addicionals per unificació àrees i visibilitat qualitat
-                'a254_area': cal.get('a254_area', 0),
-                'a254_doc_ratio': cal.get('a254_doc_ratio', 0),
-                'has_irregular_top': cal.get('has_irregular_top', False),
-                'irregular_top_repaired': cal.get('irregular_top_repaired', False),
-                'area_uib': cal.get('area_uib', 0),
-                'area_original': cal.get('area_original', 0),
-                'rf_mass_uib': cal.get('rf_mass_uib', 0),
-                'has_timeout': cal.get('has_timeout', False),
-                'timeout_severity': cal.get('timeout_severity', 'OK'),
-            })
+        # Construir entrades per ambdós senyals (Direct i UIB)
+        def _build_entries(cal_list, signal_name):
+            """Construeix llista d'entrades de calibració per un senyal."""
+            entries = []
+            for cal in cal_list:
+                conc = cal.get('conc_ppm', 0)
+                vol = cal.get('volume_uL', 0)
+                area = cal.get('area', 0)
+                if conc <= 0 or vol <= 0 or area <= 0:
+                    continue
+                entry = {
+                    'seq_name': os.path.basename(seq_path),
+                    'mode': method,
+                    'conc_ppm': conc,
+                    'volume_uL': vol,
+                    'area': area,
+                    'is_outlier': False,
+                    'valid_for_calibration': True,
+                    'condition_key': cal.get('condition_key', f"KHP{conc:g}@{vol}µL"),
+                    'rf_mass': cal.get('rf_mass', 0),
+                    'quality_score': cal.get('quality_score', 0),
+                    'name_full': cal.get('name_full', ''),
+                    # Dades addicionals per unificació àrees i visibilitat qualitat
+                    'a254_area': cal.get('a254_area', 0),
+                    'a254_doc_ratio': cal.get('a254_doc_ratio', 0),
+                    'has_irregular_top': cal.get('has_irregular_top', False),
+                    'irregular_top_repaired': cal.get('irregular_top_repaired', False),
+                    'area_uib': cal.get('area_uib', 0),
+                    'area_original': cal.get('area_original', 0),
+                    'rf_mass_uib': cal.get('rf_mass_uib', 0),
+                    'has_timeout': cal.get('has_timeout', False),
+                    'timeout_severity': cal.get('timeout_severity', 'OK'),
+                }
+                # Per UIB: remapejar area→area_u per fit_calibration_from_history
+                if signal_name == 'uib':
+                    entry['area_u'] = area
+                entries.append(entry)
+            return entries
 
-        # Guardar dades per l'AnalyzePanel
+        entries_direct = _build_entries(cals_direct, 'direct')
+        entries_uib = _build_entries(cals_uib, 'uib')
+
+        # Entrades primàries = Direct (o UIB si no hi ha Direct)
+        cal_entries = entries_direct or entries_uib
+
+        # Guardar dades per l'AnalyzePanel — ambdós senyals
         result['seq_cal_data'] = {
             'entries': cal_entries,
+            'entries_direct': entries_direct,
+            'entries_uib': entries_uib,
             'method': method,
             'concs': sorted(concs),
             'n_entries': len(cal_entries),
+            'has_direct': len(entries_direct) > 0,
+            'has_uib': len(entries_uib) > 0,
         }
 
         # Actualitzar info label

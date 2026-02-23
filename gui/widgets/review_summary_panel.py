@@ -917,8 +917,9 @@ class ReviewSummaryPanel(QWidget):
             from hpsec_calibrate import get_rf_mass_cal, get_calibration_intercept
             method = self._seq_cal_method or "COLUMN"
             mode_key = "bp" if method.upper() == "BP" else "column"
-            rf_vig = get_rf_mass_cal(signal='direct', mode=mode_key) or 0
-            int_vig = get_calibration_intercept(signal='direct', mode=mode_key) or 0
+            cal_sig = (self._seq_cal_regression or {}).get('signal', 'direct')
+            rf_vig = get_rf_mass_cal(signal=cal_sig, mode=mode_key) or 0
+            int_vig = get_calibration_intercept(signal=cal_sig, mode=mode_key) or 0
             if rf_vig > 0 and all_x:
                 x_line_v = np.linspace(0, max(all_x) * 1.1, 100)
                 y_line_v = rf_vig * x_line_v + int_vig
@@ -1116,23 +1117,26 @@ class ReviewSummaryPanel(QWidget):
             rf_values = copy.deepcopy(rf_values)
             intercept_values = copy.deepcopy(intercept_values)
 
-            # Actualitzar branca corresponent
-            mode_key = "bp" if is_bp else "column"
-            if isinstance(rf_values, dict) and "direct" in rf_values:
-                if isinstance(rf_values["direct"], dict):
-                    rf_values["direct"][mode_key] = rf_new
-                else:
-                    rf_values["direct"] = {mode_key: rf_new}
-            else:
-                rf_values = {"direct": {mode_key: rf_new}}
+            # Determinar senyal (direct o uib) del resultat de la regressió
+            cal_signal = (self._seq_cal_regression or {}).get('signal', 'direct')
 
-            if isinstance(intercept_values, dict) and "direct" in intercept_values:
-                if isinstance(intercept_values["direct"], dict):
-                    intercept_values["direct"][mode_key] = intercept_new
+            # Actualitzar branca corresponent al senyal
+            mode_key = "bp" if is_bp else "column"
+            if isinstance(rf_values, dict) and cal_signal in rf_values:
+                if isinstance(rf_values[cal_signal], dict):
+                    rf_values[cal_signal][mode_key] = rf_new
                 else:
-                    intercept_values["direct"] = {mode_key: intercept_new}
+                    rf_values[cal_signal] = {mode_key: rf_new}
             else:
-                intercept_values = {"direct": {mode_key: intercept_new}}
+                rf_values[cal_signal] = {mode_key: rf_new}
+
+            if isinstance(intercept_values, dict) and cal_signal in intercept_values:
+                if isinstance(intercept_values[cal_signal], dict):
+                    intercept_values[cal_signal][mode_key] = intercept_new
+                else:
+                    intercept_values[cal_signal] = {mode_key: intercept_new}
+            else:
+                intercept_values[cal_signal] = {mode_key: intercept_new}
 
             # Source info
             seq_path = getattr(self.main_window, 'seq_path', '')
@@ -1147,7 +1151,7 @@ class ReviewSummaryPanel(QWidget):
             # Preparar regression_data complet per persistir al JSON
             reg_data = dict(self._seq_cal_regression) if self._seq_cal_regression else {}
             reg_data['mode'] = method
-            reg_data['signal'] = 'direct'
+            reg_data['signal'] = cal_signal
             reg_data['model'] = reg_data.get('model', 'intercept')
 
             # add_calibration (amb regression_data per persistència)
@@ -1179,10 +1183,10 @@ class ReviewSummaryPanel(QWidget):
 
                 # Obtenir RF/intercept per a les dues branques
                 new_cal = get_active_global_calibration()
-                rf_col = get_rf_mass_cal(new_cal, signal="direct", mode="column")
-                int_col = get_calibration_intercept(new_cal, signal="direct", mode="column")
-                rf_bp = get_rf_mass_cal(new_cal, signal="direct", mode="bp")
-                int_bp = get_calibration_intercept(new_cal, signal="direct", mode="bp")
+                rf_col = get_rf_mass_cal(new_cal, signal=cal_signal, mode="column")
+                int_col = get_calibration_intercept(new_cal, signal=cal_signal, mode="column")
+                rf_bp = get_rf_mass_cal(new_cal, signal=cal_signal, mode="bp")
+                int_bp = get_calibration_intercept(new_cal, signal=cal_signal, mode="bp")
 
                 for cb in self._retro_seq_checkboxes:
                     if not cb.isChecked():
