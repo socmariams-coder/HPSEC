@@ -300,6 +300,11 @@ class GlobalCalibrationPanel(QWidget):
         seq_name = result.get("seq_name", "")
         logger.info(f"CalSeqWorker completat per {seq_name}")
 
+        # Guardar calib_result per diagnòstic (cromatogrames, mètriques riques)
+        calib_result = result.get("calib_result")
+        if calib_result:
+            self.cal_view.set_active_calib_result(seq_name, calib_result)
+
         # Recarregar KHP_History (ara tindrà les noves entrades)
         self._load_all_data()
 
@@ -379,8 +384,10 @@ class CalibrationLineView(QWidget):
         self.parent_panel = parent_panel
         self._cal_entries = []
         self._grouped_by_seq = {}
+        self._filtered_entries = []
         self._last_result = None
         self._loading = False
+        self._active_calib_results = {}  # {seq_name: calib_result}
         self._setup_ui()
 
     def _setup_ui(self):
@@ -403,18 +410,16 @@ class CalibrationLineView(QWidget):
         left_layout.addWidget(self._create_selectors_group())
 
         # Selector de SEQ_CAL
-        left_layout.addWidget(self._create_seq_selector(), 1)
+        left_layout.addWidget(self._create_seq_selector())
 
-        # Taula punts seleccionats
-        left_layout.addWidget(self._create_points_table(), 1)
+        # Taula punts (protagonista — stretch=3)
+        left_layout.addWidget(self._create_points_table(), 3)
 
-        # Resultats regressió
+        # Detall del punt seleccionat
+        left_layout.addWidget(self._create_detail_group(), 2)
+
+        # Resultats regressió + botons
         left_layout.addWidget(self._create_results_group())
-
-        # Stats per concentració
-        left_layout.addWidget(self._create_stats_table())
-
-        # Botons
         left_layout.addWidget(self._create_buttons())
 
         splitter.addWidget(left)
@@ -534,29 +539,60 @@ class CalibrationLineView(QWidget):
         return group
 
     def _create_points_table(self):
-        group = QGroupBox("Punts seleccionats")
+        group = QGroupBox("Punts de calibració")
         layout = QVBoxLayout(group)
         layout.setContentsMargins(4, 4, 4, 4)
 
         self.points_table = QTableWidget()
-        self.points_table.setColumnCount(8)
-        self.points_table.setHorizontalHeaderLabels([
-            "Usar", "SEQ", "Data", "Conc (ppm)", "Vol (µL)",
-            "µg DOC", "Àrea", "RF_mass"
-        ])
+        self._pt_cols = [
+            "Usar", "SEQ", "Conc", "Vol", "µg",
+            "Àrea", "RF", "SNR", "FWHM", "t_ret",
+            "Sim", "R²bg", "QS", "Estat"
+        ]
+        self.points_table.setColumnCount(len(self._pt_cols))
+        self.points_table.setHorizontalHeaderLabels(self._pt_cols)
 
         header = self.points_table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(1, QHeaderView.Stretch)
-        for i in range(2, 8):
+        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)  # checkbox
+        header.setSectionResizeMode(1, QHeaderView.Stretch)  # SEQ
+        for i in range(2, len(self._pt_cols)):
             header.setSectionResizeMode(i, QHeaderView.ResizeToContents)
 
         self.points_table.setAlternatingRowColors(True)
         self.points_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.points_table.verticalHeader().setVisible(False)
+        self.points_table.setSelectionMode(QTableWidget.SingleSelection)
+        self.points_table.currentCellChanged.connect(self._on_point_selected)
 
         layout.addWidget(self.points_table)
         return group
+
+    def _create_detail_group(self):
+        """Secció detall del punt seleccionat a la taula."""
+        self._detail_group = QGroupBox("Detall punt seleccionat")
+        self._detail_group.setStyleSheet("""
+            QGroupBox {
+                font-size: 11px; border: 1px solid #dee2e6;
+                border-radius: 4px; margin-top: 8px; padding-top: 16px;
+                background-color: #f8f9fa;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin; left: 8px; padding: 0 4px;
+            }
+        """)
+        layout = QVBoxLayout(self._detail_group)
+        layout.setContentsMargins(8, 4, 8, 4)
+        layout.setSpacing(2)
+
+        self._detail_label = QLabel(
+            "<i style='color:#999;'>Selecciona un punt per veure el detall</i>"
+        )
+        self._detail_label.setWordWrap(True)
+        self._detail_label.setTextFormat(Qt.RichText)
+        self._detail_label.setStyleSheet("font-size: 10px; border: none; background: transparent;")
+        layout.addWidget(self._detail_label)
+
+        return self._detail_group
 
     def _create_results_group(self):
         group = QGroupBox("Resultat regressió")
@@ -583,25 +619,6 @@ class CalibrationLineView(QWidget):
 
         return group
 
-    def _create_stats_table(self):
-        """Mini-taula d'estadístiques per concentració."""
-        group = QGroupBox("Estadístiques per concentració")
-        layout = QVBoxLayout(group)
-        layout.setContentsMargins(4, 4, 4, 4)
-
-        self.stats_table = QTableWidget()
-        self.stats_table.setColumnCount(5)
-        self.stats_table.setHorizontalHeaderLabels(["Conc (ppm)", "n", "Mean Àrea", "CV%", "Mean RF"])
-        self.stats_table.setMaximumHeight(100)
-        self.stats_table.verticalHeader().setVisible(False)
-
-        header = self.stats_table.horizontalHeader()
-        for i in range(5):
-            header.setSectionResizeMode(i, QHeaderView.Stretch)
-
-        layout.addWidget(self.stats_table)
-        return group
-
     def _create_buttons(self):
         widget = QWidget()
         layout = QHBoxLayout(widget)
@@ -614,7 +631,114 @@ class CalibrationLineView(QWidget):
 
         layout.addStretch()
 
+        self.btn_diagnostic = QPushButton("📊 Diagnòstic")
+        self.btn_diagnostic.setToolTip(
+            "Obre diagnòstic complet amb cromatogrames per rèplica\n"
+            "(disponible després de processar una SEQ_CAL)"
+        )
+        self.btn_diagnostic.setEnabled(False)
+        self.btn_diagnostic.clicked.connect(self._on_show_diagnostic)
+        layout.addWidget(self.btn_diagnostic)
+
+        self.btn_reprocess = QPushButton("↻ Reprocessar")
+        self.btn_reprocess.setToolTip(
+            "Re-importa i re-calibra la SEQ seleccionada\n"
+            "per obtenir dades de diagnòstic actualitzades"
+        )
+        self.btn_reprocess.clicked.connect(self._on_reprocess_seq)
+        layout.addWidget(self.btn_reprocess)
+
         return widget
+
+    # ---- Calib result / Diagnòstic ----
+
+    def set_active_calib_result(self, seq_name, calib_result):
+        """Guarda el resultat de calibració ric per diagnòstic posterior."""
+        self._active_calib_results[seq_name] = calib_result
+        self.btn_diagnostic.setEnabled(True)
+        logger.info(f"Calib result guardat per {seq_name}")
+
+    def _on_show_diagnostic(self):
+        """Obre diàleg amb diagnòstic complet (cromatogrames, mètriques)."""
+        # Trobar la SEQ seleccionada
+        selected_seqs = self._get_selected_seq_names()
+        calib_result = None
+        seq_name = None
+        for s in selected_seqs:
+            if s in self._active_calib_results:
+                calib_result = self._active_calib_results[s]
+                seq_name = s
+                break
+
+        if not calib_result:
+            QMessageBox.information(
+                self, "Info",
+                "No hi ha dades de diagnòstic disponibles.\n\n"
+                "Prem '↻ Reprocessar' per obtenir les dades de cromatograma."
+            )
+            return
+
+        # Obrir diàleg diagnòstic
+        from gui.widgets.calibrate_panel.graph_widgets import KHPReplicaGraphWidget
+        dlg = QMessageBox(self)
+        dlg.setWindowTitle(f"Diagnòstic — {seq_name}")
+        dlg.setIcon(QMessageBox.Information)
+
+        # Construir text amb mètriques riques
+        khp_d = calib_result.get('khp_data_direct') or {}
+        khp_u = calib_result.get('khp_data_uib') or {}
+        lines = [f"<h3>Diagnòstic {seq_name}</h3>"]
+
+        for label, khp in [("DOC Direct", khp_d), ("UIB", khp_u)]:
+            if not khp:
+                continue
+            area = khp.get('area', 0) or 0
+            snr = khp.get('snr', 0) or 0
+            fwhm = khp.get('fwhm_doc', 0) or 0
+            rf = khp.get('rf_mass', 0) or 0
+            n_rep = khp.get('n_replicas', 0)
+            rsd = khp.get('rsd', 0) or 0
+            lines.append(f"<b>{label}</b>: Àrea={area:.1f}, RF={rf:.0f}, "
+                         f"SNR={snr:.0f}, FWHM={fwhm:.2f}, "
+                         f"n_rep={n_rep}, RSD={rsd:.1f}%")
+
+        warnings = calib_result.get('warnings_structured', [])
+        if warnings:
+            lines.append(f"<br><b>Avisos ({len(warnings)})</b>:")
+            for w in warnings[:10]:
+                msg = w.get('message', str(w)) if isinstance(w, dict) else str(w)
+                lines.append(f"  • {msg}")
+
+        dlg.setText("<br>".join(lines))
+        dlg.setTextFormat(Qt.RichText)
+        dlg.exec()
+
+    def _on_reprocess_seq(self):
+        """Re-processa la SEQ seleccionada amb CalSeqWorker."""
+        selected_seqs = self._get_selected_seq_names()
+        if not selected_seqs:
+            QMessageBox.information(self, "Info", "Selecciona una SEQ_CAL primer.")
+            return
+
+        seq_name = selected_seqs[0]
+
+        # Buscar el path de la SEQ
+        seq_path = None
+        for entry in self._cal_entries:
+            if entry.get('seq_name') == seq_name:
+                seq_path = entry.get('seq_path')
+                break
+
+        if not seq_path or not os.path.isdir(seq_path):
+            QMessageBox.warning(
+                self, "Error",
+                f"No s'ha trobat el directori de la SEQ:\n{seq_path}"
+            )
+            return
+
+        # Llançar worker via parent_panel
+        self.show_processing_message(seq_name)
+        self.parent_panel._start_cal_worker(seq_path)
 
     def _create_apply_section(self):
         """Secció per aplicar la calibració calculada."""
@@ -896,7 +1020,7 @@ class CalibrationLineView(QWidget):
         self._recalculate_regression()
 
     def _refresh_points_table(self):
-        """Pobla la taula amb punts de les SEQs seleccionades."""
+        """Pobla la taula amb punts de les SEQs seleccionades (14 columnes)."""
         mode = self._get_mode()
         signal = self._get_signal()
         selected_seqs = self._get_selected_seq_names()
@@ -905,31 +1029,63 @@ class CalibrationLineView(QWidget):
         self.points_table.blockSignals(True)
 
         # Recollir punts de les SEQs seleccionades
-        filtered = []
+        self._filtered_entries = []
         for seq_name in selected_seqs:
             for entry in self._grouped_by_seq.get(seq_name, []):
-                filtered.append(entry)
+                self._filtered_entries.append(entry)
 
-        self.points_table.setRowCount(len(filtered))
+        self.points_table.setRowCount(len(self._filtered_entries))
 
-        for row, cal in enumerate(filtered):
+        for row, cal in enumerate(self._filtered_entries):
             conc = cal.get('conc_ppm', 0)
             vol = cal.get('volume_uL', 0)
             ug_doc = conc * vol / 1000.0 if conc > 0 and vol > 0 else 0
 
-            if signal.lower() == 'uib':
-                area = cal.get('area_u', 0)
-            elif signal.lower() == '254':
+            # Àrea i mètriques segons senyal seleccionat
+            sig = signal.lower()
+            if sig == 'uib':
+                area = cal.get('area_u', 0) or 0
+                snr = cal.get('snr_u', 0) or 0
+                fwhm = cal.get('fwhm_u', 0) or 0
+                t_ret = cal.get('t_retention_u', 0) or 0
+                sym = cal.get('symmetry_u', 0) or 0
+                bg = cal.get('bigaussian_uib') or {}
+            elif sig == '254':
                 area = cal.get('area_254', 0) or cal.get('a254_area', 0) or 0
+                snr = 0  # No disponible per 254
+                fwhm = cal.get('fwhm_254', 0) or 0
+                t_ret = cal.get('t_dad_max', 0) or 0
+                sym = 0
+                bg = cal.get('bigaussian_254') or {}
             else:
-                area = cal.get('area', 0)
+                area = cal.get('area', 0) or 0
+                snr = cal.get('snr', 0) or 0
+                fwhm = cal.get('fwhm_doc', 0) or 0
+                t_ret = cal.get('t_retention', 0) or 0
+                sym = cal.get('symmetry', 0) or 0
+                bg = cal.get('bigaussian_doc') or {}
 
             rf_mass = area / ug_doc if ug_doc > 0 else 0
+            bg_r2 = bg.get('r2', 0) if isinstance(bg, dict) else 0
+            qs = cal.get('quality_score', 0) or 0
             is_outlier = cal.get('is_outlier', False)
             not_valid = not cal.get('valid_for_calibration', True)
-            bad_point = is_outlier or not_valid or conc <= 0 or area <= 0
+            bad_point = is_outlier or not_valid or conc <= 0 or area <= 0 or qs >= 100
 
-            # Checkbox
+            # Estat derivat
+            q_issues = cal.get('quality_issues', [])
+            c_issues = cal.get('calibration_issues', [])
+            all_issues = list(q_issues) + [str(i) for i in c_issues if str(i) not in [str(q) for q in q_issues]]
+            if not_valid or qs >= 100:
+                estat = "INVALID"
+            elif qs > 50:
+                estat = "CHECK"
+            elif qs > 20 or len(all_issues) > 0:
+                estat = f"INFO"
+            else:
+                estat = "OK"
+
+            # Col 0: Checkbox
             chk = QCheckBox()
             chk.setChecked(not bad_point)
             chk.stateChanged.connect(self._on_point_toggled)
@@ -940,33 +1096,64 @@ class CalibrationLineView(QWidget):
             chk_layout.setContentsMargins(0, 0, 0, 0)
             self.points_table.setCellWidget(row, 0, chk_widget)
 
-            # Dades
-            items_text = [
-                cal.get('seq_name', ''),
-                str(cal.get('date', ''))[:10],
-                f"{conc:g}",
-                f"{vol:.0f}",
-                f"{ug_doc:.3f}",
-                f"{area:.1f}",
-                f"{rf_mass:.1f}",
+            # Col 1-13: Dades
+            items_data = [
+                (cal.get('seq_name', ''), None),
+                (f"{conc:g}", None),
+                (f"{vol:.0f}", None),
+                (f"{ug_doc:.3f}", None),
+                (f"{area:.1f}", None),
+                (f"{rf_mass:.0f}", None),
+                (f"{snr:.0f}" if snr > 0 else "—",
+                 "#dc3545" if 0 < snr < 10 else "#ffc107" if snr < 30 else None),
+                (f"{fwhm:.2f}" if fwhm > 0 else "—",
+                 "#ffc107" if fwhm > 1.5 else None),
+                (f"{t_ret:.1f}" if t_ret > 0 else "—", None),
+                (f"{sym:.2f}" if sym > 0 else "—",
+                 "#ffc107" if sym > 0 and (sym < 0.5 or sym > 2.5) else None),
+                (f"{bg_r2:.3f}" if bg_r2 > 0 else "—",
+                 "#dc3545" if 0 < bg_r2 < 0.90 else "#ffc107" if bg_r2 < 0.95 else "#28a745" if bg_r2 > 0 else None),
+                (str(int(qs)),
+                 "#dc3545" if qs >= 100 else "#ffc107" if qs > 20 else None),
+                (estat,
+                 "#dc3545" if estat == "INVALID" else "#ffc107" if estat in ("CHECK", "INFO") else "#28a745"),
             ]
 
-            for col, text in enumerate(items_text):
+            for col, (text, color) in enumerate(items_data):
                 item = QTableWidgetItem(text)
                 item.setFlags(item.flags() & ~Qt.ItemIsEditable)
                 if bad_point:
                     item.setForeground(QColor("#dc3545"))
+                elif color:
+                    item.setForeground(QColor(color))
                 self.points_table.setItem(row, col + 1, item)
 
-            # Tooltip
-            issues = cal.get('calibration_issues', [])
-            quality = cal.get('quality_score', 0)
-            tip = f"Quality: {quality}"
+            # Tooltip complet
+            tip_parts = [
+                f"SEQ: {cal.get('seq_name', '')}",
+                f"Data: {str(cal.get('date', ''))[:10]}",
+                f"Quality Score: {qs}",
+            ]
+            sel = cal.get('selection') or {}
+            if sel:
+                tip_parts.append(f"Selecció: {sel.get('method', '?')} ({sel.get('reason', '')})")
+                tip_parts.append(f"Rèpliques: {sel.get('selected_replicas', '?')}")
+            rsd_val = cal.get('rsd', 0)
+            if rsd_val:
+                tip_parts.append(f"RSD: {rsd_val:.1f}%")
+            if cal.get('has_irregular_top'):
+                tip_parts.append("⚠ Pic irregular (Pic_J)")
+            if cal.get('has_timeout'):
+                tip_parts.append("⚠ Timeout detectat")
             if is_outlier:
-                tip += " | OUTLIER"
-            if issues:
-                tip += f" | Issues: {', '.join(str(i) for i in issues)}"
-            for col in range(1, 8):
+                tip_parts.append("❌ OUTLIER")
+            if all_issues:
+                tip_parts.append("--- Issues ---")
+                for iss in all_issues[:8]:
+                    tip_parts.append(f"  • {iss}")
+
+            tip = "\n".join(tip_parts)
+            for col in range(1, len(self._pt_cols)):
                 it = self.points_table.item(row, col)
                 if it:
                     it.setToolTip(tip)
@@ -996,14 +1183,7 @@ class CalibrationLineView(QWidget):
 
     def _get_selected_calibrations(self):
         """Retorna llista d'entrades seleccionades (checkbox marcat a la taula)."""
-        mode = self._get_mode()
-        selected_seqs = self._get_selected_seq_names()
-
-        # Reconstruir llista filtrada (mateixa ordre que la taula)
-        filtered = []
-        for seq_name in selected_seqs:
-            for entry in self._grouped_by_seq.get(seq_name, []):
-                filtered.append(entry)
+        filtered = getattr(self, '_filtered_entries', [])
 
         selected = []
         for row in range(self.points_table.rowCount()):
@@ -1042,56 +1222,108 @@ class CalibrationLineView(QWidget):
                 lbl.setText("—")
             self.res_npoints_label.setText(str(result.get('n_points', 0)))
 
-        self._update_stats_table(selected)
         self._update_preview_graph(result)
         self._update_comparison(result)
         self._update_apply_visibility()
 
-    def _update_stats_table(self, selected):
-        """Estadístiques agrupades per concentració."""
-        from collections import defaultdict
+    # ---- Detall punt seleccionat ----
 
-        signal = self._get_signal()
-        groups = defaultdict(list)
+    def _on_point_selected(self, row, col, prev_row, prev_col):
+        """Mostra detall del punt seleccionat a la taula."""
+        filtered = getattr(self, '_filtered_entries', [])
+        if row < 0 or row >= len(filtered):
+            self._detail_label.setText(
+                "<i style='color:#999;'>Selecciona un punt per veure el detall</i>"
+            )
+            return
 
-        for cal in selected:
-            conc = cal.get('conc_ppm', 0)
-            vol = cal.get('volume_uL', 0)
-            if conc <= 0 or vol <= 0:
-                continue
-            ug = conc * vol / 1000.0
+        cal = filtered[row]
+        signal = self._get_signal().lower()
+        lines = []
 
-            if signal.lower() == 'uib':
-                area = cal.get('area_u', 0)
-            elif signal.lower() == '254':
-                area = cal.get('area_254', 0) or 0
-            else:
-                area = cal.get('area', 0)
+        # Capçalera
+        seq = cal.get('seq_name', '?')
+        conc = cal.get('conc_ppm', 0)
+        vol = cal.get('volume_uL', 0)
+        date = str(cal.get('date', ''))[:10]
+        lines.append(
+            f"<b>{seq}</b> — KHP {conc:g} ppm · {vol:.0f} µL · {date}"
+        )
 
-            if area <= 0:
-                continue
-            rf_mass = area / ug if ug > 0 else 0
-            groups[conc].append({"area": area, "rf_mass": rf_mass})
+        # Selecció de rèpliques
+        sel = cal.get('selection') or {}
+        if sel:
+            method = sel.get('method', '?')
+            reason = sel.get('reason', '')
+            reps = sel.get('selected_replicas', [])
+            n_avail = sel.get('n_replicas_available', '?')
+            rsd = cal.get('rsd', 0)
+            lines.append(
+                f"<b>Selecció</b>: {method} "
+                f"(R{'+R'.join(map(str, reps))} de {n_avail}) — "
+                f"<i>{reason}</i>"
+                + (f" — RSD={rsd:.1f}%" if rsd else "")
+            )
 
-        self.stats_table.setRowCount(len(groups))
-        for row, conc in enumerate(sorted(groups.keys())):
-            vals = groups[conc]
-            n = len(vals)
-            areas = [v["area"] for v in vals]
-            rfs = [v["rf_mass"] for v in vals]
-            mean_area = np.mean(areas)
-            cv = np.std(areas) / mean_area * 100 if mean_area > 0 and n > 1 else 0
-            mean_rf = np.mean(rfs)
+        # Bigaussian per senyal
+        bg_keys = [('bigaussian_doc', 'DOC'), ('bigaussian_uib', 'UIB'), ('bigaussian_254', '254')]
+        bg_parts = []
+        for bg_key, bg_name in bg_keys:
+            bg = cal.get(bg_key)
+            if isinstance(bg, dict) and bg.get('r2', 0) > 0:
+                r2 = bg['r2']
+                status = bg.get('status', '?')
+                asym = bg.get('asymmetry', 0)
+                color = '#28a745' if status == 'VALID' else '#ffc107' if status == 'CHECK' else '#dc3545'
+                bg_parts.append(
+                    f"<span style='color:{color}'>{bg_name}: R²={r2:.3f} ({status})"
+                    + (f" asim={asym:.2f}" if asym else "")
+                    + "</span>"
+                )
+        if bg_parts:
+            lines.append(f"<b>Bigaussian</b>: {' · '.join(bg_parts)}")
 
-            for col, text in enumerate([
-                f"{conc:g}", str(n), f"{mean_area:.1f}",
-                f"{cv:.1f}", f"{mean_rf:.1f}"
-            ]):
-                item = QTableWidgetItem(text)
-                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
-                if cv > 20:
-                    item.setForeground(QColor("#dc3545"))
-                self.stats_table.setItem(row, col, item)
+        # Anomalies
+        anomaly_parts = []
+        if cal.get('has_irregular_top'):
+            repaired = cal.get('irregular_top_repaired', False)
+            anomaly_parts.append(
+                f"Pic_J {'(reparat)' if repaired else '(!)'}"
+            )
+        if cal.get('has_timeout'):
+            sev = cal.get('timeout_severity', 'OK')
+            anomaly_parts.append(f"Timeout ({sev})")
+        if anomaly_parts:
+            lines.append(
+                f"<b>Anomalies</b>: "
+                + "<span style='color:#dc3545'>" + " · ".join(anomaly_parts) + "</span>"
+            )
+
+        # Comparació rèpliques
+        comp = cal.get('replica_comparison') or {}
+        if comp:
+            comp_parts = []
+            if comp.get('diff_area_pct'):
+                comp_parts.append(f"ΔÀrea={comp['diff_area_pct']:.1f}%")
+            if comp.get('diff_t_max_sec'):
+                comp_parts.append(f"Δt_max={comp['diff_t_max_sec']:.0f}s")
+            if comp.get('pearson_r2') is not None:
+                comp_parts.append(f"Pearson={comp['pearson_r2']:.3f}")
+            if comp_parts:
+                lines.append(f"<b>Rèpliques</b>: {' · '.join(comp_parts)}")
+
+        # Quality issues
+        q_issues = cal.get('quality_issues', [])
+        c_issues = cal.get('calibration_issues', [])
+        all_iss = list(q_issues) + [str(i) for i in c_issues]
+        if all_iss:
+            lines.append(f"<b>Issues ({len(all_iss)})</b>:")
+            for iss in all_iss[:6]:
+                lines.append(f"  <span style='color:#dc3545'>• {iss}</span>")
+            if len(all_iss) > 6:
+                lines.append(f"  <i>... i {len(all_iss)-6} més</i>")
+
+        self._detail_label.setText("<br>".join(lines))
 
     # ---- Gràfic ----
 
