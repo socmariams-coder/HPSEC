@@ -485,23 +485,11 @@ class CalibratePanel(QWidget):
         is_seq_cal = "_CAL" in seq_name
 
         if is_seq_cal:
-            # SEQ_CAL: amagar UI normal, mostrar info SEQ_CAL
-            self.placeholder.setVisible(False)
-            self.condition_selector_frame.setVisible(False)
-            self.summary_group.setVisible(False)
-            self.cal_line_group.setVisible(False)
-            self.graphs_group.setVisible(False)
-            self.metrics_group.setVisible(False)
-            self.replica_selection_group.setVisible(False)
-            self.validation_group.setVisible(False)
-            self.history_group.setVisible(False)
-            self._seq_cal_info_group.setVisible(True)
-
-            # Delay diagnostic (útil per a SEQ_CAL BP també)
-            try:
-                self._update_delay_diagnostic(result)
-            except Exception as e:
-                logger.warning(f"Error a _update_delay_diagnostic: {e}")
+            # SEQ_CAL necessita totes les calibracions (no una sola de l'històric).
+            # Redirigir al worker que processa tots els KHP i genera calibrations_direct/uib.
+            logger.info("SEQ_CAL detectada en preload — re-executant calibrate_from_import")
+            self._run_calibrate()
+            return
         else:
             # SEQ normal: flux habitual
             self._seq_cal_info_group.setVisible(False)
