@@ -665,6 +665,16 @@ class AnalyzePanel(QWidget):
         self.seq_cal_signal_frame = signal_frame
         seq_cal_layout.addWidget(signal_frame)
 
+        # Warning sensibilitat UIB barrejada
+        self.seq_cal_sensitivity_warning = QLabel()
+        self.seq_cal_sensitivity_warning.setWordWrap(True)
+        self.seq_cal_sensitivity_warning.setStyleSheet(
+            "background: #FCF3CF; border: 1px solid #F39C12; border-radius: 4px; "
+            "padding: 8px; color: #7D6608; font-size: 11px; font-weight: normal;"
+        )
+        self.seq_cal_sensitivity_warning.setVisible(False)
+        seq_cal_layout.addWidget(self.seq_cal_sensitivity_warning)
+
         # Taula de punts de calibració
         self.seq_cal_points_table = QTableWidget()
         self.seq_cal_points_table.setColumnCount(12)
@@ -925,10 +935,64 @@ class AnalyzePanel(QWidget):
             f"Senyals disponibles: {', '.join(signals_str)}"
         )
 
+        # Auto-excloure per barreja sensibilitats UIB
+        self._check_uib_sensitivity_mixing()
+
         # Executar regressió amb el senyal seleccionat
         self._run_seq_cal_regression(entries, method)
 
         self.seq_cal_group.setVisible(True)
+
+    def _check_uib_sensitivity_mixing(self):
+        """Detecta barreja de sensibilitats UIB i auto-exclou la minoria.
+
+        Si els punts UIB tenen sensibilitats diferents (p.ex. 700 i 1000 ppb),
+        una calibració conjunta no seria vàlida. Es manté la sensibilitat
+        majoritària i s'exclouen els punts amb sensibilitat diferent.
+        """
+        # Només rellevant per senyal UIB
+        if self._seq_cal_signal != "uib":
+            self.seq_cal_sensitivity_warning.setVisible(False)
+            return
+
+        entries = self._seq_cal_entries
+        if not entries:
+            self.seq_cal_sensitivity_warning.setVisible(False)
+            return
+
+        # Recollir sensibilitats (exclou punts ja exclosos per saturació)
+        sens_counts = {}  # {sensibilitat: [índexos]}
+        for i, e in enumerate(entries):
+            if i in self._seq_cal_excluded:
+                continue  # Ja exclòs (saturació etc.)
+            s = e.get('uib_sensitivity')
+            if s and s > 0:
+                sens_counts.setdefault(s, []).append(i)
+
+        unique_sens = sorted(sens_counts.keys())
+
+        if len(unique_sens) <= 1:
+            # Una sola sensibilitat (o cap): tot OK
+            self.seq_cal_sensitivity_warning.setVisible(False)
+            return
+
+        # Barreja detectada — trobar la majoritària
+        majority_sens = max(sens_counts, key=lambda s: len(sens_counts[s]))
+        minority_count = 0
+        for s, indices in sens_counts.items():
+            if s != majority_sens:
+                for idx in indices:
+                    self._seq_cal_excluded.add(idx)
+                    minority_count += 1
+
+        sens_str = ", ".join(f"{s:g} ppb ({len(sens_counts[s])} punts)" for s in unique_sens)
+        self.seq_cal_sensitivity_warning.setText(
+            f"⚠️ <b>Barreja de sensibilitats UIB detectada:</b> {sens_str}<br>"
+            f"S'han auto-exclòs {minority_count} punt(s) amb sensibilitat ≠ {majority_sens:g} ppb. "
+            f"Una regressió amb sensibilitats barrejades no seria vàlida."
+        )
+        self.seq_cal_sensitivity_warning.setVisible(True)
+        logger.info(f"UIB sensitivity mixing: {sens_str}, majority={majority_sens}, excluded={minority_count}")
 
     def _run_seq_cal_regression(self, cal_entries, method):
         """Executa la regressió i actualitza la UI."""
@@ -1251,6 +1315,9 @@ class AnalyzePanel(QWidget):
         for i, e in enumerate(self._seq_cal_entries):
             if e.get('uib_saturated'):
                 self._seq_cal_excluded.add(i)
+
+        # Auto-excloure per barreja sensibilitats UIB
+        self._check_uib_sensitivity_mixing()
 
         # Re-run regressió
         if self._seq_cal_entries and self._seq_cal_method:
