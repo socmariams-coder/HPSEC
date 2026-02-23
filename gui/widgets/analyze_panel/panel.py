@@ -614,14 +614,17 @@ class AnalyzePanel(QWidget):
 
         # Taula de punts de calibració
         self.seq_cal_points_table = QTableWidget()
-        self.seq_cal_points_table.setColumnCount(8)
+        self.seq_cal_points_table.setColumnCount(11)
         self.seq_cal_points_table.setHorizontalHeaderLabels([
             "Sel", "Condició", "Conc (ppm)", "Vol (µL)", "µg DOC",
-            "Àrea", "RF_mass", "Status"
+            "Àrea", "RF_mass", "A254", "DOC/254", "Anomalies", "Status"
         ])
         self.seq_cal_points_table.horizontalHeaderItem(0).setToolTip("Incloure punt a la regressió")
         self.seq_cal_points_table.horizontalHeaderItem(4).setToolTip("µg DOC injectat = ppm × µL / 1000")
         self.seq_cal_points_table.horizontalHeaderItem(6).setToolTip("RF_mass = Àrea × 1000 / (ppm × µL)")
+        self.seq_cal_points_table.horizontalHeaderItem(7).setToolTip("Àrea integrada a 254nm (DAD)")
+        self.seq_cal_points_table.horizontalHeaderItem(8).setToolTip("Ratio àrea DOC / àrea 254nm")
+        self.seq_cal_points_table.horizontalHeaderItem(9).setToolTip("Indicadors d'anomalies detectades")
         self.seq_cal_points_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         self.seq_cal_points_table.setAlternatingRowColors(True)
         self.seq_cal_points_table.setMaximumHeight(220)
@@ -853,7 +856,7 @@ class AnalyzePanel(QWidget):
             )
 
     def _populate_seq_cal_table(self, cal_entries):
-        """Omple la taula de punts de la regressió SEQ_CAL."""
+        """Omple la taula de punts de la regressió SEQ_CAL (11 columnes)."""
         self.seq_cal_points_table.setRowCount(len(cal_entries))
 
         for i, entry in enumerate(cal_entries):
@@ -867,15 +870,15 @@ class AnalyzePanel(QWidget):
             issues = entry.get('quality_issues', [])
             has_severe = any('MULTI_PEAK' in str(iss) and 'MILD' not in str(iss) for iss in issues)
             if area <= 0 or conc <= 0 or vol <= 0:
-                status_text, status_color = "INVALID", "#E74C3C"
+                status_text = "INVALID"
             elif has_severe:
-                status_text, status_color = "CHECK", "#E67E22"
+                status_text = "CHECK"
             elif rf_mass > 0 and (rf_mass < 100 or rf_mass > 3000):
-                status_text, status_color = "CHECK", "#E67E22"
+                status_text = "CHECK"
             else:
-                status_text, status_color = "OK", "#27AE60"
+                status_text = "OK"
 
-            # Checkbox
+            # Checkbox (Col 0)
             cb = QCheckBox()
             cb.setChecked(i not in self._seq_cal_excluded)
             cb.stateChanged.connect(lambda state, idx=i: self._on_seq_cal_point_toggled(idx, state))
@@ -886,7 +889,7 @@ class AnalyzePanel(QWidget):
             cb_layout.setContentsMargins(0, 0, 0, 0)
             self.seq_cal_points_table.setCellWidget(i, 0, cb_widget)
 
-            # Dades
+            # Cols 1-6: Dades bàsiques
             items = [
                 (1, entry.get('name_full', entry.get('condition_key', ''))),
                 (2, f"{conc:g}"),
@@ -900,7 +903,43 @@ class AnalyzePanel(QWidget):
                 item.setFlags(item.flags() & ~Qt.ItemIsEditable)
                 self.seq_cal_points_table.setItem(i, col, item)
 
-            # Col 7: Status badge amb fons color
+            # Col 7: A254
+            a254 = entry.get('a254_area', 0)
+            a254_item = QTableWidgetItem(f"{a254:.0f}" if a254 else "-")
+            a254_item.setFlags(a254_item.flags() & ~Qt.ItemIsEditable)
+            self.seq_cal_points_table.setItem(i, 7, a254_item)
+
+            # Col 8: DOC/254 ratio
+            ratio = entry.get('a254_doc_ratio', 0)
+            if not ratio and a254 and area:
+                ratio = area / a254
+            ratio_item = QTableWidgetItem(f"{ratio:.2f}" if ratio else "-")
+            ratio_item.setFlags(ratio_item.flags() & ~Qt.ItemIsEditable)
+            if ratio and (ratio < 0.5 or ratio > 10):
+                ratio_item.setForeground(QBrush(QColor("#E67E22")))
+            self.seq_cal_points_table.setItem(i, 8, ratio_item)
+
+            # Col 9: Anomalies
+            anomaly_parts = []
+            if entry.get('irregular_top_repaired'):
+                anomaly_parts.append("\u2705 reparat")  # ✅
+            elif entry.get('has_irregular_top'):
+                anomaly_parts.append("\u26a0 irregular")  # ⚠
+            if entry.get('has_timeout') and entry.get('timeout_severity', 'OK') != 'OK':
+                anomaly_parts.append("timeout")
+            if any('MULTI_PEAK' in str(iss) for iss in issues):
+                anomaly_parts.append("multi-peak")
+            anomaly_text = ", ".join(anomaly_parts) if anomaly_parts else "-"
+            anomaly_item = QTableWidgetItem(anomaly_text)
+            anomaly_item.setFlags(anomaly_item.flags() & ~Qt.ItemIsEditable)
+            if anomaly_parts:
+                if any("reparat" in p for p in anomaly_parts):
+                    anomaly_item.setForeground(QBrush(QColor("#27AE60")))
+                else:
+                    anomaly_item.setForeground(QBrush(QColor("#E67E22")))
+            self.seq_cal_points_table.setItem(i, 9, anomaly_item)
+
+            # Col 10: Status badge amb fons color
             badge_colors = {
                 "OK": ("#D5F5E3", "#27AE60"),
                 "CHECK": ("#FCF3CF", "#E67E22"),
@@ -918,7 +957,7 @@ class AnalyzePanel(QWidget):
             badge_l.addWidget(badge)
             badge_l.setAlignment(Qt.AlignCenter)
             badge_l.setContentsMargins(2, 1, 2, 1)
-            self.seq_cal_points_table.setCellWidget(i, 7, badge_w)
+            self.seq_cal_points_table.setCellWidget(i, 10, badge_w)
 
     def _on_seq_cal_point_toggled(self, idx, state):
         """Quan l'usuari marca/desmarca un punt de la regressió."""
