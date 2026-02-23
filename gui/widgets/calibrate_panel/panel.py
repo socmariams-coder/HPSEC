@@ -479,22 +479,50 @@ class CalibratePanel(QWidget):
                     self.condition_combo.blockSignals(False)
                     break
 
-        # Mostrar resultats (TOTS els mètodes, igual que _on_finished)
-        for fn in [self._update_summary, self._update_delay_diagnostic,
-                   self._update_graphs,
-                   self._update_metrics_table, self._update_replica_selection,
-                   self._update_validation, self._update_history]:
+        # Detectar si és SEQ_CAL (pel nom de la seqüència)
+        seq_path = self.main_window.seq_path or ""
+        seq_name = os.path.basename(seq_path).upper()
+        is_seq_cal = "_CAL" in seq_name
+
+        if is_seq_cal:
+            # SEQ_CAL: amagar UI normal, mostrar info SEQ_CAL
+            self.placeholder.setVisible(False)
+            self.condition_selector_frame.setVisible(False)
+            self.summary_group.setVisible(False)
+            self.cal_line_group.setVisible(False)
+            self.graphs_group.setVisible(False)
+            self.metrics_group.setVisible(False)
+            self.replica_selection_group.setVisible(False)
+            self.validation_group.setVisible(False)
+            self.history_group.setVisible(False)
+            self._seq_cal_info_group.setVisible(True)
+
+            # Delay diagnostic (útil per a SEQ_CAL BP també)
             try:
-                fn(result)
+                self._update_delay_diagnostic(result)
             except Exception as e:
-                logger.warning(f"Error a {fn.__name__}: {e}")
-                import traceback; traceback.print_exc()
+                logger.warning(f"Error a _update_delay_diagnostic: {e}")
+        else:
+            # SEQ normal: flux habitual
+            self._seq_cal_info_group.setVisible(False)
+            for fn in [self._update_summary, self._update_delay_diagnostic,
+                       self._update_graphs,
+                       self._update_metrics_table, self._update_replica_selection,
+                       self._update_validation, self._update_history]:
+                try:
+                    fn(result)
+                except Exception as e:
+                    logger.warning(f"Error a {fn.__name__}: {e}")
+                    import traceback; traceback.print_exc()
 
         self.main_window.enable_tab(2)
 
         # Indicar font de la calibració
         source = "local" if cal.get('_from_local') else "global"
-        self.main_window.set_status(f"Calibració carregada ({source}): {cal.get('condition_key', 'N/A')}", 3000)
+        self.main_window.set_status(
+            "SEQ_CAL verificada — regressió al pas Analitzar" if is_seq_cal
+            else f"Calibració carregada ({source}): {cal.get('condition_key', 'N/A')}", 3000
+        )
 
         # Emetre senyal per notificar al wizard
         self.calibration_completed.emit(result)

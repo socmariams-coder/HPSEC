@@ -421,22 +421,22 @@ def detect_master_format(filepath):
         None si no és reconegut
     """
     try:
-        xl = pd.ExcelFile(filepath, engine="openpyxl")
-        sheets = set(xl.sheet_names)
+        with pd.ExcelFile(filepath, engine="openpyxl") as xl:
+            sheets = set(xl.sheet_names)
 
-        # Format nou: té 0-INFO i 4-TOC_CALC (o 1-HPLC-SEQ)
-        if "0-INFO" in sheets and ("4-TOC_CALC" in sheets or "1-HPLC-SEQ" in sheets):
-            return "NEW"
+            # Format nou: té 0-INFO i 4-TOC_CALC (o 1-HPLC-SEQ)
+            if "0-INFO" in sheets and ("4-TOC_CALC" in sheets or "1-HPLC-SEQ" in sheets):
+                return "NEW"
 
-        # Format antic: té 0-CHECK i 4-SEQ_DATA
-        if any(s.lower() == "0-check" for s in sheets) and "4-SEQ_DATA" in sheets:
-            return "OLD"
+            # Format antic: té 0-CHECK i 4-SEQ_DATA
+            if any(s.lower() == "0-check" for s in sheets) and "4-SEQ_DATA" in sheets:
+                return "OLD"
 
-        # Compatibilitat: si té 2-TOC i 4-SEQ_DATA, és antic
-        if "2-TOC" in sheets and "4-SEQ_DATA" in sheets:
-            return "OLD"
+            # Compatibilitat: si té 2-TOC i 4-SEQ_DATA, és antic
+            if "2-TOC" in sheets and "4-SEQ_DATA" in sheets:
+                return "OLD"
 
-        return None
+            return None
     except Exception:
         return None
 
@@ -489,30 +489,30 @@ def read_master_date(seq_folder):
         if "~$" in os.path.basename(f):
             continue
         try:
-            xf = pd.ExcelFile(f, engine="openpyxl")
+            with pd.ExcelFile(f, engine="openpyxl") as xf:
 
-            # Primer intentar format nou (0-INFO)
-            if "0-INFO" in xf.sheet_names:
-                df = pd.read_excel(xf, sheet_name="0-INFO", header=None, engine="openpyxl")
-                for i, row in df.iterrows():
-                    if str(row.iloc[0]).strip().lower() == "date":
-                        val = row.iloc[1]
-                        if pd.notna(val):
-                            return str(val)
-                continue
+                # Primer intentar format nou (0-INFO)
+                if "0-INFO" in xf.sheet_names:
+                    df = pd.read_excel(xf, sheet_name="0-INFO", header=None, engine="openpyxl")
+                    for i, row in df.iterrows():
+                        if str(row.iloc[0]).strip().lower() == "date":
+                            val = row.iloc[1]
+                            if pd.notna(val):
+                                return str(val)
+                    continue
 
-            # Fallback format antic (0-CHECK)
-            sheet = None
-            for s in xf.sheet_names:
-                if str(s).strip().lower() == "0-check":
-                    sheet = s
-                    break
-            if sheet is None:
-                sheet = 0
-            df = pd.read_excel(xf, sheet_name=sheet, header=None, engine="openpyxl")
-            val = df.iloc[1, 1]
-            if pd.notna(val):
-                return str(val)
+                # Fallback format antic (0-CHECK)
+                sheet = None
+                for s in xf.sheet_names:
+                    if str(s).strip().lower() == "0-check":
+                        sheet = s
+                        break
+                if sheet is None:
+                    sheet = 0
+                df = pd.read_excel(xf, sheet_name=sheet, header=None, engine="openpyxl")
+                val = df.iloc[1, 1]
+                if pd.notna(val):
+                    return str(val)
         except Exception:
             pass
     return ""
@@ -540,42 +540,42 @@ def llegir_masterfile_nou(filepath):
     }
 
     try:
-        xl = pd.ExcelFile(filepath, engine="openpyxl")
+        with pd.ExcelFile(filepath, engine="openpyxl") as xl:
 
-        # 0-INFO
-        if "0-INFO" in xl.sheet_names:
-            df_info = pd.read_excel(xl, sheet_name="0-INFO", header=None, engine="openpyxl")
-            for _, row in df_info.iterrows():
-                key = str(row.iloc[0]).strip() if pd.notna(row.iloc[0]) else ""
-                val = row.iloc[1] if len(row) > 1 and pd.notna(row.iloc[1]) else None
-                if key:
-                    result["info"][key] = val
+            # 0-INFO
+            if "0-INFO" in xl.sheet_names:
+                df_info = pd.read_excel(xl, sheet_name="0-INFO", header=None, engine="openpyxl")
+                for _, row in df_info.iterrows():
+                    key = str(row.iloc[0]).strip() if pd.notna(row.iloc[0]) else ""
+                    val = row.iloc[1] if len(row) > 1 and pd.notna(row.iloc[1]) else None
+                    if key:
+                        result["info"][key] = val
 
-            # Sensibilitat UIB a B5 (fila 4, columna 1 en 0-indexed)
-            if len(df_info) > 4 and len(df_info.columns) > 1:
-                uib_sens = df_info.iloc[4, 1]
-                if pd.notna(uib_sens):
-                    result["info"]["uib_sensitivity"] = uib_sens
+                # Sensibilitat UIB a B5 (fila 4, columna 1 en 0-indexed)
+                if len(df_info) > 4 and len(df_info.columns) > 1:
+                    uib_sens = df_info.iloc[4, 1]
+                    if pd.notna(uib_sens):
+                        result["info"]["uib_sensitivity"] = uib_sens
 
-        # 1-HPLC-SEQ (o 1-HPLC-SEQ_RAW per format antic v11)
-        if "1-HPLC-SEQ" in xl.sheet_names:
-            result["hplc_seq"] = pd.read_excel(xl, sheet_name="1-HPLC-SEQ", engine="openpyxl")
-        elif "1-HPLC-SEQ_RAW" in xl.sheet_names:
-            result["hplc_seq"] = pd.read_excel(xl, sheet_name="1-HPLC-SEQ_RAW", engine="openpyxl")
+            # 1-HPLC-SEQ (o 1-HPLC-SEQ_RAW per format antic v11)
+            if "1-HPLC-SEQ" in xl.sheet_names:
+                result["hplc_seq"] = pd.read_excel(xl, sheet_name="1-HPLC-SEQ", engine="openpyxl")
+            elif "1-HPLC-SEQ_RAW" in xl.sheet_names:
+                result["hplc_seq"] = pd.read_excel(xl, sheet_name="1-HPLC-SEQ_RAW", engine="openpyxl")
 
-        # 2-TOC
-        if "2-TOC" in xl.sheet_names:
-            result["toc"] = pd.read_excel(xl, sheet_name="2-TOC", header=6, engine="openpyxl")
+            # 2-TOC
+            if "2-TOC" in xl.sheet_names:
+                result["toc"] = pd.read_excel(xl, sheet_name="2-TOC", header=6, engine="openpyxl")
 
-        # 4-TOC_CALC (o 4-SEQ_DATA per format antic v11)
-        if "4-TOC_CALC" in xl.sheet_names:
-            result["toc_calc"] = pd.read_excel(xl, sheet_name="4-TOC_CALC", engine="openpyxl")
-        elif "4-SEQ_DATA" in xl.sheet_names:
-            result["toc_calc"] = pd.read_excel(xl, sheet_name="4-SEQ_DATA", engine="openpyxl")
+            # 4-TOC_CALC (o 4-SEQ_DATA per format antic v11)
+            if "4-TOC_CALC" in xl.sheet_names:
+                result["toc_calc"] = pd.read_excel(xl, sheet_name="4-TOC_CALC", engine="openpyxl")
+            elif "4-SEQ_DATA" in xl.sheet_names:
+                result["toc_calc"] = pd.read_excel(xl, sheet_name="4-SEQ_DATA", engine="openpyxl")
 
-        # 3-DAD_KHP (opcional)
-        if "3-DAD_KHP" in xl.sheet_names:
-            result["dad_khp"] = pd.read_excel(xl, sheet_name="3-DAD_KHP", header=1, engine="openpyxl")
+            # 3-DAD_KHP (opcional)
+            if "3-DAD_KHP" in xl.sheet_names:
+                result["dad_khp"] = pd.read_excel(xl, sheet_name="3-DAD_KHP", header=1, engine="openpyxl")
 
     except PermissionError:
         result["error"] = (
@@ -596,20 +596,20 @@ def llegir_master_direct(mestre):
         (df_toc, df_seq) o (None, None) si error
     """
     try:
-        xl = pd.ExcelFile(mestre, engine="openpyxl")
+        with pd.ExcelFile(mestre, engine="openpyxl") as xl:
 
-        df_toc = None
-        df_seq = None
+            df_toc = None
+            df_seq = None
 
-        # Llegir 2-TOC
-        if "2-TOC" in xl.sheet_names:
-            df_toc = pd.read_excel(xl, sheet_name="2-TOC", header=6, engine="openpyxl")
+            # Llegir 2-TOC
+            if "2-TOC" in xl.sheet_names:
+                df_toc = pd.read_excel(xl, sheet_name="2-TOC", header=6, engine="openpyxl")
 
-        # Llegir 4-SEQ_DATA
-        if "4-SEQ_DATA" in xl.sheet_names:
-            df_seq = pd.read_excel(xl, sheet_name="4-SEQ_DATA", engine="openpyxl")
+            # Llegir 4-SEQ_DATA
+            if "4-SEQ_DATA" in xl.sheet_names:
+                df_seq = pd.read_excel(xl, sheet_name="4-SEQ_DATA", engine="openpyxl")
 
-        return df_toc, df_seq
+            return df_toc, df_seq
     except PermissionError:
         raise PermissionError(
             f"No es pot llegir el MasterFile: el fitxer està obert a Excel o sense permisos. "
@@ -3082,17 +3082,16 @@ def import_sequence(seq_path, config=None, progress_callback=None):
         toc_calc_df = None
         has_3dad_khp_sheet = False
         try:
-            xl = pd.ExcelFile(master_path)
-            if "3-DAD_KHP" in xl.sheet_names:
-                master_khp_data = pd.read_excel(master_path, sheet_name="3-DAD_KHP")
-                has_3dad_khp_sheet = True
-                pass
-            if "2-TOC" in xl.sheet_names:
-                toc_df = pd.read_excel(master_path, sheet_name="2-TOC", header=6)
-            if "4-TOC_CALC" in xl.sheet_names:
-                toc_calc_df = pd.read_excel(master_path, sheet_name="4-TOC_CALC")
-            elif "4-SEQ_DATA" in xl.sheet_names:
-                toc_calc_df = pd.read_excel(master_path, sheet_name="4-SEQ_DATA")
+            with pd.ExcelFile(master_path) as xl:
+                if "3-DAD_KHP" in xl.sheet_names:
+                    master_khp_data = pd.read_excel(master_path, sheet_name="3-DAD_KHP")
+                    has_3dad_khp_sheet = True
+                if "2-TOC" in xl.sheet_names:
+                    toc_df = pd.read_excel(master_path, sheet_name="2-TOC", header=6)
+                if "4-TOC_CALC" in xl.sheet_names:
+                    toc_calc_df = pd.read_excel(master_path, sheet_name="4-TOC_CALC")
+                elif "4-SEQ_DATA" in xl.sheet_names:
+                    toc_calc_df = pd.read_excel(master_path, sheet_name="4-SEQ_DATA")
         except Exception as e:
             logger.warning(f"Error llegint fulls addicionals del MasterFile: {e}")
 
@@ -3308,6 +3307,23 @@ def import_sequence(seq_path, config=None, progress_callback=None):
             len(s["replicas"]) for s in result["samples"].values()
         )
 
+        # Comptadors per tipus de senyal (rèpliques amb cada tipus)
+        doc_direct_count = sum(
+            1 for s in result["samples"].values()
+            for r in s["replicas"].values()
+            if r.get("direct") is not None
+        )
+        uib_count = sum(
+            1 for s in result["samples"].values()
+            for r in s["replicas"].values()
+            if r.get("uib") is not None
+        )
+        dad_count = sum(
+            1 for s in result["samples"].values()
+            for r in s["replicas"].values()
+            if r.get("dad") is not None
+        )
+
         result["stats"] = {
             "master_line_count": result.get("master_line_count", len(injections)),  # Line# al MasterFile
             "total_injections": len(injections),  # Injeccions parsejades del MasterFile
@@ -3321,6 +3337,9 @@ def import_sequence(seq_path, config=None, progress_callback=None):
             "dad_files_used": len(used_files["dad"]),
             "orphan_uib": len(orphan_uib),
             "orphan_dad": len(orphan_dad),
+            "doc_direct_count": doc_direct_count,
+            "uib_count": uib_count,
+            "dad_count": dad_count,
         }
 
         # Warning clar si s'han perdut injeccions per sobreescriptura
@@ -3896,12 +3915,12 @@ def generate_import_manifest(imported_data, include_injection_details=True):
                 if dad.get("manual_assignment"):
                     replica_entry["dad"]["manual_assignment"] = True
                     replica_entry["dad"]["manual_file"] = dad.get("manual_file") or dad.get("file", "")
-            elif dad.get("file") or dad.get("manual_file"):
+            elif dad.get("file") or dad.get("manual_file") or dad.get("n_points"):
                 # Preservar metadades encara que no hi hagi DataFrame
                 replica_entry["dad"] = {
                     "source": rep_data.get("dad_source", "unknown"),
-                    "file": dad.get("file", ""),
-                    "n_points": 0,
+                    "file": dad.get("file", "") or dad.get("path", ""),
+                    "n_points": dad.get("n_points", 0),
                 }
                 if dad.get("manual_assignment"):
                     replica_entry["dad"]["manual_assignment"] = True
@@ -4133,13 +4152,13 @@ def import_from_manifest(seq_path, manifest=None, config=None, progress_callback
     if load_data:
         report_progress(10, "Llegint MasterFile...")
         try:
-            xl = pd.ExcelFile(master_path, engine="openpyxl")
-            if "2-TOC" in xl.sheet_names:
-                toc_df = pd.read_excel(xl, sheet_name="2-TOC", header=6, engine="openpyxl")
-            # FIX F2.2: Llegir 3-DAD_KHP per KHP samples (abans no es llegia des de manifest)
-            if "3-DAD_KHP" in xl.sheet_names:
-                master_khp_data = pd.read_excel(xl, sheet_name="3-DAD_KHP", engine="openpyxl")
-                logger.debug("3-DAD_KHP sheet loaded (%d rows)", len(master_khp_data))
+            with pd.ExcelFile(master_path, engine="openpyxl") as xl:
+                if "2-TOC" in xl.sheet_names:
+                    toc_df = pd.read_excel(xl, sheet_name="2-TOC", header=6, engine="openpyxl")
+                # FIX F2.2: Llegir 3-DAD_KHP per KHP samples (abans no es llegia des de manifest)
+                if "3-DAD_KHP" in xl.sheet_names:
+                    master_khp_data = pd.read_excel(xl, sheet_name="3-DAD_KHP", engine="openpyxl")
+                    logger.debug("3-DAD_KHP sheet loaded (%d rows)", len(master_khp_data))
         except PermissionError:
             result["errors"].append(
                 f"No es pot llegir el MasterFile: el fitxer està obert a Excel o sense permisos. "
@@ -4321,12 +4340,13 @@ def import_from_manifest(seq_path, manifest=None, config=None, progress_callback
                 if not load_data:
                     # Guardar info DAD del manifest per la taula
                     dad_file = dad_info.get("manual_file") or dad_info.get("file", "")
-                    if dad_file:
+                    dad_n_points = dad_info.get("n_points", 0)
+                    if dad_file or dad_n_points:
                         rep_data["dad"] = {
                             "df": None,
                             "path": dad_file,
                             "file": dad_file,
-                            "n_points": dad_info.get("n_points", 0),
+                            "n_points": dad_n_points,
                         }
                         rep_data["dad_source"] = dad_source
                         rep_data["has_data"] = True
@@ -4617,11 +4637,11 @@ def ensure_data_loaded(imported_data, config=None, progress_callback=None):
     toc_df = None
     master_khp_data = None
     try:
-        xl = pd.ExcelFile(master_path, engine="openpyxl")
-        if "2-TOC" in xl.sheet_names:
-            toc_df = pd.read_excel(xl, sheet_name="2-TOC", header=6, engine="openpyxl")
-        if "3-DAD_KHP" in xl.sheet_names:
-            master_khp_data = pd.read_excel(xl, sheet_name="3-DAD_KHP", engine="openpyxl")
+        with pd.ExcelFile(master_path, engine="openpyxl") as xl:
+            if "2-TOC" in xl.sheet_names:
+                toc_df = pd.read_excel(xl, sheet_name="2-TOC", header=6, engine="openpyxl")
+            if "3-DAD_KHP" in xl.sheet_names:
+                master_khp_data = pd.read_excel(xl, sheet_name="3-DAD_KHP", engine="openpyxl")
     except Exception as e:
         logger.error("ensure_data_loaded: Error llegint MasterFile: %s", e)
         return imported_data

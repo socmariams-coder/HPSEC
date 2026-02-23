@@ -502,8 +502,15 @@ class ImportPanel(QWidget):
         # Nota: Els avisos es gestionen des del wizard header
 
         try:
-            save_import_manifest(result)
+            manifest_path = save_import_manifest(result)
             self.main_window.mark_manifest_saved()
+            # Verificar que DAD s'ha guardat al manifest
+            n_dad = sum(
+                1 for s in result.get("samples", {}).values()
+                for r in s.get("replicas", {}).values()
+                if r.get("dad") is not None
+            )
+            logger.info(f"Manifest guardat: {manifest_path} (DAD: {n_dad} rèpliques)")
         except Exception as e:
             logger.warning(f"No s'ha pogut guardar manifest: {e}")
 
@@ -515,6 +522,8 @@ class ImportPanel(QWidget):
                 pdf = generate_import_report(seq_path)
                 if pdf:
                     logger.info(f"Report importació: {pdf}")
+        except ImportError:
+            pass
         except Exception as e:
             logger.warning(f"No s'ha pogut generar report d'importació: {e}")
 
@@ -711,16 +720,17 @@ class ImportPanel(QWidget):
             "font-weight: bold; color: #E74C3C;" if has_warning else "font-weight: bold; color: #2E86AB;"
         )
 
-        # Comptar fitxers
-        uib_used = stats.get("uib_files_used", 0)
-        uib_orphan = stats.get("orphan_uib", 0)
-        dad_used = stats.get("dad_files_used", 0)
-        dad_orphan = stats.get("orphan_dad", 0)
+        # Comptar fitxers per tipus de senyal
+        n_total = stats.get("total_replicas_imported", total_injections)
+        doc_direct = stats.get("doc_direct_count", 0)
+        uib_count = stats.get("uib_count", 0)
+        dad_count = stats.get("dad_count", 0)
 
         files_parts = []
+        files_parts.append(f"DOC: {doc_direct}/{n_total}")
         if self._data_mode in ["DUAL", "UIB"]:
-            files_parts.append(f"UIB: {uib_used}/{total_injections}")
-        files_parts.append(f"DAD: {dad_used}/{total_injections}")
+            files_parts.append(f"UIB: {uib_count}/{n_total}")
+        files_parts.append(f"DAD: {dad_count}/{n_total}")
         self.files_label.setText(" · ".join(files_parts))
         self.info_frame.setVisible(True)
 
@@ -736,7 +746,10 @@ class ImportPanel(QWidget):
     def _open_seq_folder(self):
         """Obre la carpeta de la seqüència a l'explorador de fitxers."""
         import subprocess
-        seq_path = self.seq_path
+        seq_path = self.seq_path or (
+            self.main_window.imported_data.get("seq_path")
+            if self.main_window.imported_data else None
+        )
 
         # Si no tenim path absolut, reconstruir des de config + nom SEQ
         if not seq_path or not os.path.isdir(seq_path):
@@ -756,9 +769,11 @@ class ImportPanel(QWidget):
                     pass
 
         if seq_path and os.path.isdir(seq_path):
-            subprocess.Popen(f'explorer "{seq_path}"')
+            norm_path = os.path.normpath(seq_path)
+            subprocess.Popen(f'explorer "{norm_path}"')
         else:
-            QMessageBox.information(self, "Info", "No s'ha trobat la carpeta de la seqüència.")
+            QMessageBox.information(self, "Info",
+                f"No s'ha trobat la carpeta de la seqüència.\n\nPath: {seq_path}")
 
     def _populate_row_basic(self, row, injection_num, inj):
         """Omple les columnes bàsiques d'una fila (Inj, Mostra, Tipus, Rep, Vol, Direct)."""
@@ -1216,7 +1231,7 @@ class ImportPanel(QWidget):
         for col in sem_cols:
             if col is not None:
                 header.setSectionResizeMode(col, QHeaderView.Fixed)
-                self.samples_table.setColumnWidth(col, 50)
+                self.samples_table.setColumnWidth(col, 62)
 
     def _add_data_cell(self, row, col, text, match_type, editable=False):
         """Afegeix una cel·la amb color segons match_type."""
@@ -1908,7 +1923,7 @@ class ImportPanel(QWidget):
             )
         else:
             self.next_btn.setEnabled(True)
-            self.next_btn.setToolTip("")
+            self.next_btn.setToolTip("Tot correcte. Clic per avançar.")
 
     def _refresh_orphan_count(self):
         """Actualitza el comptador d'orfes i la llista després d'assignacions manuals."""
