@@ -310,16 +310,38 @@ class HPSECSuiteWindow(QMainWindow):
 
         try:
             self.set_status(f"Carregant {seq_name}...")
-            self.load_sequence(seq_path)
 
-            # Anar al wizard - la navegació interna la gestiona el ProcessWizardPanel
-            # que detecta automàticament la primera etapa que necessita atenció (warning o pending)
-            self.tab_widget.setCurrentIndex(1)
+            # SEQ_CAL → directament al tab Calibració Global (tab 5)
+            if "_CAL" in seq_name.upper():
+                self._load_seq_cal(seq_path)
+            else:
+                # Flux normal: wizard de 4 passos
+                self.load_sequence(seq_path)
+                self.tab_widget.setCurrentIndex(1)
 
             self.set_status(f"{seq_name} carregat", 3000)
         finally:
             # Sempre restaurar cursor i overlay, fins i tot si hi ha error
             self.dashboard_panel.hide_loading_overlay()
+
+    def _load_seq_cal(self, seq_path):
+        """Carrega una SEQ_CAL directament al tab Calibració Global (tab 5)."""
+        import os
+        seq_name = os.path.basename(seq_path)
+
+        # Actualitzar estat i títol
+        self.seq_path = seq_path
+        self.setWindowTitle(f"HPSEC Suite - {seq_name}")
+
+        # Assegurar que el panell Calibració Global existeix (lazy loading)
+        self._ensure_panel(5)
+
+        # Navegar al tab 5
+        self.tab_widget.setCurrentIndex(5)
+
+        # Carregar la SEQ_CAL al panell
+        if self.global_cal_panel:
+            self.global_cal_panel.load_seq_cal(seq_path)
 
     def _on_wizard_sequence_loaded(self, seq_path):
         """Callback quan el wizard carrega una seqüència."""

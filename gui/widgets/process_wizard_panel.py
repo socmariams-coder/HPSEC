@@ -1558,9 +1558,6 @@ class ProcessWizardPanel(QWidget):
         self.import_panel.import_completed.connect(self._on_import_completed)
         self.import_panel.warnings_dismissed.connect(self._on_import_warnings_dismissed)
         self.calibrate_panel.calibration_completed.connect(self._on_calibrate_completed)
-        # Notificar l'AnalyzePanel quan la calibració acaba (per SEQ_CAL preloaded)
-        self.calibrate_panel.calibration_completed.connect(
-            self.analyze_panel._on_calibration_data_updated)
         self.analyze_panel.analyze_completed.connect(self._on_analyze_completed)
         self.review_panel.review_completed.connect(self._on_export_completed)
 
