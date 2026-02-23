@@ -202,10 +202,11 @@ retingut en memòria, i fitxers de calibració rellegits del disc repetidament.
    - Si es necessita de nou (reimportació), `ensure_data_loaded()` rellegeix MasterFile des del disc
 
 3. **Cache calibració amb verificació mtime (estalvi I/O)**:
-   - `load_calibration_reference()`: cache `_cal_ref_cache` + `_cal_ref_mtime`
-   - `load_khp_history()`: cache `_khp_cache` + `_khp_mtime` + `_khp_cache_path`
-   - Invalidació automàtica a `save_calibration_reference()` i `save_khp_history()`
-   - ~15 crides/sessió passen de lectura disc a lectura memòria
+   - `load_calibration_reference()`: cache `_cal_ref_cache` + `_cal_ref_mtime` (5x speedup)
+   - `load_khp_history()`: cache `_khp_cache` + `_khp_mtime` + `_khp_cache_path` (94x speedup)
+   - `load_local_calibrations()`: cache `_local_cal_cache` + `_local_cal_mtime` + `_local_cal_path` (31x speedup, 10 call sites)
+   - Invalidació automàtica als corresponents `save_*()` functions
+   - ~25 crides/sessió passen de lectura disc a lectura memòria
 
 4. **Eliminar "df" redundant de rep_data["direct"] (~12 MB estalvi/SEQ)**:
    - `"df": df_doc` eliminat de 3 llocs (find_data_for_injection, import_from_manifest, ensure_data_loaded)
