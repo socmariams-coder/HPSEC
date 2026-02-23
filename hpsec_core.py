@@ -1469,6 +1469,7 @@ def detect_main_peak(t, y, min_prominence_pct=5.0, is_bp=None):
     # dóna límits erronis. Reparem primer, integrem sobre senyal reparat.
     # =====================================================================
     irregular_top_info = None
+    smoothness_info = None
     irregular_top_repaired = False
     y_for_boundaries = y  # per defecte, senyal original
 
@@ -1481,8 +1482,14 @@ def detect_main_peak(t, y, min_prominence_pct=5.0, is_bp=None):
 
     if len(y_seg) > 20:
         irregular_top_info = detect_irregular_top(t_seg, y_seg)
+        smoothness_info = calc_top_smoothness(t_seg, y_seg)
+        smoothness_val = smoothness_info.get("smoothness", 100.0)
 
-        if irregular_top_info.get("is_irregular_top", False):
+        # Reparar si IRREGULAR_TOP (valls pic-vall-pic) O ROUGH_TOP (smoothness < 70%)
+        needs_repair = (irregular_top_info.get("is_irregular_top", False)
+                        or smoothness_val < 70.0)
+
+        if needs_repair:
             # Intentar reparar amb paràbola
             y_seg_repaired, repair_info, was_repaired = repair_with_parabola(t_seg, y_seg)
             if was_repaired:
@@ -1522,11 +1529,14 @@ def detect_main_peak(t, y, min_prominence_pct=5.0, is_bp=None):
         "fallback": False,
     }
 
-    # Afegir info d'irregular top si detectat
-    if irregular_top_info is not None and irregular_top_info.get("is_irregular_top", False):
+    # Afegir info d'irregular top si detectat (IRREGULAR_TOP o ROUGH_TOP)
+    if irregular_top_repaired or (irregular_top_info is not None
+                                  and irregular_top_info.get("is_irregular_top", False)):
         result["is_irregular_top"] = True
         result["irregular_top_repaired"] = irregular_top_repaired
         result["irregular_top_info"] = irregular_top_info
+    if smoothness_info is not None:
+        result["smoothness"] = smoothness_info.get("smoothness", 100.0)
 
     return result
 
