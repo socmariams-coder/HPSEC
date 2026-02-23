@@ -1003,16 +1003,15 @@ class CalibratePanel(QWidget):
                     logger.warning(f"Error a {fn.__name__}: {e}")
                     import traceback; traceback.print_exc()
 
-            # Auto-generar PDF de QA/QC
-            try:
-                from generate_calibration_report import generate_calibration_report
-                seq_path = self.main_window.seq_path
-                if seq_path:
-                    pdf = generate_calibration_report(seq_path)
+            # Auto-generar PDF de QA/QC (si no és SEQ_CAL — l'informe es genera al pas 4)
+            if not is_seq_cal:
+                try:
+                    from hpsec_reports import generate_calibration_report
+                    pdf = generate_calibration_report()
                     if pdf:
                         logger.info(f"Report QA/QC: {pdf}")
-            except Exception as e:
-                logger.warning(f"No s'ha pogut generar report de QA/QC: {e}")
+                except Exception as e:
+                    logger.warning(f"No s'ha pogut generar report de QA/QC: {e}")
 
             # Recarregar el selector de condicions
             self._reload_condition_selector()

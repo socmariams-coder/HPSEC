@@ -66,13 +66,24 @@ class AnalyzePanel(QWidget):
 
     def _setup_ui(self):
         """Configura la interfície — Taula unificada + panel fraccions."""
-        layout = QVBoxLayout(self)
-        apply_panel_layout(layout)
+        outer_layout = QVBoxLayout(self)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.setSpacing(0)
 
         # Botó analitzar (amagat - l'acció es dispara des del wizard header)
         self.analyze_btn = QPushButton()
         self.analyze_btn.setVisible(False)
         self.analyze_btn.clicked.connect(self._run_analyze)
+
+        # === SCROLL AREA per contenir tot el contingut ===
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QFrame.NoFrame)
+        scroll_area.setStyleSheet("QScrollArea { border: none; }")
+
+        scroll_content = QWidget()
+        layout = QVBoxLayout(scroll_content)
+        apply_panel_layout(layout)
 
         # === INFO PANEL ===
         self.info_frame = QFrame()
@@ -162,7 +173,7 @@ class AnalyzePanel(QWidget):
         legend_layout.addWidget(legend)
         legend_layout.addStretch()
 
-        # Botó Generar Report PDF
+        # Botó Generar Report PDF (amagat per SEQ_CAL)
         self.report_btn = QPushButton("Generar Report PDF")
         self.report_btn.setStyleSheet(
             "QPushButton { background-color: #2E86AB; color: white; "
@@ -204,6 +215,10 @@ class AnalyzePanel(QWidget):
         results_layout.addWidget(self.stats_frame)
 
         layout.addWidget(self.results_frame, 1)
+
+        # Completar scroll area
+        scroll_area.setWidget(scroll_content)
+        outer_layout.addWidget(scroll_area, 1)
 
     def _configure_unified_columns(self):
         """Configura columnes de la taula unificada."""
@@ -671,6 +686,7 @@ class AnalyzePanel(QWidget):
         if not cal_data or not cal_data.get('is_seq_cal'):
             self.seq_cal_group.setVisible(False)
             self._is_seq_cal = False
+            self.report_btn.setVisible(True)  # Mostrar per seqüències normals
             return
 
         seq_cal_data = cal_data.get('seq_cal_data', {})
@@ -683,6 +699,8 @@ class AnalyzePanel(QWidget):
             return
 
         self._is_seq_cal = True
+        # Amagar botó report d'anàlisi per SEQ_CAL (l'informe es genera des del pas 4)
+        self.report_btn.setVisible(False)
         self._seq_cal_entries = entries
         self._seq_cal_method = method
         self._seq_cal_excluded = set()
