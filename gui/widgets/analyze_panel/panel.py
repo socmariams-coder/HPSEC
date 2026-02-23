@@ -640,6 +640,26 @@ class AnalyzePanel(QWidget):
         """)
         seq_cal_layout.addWidget(self.seq_cal_points_table)
 
+        # Connectar click a la taula per preview cromatograma
+        self.seq_cal_points_table.cellClicked.connect(self._on_seq_cal_row_clicked)
+
+        # Preview cromatograma (inicialment ocult)
+        try:
+            import matplotlib
+            matplotlib.use('QtAgg')
+            from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+            from matplotlib.figure import Figure
+            self._seq_cal_chrom_figure = Figure(figsize=(8, 3), dpi=100)
+            self._seq_cal_chrom_figure.set_facecolor("#FAFAFA")
+            self.seq_cal_chrom_canvas = FigureCanvas(self._seq_cal_chrom_figure)
+            self.seq_cal_chrom_canvas.setMinimumHeight(200)
+            self.seq_cal_chrom_canvas.setMaximumHeight(250)
+            self.seq_cal_chrom_canvas.setVisible(False)
+            seq_cal_layout.addWidget(self.seq_cal_chrom_canvas)
+            self._has_seq_cal_chrom = True
+        except Exception:
+            self._has_seq_cal_chrom = False
+
         # Resultats regressió
         reg_results_frame = QFrame()
         reg_results_frame.setStyleSheet(
@@ -958,6 +978,81 @@ class AnalyzePanel(QWidget):
             badge_l.setAlignment(Qt.AlignCenter)
             badge_l.setContentsMargins(2, 1, 2, 1)
             self.seq_cal_points_table.setCellWidget(i, 10, badge_w)
+
+    def _on_seq_cal_row_clicked(self, row, col):
+        """Mostra preview cromatograma quan l'usuari clica una fila de la taula."""
+        if not getattr(self, '_has_seq_cal_chrom', False):
+            return
+        if row < 0 or row >= len(self._seq_cal_entries):
+            return
+
+        entry = self._seq_cal_entries[row]
+        replicas = entry.get('replicas', [])
+        if not replicas:
+            self.seq_cal_chrom_canvas.setVisible(False)
+            return
+
+        try:
+            import numpy as np
+
+            fig = self._seq_cal_chrom_figure
+            fig.clear()
+            ax = fig.add_subplot(111)
+
+            # Usar la primera rèplica (o la seleccionada)
+            rep = replicas[0]
+
+            # DOC signal
+            t_doc = rep.get('t_doc')
+            y_doc = rep.get('y_doc')
+            y_repaired = rep.get('y_doc_repaired')
+
+            if t_doc is not None and y_doc is not None:
+                t_doc = np.asarray(t_doc)
+                y_doc = np.asarray(y_doc)
+                ax.plot(t_doc, y_doc, color='#2196F3', linewidth=1.2,
+                        label='DOC', alpha=0.8)
+                if y_repaired is not None:
+                    y_repaired = np.asarray(y_repaired)
+                    ax.plot(t_doc, y_repaired, color='#E74C3C', linewidth=1,
+                            linestyle='--', label='Reparat', alpha=0.7)
+
+                # Marcar límits del pic si disponibles
+                peak_info = rep.get('peak_info', {})
+                if peak_info.get('t_start') and peak_info.get('t_end'):
+                    ax.axvline(peak_info['t_start'], color='gray', linewidth=0.5,
+                              linestyle=':', alpha=0.6)
+                    ax.axvline(peak_info['t_end'], color='gray', linewidth=0.5,
+                              linestyle=':', alpha=0.6)
+
+            # 254nm signal (eix secundari)
+            t_dad = rep.get('t_dad')
+            y_254 = rep.get('y_dad_254')
+            if t_dad is not None and y_254 is not None:
+                t_dad = np.asarray(t_dad)
+                y_254 = np.asarray(y_254)
+                ax2 = ax.twinx()
+                ax2.plot(t_dad, y_254, color='#9B59B6', linewidth=0.8,
+                        label='254nm', alpha=0.6)
+                ax2.set_ylabel('254nm', color='#9B59B6', fontsize=9)
+                ax2.tick_params(axis='y', labelcolor='#9B59B6', labelsize=8)
+
+            # Format
+            conc = entry.get('conc_ppm', 0)
+            name = entry.get('name_full', entry.get('condition_key', ''))
+            ax.set_title(f"{name} ({conc:g} ppm)", fontsize=10, fontweight='bold')
+            ax.set_xlabel('Temps (min)', fontsize=9)
+            ax.set_ylabel('Senyal DOC', fontsize=9, color='#2196F3')
+            ax.tick_params(labelsize=8)
+            ax.legend(loc='upper right', fontsize=8)
+            fig.tight_layout()
+
+            self.seq_cal_chrom_canvas.setVisible(True)
+            self.seq_cal_chrom_canvas.draw()
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(f"Error preview cromatograma: {e}")
+            self.seq_cal_chrom_canvas.setVisible(False)
 
     def _on_seq_cal_point_toggled(self, idx, state):
         """Quan l'usuari marca/desmarca un punt de la regressió."""
