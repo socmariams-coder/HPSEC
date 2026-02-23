@@ -927,12 +927,26 @@ class ReviewSummaryPanel(QWidget):
         except Exception:
             pass
 
+        # Equació com a text overlay
+        r2 = reg_result.get('r2', 0)
+        n_pts = reg_result.get('n_points', len(x_inc))
+        if rf > 0:
+            if abs(intercept) > 0.5:
+                eq_text = f"A = {rf:.1f} × µg + {intercept:.1f}"
+            else:
+                eq_text = f"A = {rf:.1f} × µg"
+            eq_text += f"  (R²={r2:.4f}, n={n_pts})"
+            ax.text(0.03, 0.97, eq_text, transform=ax.transAxes,
+                    fontsize=7, fontfamily='monospace', verticalalignment='top',
+                    bbox=dict(boxstyle='round,pad=0.3', facecolor='white',
+                              edgecolor='#ccc', alpha=0.9))
+
         ax.set_xlabel('µg DOC', fontsize=8)
         ax.set_ylabel('Àrea', fontsize=8)
         ax.tick_params(labelsize=7)
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
-        ax.legend(fontsize=7, loc='upper left')
+        ax.legend(fontsize=7, loc='lower right')
         ax.grid(True, alpha=0.2)
         self._cal_mini_figure.tight_layout()
         self._cal_mini_canvas.draw()
