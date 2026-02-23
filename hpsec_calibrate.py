@@ -214,20 +214,31 @@ def load_qc_history():
         return []
 
 
+_cal_ref_cache = None
+_cal_ref_mtime = 0
+
+
 def load_calibration_reference():
     """
-    Carrega la calibració de referència global.
+    Carrega la calibració de referència global (amb cache mtime).
 
     Returns:
         dict amb les dades de calibració o None si no existeix
     """
+    global _cal_ref_cache, _cal_ref_mtime
     ref_path = get_calibration_reference_path()
     if not ref_path or not os.path.exists(ref_path):
         return None
 
     try:
+        mtime = os.path.getmtime(ref_path)
+        if _cal_ref_cache is not None and mtime == _cal_ref_mtime:
+            return _cal_ref_cache
         with open(ref_path, 'r', encoding='utf-8') as f:
-            return json.load(f)
+            data = json.load(f)
+        _cal_ref_cache = data
+        _cal_ref_mtime = mtime
+        return data
     except Exception as e:
         logger.error(f"Error carregant calibració de referència: {e}")
         return None
@@ -243,6 +254,7 @@ def save_calibration_reference(data):
     Returns:
         bool indicant èxit
     """
+    global _cal_ref_cache, _cal_ref_mtime
     ref_path = get_calibration_reference_path()
     if not ref_path:
         return False
@@ -251,6 +263,8 @@ def save_calibration_reference(data):
         data['updated'] = datetime.now().strftime('%Y-%m-%d')
         with open(ref_path, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
+        _cal_ref_cache = None  # Invalidar cache
+        _cal_ref_mtime = 0
         return True
     except Exception as e:
         logger.error(f"Error guardant calibració de referència: {e}")
@@ -2526,19 +2540,32 @@ def get_samples_history_path(seq_path):
     return os.path.join(registry, SAMPLES_HISTORY_FILENAME)
 
 
+_khp_cache = None
+_khp_mtime = 0
+_khp_cache_path = None
+
+
 def load_khp_history(seq_path):
     """
-    Carrega l'històric de calibracions KHP.
+    Carrega l'històric de calibracions KHP (amb cache mtime).
     Ubicació: PARENT_FOLDER/REGISTRY/KHP_History.json
     """
+    global _khp_cache, _khp_mtime, _khp_cache_path
     history_path = get_history_path(seq_path)
     if not history_path or not os.path.exists(history_path):
         return []
 
     try:
+        mtime = os.path.getmtime(history_path)
+        if _khp_cache is not None and mtime == _khp_mtime and history_path == _khp_cache_path:
+            return _khp_cache
         with open(history_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
-            return data.get("calibrations", [])
+        cals = data.get("calibrations", [])
+        _khp_cache = cals
+        _khp_mtime = mtime
+        _khp_cache_path = history_path
+        return cals
     except Exception as e:
         logger.error(f"Error carregant històric KHP: {e}")
         return []
@@ -2548,6 +2575,7 @@ def save_khp_history(seq_path, calibrations):
     """
     Guarda l'històric de calibracions KHP.
     """
+    global _khp_cache, _khp_mtime, _khp_cache_path
     history_path = get_history_path(seq_path)
     if not history_path:
         return False
@@ -2560,6 +2588,9 @@ def save_khp_history(seq_path, calibrations):
         }
         with open(history_path, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2, ensure_ascii=False, cls=NumpyEncoder)
+        _khp_cache = None  # Invalidar cache
+        _khp_mtime = 0
+        _khp_cache_path = None
         return True
     except Exception as e:
         logger.error(f"Error guardant històric KHP: {e}")

@@ -1557,7 +1557,9 @@ class ImportPanel(QWidget):
 
             elif file_type == "dad":
                 # Provar primer Export3D, després DAD1A
-                df, status = llegir_dad_export3d(full_path)
+                from hpsec_config import get_config
+                _wl_keep = get_config().get("wavelengths", "selected")
+                df, status = llegir_dad_export3d(full_path, wavelengths_to_keep=_wl_keep)
                 if df.empty or "Error" in status:
                     df, status = llegir_dad_1a(full_path)
 
