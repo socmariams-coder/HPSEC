@@ -1065,7 +1065,13 @@ class ReviewSummaryPanel(QWidget):
                 "mode": method,
             }
 
-            # add_calibration
+            # Preparar regression_data complet per persistir al JSON
+            reg_data = dict(self._seq_cal_regression) if self._seq_cal_regression else {}
+            reg_data['mode'] = method
+            reg_data['signal'] = 'direct'
+            reg_data['model'] = reg_data.get('model', 'intercept')
+
+            # add_calibration (amb regression_data per persistència)
             cal_id = add_calibration(
                 rf_mass_cal_values=rf_values,
                 source=source,
@@ -1074,6 +1080,7 @@ class ReviewSummaryPanel(QWidget):
                 n_points=n_pts,
                 reason=f"SEQ_CAL wizard: {seq_name}",
                 intercept_values=intercept_values,
+                regression_data=reg_data,
             )
 
             if not cal_id:

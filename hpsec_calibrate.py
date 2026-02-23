@@ -632,7 +632,8 @@ def register_qc_result(seq_name, seq_date, qc_result, khp_data):
 
 
 def add_calibration(rf_mass_cal_values, source, valid_from, r2=None, n_points=None,
-                    conditions=None, reason="", intercept_values=None):
+                    conditions=None, reason="", intercept_values=None,
+                    regression_data=None):
     """
     Afegeix una nova calibració i tanca l'anterior.
 
@@ -644,6 +645,22 @@ def add_calibration(rf_mass_cal_values, source, valid_from, r2=None, n_points=No
         n_points: Nombre de punts usats
         conditions: dict amb condicions (column_type, flow_rate, etc.)
         reason: Motiu del canvi
+        intercept_values: dict amb intercepts per senyal/mode
+        regression_data: dict complet de la regressió (punts, residuals, stats).
+            Estructura esperada (de fit_calibration_from_history):
+            {
+                "rf_mass_cal": float, "intercept": float, "r2": float,
+                "n_points": int, "residuals_rms": float,
+                "model": str,  # "intercept" o "origin"
+                "signal": str,  # "direct", "uib", "254"
+                "mode": str,  # "COLUMN", "BP"
+                "points": [
+                    {"seq_name": str, "date": str, "conc_ppm": float,
+                     "volume_uL": float, "ug_doc": float, "area": float,
+                     "rf_mass": float, "residual": float, "y_pred": float,
+                     "excluded": bool (opcional)}
+                ]
+            }
 
     Returns:
         str: ID de la nova calibració o None si error
@@ -700,12 +717,88 @@ def add_calibration(rf_mass_cal_values, source, valid_from, r2=None, n_points=No
         }
     }
 
+    # Guardar dades completes de regressió (punts, residuals, stats)
+    if regression_data:
+        new_cal['regression_data'] = _sanitize_regression_data(regression_data)
+
     ref['calibrations'].insert(0, new_cal)
     ref['active_calibration_id'] = cal_id
 
     if save_calibration_reference(ref):
         return cal_id
     return None
+
+
+def _sanitize_regression_data(reg_data):
+    """
+    Neteja les dades de regressió per serialització JSON.
+
+    Converteix numpy a Python natiu, selecciona camps rellevants dels punts,
+    i afegeix stats per concentració.
+
+    Args:
+        reg_data: dict retornat per fit_calibration_from_history()
+
+    Returns:
+        dict net per a JSON (sense numpy, sense camps innecessaris)
+    """
+    def _to_python(val):
+        """Converteix numpy scalar a Python natiu."""
+        if hasattr(val, 'item'):
+            return val.item()
+        return val
+
+    sanitized = {
+        'rf_mass_cal': _to_python(reg_data.get('rf_mass_cal', 0)),
+        'intercept': _to_python(reg_data.get('intercept', 0)),
+        'r2': _to_python(reg_data.get('r2', 0)),
+        'n_points': int(reg_data.get('n_points', 0)),
+        'residuals_rms': _to_python(reg_data.get('residuals_rms', 0)),
+        'model': reg_data.get('model', 'intercept'),
+        'signal': reg_data.get('signal', 'direct'),
+        'mode': reg_data.get('mode', ''),
+    }
+
+    # Punts individuals
+    points = reg_data.get('points', [])
+    clean_points = []
+    for p in points:
+        clean_points.append({
+            'seq_name': str(p.get('seq_name', '')),
+            'date': str(p.get('date', '')),
+            'conc_ppm': _to_python(p.get('conc_ppm', 0)),
+            'volume_uL': _to_python(p.get('volume_uL', 0)),
+            'ug_doc': _to_python(p.get('ug_doc', 0)),
+            'area': _to_python(p.get('area', 0)),
+            'rf_mass': _to_python(p.get('rf_mass', 0)),
+            'residual': _to_python(p.get('residual', 0)),
+            'y_pred': _to_python(p.get('y_pred', 0)),
+            'excluded': bool(p.get('excluded', False)),
+        })
+    sanitized['points'] = clean_points
+
+    # Stats per concentració (per la taula de l'informe)
+    conc_stats = {}
+    from collections import defaultdict
+    by_conc = defaultdict(list)
+    for p in clean_points:
+        if not p.get('excluded'):
+            by_conc[p['conc_ppm']].append(p)
+
+    for conc, pts in sorted(by_conc.items()):
+        areas = [p['area'] for p in pts]
+        rfs = [p['rf_mass'] for p in pts]
+        conc_stats[str(conc)] = {
+            'n': len(pts),
+            'area_mean': sum(areas) / len(areas),
+            'area_std': float(np.std(areas)) if len(areas) > 1 else 0,
+            'rf_mean': sum(rfs) / len(rfs),
+            'rf_std': float(np.std(rfs)) if len(rfs) > 1 else 0,
+            'rf_cv_pct': float(np.std(rfs) / np.mean(rfs) * 100) if len(rfs) > 1 and np.mean(rfs) > 0 else 0,
+        }
+    sanitized['stats_per_concentration'] = conc_stats
+
+    return sanitized
 
 
 # =============================================================================
