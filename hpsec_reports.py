@@ -1379,6 +1379,527 @@ def _plot_analyzed_sample(ax, sample_name, sample_data):
 
 
 # =============================================================================
+# REPORT CALIBRACIÓ
+# =============================================================================
+
+def generate_calibration_report(calibration=None, output_path=None):
+    """
+    Genera informe PDF de calibració.
+
+    Llegeix TOTES les dades del Calibration_Reference.json i KHP_History.json.
+    NO recalcula regressions — usa les dades emmagatzemades.
+
+    Args:
+        calibration: dict de calibració específica (None = activa).
+                     Ha de contenir 'regression_data' amb punts i stats.
+        output_path: carpeta de sortida (None = REGISTRY/)
+
+    Returns:
+        str: path del PDF generat, o None si error
+    """
+    import json as _json
+    from hpsec_calibrate import (
+        load_calibration_reference, get_active_global_calibration,
+        get_registry_folder, compute_calibration_fingerprint,
+        load_khp_history
+    )
+
+    apply_style()
+
+    # Obtenir calibració
+    if calibration is None:
+        calibration = get_active_global_calibration()
+    if not calibration:
+        logger.error("No hi ha calibració per generar informe")
+        return None
+
+    # Dades de regressió (guardades al JSON)
+    reg = calibration.get('regression_data', {})
+    points = reg.get('points', [])
+    stats_conc = reg.get('stats_per_concentration', {})
+
+    # Output path
+    if output_path is None:
+        registry = get_registry_folder()
+        if registry:
+            output_path = registry
+        else:
+            output_path = os.path.dirname(os.path.abspath(__file__))
+
+    os.makedirs(output_path, exist_ok=True)
+    ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+    cal_id = calibration.get('id', 'unknown')
+    pdf_path = os.path.join(output_path, f"REPORT_Calibracio_{ts}.pdf")
+
+    # Dades bàsiques
+    rf_cal = reg.get('rf_mass_cal', 0)
+    intercept = reg.get('intercept', 0)
+    r2 = reg.get('r2', calibration.get('r2', 0))
+    n_pts = reg.get('n_points', calibration.get('n_points', 0))
+    rms = reg.get('residuals_rms', 0)
+    model_type = reg.get('model', calibration.get('model', 'intercept'))
+    mode = reg.get('mode', calibration.get('source', {}).get('mode', 'COLUMN'))
+    signal = reg.get('signal', 'direct')
+    fingerprint = compute_calibration_fingerprint(calibration)
+
+    # Extreure RF per mode des del dict anidat
+    rf_values = calibration.get('rf_mass_cal', {})
+    intercept_values = calibration.get('intercept', {})
+
+    def _extract_rf(sig, mod):
+        sig_data = rf_values.get(sig, {})
+        return sig_data.get(mod, 0) if isinstance(sig_data, dict) else 0
+
+    def _extract_int(sig, mod):
+        if isinstance(intercept_values, (int, float)):
+            return intercept_values
+        sig_data = intercept_values.get(sig, {})
+        return sig_data.get(mod, 0) if isinstance(sig_data, dict) else 0
+
+    # Historial KHP per gràfic temporal i QC (seq_path=None → usa REGISTRY global)
+    khp_history = load_khp_history(None) or []
+
+    # All calibrations for history context
+    ref = load_calibration_reference() or {}
+    all_calibrations = ref.get('calibrations', [])
+
+    with PdfPages(pdf_path) as pdf:
+        # =====================================================================
+        # PÀGINA 1: Resum executiu
+        # =====================================================================
+        fig = plt.figure(figsize=(8.27, 11.69))  # A4
+        fig.patch.set_facecolor('white')
+
+        draw_header(fig, "INFORME DE CALIBRACIÓ",
+                   f"Calibració {cal_id}", page_num=1, total_pages=5)
+
+        # Taula resum
+        ax_info = fig.add_axes([0.05, 0.68, 0.9, 0.16])
+        ax_info.axis('off')
+
+        valid_from = calibration.get('valid_from', '—')
+        valid_to = calibration.get('valid_to', 'Vigent')
+        created = calibration.get('metadata', {}).get('created_date', '—')
+        source_desc = calibration.get('source', {}).get('description', '—')
+        seq_refs = ", ".join(calibration.get('source', {}).get('seq_references', []))
+
+        info_data = [
+            ["PARÀMETRE", "VALOR", "PARÀMETRE", "VALOR"],
+            ["ID", cal_id, "Vigent des de", str(valid_from)],
+            ["Model", model_type, "Vigent fins", str(valid_to) if valid_to else "Vigent"],
+            ["Mode", mode, "Creat", str(created)],
+            ["Font", source_desc[:30], "SEQs referència", seq_refs[:30] if seq_refs else "—"],
+            ["Fingerprint", fingerprint[:16], "Motiu", calibration.get('metadata', {}).get('reason', '—')[:30]],
+        ]
+
+        tbl = ax_info.table(cellText=info_data, loc='center', cellLoc='center',
+                            colWidths=[0.18, 0.32, 0.18, 0.32])
+        tbl.auto_set_font_size(False)
+        tbl.set_fontsize(8)
+        tbl.scale(1.0, 1.8)
+        for j in range(4):
+            tbl[(0, j)].set_facecolor(COLORS["primary"])
+            tbl[(0, j)].set_text_props(color='white', fontweight='bold')
+
+        # Taula paràmetres per mode
+        ax_params = fig.add_axes([0.05, 0.50, 0.9, 0.14])
+        ax_params.axis('off')
+
+        params_data = [
+            ["SENYAL / MODE", "RF (slope)", "Intercept", "R²", "N punts", "RMS"],
+            ["Direct / COLUMN", f"{_extract_rf('direct', 'column'):.1f}",
+             f"{_extract_int('direct', 'column'):.1f}", "", "", ""],
+            ["Direct / BP", f"{_extract_rf('direct', 'bp'):.1f}",
+             f"{_extract_int('direct', 'bp'):.1f}", "", "", ""],
+        ]
+
+        # Afegir R² i RMS a la fila corresponent al mode de la regressió
+        mode_key = mode.upper()
+        for i, row in enumerate(params_data[1:], 1):
+            row_mode = "COLUMN" if "COLUMN" in row[0] else "BP"
+            if row_mode == mode_key:
+                row[3] = f"{r2:.6f}" if r2 else "—"
+                row[4] = str(n_pts)
+                row[5] = f"{rms:.2f}" if rms else "—"
+
+        tbl2 = ax_params.table(cellText=params_data, loc='center', cellLoc='center',
+                               colWidths=[0.25, 0.15, 0.15, 0.15, 0.15, 0.15])
+        tbl2.auto_set_font_size(False)
+        tbl2.set_fontsize(8)
+        tbl2.scale(1.0, 1.8)
+        for j in range(6):
+            tbl2[(0, j)].set_facecolor(COLORS["dark"])
+            tbl2[(0, j)].set_text_props(color='white', fontweight='bold')
+
+        # Equació
+        if model_type == 'origin':
+            eq_str = f"Àrea = {rf_cal:.1f} × µg_DOC   (R² = {r2:.6f})"
+        else:
+            eq_str = f"Àrea = {rf_cal:.1f} × µg_DOC + {intercept:.1f}   (R² = {r2:.6f})"
+
+        fig.text(0.5, 0.44, eq_str, ha='center', va='top',
+                fontsize=12, fontfamily='monospace',
+                bbox=dict(boxstyle='round,pad=0.5', facecolor='#e8f4fd', edgecolor='#2980B9'))
+
+        # Stats per concentració (si disponible)
+        if stats_conc:
+            ax_stats = fig.add_axes([0.05, 0.15, 0.9, 0.24])
+            ax_stats.axis('off')
+
+            stats_header = ["Conc (ppm)", "N", "Àrea mitj", "Àrea σ", "RF mitj", "RF σ", "RF CV%"]
+            stats_rows = []
+            for conc_str, st in sorted(stats_conc.items(), key=lambda x: float(x[0])):
+                stats_rows.append([
+                    f"{float(conc_str):g}",
+                    str(st.get('n', 0)),
+                    f"{st.get('area_mean', 0):.1f}",
+                    f"{st.get('area_std', 0):.1f}",
+                    f"{st.get('rf_mean', 0):.1f}",
+                    f"{st.get('rf_std', 0):.1f}",
+                    f"{st.get('rf_cv_pct', 0):.1f}%",
+                ])
+
+            stats_data = [stats_header] + stats_rows
+            tbl3 = ax_stats.table(cellText=stats_data, loc='upper center', cellLoc='center',
+                                  colWidths=[0.12, 0.08, 0.16, 0.14, 0.16, 0.14, 0.12])
+            tbl3.auto_set_font_size(False)
+            tbl3.set_fontsize(8)
+            tbl3.scale(1.0, 1.6)
+            for j in range(7):
+                tbl3[(0, j)].set_facecolor(COLORS["primary"])
+                tbl3[(0, j)].set_text_props(color='white', fontweight='bold')
+
+            # Colorar CV alts
+            for i, row in enumerate(stats_rows, 1):
+                cv = float(row[6].rstrip('%'))
+                if cv > 20:
+                    tbl3[(i, 6)].set_facecolor('#f8d7da')
+                elif cv > 10:
+                    tbl3[(i, 6)].set_facecolor('#fff3cd')
+
+        draw_footer(fig, "Serveis Tècnics de Recerca")
+        pdf.savefig(fig, dpi=150)
+        plt.close(fig)
+
+        # =====================================================================
+        # PÀGINA 2: Scatter regressió + residuals
+        # =====================================================================
+        fig = plt.figure(figsize=(11.69, 8.27))  # A4 landscape
+        fig.patch.set_facecolor('white')
+
+        draw_header(fig, "REGRESSIÓ LINEAL", page_num=2, total_pages=5)
+
+        if points:
+            gs = GridSpec(1, 2, figure=fig,
+                         left=0.08, right=0.95, top=0.85, bottom=0.12,
+                         wspace=0.25, width_ratios=[2, 1])
+
+            # Scatter principal
+            ax1 = fig.add_subplot(gs[0])
+
+            x_inc = [p['ug_doc'] for p in points if not p.get('excluded')]
+            y_inc = [p['area'] for p in points if not p.get('excluded')]
+            x_exc = [p['ug_doc'] for p in points if p.get('excluded')]
+            y_exc = [p['area'] for p in points if p.get('excluded')]
+
+            if x_inc:
+                ax1.scatter(x_inc, y_inc, c=COLORS["primary"], s=50, zorder=5,
+                           edgecolors='white', linewidth=0.5, label='Inclòs')
+            if x_exc:
+                ax1.scatter(x_exc, y_exc, c=COLORS["danger"], s=50, marker='x',
+                           zorder=5, linewidth=1.5, label='Exclòs')
+
+            # Recta de regressió
+            all_x = [p['ug_doc'] for p in points]
+            if all_x and rf_cal > 0:
+                x_line = np.linspace(0, max(all_x) * 1.1, 100)
+                y_line = rf_cal * x_line + intercept
+                ax1.plot(x_line, y_line, '-', color=COLORS["success"], linewidth=2,
+                        label=f'Regressió (RF={rf_cal:.1f})')
+
+                # Banda de predicció 95% (si ≥3 punts)
+                n = len(x_inc)
+                if n >= 3:
+                    try:
+                        from scipy.stats import t as t_dist
+                        x_arr = np.array(x_inc)
+                        y_arr = np.array(y_inc)
+                        x_mean = np.mean(x_arr)
+                        Sxx = np.sum((x_arr - x_mean)**2)
+                        mse = np.sum((y_arr - (rf_cal * x_arr + intercept))**2) / (n - 2)
+                        t_val = t_dist.ppf(0.975, n - 2)
+
+                        se_pred = np.sqrt(mse * (1 + 1/n + (x_line - x_mean)**2 / Sxx))
+                        ax1.fill_between(x_line,
+                                        y_line - t_val * se_pred,
+                                        y_line + t_val * se_pred,
+                                        alpha=0.12, color=COLORS["primary"],
+                                        label='Predicció 95%')
+                    except Exception:
+                        pass
+
+            ax1.set_xlabel('µg DOC injectat', fontsize=10)
+            ax1.set_ylabel('Àrea', fontsize=10)
+            ax1.set_title(f'Regressió {mode} — {signal}', fontsize=11, fontweight='bold')
+            ax1.legend(fontsize=8, loc='upper left')
+            ax1.grid(True, alpha=0.3)
+            ax1.spines['top'].set_visible(False)
+            ax1.spines['right'].set_visible(False)
+
+            # Etiquetes dels punts (seq_name abreujat)
+            for p in points:
+                if not p.get('excluded'):
+                    label = p.get('seq_name', '')[:6]
+                    ax1.annotate(label, (p['ug_doc'], p['area']),
+                               fontsize=5, alpha=0.5, ha='center', va='bottom',
+                               xytext=(0, 4), textcoords='offset points')
+
+            # Residuals
+            ax2 = fig.add_subplot(gs[1])
+            inc_pts = [p for p in points if not p.get('excluded')]
+            if inc_pts:
+                x_res = [p['ug_doc'] for p in inc_pts]
+                y_res = [p['residual'] for p in inc_pts]
+                colors_res = [COLORS["success"] if abs(r) < rms * 2 else COLORS["warning"]
+                             for r in y_res]
+                ax2.bar(range(len(x_res)), y_res, color=colors_res, alpha=0.7)
+                ax2.axhline(0, color='black', linewidth=0.5)
+                ax2.axhline(rms, color=COLORS["warning"], linewidth=0.5, linestyle='--', alpha=0.5)
+                ax2.axhline(-rms, color=COLORS["warning"], linewidth=0.5, linestyle='--', alpha=0.5)
+
+                # Etiquetes x: conc ppm
+                ax2.set_xticks(range(len(x_res)))
+                ax2.set_xticklabels([f"{p['conc_ppm']:g}" for p in inc_pts],
+                                    fontsize=7, rotation=45)
+                ax2.set_xlabel('Concentració (ppm)', fontsize=8)
+            ax2.set_ylabel('Residual', fontsize=8)
+            ax2.set_title('Residuals', fontsize=10, fontweight='bold')
+            ax2.grid(True, alpha=0.3, axis='y')
+            ax2.spines['top'].set_visible(False)
+            ax2.spines['right'].set_visible(False)
+
+        else:
+            ax = fig.add_axes([0.1, 0.1, 0.8, 0.7])
+            ax.text(0.5, 0.5,
+                   "Sense dades de regressió\n(regression_data no disponible al JSON)",
+                   ha='center', va='center', fontsize=14, color='gray')
+            ax.axis('off')
+
+        draw_footer(fig, "Serveis Tècnics de Recerca")
+        pdf.savefig(fig, dpi=150)
+        plt.close(fig)
+
+        # =====================================================================
+        # PÀGINA 3: Evolució temporal RF (historial KHP)
+        # =====================================================================
+        fig = plt.figure(figsize=(11.69, 8.27))
+        fig.patch.set_facecolor('white')
+
+        draw_header(fig, "EVOLUCIÓ TEMPORAL RF", page_num=3, total_pages=5)
+
+        ax = fig.add_axes([0.08, 0.12, 0.84, 0.72])
+
+        # Filtrar entrades vàlides del historial
+        mode_upper = mode.upper()
+        hist_entries = []
+        for entry in khp_history:
+            if entry.get('mode', '').upper() != mode_upper:
+                continue
+            if not entry.get('valid_for_calibration', True):
+                continue
+            rf = entry.get('rf_mass', 0)
+            if rf <= 0:
+                continue
+            hist_entries.append(entry)
+
+        if hist_entries:
+            # Separar CAL vs producció
+            cal_entries = [e for e in hist_entries if '_CAL' in e.get('seq_name', '').upper()]
+            prod_entries = [e for e in hist_entries if '_CAL' not in e.get('seq_name', '').upper()]
+
+            # X = índex seqüencial
+            for i, entries in enumerate([prod_entries, cal_entries]):
+                if not entries:
+                    continue
+                x_vals = list(range(len(entries)))
+                y_vals = [e['rf_mass'] for e in entries]
+                labels = [e.get('seq_name', '')[:8] for e in entries]
+
+                color = COLORS["doc_direct"] if i == 0 else COLORS["success"]
+                marker = 'o' if i == 0 else 's'
+                label = 'Producció' if i == 0 else 'SEQ_CAL'
+                ax.scatter(x_vals, y_vals, c=color, s=25, marker=marker,
+                          alpha=0.6, label=label, zorder=3)
+
+            # Línia RF vigent
+            if rf_cal > 0:
+                ax.axhline(rf_cal, color=COLORS["success"], linewidth=1.5,
+                          linestyle='-', alpha=0.8, label=f'RF vigent ({rf_cal:.0f})')
+                ax.axhspan(rf_cal * 0.9, rf_cal * 1.1, alpha=0.08, color=COLORS["success"])
+
+            ax.set_xlabel('Entrada (ordre cronològic)', fontsize=9)
+            ax.set_ylabel('RF mass (Àrea / µg DOC)', fontsize=9)
+            ax.set_title(f'Evolució RF — {mode} {signal}', fontsize=11, fontweight='bold')
+            ax.legend(fontsize=8, loc='upper right')
+            ax.grid(True, alpha=0.3)
+            ax.spines['top'].set_visible(False)
+            ax.spines['right'].set_visible(False)
+        else:
+            ax.text(0.5, 0.5, f"Sense historial KHP per mode {mode}",
+                   ha='center', va='center', fontsize=14, color='gray')
+            ax.axis('off')
+
+        draw_footer(fig, "Serveis Tècnics de Recerca")
+        pdf.savefig(fig, dpi=150)
+        plt.close(fig)
+
+        # =====================================================================
+        # PÀGINA 4: QC Levey-Jennings
+        # =====================================================================
+        fig = plt.figure(figsize=(11.69, 8.27))
+        fig.patch.set_facecolor('white')
+
+        draw_header(fig, "CONTROL DE QUALITAT (LEVEY-JENNINGS)", page_num=4, total_pages=5)
+
+        ax = fig.add_axes([0.08, 0.12, 0.84, 0.72])
+
+        # Producció: calcular desviació % vs recta vigent
+        prod_entries = [e for e in hist_entries if '_CAL' not in e.get('seq_name', '').upper()]
+        if prod_entries and rf_cal > 0:
+            dev_data = []
+            for e in prod_entries:
+                area = e.get('area', 0)
+                conc = e.get('conc_ppm', 0)
+                vol = e.get('volume_uL', 0)
+                if conc > 0 and vol > 0 and area > 0:
+                    ug_expected = conc * vol / 1000.0
+                    area_expected = rf_cal * ug_expected + intercept
+                    dev_pct = (area - area_expected) / area_expected * 100 if area_expected > 0 else 0
+                    dev_data.append({
+                        'seq': e.get('seq_name', '')[:10],
+                        'dev_pct': dev_pct,
+                        'conc': conc,
+                    })
+
+            if dev_data:
+                x = list(range(len(dev_data)))
+                y = [d['dev_pct'] for d in dev_data]
+
+                # Barres colorades per desviació
+                colors_bars = []
+                for d in y:
+                    if abs(d) <= 10:
+                        colors_bars.append(COLORS["success"])
+                    elif abs(d) <= 20:
+                        colors_bars.append(COLORS["warning"])
+                    else:
+                        colors_bars.append(COLORS["danger"])
+
+                ax.bar(x, y, color=colors_bars, alpha=0.7, width=0.8)
+                ax.axhline(0, color='black', linewidth=0.8)
+
+                # Línies de control
+                for lim, style, label in [(10, '--', '±10%'), (20, ':', '±20%')]:
+                    ax.axhline(lim, color=COLORS["warning"], linewidth=0.8, linestyle=style, alpha=0.7)
+                    ax.axhline(-lim, color=COLORS["warning"], linewidth=0.8, linestyle=style, alpha=0.7)
+
+                ax.axhspan(-10, 10, alpha=0.05, color=COLORS["success"])
+                ax.axhspan(-20, -10, alpha=0.03, color=COLORS["warning"])
+                ax.axhspan(10, 20, alpha=0.03, color=COLORS["warning"])
+
+                # Estadístiques
+                n_ok = sum(1 for d in y if abs(d) <= 10)
+                n_attn = sum(1 for d in y if 10 < abs(d) <= 20)
+                n_out = sum(1 for d in y if abs(d) > 20)
+                total = len(y)
+
+                status_text = f"EN CONTROL: {n_ok}/{total}  |  ATENCIÓ: {n_attn}  |  FORA: {n_out}"
+                status_color = COLORS["success"] if n_out == 0 and n_attn <= total * 0.1 else (
+                    COLORS["warning"] if n_out <= 1 else COLORS["danger"])
+                fig.text(0.5, 0.88, status_text, ha='center', fontsize=10,
+                        fontweight='bold', color=status_color)
+
+                ax.set_xlabel('Entrada KHP producció', fontsize=9)
+                ax.set_ylabel('Desviació vs recta vigent (%)', fontsize=9)
+                ax.set_title(f'Levey-Jennings — {mode}', fontsize=11, fontweight='bold')
+                ax.grid(True, alpha=0.3, axis='y')
+                ax.spines['top'].set_visible(False)
+                ax.spines['right'].set_visible(False)
+            else:
+                ax.text(0.5, 0.5, "No s'han pogut calcular desviacions",
+                       ha='center', va='center', fontsize=14, color='gray')
+                ax.axis('off')
+        else:
+            msg = "Sense dades de producció" if not prod_entries else "RF vigent = 0"
+            ax.text(0.5, 0.5, msg, ha='center', va='center', fontsize=14, color='gray')
+            ax.axis('off')
+
+        draw_footer(fig, "Serveis Tècnics de Recerca")
+        pdf.savefig(fig, dpi=150)
+        plt.close(fig)
+
+        # =====================================================================
+        # PÀGINA 5: Historial de calibracions
+        # =====================================================================
+        fig = plt.figure(figsize=(8.27, 11.69))  # A4 portrait
+        fig.patch.set_facecolor('white')
+
+        draw_header(fig, "HISTORIAL DE CALIBRACIONS", page_num=5, total_pages=5)
+
+        ax_hist = fig.add_axes([0.05, 0.15, 0.9, 0.70])
+        ax_hist.axis('off')
+
+        # Taula amb totes les calibracions
+        hist_header = ["ID", "Des de", "Fins", "RF COLUMN", "RF BP", "R²", "Punts", "Font"]
+        hist_rows = []
+        for cal in all_calibrations[:20]:  # Màxim 20 entrades
+            rf_col_val = 0
+            rf_bp_val = 0
+            rf_dict = cal.get('rf_mass_cal', {})
+            if isinstance(rf_dict, dict):
+                direct = rf_dict.get('direct', {})
+                if isinstance(direct, dict):
+                    rf_col_val = direct.get('column', 0)
+                    rf_bp_val = direct.get('bp', 0)
+
+            src = cal.get('source', {}).get('type', '')
+            hist_rows.append([
+                cal.get('id', '—')[:18],
+                str(cal.get('valid_from', '—'))[:10],
+                str(cal.get('valid_to', 'Vigent'))[:10] if cal.get('valid_to') else 'Vigent',
+                f"{rf_col_val:.0f}" if rf_col_val else "—",
+                f"{rf_bp_val:.0f}" if rf_bp_val else "—",
+                f"{cal.get('r2', 0):.4f}" if cal.get('r2') else "—",
+                str(cal.get('n_points', '—')),
+                src[:12],
+            ])
+
+        if hist_rows:
+            hist_data = [hist_header] + hist_rows
+            tbl4 = ax_hist.table(cellText=hist_data, loc='upper center', cellLoc='center',
+                                 colWidths=[0.18, 0.10, 0.10, 0.10, 0.10, 0.12, 0.08, 0.12])
+            tbl4.auto_set_font_size(False)
+            tbl4.set_fontsize(7)
+            tbl4.scale(1.0, 1.5)
+            for j in range(8):
+                tbl4[(0, j)].set_facecolor(COLORS["primary"])
+                tbl4[(0, j)].set_text_props(color='white', fontweight='bold')
+
+            # Marcar activa
+            for i, cal in enumerate(all_calibrations[:20], 1):
+                if cal.get('is_active'):
+                    for j in range(8):
+                        tbl4[(i, j)].set_facecolor('#d4edda')
+
+        draw_footer(fig, "Serveis Tècnics de Recerca")
+        pdf.savefig(fig, dpi=150)
+        plt.close(fig)
+
+    logger.info(f"Informe calibració generat: {pdf_path}")
+    return pdf_path
+
+
+# =============================================================================
 # TEST STANDALONE
 # =============================================================================
 if __name__ == "__main__":
