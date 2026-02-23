@@ -2883,10 +2883,11 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
     smoothness = anomaly_info.get('smoothness', 100.0)
 
     # Reparació cim irregular: intentar reparar amb paràbola si detectat
+    # Aplica tant per IRREGULAR_TOP (pic-vall-pic) com ROUGH_TOP (smoothness baixa)
     irregular_top_repaired = False
     repair_info = None
     area_original = peak_info['area']
-    if has_irregular_top:
+    if has_irregular_top or has_irregular:
         try:
             y_repaired_seg, repair_info, was_repaired = repair_with_parabola(
                 t_peak_seg, y_peak_seg
