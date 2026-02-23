@@ -1431,15 +1431,25 @@ def generate_calibration_report(calibration=None, output_path=None):
     cal_id = calibration.get('id', 'unknown')
     pdf_path = os.path.join(output_path, f"REPORT_Calibracio_{ts}.pdf")
 
-    # Dades bàsiques
-    rf_cal = reg.get('rf_mass_cal', 0)
-    intercept = reg.get('intercept', 0)
-    r2 = reg.get('r2', calibration.get('r2', 0))
-    n_pts = reg.get('n_points', calibration.get('n_points', 0))
-    rms = reg.get('residuals_rms', 0)
-    model_type = reg.get('model', calibration.get('model', 'intercept'))
+    # Dades bàsiques (protegir contra None i dict — calibracions antigues pre-regression_data)
     mode = reg.get('mode', calibration.get('source', {}).get('mode', 'COLUMN'))
     signal = reg.get('signal', 'direct')
+    rf_cal = reg.get('rf_mass_cal') or 0
+    intercept_raw = reg.get('intercept') or 0
+    # Si rf_cal/intercept són dict (ve del nivell calibration), extreure valor escalar
+    if isinstance(rf_cal, dict):
+        rf_cal = rf_cal.get(signal, {}).get(mode.lower(), 0) if isinstance(rf_cal.get(signal), dict) else 0
+    if isinstance(intercept_raw, dict):
+        intercept_raw = intercept_raw.get(signal, {}).get(mode.lower(), 0) if isinstance(intercept_raw.get(signal), dict) else 0
+    intercept = float(intercept_raw) if intercept_raw else 0
+    rf_cal = float(rf_cal) if rf_cal else 0
+    r2 = reg.get('r2', calibration.get('r2', 0)) or 0
+    if isinstance(r2, dict):
+        r2 = r2.get(mode.lower(), 0) or 0
+    r2 = float(r2)
+    n_pts = reg.get('n_points', calibration.get('n_points', 0)) or 0
+    rms = reg.get('residuals_rms', 0) or 0
+    model_type = reg.get('model', calibration.get('model', 'intercept')) or 'intercept'
     fingerprint = compute_calibration_fingerprint(calibration)
 
     # Extreure RF per mode des del dict anidat
@@ -1869,7 +1879,7 @@ def generate_calibration_report(calibration=None, output_path=None):
                 str(cal.get('valid_to', 'Vigent'))[:10] if cal.get('valid_to') else 'Vigent',
                 f"{rf_col_val:.0f}" if rf_col_val else "—",
                 f"{rf_bp_val:.0f}" if rf_bp_val else "—",
-                f"{cal.get('r2', 0):.4f}" if cal.get('r2') else "—",
+                f"{(cal['r2'].get(mode.lower(), 0) if isinstance(cal.get('r2'), dict) else cal.get('r2', 0)):.4f}" if cal.get('r2') else "—",
                 str(cal.get('n_points', '—')),
                 src[:12],
             ])
@@ -1895,7 +1905,8 @@ def generate_calibration_report(calibration=None, output_path=None):
         pdf.savefig(fig, dpi=150)
         plt.close(fig)
 
-    logger.info(f"Informe calibració generat: {pdf_path}")
+    import logging
+    logging.getLogger(__name__).info(f"Informe calibració generat: {pdf_path}")
     return pdf_path
 
 
