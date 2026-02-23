@@ -579,7 +579,7 @@ class AnalyzePanel(QWidget):
         self.seq_cal_info.setWordWrap(True)
         self.seq_cal_info.setStyleSheet(
             "background: #EBF5FB; border-radius: 4px; padding: 8px; "
-            "color: #1A5276; font-weight: normal;"
+            "color: #1A5276; font-weight: normal; font-size: 12px;"
         )
         seq_cal_layout.addWidget(self.seq_cal_info)
 
@@ -597,6 +597,15 @@ class AnalyzePanel(QWidget):
         self.seq_cal_points_table.setAlternatingRowColors(True)
         self.seq_cal_points_table.setMaximumHeight(220)
         self.seq_cal_points_table.verticalHeader().setVisible(False)
+        self.seq_cal_points_table.setStyleSheet("""
+            QTableWidget { font-size: 11px; gridline-color: #ddd; }
+            QTableWidget::item { padding: 2px 4px; }
+            QHeaderView::section {
+                background-color: #f5f5f5; font-weight: bold;
+                font-size: 10px; padding: 4px; border: none;
+                border-bottom: 2px solid #ddd;
+            }
+        """)
         seq_cal_layout.addWidget(self.seq_cal_points_table)
 
         # Resultats regressió
@@ -619,7 +628,7 @@ class AnalyzePanel(QWidget):
         ]
         for key, label_text, row, col in reg_items:
             lbl = QLabel(label_text)
-            lbl.setStyleSheet("font-weight: bold; color: #2C3E50;")
+            lbl.setStyleSheet("font-weight: bold; color: #2C3E50; font-size: 11px;")
             reg_grid.addWidget(lbl, row, col)
             val = QLabel("-")
             val.setStyleSheet("font-size: 13px;")
@@ -825,14 +834,31 @@ class AnalyzePanel(QWidget):
                 (4, f"{ug_doc:.3f}"),
                 (5, f"{area:.1f}"),
                 (6, f"{rf_mass:.0f}"),
-                (7, status_text),
             ]
             for col, text in items:
                 item = QTableWidgetItem(str(text))
                 item.setFlags(item.flags() & ~Qt.ItemIsEditable)
-                if col == 7:
-                    item.setForeground(QColor(status_color))
                 self.seq_cal_points_table.setItem(i, col, item)
+
+            # Col 7: Status badge amb fons color
+            badge_colors = {
+                "OK": ("#D5F5E3", "#27AE60"),
+                "CHECK": ("#FCF3CF", "#E67E22"),
+                "INVALID": ("#FADBD8", "#E74C3C"),
+            }
+            bg, fg = badge_colors.get(status_text, ("#F0F0F0", "#666"))
+            badge = QLabel(f" {status_text} ")
+            badge.setAlignment(Qt.AlignCenter)
+            badge.setStyleSheet(
+                f"background: {bg}; color: {fg}; font-weight: bold; "
+                f"font-size: 10px; border-radius: 3px; padding: 1px 6px;"
+            )
+            badge_w = QWidget()
+            badge_l = QHBoxLayout(badge_w)
+            badge_l.addWidget(badge)
+            badge_l.setAlignment(Qt.AlignCenter)
+            badge_l.setContentsMargins(2, 1, 2, 1)
+            self.seq_cal_points_table.setCellWidget(i, 7, badge_w)
 
     def _on_seq_cal_point_toggled(self, idx, state):
         """Quan l'usuari marca/desmarca un punt de la regressió."""
@@ -919,24 +945,43 @@ class AnalyzePanel(QWidget):
                     x_inc.append(x_val)
                     y_inc.append(y_val)
 
-            ax_main.scatter(x_inc, y_inc, c='#2980B9', s=60, zorder=5,
-                            edgecolors='white', linewidths=0.8, label='Inclosos')
+            # Scatter punts per grups de concentració (color per conc)
+            conc_groups = {}
+            for xi, yi, lbl in zip(x_inc, y_inc, [l for i, l in enumerate(labels) if i not in excluded]):
+                conc_groups.setdefault(lbl, ([], []))
+                conc_groups[lbl][0].append(xi)
+                conc_groups[lbl][1].append(yi)
+
+            cmap_colors = ['#2980B9', '#27AE60', '#8E44AD', '#E67E22', '#E74C3C', '#1ABC9C',
+                           '#34495E', '#F39C12', '#D35400', '#7F8C8D']
+            for idx_c, (lbl, (xs, ys)) in enumerate(sorted(conc_groups.items())):
+                c = cmap_colors[idx_c % len(cmap_colors)]
+                ax_main.scatter(xs, ys, c=c, s=60, zorder=5,
+                                edgecolors='white', linewidths=0.8, label=lbl)
+
             if x_exc:
                 ax_main.scatter(x_exc, y_exc, c='#E74C3C', s=50, marker='x',
                                 zorder=4, linewidths=1.5, label='Exclosos')
 
-            for xi, yi, lbl in zip(x_all, y_all, labels):
-                ax_main.annotate(lbl, (xi, yi), textcoords="offset points",
-                                 xytext=(5, 6), fontsize=7, color='#555')
-
             new_rf = reg_result.get('rf_mass_cal', 0)
             new_intercept = reg_result.get('intercept', 0)
             r2 = reg_result.get('r2', 0)
+            n_pts = reg_result.get('n_points', len(x_inc))
             x_max = max(x_all) * 1.1 if x_all else 1
             x_line = np.linspace(0, x_max, 100)
             y_line = new_rf * x_line + new_intercept
-            ax_main.plot(x_line, y_line, '-', color='#27AE60', linewidth=2,
-                         label=f'Nova: RF={new_rf:.0f}, int={new_intercept:.1f}, R²={r2:.4f}')
+            ax_main.plot(x_line, y_line, '-', color='#27AE60', linewidth=2)
+
+            # Equació com a text overlay al gràfic
+            if abs(new_intercept) > 0.5:
+                eq_text = f"A = {new_rf:.1f} × µg + {new_intercept:.1f}"
+            else:
+                eq_text = f"A = {new_rf:.1f} × µg"
+            eq_text += f"   (R²={r2:.4f}, n={n_pts})"
+            ax_main.text(0.03, 0.97, eq_text, transform=ax_main.transAxes,
+                         fontsize=8, fontfamily='monospace', verticalalignment='top',
+                         bbox=dict(boxstyle='round,pad=0.3', facecolor='white',
+                                   edgecolor='#ccc', alpha=0.9))
 
             # Banda de predicció 95%
             if len(x_inc) >= 3:
@@ -962,7 +1007,7 @@ class AnalyzePanel(QWidget):
             ax_main.set_xlabel('µg DOC injectat', fontsize=9)
             ax_main.set_ylabel('Àrea DOC', fontsize=9)
             ax_main.set_title(f'Recta de Calibració {method}', fontsize=10, fontweight='bold')
-            ax_main.legend(fontsize=7, loc='upper left')
+            ax_main.legend(fontsize=7, loc='lower right')
             ax_main.set_xlim(left=0)
             ax_main.set_ylim(bottom=min(0, min(y_all) - 10) if y_all else 0)
             ax_main.grid(True, alpha=0.3)
