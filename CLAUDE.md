@@ -80,6 +80,10 @@ Mark features as DONE only when code is fully functional end-to-end, not when pl
 - [x] Calibration: KHP DAD 254nm fallback from MasterFile 3-DAD_KHP in manifest loading — DONE
 - [x] Calibration: clean_khp_history() to remove invalid entries (conc=0, area=0) — DONE
 - [x] Export: PDF analysis report (generate_analysis_report.py) — DONE
+- [x] Export: PDF calibration report (generate_calibration_report in hpsec_reports.py) — DONE (e0ba6ca)
+- [x] Calibration: regression_data persisted in Calibration_Reference.json — DONE (ad93a2f)
+- [x] Calibration: PDF report buttons at wizard Step 4 + GlobalCalibrationPanel — DONE (6527509)
+- [x] Calibration: shared comparison HTML + prediction band helpers — DONE (e0ba6ca)
 - [x] Export: SUMMARY.xlsx ampliat (A_UIB, ppm_UIB, A_254, SNR_254, R²_DOC, R²_DAD, Anomalies) — DONE
 - [x] Export: ID sheet with full traceability (RF, intercept, anomalies, batman repair, timeouts) — DONE
 - [x] Export: skip invalid samples (sample_valid=False or "Cap") — DONE
@@ -175,7 +179,46 @@ All exploratory scripts and results live in `research/` — NOT part of the prod
 
 ## Working notes
 
-> Last updated: 2026-02-22
+> Last updated: 2026-02-23
+
+### Informe calibració PDF + regression_data al JSON (2026-02-23)
+
+**Motivació**: L'informe PDF de calibració recalculava la regressió des de KHP_History.
+L'usuari va demanar que TOTES les dades vinguessin del JSON, sense recalcular res.
+
+**Canvis implementats:**
+
+1. **`hpsec_calibrate.py`**: `add_calibration()` nou param `regression_data`.
+   - `_sanitize_regression_data()`: converteix numpy→Python, genera `stats_per_concentration`
+   - El JSON ara guarda: punts (ug_doc, area, residual, y_pred), RMS, stats per conc, model info
+
+2. **`gui/widgets/review_summary_panel.py`**: Passa `regression_data` a `add_calibration()`.
+   - Botó "📄 Generar Informe Calibració (PDF)" visible després d'aplicar
+   - Scatter miniatura: 7×3 (era 6×2.5), amb recta vigent (taronja) i banda predicció 95%
+   - Equació en monospace amb fons blau
+   - Comptador retro: "X/Y SEQs seleccionades"
+   - Comparació via `format_calibration_comparison_html()` compartit
+
+3. **`gui/widgets/global_calibration_panel.py`**: Botó "📄 Generar Informe PDF" al panell global.
+
+4. **`hpsec_reports.py`**: `generate_calibration_report()` — 5 pàgines PDF:
+   - P1: Resum executiu (taula params, equació, stats per concentració)
+   - P2: Scatter regressió + residuals (banda predicció 95%)
+   - P3: Evolució temporal RF des de KHP_History.json
+   - P4: QC Levey-Jennings (desviació % vs recta vigent)
+   - P5: Historial calibracions
+   - **TOT des de JSON** — NO recalcula regressió
+
+5. **`gui/widgets/analyze_panel/_helpers.py`**: Helpers compartits:
+   - `format_calibration_comparison_html()`: taula HTML amb capçalera blava, deltes colorats
+   - `compute_prediction_band()`: interval predicció 95% via scipy t-distribution
+
+6. **`gui/widgets/analyze_panel/panel.py`** (Step 3):
+   - Comparació usa helper compartit (amb fila equació)
+   - Scatter: banda predicció 95%, línies RMS als residuals, etiquetes ppm
+
+**Calibracions antigues** (pre-regression_data) no tindran les pàgines de scatter al PDF.
+Es mostra un missatge informatiu i es genera igualment les pàgines 1, 3, 4, 5.
 
 ### Revisió calibració KHP (EN CURS)
 
