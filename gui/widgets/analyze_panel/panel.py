@@ -798,10 +798,47 @@ class AnalyzePanel(QWidget):
 
         parent_layout.addWidget(self.seq_cal_group)
 
+    def _on_calibration_data_updated(self, cal_data):
+        """Slot cridat quan el CalibrateWorker finalitza i actualitza calibration_data.
+
+        Si l'AnalyzePanel ja ha carregat una anàlisi existent però mostrava
+        la vista estàndard (perquè is_seq_cal no estava disponible al preload),
+        ara re-comprova i canvia a vista SEQ_CAL si cal.
+        """
+        if not self.samples_grouped:
+            return  # No hi ha anàlisi carregada — res a fer
+        if self._is_seq_cal:
+            return  # Ja mostrant vista SEQ_CAL — res a fer
+
+        # Comprovar si ara tenim dades SEQ_CAL
+        if cal_data and cal_data.get('is_seq_cal') and cal_data.get('seq_cal_data'):
+            logger.info("SEQ_CAL data disponible — refrescant vista AnalyzePanel")
+            self._check_and_show_seq_cal()
+
     def _check_and_show_seq_cal(self):
         """Comprova si és SEQ_CAL i mostra la secció de regressió."""
         cal_data = self.main_window.calibration_data
-        if not cal_data or not cal_data.get('is_seq_cal'):
+
+        # Detecció primària: flag is_seq_cal del CalibrateWorker
+        is_seq_cal = cal_data.get('is_seq_cal', False) if cal_data else False
+
+        # Detecció fallback: nom de la SEQ conté _CAL
+        if not is_seq_cal:
+            import os
+            seq_path = self.main_window.seq_path or ""
+            seq_name = os.path.basename(seq_path).upper()
+            if "_CAL" in seq_name:
+                # El nom indica SEQ_CAL però el CalibrateWorker encara no ha
+                # processat les dades (seq_cal_data no disponible).
+                # Si seq_cal_data no existeix, no podem mostrar la regressió.
+                if cal_data and cal_data.get('seq_cal_data'):
+                    is_seq_cal = True
+                else:
+                    # CalibrateWorker no ha acabat — esperem el senyal
+                    # _on_calibration_data_updated() refarà aquesta comprovació
+                    logger.debug("SEQ_CAL per nom però seq_cal_data no disponible — esperant worker")
+
+        if not is_seq_cal:
             self.seq_cal_group.setVisible(False)
             self._is_seq_cal = False
             self.report_btn.setVisible(True)  # Mostrar per seqüències normals
