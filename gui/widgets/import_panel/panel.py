@@ -719,8 +719,8 @@ class ImportPanel(QWidget):
 
         files_parts = []
         if self._data_mode in ["DUAL", "UIB"]:
-            files_parts.append(f"UIB: {uib_used + uib_orphan}")
-        files_parts.append(f"DAD: {dad_used + dad_orphan}")
+            files_parts.append(f"UIB: {uib_used}/{total_injections}")
+        files_parts.append(f"DAD: {dad_used}/{total_injections}")
         self.files_label.setText(" · ".join(files_parts))
         self.info_frame.setVisible(True)
 
