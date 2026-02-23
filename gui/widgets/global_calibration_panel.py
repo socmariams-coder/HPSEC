@@ -1319,11 +1319,17 @@ class CalibrationLineView(QWidget):
         self._retro_frame.setVisible(checked)
 
     def _populate_retro_list(self):
-        """Pobla la llista de SEQs disponibles per requantificació."""
+        """Pobla la llista de SEQs disponibles per requantificació.
+
+        Filtra per mode (COLUMN/BP) — no es poden barrejar.
+        """
         # Netejar
         for cb in self._retro_seq_checkboxes:
             cb.deleteLater()
         self._retro_seq_checkboxes = []
+
+        # Mode actual de la calibració
+        current_mode = self._get_mode().upper()  # "COLUMN" o "BP"
 
         # Buscar JSONs d'anàlisi existents
         from hpsec_config import get_config
@@ -1333,9 +1339,8 @@ class CalibrationLineView(QWidget):
             self._retro_info_label.setText("No s'ha trobat la carpeta de dades")
             return
 
-        valid_from = self._apply_valid_from.date().toString("yyyy-MM-dd")
-
         analysis_jsons = []
+        skipped_other_mode = 0
         for seq_dir in sorted(os.listdir(data_folder_root)):
             seq_path = os.path.join(data_folder_root, seq_dir)
             if not os.path.isdir(seq_path):
@@ -1343,16 +1348,36 @@ class CalibrationLineView(QWidget):
             if "_CAL" in seq_dir.upper():
                 continue  # No requantificar SEQ_CAL
             json_path = os.path.join(seq_path, "CHECK", "data", "analysis.json")
-            if os.path.exists(json_path):
-                analysis_jsons.append((seq_dir, json_path))
+            if not os.path.exists(json_path):
+                continue
+
+            # Llegir method del JSON per filtrar per mode
+            try:
+                with open(json_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                seq_method = data.get("method", "COLUMN").upper()
+            except Exception:
+                seq_method = "COLUMN"
+
+            if seq_method != current_mode:
+                skipped_other_mode += 1
+                continue
+
+            analysis_jsons.append((seq_dir, json_path))
 
         if not analysis_jsons:
-            self._retro_info_label.setText("No hi ha SEQs analitzades per requantificar")
+            other_mode = "BP" if current_mode == "COLUMN" else "COLUMN"
+            msg = f"No hi ha SEQs {current_mode} analitzades per requantificar"
+            if skipped_other_mode:
+                msg += f" ({skipped_other_mode} SEQs {other_mode} excloses)"
+            self._retro_info_label.setText(msg)
             return
 
-        self._retro_info_label.setText(
-            f"SEQs analitzades disponibles ({len(analysis_jsons)}):"
-        )
+        info = f"SEQs {current_mode} analitzades ({len(analysis_jsons)}):"
+        if skipped_other_mode:
+            other_mode = "BP" if current_mode == "COLUMN" else "COLUMN"
+            info += f"  <i>({skipped_other_mode} {other_mode} excloses)</i>"
+        self._retro_info_label.setText(info)
 
         for seq_dir, json_path in analysis_jsons:
             cb = QCheckBox(seq_dir)

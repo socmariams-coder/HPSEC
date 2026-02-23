@@ -479,37 +479,23 @@ class CalibratePanel(QWidget):
                     self.condition_combo.blockSignals(False)
                     break
 
-        # Detectar si és SEQ_CAL (pel nom de la seqüència)
-        seq_path = self.main_window.seq_path or ""
-        seq_name = os.path.basename(seq_path).upper()
-        is_seq_cal = "_CAL" in seq_name
-
-        if is_seq_cal:
-            # SEQ_CAL necessita totes les calibracions (no una sola de l'històric).
-            # Redirigir al worker que processa tots els KHP i genera calibrations_direct/uib.
-            logger.info("SEQ_CAL detectada en preload — re-executant calibrate_from_import")
-            self._run_calibrate()
-            return
-        else:
-            # SEQ normal: flux habitual
-            self._seq_cal_info_group.setVisible(False)
-            for fn in [self._update_summary, self._update_delay_diagnostic,
-                       self._update_graphs,
-                       self._update_metrics_table, self._update_replica_selection,
-                       self._update_validation, self._update_history]:
-                try:
-                    fn(result)
-                except Exception as e:
-                    logger.warning(f"Error a {fn.__name__}: {e}")
-                    import traceback; traceback.print_exc()
+        # Flux habitual (SEQ_CAL ara va a tab Calibració Global, no pel wizard)
+        for fn in [self._update_summary, self._update_delay_diagnostic,
+                   self._update_graphs,
+                   self._update_metrics_table, self._update_replica_selection,
+                   self._update_validation, self._update_history]:
+            try:
+                fn(result)
+            except Exception as e:
+                logger.warning(f"Error a {fn.__name__}: {e}")
+                import traceback; traceback.print_exc()
 
         self.main_window.enable_tab(2)
 
         # Indicar font de la calibració
         source = "local" if cal.get('_from_local') else "global"
         self.main_window.set_status(
-            "SEQ_CAL verificada — regressió al pas Analitzar" if is_seq_cal
-            else f"Calibració carregada ({source}): {cal.get('condition_key', 'N/A')}", 3000
+            f"Calibració carregada ({source}): {cal.get('condition_key', 'N/A')}", 3000
         )
 
         # Emetre senyal per notificar al wizard
@@ -664,24 +650,6 @@ class CalibratePanel(QWidget):
 
         # === SECCIÓN: Diagnòstic Delay HPLC↔TOC ===
         self._build_delay_diagnostic_section(content_layout)
-
-        # === SECCIÓN: SEQ_CAL info (quan detecta calibració) ===
-        self._seq_cal_info_group = QGroupBox("Seqüència de Calibració (SEQ_CAL)")
-        self._seq_cal_info_group.setVisible(False)
-        self._seq_cal_info_group.setStyleSheet(
-            "QGroupBox { font-weight: bold; color: #1A5276; border: 2px solid #27AE60; "
-            "border-radius: 6px; margin-top: 8px; padding-top: 14px; }"
-            "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 6px; }"
-        )
-        seq_cal_info_layout = QVBoxLayout(self._seq_cal_info_group)
-        self._seq_cal_info_label = QLabel()
-        self._seq_cal_info_label.setWordWrap(True)
-        self._seq_cal_info_label.setStyleSheet(
-            "background: #EBF5FB; border-radius: 4px; padding: 12px; "
-            "color: #1A5276; font-size: 13px;"
-        )
-        seq_cal_info_layout.addWidget(self._seq_cal_info_label)
-        content_layout.addWidget(self._seq_cal_info_group)
 
         # === SECCIÓN: Gràfic recta calibració global (PROMINENT) ===
         self.cal_line_group = QGroupBox("Recta de calibració")
@@ -958,7 +926,6 @@ class CalibratePanel(QWidget):
         # Limpiar resultados anteriores
         self.summary_group.setVisible(False)
         self.delay_group.setVisible(False)
-        self._seq_cal_info_group.setVisible(False)
         self.cal_line_group.setVisible(False)
         self.graphs_group.setVisible(False)
         self.metrics_group.setVisible(False)
@@ -993,54 +960,28 @@ class CalibratePanel(QWidget):
         self.calibration_data = result
         self.main_window.calibration_data = result
 
-        # Detectar si és SEQ_CAL (regressió multi-concentració)
-        is_seq_cal = self._detect_seq_cal(result)
-
-        if is_seq_cal:
-            # SEQ_CAL: amagar UI normal, mostrar info + delay diagnostic
-            self.placeholder.setVisible(False)
-            self.condition_selector_frame.setVisible(False)
-            self.summary_group.setVisible(False)
-            self.cal_line_group.setVisible(False)
-            self.graphs_group.setVisible(False)
-            self.metrics_group.setVisible(False)
-            self.replica_selection_group.setVisible(False)
-            self.validation_group.setVisible(False)
-            self.history_group.setVisible(False)
-
-            # Mostrar secció SEQ_CAL info
-            self._seq_cal_info_group.setVisible(True)
-
-            # Delay diagnostic (útil per a SEQ_CAL BP també)
+        # Flux habitual (SEQ_CAL va directament a tab Calibració Global, no pel wizard)
+        for fn in [self._update_summary, self._update_delay_diagnostic,
+                   self._update_graphs,
+                   self._update_metrics_table, self._update_replica_selection,
+                   self._update_validation, self._update_history]:
             try:
-                self._update_delay_diagnostic(result)
+                fn(result)
             except Exception as e:
-                logger.warning(f"Error a _update_delay_diagnostic: {e}")
-        else:
-            # SEQ normal: flux habitual
-            self._seq_cal_info_group.setVisible(False)
-            for fn in [self._update_summary, self._update_delay_diagnostic,
-                       self._update_graphs,
-                       self._update_metrics_table, self._update_replica_selection,
-                       self._update_validation, self._update_history]:
-                try:
-                    fn(result)
-                except Exception as e:
-                    logger.warning(f"Error a {fn.__name__}: {e}")
-                    import traceback; traceback.print_exc()
+                logger.warning(f"Error a {fn.__name__}: {e}")
+                import traceback; traceback.print_exc()
 
-            # Auto-generar PDF de QA/QC (si no és SEQ_CAL — l'informe es genera al pas 4)
-            if not is_seq_cal:
-                try:
-                    from hpsec_reports import generate_calibration_report
-                    pdf = generate_calibration_report()
-                    if pdf:
-                        logger.info(f"Report QA/QC: {pdf}")
-                except Exception as e:
-                    logger.warning(f"No s'ha pogut generar report de QA/QC: {e}")
+        # Auto-generar PDF de QA/QC
+        try:
+            from hpsec_reports import generate_calibration_report
+            pdf = generate_calibration_report()
+            if pdf:
+                logger.info(f"Report QA/QC: {pdf}")
+        except Exception as e:
+            logger.warning(f"No s'ha pogut generar report de QA/QC: {e}")
 
-            # Recarregar el selector de condicions
-            self._reload_condition_selector()
+        # Recarregar el selector de condicions
+        self._reload_condition_selector()
 
         # Mostrar warnings inline si n'hi ha
         warnings = result.get("warnings_structured", [])
@@ -1059,10 +1000,7 @@ class CalibratePanel(QWidget):
             self.cal_status_frame.setVisible(False)
 
         self.main_window.enable_tab(2)
-        self.main_window.set_status(
-            "SEQ_CAL verificada — regressió al pas Analitzar" if is_seq_cal
-            else "QA/QC KHP completat", 5000
-        )
+        self.main_window.set_status("QA/QC KHP completat", 5000)
 
         # Emetre senyal per notificar al wizard
         self.calibration_completed.emit(result)
@@ -2665,171 +2603,6 @@ class CalibratePanel(QWidget):
             )
         else:
             self.toggle_outlier_btn.setText("Marcar Outlier")
-
-    # =========================================================================
-    # SEQ_CAL DETECTION
-    # =========================================================================
-
-    def _detect_seq_cal(self, result):
-        """Detecta si la SEQ és de calibració i prepara les dades per l'AnalyzePanel.
-
-        Criteri:
-        - Nom conté _CAL, O
-        - ≥3 calibracions amb ≥2 concentracions
-
-        Si és SEQ_CAL, prepara cal_entries i les guarda a result['seq_cal_data']
-        perquè l'AnalyzePanel les pugui utilitzar per la regressió.
-
-        Returns:
-            bool: True si és SEQ_CAL
-        """
-        import os
-
-        # Obtenir calibracions directes
-        cals_direct = result.get('calibrations_direct', [])
-        cals_uib = result.get('calibrations_uib', [])
-        cals = cals_direct or cals_uib or result.get('calibrations', [])
-
-        if not cals or len(cals) < 3:
-            result['is_seq_cal'] = False
-            return False
-
-        # Criteri 1: nom conté _CAL
-        seq_path = self.main_window.seq_path or ""
-        seq_name = os.path.basename(seq_path).upper()
-        name_has_cal = "_CAL" in seq_name
-
-        # Criteri 2: ≥3 condicions amb ≥2 concentracions
-        concs = set()
-        for cal in cals:
-            c = cal.get('conc_ppm', 0)
-            if c > 0:
-                concs.add(round(c, 4))
-        auto_detect = len(cals) >= 3 and len(concs) >= 2
-
-        if not name_has_cal and not auto_detect:
-            result['is_seq_cal'] = False
-            return False
-
-        # Activar mode SEQ_CAL
-        result['is_seq_cal'] = True
-        logger.info(f"SEQ_CAL detectada: {len(cals)} calibracions, "
-                     f"{len(concs)} concentracions ({sorted(concs)})")
-
-        # Determinar mode (BP o COLUMN)
-        method = "COLUMN"
-        if any(c.get('is_bp', False) for c in cals):
-            method = "BP"
-        elif self.main_window.imported_data:
-            if self.main_window.imported_data.get("method", "").upper() == "BP":
-                method = "BP"
-        if "_BP" in seq_name:
-            method = "BP"
-
-        # Sensibilitat UIB de la seqüència
-        seq_uib_sensitivity = None
-        if self.main_window.imported_data:
-            seq_uib_sensitivity = self.main_window.imported_data.get("uib_sensitivity")
-
-        # Construir entrades per ambdós senyals (Direct i UIB)
-        def _build_entries(cal_list, signal_name):
-            """Construeix llista d'entrades de calibració per un senyal."""
-            entries = []
-            for cal in cal_list:
-                conc = cal.get('conc_ppm', 0)
-                vol = cal.get('volume_uL', 0)
-                area = cal.get('area', 0)
-                if conc <= 0 or vol <= 0 or area <= 0:
-                    continue
-
-                # Detectar saturació UIB: y_max >= 95% de la sensibilitat
-                uib_saturated = False
-                if signal_name == 'uib' and seq_uib_sensitivity:
-                    # Buscar intensity_doc (y_max) a les rèpliques
-                    replicas = cal.get('replicas', [])
-                    for rep in replicas:
-                        y_max = rep.get('metrics', {}).get('intensity_doc', 0)
-                        if y_max >= seq_uib_sensitivity * 0.95:
-                            uib_saturated = True
-                            break
-
-                entry = {
-                    'seq_name': os.path.basename(seq_path),
-                    'mode': method,
-                    'conc_ppm': conc,
-                    'volume_uL': vol,
-                    'area': area,
-                    'is_outlier': False,
-                    'valid_for_calibration': not uib_saturated,
-                    'condition_key': cal.get('condition_key', f"KHP{conc:g}@{vol}µL"),
-                    'rf_mass': cal.get('rf_mass', 0),
-                    'quality_score': cal.get('quality_score', 0),
-                    'name_full': cal.get('name_full', ''),
-                    # Dades addicionals per unificació àrees i visibilitat qualitat
-                    'a254_area': cal.get('a254_area', 0),
-                    'a254_doc_ratio': cal.get('a254_doc_ratio', 0),
-                    'has_irregular_top': cal.get('has_irregular_top', False),
-                    'irregular_top_repaired': cal.get('irregular_top_repaired', False),
-                    'area_uib': cal.get('area_uib', 0),
-                    'area_original': cal.get('area_original', 0),
-                    'area_repaired': cal.get('area_repaired', 0),
-                    'rf_mass_uib': cal.get('rf_mass_uib', 0),
-                    'has_timeout': cal.get('has_timeout', False),
-                    'timeout_severity': cal.get('timeout_severity', 'OK'),
-                    'uib_sensitivity': cal.get('uib_sensitivity'),
-                    'uib_saturated': uib_saturated,
-                    # Dades cromatograma per preview al pas 3
-                    'replicas': cal.get('replicas', []),
-                }
-                # Per UIB: remapejar area→area_u per fit_calibration_from_history
-                if signal_name == 'uib':
-                    entry['area_u'] = area
-                entries.append(entry)
-            return entries
-
-        entries_direct = _build_entries(cals_direct, 'direct')
-        entries_uib = _build_entries(cals_uib, 'uib')
-
-        # Entrades primàries = Direct (o UIB si no hi ha Direct)
-        cal_entries = entries_direct or entries_uib
-
-        # Guardar dades per l'AnalyzePanel — ambdós senyals
-        result['seq_cal_data'] = {
-            'entries': cal_entries,
-            'entries_direct': entries_direct,
-            'entries_uib': entries_uib,
-            'method': method,
-            'concs': sorted(concs),
-            'n_entries': len(cal_entries),
-            'has_direct': len(entries_direct) > 0,
-            'has_uib': len(entries_uib) > 0,
-        }
-
-        # Actualitzar info label amb detalls complets
-        conc_str = ", ".join(f"{c:g}" for c in sorted(concs))
-        signals_info = []
-        if entries_direct:
-            signals_info.append(f"Direct ({len(entries_direct)} punts)")
-        if entries_uib:
-            signals_info.append(f"UIB ({len(entries_uib)} punts)")
-        signals_str = " + ".join(signals_info) if signals_info else "cap"
-
-        self._seq_cal_info_label.setText(
-            f"<b>Seqüència de calibració detectada</b><br><br>"
-            f"<table cellpadding='3'>"
-            f"<tr><td><b>Mode:</b></td><td>{method}</td></tr>"
-            f"<tr><td><b>Concentracions:</b></td><td>{conc_str} ppm</td></tr>"
-            f"<tr><td><b>Senyals:</b></td><td>{signals_str}</td></tr>"
-            f"</table><br>"
-            f"<b>Pas 3 (Analitzar):</b> Regressió de calibració amb selecció "
-            f"de senyal Direct/UIB<br>"
-            f"<b>Pas 4 (Revisar):</b> Aplicació de la nova calibració"
-        )
-
-        # Propagar al main_window
-        self.main_window.calibration_data = result
-
-        return True
 
     # =========================================================================
     # DELAY DIAGNOSTIC SECTION
