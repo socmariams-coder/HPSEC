@@ -493,7 +493,7 @@ class SequenceState:
             return "Completat"
         actions = {
             Phase.IMPORT: "Importar",
-            Phase.CALIBRATE: "Calibrar",
+            Phase.CALIBRATE: "Verificar",
             Phase.ANALYZE: "Analitzar",
             Phase.REVIEW: "Revisar",
         }

@@ -43,6 +43,7 @@ from hpsec_core import (
     detect_timeout,
     detect_irregular_top,
     detect_peak_anomaly,
+    calc_top_smoothness,
     detect_main_peak,
     detect_all_peaks,
     integrate_chromatogram,
@@ -2112,16 +2113,32 @@ def validate_khp_for_alignment(t_doc, y_doc, t_dad, y_a254, t_uib=None, y_uib=No
 
     if len(t_peak_zone) > 20:
         irregular_top_info = detect_irregular_top(t_peak_zone, y_peak_zone, top_pct=0.20, min_valley_depth=0.02)
+        smoothness_info = calc_top_smoothness(t_peak_zone, y_peak_zone)
+        smoothness_val = smoothness_info.get("smoothness", 100.0)
         result["metrics"]["irregular_top_detected"] = irregular_top_info.get("is_irregular_top", False)
+        result["metrics"]["smoothness"] = smoothness_val
 
-        if irregular_top_info.get("is_irregular_top", False):
-            result["warnings"].append(
-                f"IRREGULAR_TOP: Detectat cim irregular (profunditat {irregular_top_info.get('max_depth', 0)*100:.1f}%)"
-            )
+        is_irregular = irregular_top_info.get("is_irregular_top", False)
+        is_rough = smoothness_val < 70.0
+        needs_repair = is_irregular or is_rough
+
+        if needs_repair:
+            anomaly_type = "IRREGULAR_TOP" if is_irregular else "ROUGH_TOP"
+            if is_irregular:
+                result["warnings"].append(
+                    f"IRREGULAR_TOP: Detectat cim irregular (profunditat {irregular_top_info.get('max_depth', 0)*100:.1f}%)"
+                )
+            else:
+                result["warnings"].append(
+                    f"ROUGH_TOP: Cim rugós (smoothness={smoothness_val:.1f}%)"
+                )
 
             if repair_irregular_top:
                 try:
-                    y_repaired, repair_info, was_repaired = repair_with_parabola(t_peak_zone, y_peak_zone)
+                    force_repair = is_rough and not is_irregular
+                    y_repaired, repair_info, was_repaired = repair_with_parabola(
+                        t_peak_zone, y_peak_zone, force=force_repair
+                    )
                     if was_repaired:
                         y_doc_working[peak_zone] = y_repaired
                         result["y_doc_clean"] = y_doc_working
@@ -2889,8 +2906,10 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
     area_original = peak_info['area']
     if has_irregular_top or has_irregular:
         try:
+            # force=True si ROUGH_TOP sense valls profundes (has_irregular sense has_irregular_top)
+            force_repair = has_irregular and not has_irregular_top
             y_repaired_seg, repair_info, was_repaired = repair_with_parabola(
-                t_peak_seg, y_peak_seg
+                t_peak_seg, y_peak_seg, force=force_repair
             )
             if was_repaired:
                 irregular_top_repaired = True

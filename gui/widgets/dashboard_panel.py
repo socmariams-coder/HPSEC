@@ -239,9 +239,9 @@ class SingleSeqWorker(QThread):
 
         # CALIBRATE (si pendent)
         if not self.seq.calibrate_status.completed:
-            self.progress.emit("Calibrar...")
+            self.progress.emit("Verificar...")
             ok, msg, _ = run_calibrate(seq_path)
-            # Calibrar pot fallar sense KHP, continuem
+            # Verificar pot fallar sense KHP, continuem
 
         # ANALYZE (si pendent)
         if not self.seq.analyze_status.completed:
@@ -293,7 +293,7 @@ class BatchWorker(QThread):
                     return run_import(seq.seq_path, self.default_uib_sensitivity, siblings)
                 runner = import_runner
             elif phase == Phase.CALIBRATE:
-                phase_name = "Calibrar"
+                phase_name = "Verificar"
                 runner = lambda seq: run_calibrate(seq.seq_path)
             elif phase == Phase.ANALYZE:
                 phase_name = "Analitzar"
@@ -330,7 +330,7 @@ class DashboardPanel(QWidget):
     sequence_selected = Signal(str, str)
 
     # Noms de les etapes
-    STAGE_NAMES = ["Importar", "Calibrar", "Analitzar", "Consolidar"]
+    STAGE_NAMES = ["Importar", "Verificar", "Analitzar", "Revisar"]
 
     def __init__(self, main_window):
         super().__init__()
@@ -456,7 +456,7 @@ class DashboardPanel(QWidget):
         self.btn_batch_process.setFixedWidth(120)
         process_menu = QMenu(self)
         process_menu.addAction("Importar seleccionades", lambda: self._batch_process_stage(Phase.IMPORT))
-        process_menu.addAction("Calibrar seleccionades", lambda: self._batch_process_stage(Phase.CALIBRATE))
+        process_menu.addAction("Verificar seleccionades", lambda: self._batch_process_stage(Phase.CALIBRATE))
         process_menu.addAction("Analitzar seleccionades", lambda: self._batch_process_stage(Phase.ANALYZE))
         process_menu.addSeparator()
         process_menu.addAction("Pipeline complet", lambda: self._batch_process_stage(None))
@@ -481,7 +481,7 @@ class DashboardPanel(QWidget):
         self.table.setColumnCount(NUM_COLS)
         self.table.setHorizontalHeaderLabels([
             "", "#", "Seqüència", "Data", "Tipus", "Mode", "M", "PC", "PR", "Inj",
-            "Importar", "Calibrar", "Analitzar", "Consolidar", "Notes"
+            "Importar", "Verificar", "Analitzar", "Revisar", "Notes"
         ])
 
         # Tooltips per capçaleres
@@ -517,9 +517,9 @@ class DashboardPanel(QWidget):
             COL_PR: 32,     # PR
             COL_INJ: 48,    # Inj
             COL_IMPORT: 65, # Importar
-            COL_CAL: 62,    # Calibrar
+            COL_CAL: 65,    # Verificar
             COL_ANA: 68,    # Analitzar
-            COL_REVIEW: 78, # Consolidar
+            COL_REVIEW: 60, # Revisar
         }
 
         # Estil per mantenir colors dels punts en selecció
@@ -743,12 +743,12 @@ class DashboardPanel(QWidget):
                 item_inj.setFont(font)
             self.table.setItem(row, COL_INJ, item_inj)
 
-            # Fases (Importar, Calibrar, Analitzar, Consolidar)
+            # Fases (Importar, Verificar, Analitzar, Revisar)
             phases_data = [
                 (seq.import_status, seq.import_state, "Importar", seq.import_warnings),
-                (seq.calibrate_status, seq.calibrate_state, "Calibrar", []),
+                (seq.calibrate_status, seq.calibrate_state, "Verificar", []),
                 (seq.analyze_status, seq.analyze_state, "Analitzar", seq.analyze_warnings),
-                (seq.review_status, seq.review_state, "Consolidar", []),
+                (seq.review_status, seq.review_state, "Revisar", []),
             ]
 
             current_phase_idx = None
@@ -788,7 +788,7 @@ class DashboardPanel(QWidget):
                 elif state == 'warning':
                     item.setText("⚠")
                     item.setForeground(QColor(COLOR_WARNING))
-                    if phase_name == "Calibrar":
+                    if phase_name == "Verificar":
                         tooltip = f"{phase_name}: KHP sibling ({seq.khp_source})"
                     elif phase_warnings:
                         tooltip = f"{phase_name}: Avisos\n" + "\n".join(phase_warnings[:3])
@@ -801,7 +801,7 @@ class DashboardPanel(QWidget):
                     item.setForeground(QColor(COLOR_ERROR))
                     if phase_name == "Importar":
                         tooltip = f"{phase_name}: Error MasterFile"
-                    elif phase_name == "Calibrar" and not seq.has_khp:
+                    elif phase_name == "Verificar" and not seq.has_khp:
                         tooltip = f"{phase_name}: Només històric!"
                     elif status.errors:
                         tooltip = f"{phase_name}: Error\n" + "\n".join(status.errors)
@@ -982,7 +982,7 @@ class DashboardPanel(QWidget):
             action_reimport.triggered.connect(lambda: self._run_single_phase(seq, "import"))
 
         if seq.import_status.completed and not seq.calibrate_status.completed:
-            action_cal = menu.addAction("  → Calibrar")
+            action_cal = menu.addAction("  → Verificar")
             action_cal.triggered.connect(lambda: self._run_single_phase(seq, "calibrate"))
 
         if seq.import_status.completed and not seq.analyze_status.completed:
@@ -1472,7 +1472,7 @@ class DashboardPanel(QWidget):
             op_name = "Pipeline complet"
         else:
             phases = [phase]
-            op_name = {Phase.IMPORT: "Importar", Phase.CALIBRATE: "Calibrar", Phase.ANALYZE: "Analitzar"}.get(phase, str(phase))
+            op_name = {Phase.IMPORT: "Importar", Phase.CALIBRATE: "Verificar", Phase.ANALYZE: "Analitzar"}.get(phase, str(phase))
 
         # Confirmació
         seq_names = [s.seq_name for s in target_seqs[:8]]
@@ -1518,7 +1518,7 @@ class DashboardPanel(QWidget):
         """Reset per etapa de les seqüències seleccionades (cascade).
 
         Args:
-            from_stage: 0=Import, 1=Calibrar, 2=Analitzar, 3=Revisar
+            from_stage: 0=Importar, 1=Verificar, 2=Analitzar, 3=Revisar
         """
         from hpsec_reset import reset_batch, STAGE_NAMES
 
@@ -1591,9 +1591,9 @@ class DashboardPanel(QWidget):
 
         phases_data = [
             (seq.import_status, seq.import_state, "Importar", seq.import_warnings),
-            (seq.calibrate_status, seq.calibrate_state, "Calibrar", []),
+            (seq.calibrate_status, seq.calibrate_state, "Verificar", []),
             (seq.analyze_status, seq.analyze_state, "Analitzar", seq.analyze_warnings),
-            (seq.review_status, seq.review_state, "Consolidar", []),
+            (seq.review_status, seq.review_state, "Revisar", []),
         ]
 
         current_phase_idx = None

@@ -640,11 +640,11 @@ def fit_parabola(t1, y1, t2, y2, t3, y3):
         return None
 
 
-def repair_with_parabola(t, y, factor=REPAIR_FACTOR):
+def repair_with_parabola(t, y, factor=REPAIR_FACTOR, force=False):
     """
     Repair irregular peak top (jagged/batman artifact) using parabola interpolation.
 
-    1. Detect irregular top pattern
+    1. Detect irregular top pattern (skip if force=True)
     2. Calculate tangent intersection for theoretical peak
     3. Apply correction factor
     4. Fit parabola through anchors and theoretical max
@@ -653,6 +653,7 @@ def repair_with_parabola(t, y, factor=REPAIR_FACTOR):
     Parameters:
         t, y: time and signal arrays (peak segment)
         factor: correction factor for tangent height
+        force: if True, skip detect_irregular_top check (caller already decided repair needed)
 
     Returns:
         tuple (y_repaired, repair_info, was_repaired)
@@ -660,10 +661,10 @@ def repair_with_parabola(t, y, factor=REPAIR_FACTOR):
     t = np.asarray(t, dtype=float)
     y = np.asarray(y, dtype=float)
 
-    # Detect irregular top (jagged/batman)
+    # Detect irregular top (jagged/batman) — skip if caller forces repair
     irr_top = detect_irregular_top(t, y)
 
-    if not irr_top["is_irregular_top"]:
+    if not force and not irr_top["is_irregular_top"]:
         return y.copy(), irr_top, False
 
     # Get tangent info
@@ -1490,8 +1491,11 @@ def detect_main_peak(t, y, min_prominence_pct=5.0, is_bp=None):
                         or smoothness_val < 70.0)
 
         if needs_repair:
-            # Intentar reparar amb paràbola
-            y_seg_repaired, repair_info, was_repaired = repair_with_parabola(t_seg, y_seg)
+            # Intentar reparar amb paràbola (force=True si ROUGH_TOP sense valls profundes)
+            force_repair = not irregular_top_info.get("is_irregular_top", False)
+            y_seg_repaired, repair_info, was_repaired = repair_with_parabola(
+                t_seg, y_seg, force=force_repair
+            )
             if was_repaired:
                 irregular_top_repaired = True
                 # Aplicar reparació al senyal complet per find_peak_boundaries
@@ -1513,6 +1517,13 @@ def detect_main_peak(t, y, min_prominence_pct=5.0, is_bp=None):
     else:
         area = 0.0
 
+    # Si reparat, calcular també àrea sobre senyal reparat (per calibració)
+    area_repaired = None
+    if irregular_top_repaired and right_idx > left_idx:
+        area_repaired = float(trapezoid(
+            y_for_boundaries[left_idx:right_idx + 1], t[left_idx:right_idx + 1]
+        ))
+
     result = {
         "valid": True,
         "t_max": float(t[main_peak]),
@@ -1530,11 +1541,19 @@ def detect_main_peak(t, y, min_prominence_pct=5.0, is_bp=None):
     }
 
     # Afegir info d'irregular top si detectat (IRREGULAR_TOP o ROUGH_TOP)
-    if irregular_top_repaired or (irregular_top_info is not None
-                                  and irregular_top_info.get("is_irregular_top", False)):
+    has_irregular_top = (irregular_top_info is not None
+                         and irregular_top_info.get("is_irregular_top", False))
+    has_rough_top = (smoothness_info is not None
+                     and smoothness_info.get("smoothness", 100.0) < 70.0)
+    if has_irregular_top or has_rough_top or irregular_top_repaired:
         result["is_irregular_top"] = True
         result["irregular_top_repaired"] = irregular_top_repaired
         result["irregular_top_info"] = irregular_top_info
+        if area_repaired is not None:
+            result["area_original"] = area
+            result["area_repaired"] = area_repaired
+        if has_rough_top and not has_irregular_top:
+            result["anomaly_subtype"] = "ROUGH_TOP"
     if smoothness_info is not None:
         result["smoothness"] = smoothness_info.get("smoothness", 100.0)
 
