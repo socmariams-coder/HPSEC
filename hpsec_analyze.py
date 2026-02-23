@@ -1790,6 +1790,29 @@ def analyze_sample(sample_data, calibration_data=None, config=None):
         else:
             result["irregular_top_uib"] = False
 
+    # Detectar saturació UIB (si DUAL o UIB-only)
+    # El detector Sievers M9e satura a la sensibilitat configurada (700 o 1000 ppb).
+    # Quan y_max_raw >= 95% de la sensibilitat, el pic està retallat.
+    uib_sensitivity = sample_data.get("uib_sensitivity")
+    y_uib_for_sat = y_doc_uib if is_dual else (y_doc if sample_data.get("is_uib_only") else None)
+    if uib_sensitivity and y_uib_for_sat is not None and len(y_uib_for_sat) > 0:
+        y_max_uib = float(np.max(y_uib_for_sat))
+        sat_threshold = uib_sensitivity * 0.95
+        if y_max_uib >= sat_threshold:
+            sat_details = {
+                "y_max": y_max_uib,
+                "sensitivity": uib_sensitivity,
+                "saturation_pct": y_max_uib / uib_sensitivity * 100,
+            }
+            result["anomalies"].append(create_anomaly("UIB_SATURATED", details=sat_details))
+            result["uib_saturated"] = True
+            logger.warning(f"{seq_name}/{sample_name}: UIB SATURATED y_max={y_max_uib:.1f} >= "
+                          f"{sat_threshold:.0f} ppb (sensitivity={uib_sensitivity})")
+        else:
+            result["uib_saturated"] = False
+    else:
+        result["uib_saturated"] = False
+
     result["peak_info"] = peak_info
 
     # Check TIMEOUT_IN_PEAK: timeout que afecta el pic principal DOC
@@ -2133,6 +2156,9 @@ def _flatten_samples_for_processing(imported_data, data_mode="DUAL"):
     control_samples = []  # Kept empty for backward compat (result dict still has the key)
     light_samples = []    # BLANK + CONTROL → lightweight analysis
 
+    # Sensibilitat UIB (700 o 1000 ppb) — per detectar saturació
+    uib_sensitivity = imported_data.get("uib_sensitivity")
+
     all_samples = imported_data.get("samples", {})
 
     for sample_name, sample_info in all_samples.items():
@@ -2149,6 +2175,7 @@ def _flatten_samples_for_processing(imported_data, data_mode="DUAL"):
                 "sample_type": sample_type,
                 "inj_volume": inj_info.get("inj_volume"),  # Volum d'injecció en µL
                 "injection_index": inj_info.get("line_num"),  # Ordre d'injecció al MasterFile
+                "uib_sensitivity": uib_sensitivity,  # ppb (700/1000) per detecció saturació
             }
 
             # Extreure dades segons data_mode (DUAL, DIRECT, UIB)

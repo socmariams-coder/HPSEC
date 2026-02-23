@@ -181,6 +181,48 @@ All exploratory scripts and results live in `research/` — NOT part of the prod
 
 > Last updated: 2026-02-23
 
+### UIB Downsample + Saturació (2026-02-23)
+
+**Problema**: UIB CSV té dt=0.005 min (14k punts) vs DOC Direct dt=0.067 min (1.1k punts).
+Amb 12.6x més punts, el Savitzky-Golay (finestra 131 pts vs 11 pts) i les derivades es
+comporten diferent → límits d'integració i àrees no comparables entre UIB i Direct.
+A més, el detector UIB (Sievers M9e) satura a la sensibilitat configurada (700/1000 ppb),
+retallant pics d'alta concentració.
+
+**Solució implementada:**
+
+1. **`hpsec_core.py`**: Nova funció `downsample_to_cadence(t, y, target_dt)`.
+   - Bin-average: bins uniformes de mida target_dt, mitjana dels punts per bin.
+   - Preserva àrea integrada i forma del pic.
+   - Auto-detect: si dt_median >= target_dt * 0.8, retorna dades originals.
+   - Constant `DOC_TARGET_DT_MIN = 0.0667` (4 segons, cadència TOC).
+
+2. **`hpsec_import.py`**: Downsample aplicat a 3 punts d'entrada UIB:
+   - L2708: mostres regulars (`find_data_for_injection`)
+   - L4314: KHP via manifest (`import_from_manifest`)
+   - L4720: KHP via `ensure_data_loaded`
+
+3. **`gui/widgets/import_panel/panel.py`**: 4t punt d'entrada UIB (reassignació manual).
+
+4. **`hpsec_warnings.py`**: Nova anomalia `UIB_SATURATED` (BLOCKER, invalidates=True).
+   - Icon: "SAT", description: "Senyal UIB saturat (y_max >= 95% sensibilitat)"
+
+5. **`hpsec_analyze.py`**: Detecció saturació a `analyze_sample()`:
+   - Compara y_max_raw UIB vs 95% de uib_sensitivity
+   - Flag `uib_saturated=True` + anomalia BLOCKER
+   - `uib_sensitivity` propagada via `_flatten_samples_for_processing`
+
+6. **`gui/widgets/calibrate_panel/panel.py`**: `_build_entries` detecta saturació UIB:
+   - Mira `intensity_doc` de les rèpliques vs sensibilitat
+   - Marca entry amb `uib_saturated=True`, `valid_for_calibration=False`
+
+7. **`gui/widgets/analyze_panel/panel.py`**: Auto-exclusió i UI:
+   - Punts UIB saturats auto-exclosos de la regressió (`_seq_cal_excluded`)
+   - Columna anomalies mostra "⛔ SAT" en vermell
+   - Swap senyal Direct/UIB recalcula exclusions
+
+**Verificació**: Downsample 15000→1125 pts (13.3x), dt 0.005→0.0675 min.
+
 ### Informe calibració PDF + regression_data al JSON (2026-02-23)
 
 **Motivació**: L'informe PDF de calibració recalculava la regressió des de KHP_History.

@@ -823,7 +823,12 @@ class AnalyzePanel(QWidget):
         self._seq_cal_entries_direct = seq_cal_data.get('entries_direct', [])
         self._seq_cal_entries_uib = seq_cal_data.get('entries_uib', [])
         self._seq_cal_method = method
+
+        # Auto-excloure punts amb UIB saturada (per senyal UIB)
         self._seq_cal_excluded = set()
+        for i, e in enumerate(entries):
+            if e.get('uib_saturated'):
+                self._seq_cal_excluded.add(i)
 
         # Configurar selector senyal Direct/UIB
         has_direct = seq_cal_data.get('has_direct', len(self._seq_cal_entries_direct) > 0)
@@ -1022,6 +1027,8 @@ class AnalyzePanel(QWidget):
 
             # Col 9: Anomalies
             anomaly_parts = []
+            if entry.get('uib_saturated'):
+                anomaly_parts.append("\u26d4 SAT")  # ⛔ saturat
             if entry.get('irregular_top_repaired'):
                 anomaly_parts.append("\u2705 reparat")  # ✅
             elif entry.get('has_irregular_top'):
@@ -1034,7 +1041,9 @@ class AnalyzePanel(QWidget):
             anomaly_item = QTableWidgetItem(anomaly_text)
             anomaly_item.setFlags(anomaly_item.flags() & ~Qt.ItemIsEditable)
             if anomaly_parts:
-                if any("reparat" in p for p in anomaly_parts):
+                if any("SAT" in p for p in anomaly_parts):
+                    anomaly_item.setForeground(QBrush(QColor("#E74C3C")))  # Vermell per saturació
+                elif any("reparat" in p for p in anomaly_parts):
                     anomaly_item.setForeground(QBrush(QColor("#27AE60")))
                 else:
                     anomaly_item.setForeground(QBrush(QColor("#E67E22")))
@@ -1193,13 +1202,18 @@ class AnalyzePanel(QWidget):
             return
 
         self._seq_cal_signal = signal
-        self._seq_cal_excluded = set()  # Reset exclusions al canviar senyal
 
         # Swap entries segons senyal seleccionat
         if signal == "uib" and self._seq_cal_entries_uib:
             self._seq_cal_entries = self._seq_cal_entries_uib
         elif signal == "direct" and self._seq_cal_entries_direct:
             self._seq_cal_entries = self._seq_cal_entries_direct
+
+        # Reset exclusions + auto-excloure punts saturats UIB
+        self._seq_cal_excluded = set()
+        for i, e in enumerate(self._seq_cal_entries):
+            if e.get('uib_saturated'):
+                self._seq_cal_excluded.add(i)
 
         # Re-run regressió
         if self._seq_cal_entries and self._seq_cal_method:

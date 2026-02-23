@@ -449,6 +449,15 @@ ANOMALY_CATALOG = {
         "repairable": False,
         "invalidates": False,
     },
+    "UIB_SATURATED": {
+        "severity": WarningLevel.BLOCKER,
+        "label": "UIB saturat",
+        "icon": "SAT",
+        "description": "Senyal UIB saturat (y_max >= 95% sensibilitat)",
+        "stage": "analyze",
+        "repairable": False,
+        "invalidates": True,
+    },
     "UIB_NO_BASELINE": {
         "severity": WarningLevel.INFO,
         "label": "UIB sense baseline",

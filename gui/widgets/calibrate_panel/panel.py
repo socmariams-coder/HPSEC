@@ -2738,6 +2738,11 @@ class CalibratePanel(QWidget):
         if "_BP" in seq_name:
             method = "BP"
 
+        # Sensibilitat UIB de la seqüència
+        seq_uib_sensitivity = None
+        if self.main_window.imported_data:
+            seq_uib_sensitivity = self.main_window.imported_data.get("uib_sensitivity")
+
         # Construir entrades per ambdós senyals (Direct i UIB)
         def _build_entries(cal_list, signal_name):
             """Construeix llista d'entrades de calibració per un senyal."""
@@ -2748,6 +2753,18 @@ class CalibratePanel(QWidget):
                 area = cal.get('area', 0)
                 if conc <= 0 or vol <= 0 or area <= 0:
                     continue
+
+                # Detectar saturació UIB: y_max >= 95% de la sensibilitat
+                uib_saturated = False
+                if signal_name == 'uib' and seq_uib_sensitivity:
+                    # Buscar intensity_doc (y_max) a les rèpliques
+                    replicas = cal.get('replicas', [])
+                    for rep in replicas:
+                        y_max = rep.get('metrics', {}).get('intensity_doc', 0)
+                        if y_max >= seq_uib_sensitivity * 0.95:
+                            uib_saturated = True
+                            break
+
                 entry = {
                     'seq_name': os.path.basename(seq_path),
                     'mode': method,
@@ -2755,7 +2772,7 @@ class CalibratePanel(QWidget):
                     'volume_uL': vol,
                     'area': area,
                     'is_outlier': False,
-                    'valid_for_calibration': True,
+                    'valid_for_calibration': not uib_saturated,
                     'condition_key': cal.get('condition_key', f"KHP{conc:g}@{vol}µL"),
                     'rf_mass': cal.get('rf_mass', 0),
                     'quality_score': cal.get('quality_score', 0),
@@ -2772,6 +2789,7 @@ class CalibratePanel(QWidget):
                     'has_timeout': cal.get('has_timeout', False),
                     'timeout_severity': cal.get('timeout_severity', 'OK'),
                     'uib_sensitivity': cal.get('uib_sensitivity'),
+                    'uib_saturated': uib_saturated,
                     # Dades cromatograma per preview al pas 3
                     'replicas': cal.get('replicas', []),
                 }

@@ -30,6 +30,7 @@ from hpsec_import import (
     llegir_doc_uib, llegir_dad_export3d, llegir_dad_1a,
     get_baseline_value
 )
+from hpsec_core import downsample_to_cadence
 import logging
 import numpy as np
 
@@ -1518,6 +1519,10 @@ class ImportPanel(QWidget):
                 if not df.empty and "OK" in status:
                     t = df["time (min)"].values
                     y = df["DOC"].values
+
+                    # Downsample UIB a cadència DOC Direct
+                    if len(t) > 10:
+                        t, y = downsample_to_cadence(t, y)
 
                     # Calcular baseline i y_net (CRÍTIC per areas_uib)
                     baseline = None

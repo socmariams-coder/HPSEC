@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 
 from hpsec_config import get_config
 from hpsec_utils import get_baseline_value
-from hpsec_core import detect_timeout
+from hpsec_core import detect_timeout, downsample_to_cadence
 from hpsec_migrate_master import migrate_single
 
 # Import sistema d'avisos estructurats
@@ -2708,9 +2708,15 @@ def find_data_for_injection(injection, seq_path, uib_files, dad_files, dad_csv_f
                     t_uib = df_uib["time (min)"].values if not df_uib.empty else None
                     y_uib = df_uib["DOC"].values if not df_uib.empty else None
 
+                    # Downsample UIB a la cadència DOC Direct (~4s/punt)
+                    # UIB CSV té dt≈0.005 min (12x més dens que Direct dt≈0.067).
+                    # Sense downsample, el SG i derivades es comporten diferent.
+                    if t_uib is not None and len(t_uib) > 10:
+                        t_uib, y_uib = downsample_to_cadence(t_uib, y_uib)
+
                     result["uib"] = {
                         "path": uib_path,
-                        "df": df_uib,
+                        "df": df_uib,  # df original (per referència)
                         "t": t_uib,
                         "y": y_uib,
                     }
@@ -4310,6 +4316,10 @@ def import_from_manifest(seq_path, manifest=None, config=None, progress_callback
                                 t_uib = df_uib["time (min)"].values
                                 y_uib = df_uib["DOC"].values
 
+                                # Downsample UIB a cadència DOC Direct
+                                if len(t_uib) > 10:
+                                    t_uib, y_uib = downsample_to_cadence(t_uib, y_uib)
+
                                 # Baseline
                                 mode = "BP" if result["method"] == "BP" else "COLUMN"
                                 baseline = get_baseline_value(t_uib, y_uib, mode=mode)
@@ -4711,6 +4721,9 @@ def ensure_data_loaded(imported_data, config=None, progress_callback=None):
                             if not df_uib.empty and "OK" in status:
                                 t_uib = df_uib["time (min)"].values
                                 y_uib = df_uib["DOC"].values
+                                # Downsample UIB a cadència DOC Direct
+                                if len(t_uib) > 10:
+                                    t_uib, y_uib = downsample_to_cadence(t_uib, y_uib)
                                 baseline = get_baseline_value(t_uib, y_uib, mode=mode)
                                 y_net = np.array(y_uib) - baseline
                                 rep_data["uib"] = {

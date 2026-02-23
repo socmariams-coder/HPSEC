@@ -86,6 +86,73 @@ def apply_smoothing(y, window_length=11, polyorder=3):
 
 
 # =============================================================================
+# DOWNSAMPLING
+# =============================================================================
+
+# Cadència objectiu per DOC: ~4s per punt (Sievers M9e)
+DOC_TARGET_DT_MIN = 0.0667   # 4 segons en minuts
+
+
+def downsample_to_cadence(t, y, target_dt=DOC_TARGET_DT_MIN):
+    """
+    Redueix la cadència d'un senyal mitjançant bin-average.
+
+    Si la cadència original (dt_median) ja és >= target_dt * 0.8, retorna
+    les dades originals sense modificar.
+
+    Mètode: bins uniformes de mida target_dt. Cada bin calcula la mitjana
+    dels punts que hi cauen. Això preserva l'àrea integrada i la forma
+    del pic millor que interpolació o subsampling directe.
+
+    Args:
+        t: Array de temps (minuts)
+        y: Array de senyal
+        target_dt: Cadència objectiu en minuts (defecte: 0.0667 = 4s)
+
+    Returns:
+        (t_ds, y_ds): Arrays downsampled. Si no cal downsample, retorna (t, y).
+    """
+    t = np.asarray(t, dtype=float)
+    y = np.asarray(y, dtype=float)
+
+    if len(t) < 3:
+        return t, y
+
+    dt_median = float(np.median(np.diff(t)))
+
+    # No cal downsample si ja estem a la cadència objectiu (±20%)
+    if dt_median >= target_dt * 0.8:
+        return t, y
+
+    # Crear bins uniformes
+    t_min, t_max = t[0], t[-1]
+    n_bins = max(1, int(np.ceil((t_max - t_min) / target_dt)))
+    bin_edges = np.linspace(t_min, t_min + n_bins * target_dt, n_bins + 1)
+
+    # Assignar cada punt al bin corresponent
+    bin_idx = np.digitize(t, bin_edges) - 1  # 0-indexed
+    bin_idx = np.clip(bin_idx, 0, n_bins - 1)
+
+    # Calcular mitjana per bin (bins buits s'ometen)
+    t_ds = []
+    y_ds = []
+    for i in range(n_bins):
+        mask = bin_idx == i
+        if np.any(mask):
+            t_ds.append(float(np.mean(t[mask])))
+            y_ds.append(float(np.mean(y[mask])))
+
+    t_ds = np.array(t_ds)
+    y_ds = np.array(y_ds)
+
+    ratio = len(t) / max(len(t_ds), 1)
+    logger.debug(f"downsample_to_cadence: {len(t)} → {len(t_ds)} punts "
+                 f"(ratio {ratio:.1f}x, dt {dt_median:.4f} → {target_dt:.4f} min)")
+
+    return t_ds, y_ds
+
+
+# =============================================================================
 # BI-GAUSSIAN FUNCTIONS
 # =============================================================================
 
