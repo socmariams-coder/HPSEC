@@ -226,39 +226,51 @@ class KHPReplicaGraphWidget(QWidget):
             pass
 
     def _draw_info_box(self, ax, rep, area, snr, has_uib, area_uib):
-        """Bloc únic amb llegenda + mètriques a upper right."""
-        lines = []
+        """Bloc únic amb llegenda (colors) + mètriques a upper right."""
+        # --- Llegenda amb colors reals ---
+        legend_y = 0.97
+        legend_x = 0.97
+        color_direct = '#2E86AB'
+        color_uib = '#27AE60'
 
-        # Senyals
-        lines.append(f"\u2501 Direct  A={area:.0f}")
+        ax.text(legend_x, legend_y, f"\u2501\u2501 Direct  A={area:.0f}",
+                transform=ax.transAxes, fontsize=6, color=color_direct,
+                verticalalignment='top', horizontalalignment='right',
+                family='monospace', fontweight='bold')
+        legend_y -= 0.08
+
         if has_uib:
-            lines.append(f"\u2501 UIB     A={area_uib:.0f}")
+            ax.text(legend_x, legend_y, f"\u2501\u2501 UIB     A={area_uib:.0f}",
+                    transform=ax.transAxes, fontsize=6, color=color_uib,
+                    verticalalignment='top', horizontalalignment='right',
+                    family='monospace', fontweight='bold')
+            legend_y -= 0.08
 
-        # SNR
+        # --- Mètriques (info box) ---
+        metrics = []
         if snr > 0:
-            lines.append(f"SNR={snr:.0f}")
+            metrics.append(f"SNR={snr:.0f}")
 
-        # Bigaussian R²
         bg = rep.get('bigaussian_doc', {})
         if bg:
             r2 = bg.get('r2', 0)
             status = bg.get('status', '')
             if r2 > 0:
                 tag = 'OK' if status == 'VALID' else ('!!' if status in ('CHECK', 'INVALID') else '')
-                lines.append(f"R\u00B2={r2:.4f} {tag}")
+                metrics.append(f"R\u00B2={r2:.4f} {tag}")
 
-        # Anomalies — cim irregular (jagged/batman)
         if rep.get('has_irregular_top', rep.get('has_batman')):
-            lines.append("Pic_J" + (" (rep)" if rep.get('irregular_top_repaired', rep.get('batman_repaired')) else " !!"))
+            metrics.append("Pic_J" + (" (rep)" if rep.get('irregular_top_repaired', rep.get('batman_repaired')) else " !!"))
         qs = rep.get('quality_score', 0)
         if qs > 0:
-            lines.append(f"QS={qs}")
+            metrics.append(f"QS={qs}")
 
-        text = "\n".join(lines)
-        props = dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.8, edgecolor='#BDC3C7')
-        ax.text(0.98, 0.97, text, transform=ax.transAxes, fontsize=6,
-               verticalalignment='top', horizontalalignment='right',
-               bbox=props, family='monospace')
+        if metrics:
+            text = "\n".join(metrics)
+            props = dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.8, edgecolor='#BDC3C7')
+            ax.text(0.98, legend_y, text, transform=ax.transAxes, fontsize=6,
+                   verticalalignment='top', horizontalalignment='right',
+                   bbox=props, family='monospace')
 
     def _draw_timeout_zones(self, ax, rep):
         """Draw timeout zones and annotations on a subplot."""

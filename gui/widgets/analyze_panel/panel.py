@@ -321,17 +321,6 @@ class AnalyzePanel(QWidget):
         )
 
         if calibration_data and calibration_data.get("success"):
-            khp_conc = calibration_data.get("khp_conc", 0)
-            rf_mass_local = calibration_data.get("rf_mass", 0)
-            rf_direct = calibration_data.get("rf_direct", 0) or calibration_data.get("rf", 0)
-            shift = calibration_data.get("shift_direct", 0) or calibration_data.get("shift", 0)
-            shift_sec = shift * 60 if shift else 0
-            khp_source = calibration_data.get("khp_source", "LOCAL")
-            volume_uL = calibration_data.get("volume_uL", 0)
-            if not volume_uL:
-                cal_inner = calibration_data.get("calibration", {})
-                volume_uL = cal_inner.get("volume_uL", 0) if cal_inner else 0
-
             # Get rf_mass_cal + intercept GLOBAL (what quantify_sample actually uses)
             rf_mass_global = None
             intercept_global = 0
@@ -344,29 +333,19 @@ class AnalyzePanel(QWidget):
             except Exception:
                 pass
 
-            is_alt = "ALTERNATIU" in str(khp_source) or "SIBLING" in str(khp_source)
-            color = "#E67E22" if is_alt else "#27AE60"
-            icon = "⚠" if is_alt else "✓"
-
-            khp_label = f"KHP {khp_conc:g}ppm"
-            if volume_uL > 0:
-                khp_label += f" @ {volume_uL:.0f}µL"
-
-            # Show full regression line: RF + intercept (what quantify_sample uses)
+            # Display: prioritzar calibració global (el que realment usa quantify_sample)
             if rf_mass_global and rf_mass_global > 0:
                 rf_display = rf_mass_global
                 intercept_display = intercept_global
-                cal_note = "GLOBAL (Calibration_Reference)"
-            elif rf_mass_local > 0:
-                rf_display = rf_mass_local
-                intercept_display = 0
-                cal_note = "LOCAL (SEQ)"
+                cal_note = "Global"
             else:
-                rf_display = rf_direct
+                rf_mass_local = calibration_data.get("rf_mass", 0)
+                rf_direct = calibration_data.get("rf_direct", 0) or calibration_data.get("rf", 0)
+                rf_display = rf_mass_local if rf_mass_local > 0 else rf_direct
                 intercept_display = 0
-                cal_note = "LOCAL (àrea/ppm)"
+                cal_note = "Local"
 
-            # Build regression line text: "RF=628.1 · b=81.0" or "RF=628.1 · origen"
+            # Build regression line text
             if intercept_display and abs(intercept_display) > 0.01:
                 recta_str = f"RF=<b>{rf_display:.1f}</b> · b=<b>{intercept_display:.1f}</b>"
             else:
@@ -374,10 +353,15 @@ class AnalyzePanel(QWidget):
 
             self.cal_info.setText(
                 f"<span style='color: #6c757d; font-size: 10px;'>CALIBRACIÓ</span><br>"
-                f"<span style='color: {color};'>{icon}</span> <b style='font-size: 13px;'>{khp_label}</b><br>"
-                f"<span style='color: #6c757d; font-size: 10px;'>"
-                f"{recta_str} · Shift: <b>{shift_sec:.1f}s</b></span>"
+                f"<span style='color: #27AE60;'>✓</span> <b style='font-size: 13px;'>{cal_note}</b><br>"
+                f"<span style='color: #6c757d; font-size: 10px;'>{recta_str}</span>"
             )
+
+            # Tooltip: detalls complets per si vol aprofundir
+            khp_conc = calibration_data.get("khp_conc", 0)
+            shift = calibration_data.get("shift_direct", 0) or calibration_data.get("shift", 0)
+            shift_sec = shift * 60 if shift else 0
+            khp_source = calibration_data.get("khp_source", "LOCAL")
             rf_global_str = f"{rf_mass_global:.2f}" if rf_mass_global else "N/A"
             self.cal_info.setToolTip(
                 f"Font: {khp_source}\n"
@@ -385,10 +369,7 @@ class AnalyzePanel(QWidget):
                 f"Recta: ppm = (A - {intercept_display:.1f}) × 1000 / (RF × V)\n"
                 f"RF_mass_cal (global): {rf_global_str}\n"
                 f"Intercept (global): {intercept_global:.2f}\n"
-                f"RF_mass (local): {rf_mass_local:.2f}\n"
-                f"RF_direct (local): {rf_direct:.2f}\n"
-                f"Shift: {shift_sec:.2f}s ({shift:.4f} min)\n"
-                f"Volum: {volume_uL:.0f} µL"
+                f"KHP SEQ: {khp_conc:g}ppm, shift={shift_sec:.1f}s"
             )
         else:
             self.cal_info.setText(
@@ -559,6 +540,7 @@ class AnalyzePanel(QWidget):
         self.analyze_completed.emit(result)
 
     def _on_error(self, error_msg):
+        logger.error(f"Error durant anàlisi: {error_msg}")
         self.progress_frame.setVisible(False)
         self.analyze_btn.setEnabled(True)
         # Mostrar error inline en lloc de QMessageBox
