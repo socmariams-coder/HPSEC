@@ -1,13 +1,12 @@
 """
-HPSEC Suite - Global Calibration Panel (Consulta)
-===================================================
+HPSEC Suite - Global Calibration Panel
+========================================
 
-Panell de CONSULTA amb dues vistes:
-- Tab 0: Recta de Calibració — previsualització des de SEQ_CAL dedicades
+Panell de calibració global amb dues vistes:
+- Tab 0: Recta de Calibració — des de SEQ_CAL dedicades (inclou aplicar)
 - Tab 1: Control de Qualitat — Levey-Jennings per KHP de producció
 
-Les accions (aplicar nova calibració) es fan des del wizard (CalibratePanel).
-Aquí l'usuari pot veure i comparar regressions, però no aplicar-les.
+Les SEQ_CAL arriben directament des del Dashboard (sense passar pel wizard).
 """
 
 from PySide6.QtWidgets import (
@@ -15,9 +14,9 @@ from PySide6.QtWidgets import (
     QGridLayout, QTableWidget, QTableWidgetItem, QHeaderView,
     QComboBox, QMessageBox, QSplitter, QRadioButton, QButtonGroup,
     QSizePolicy, QCheckBox, QTabWidget, QListWidget,
-    QListWidgetItem, QFrame
+    QListWidgetItem, QFrame, QProgressBar
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal, QThread
 from PySide6.QtGui import QFont, QColor
 
 from pathlib import Path
@@ -43,6 +42,100 @@ from matplotlib.figure import Figure
 import numpy as np
 
 logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# WORKER: Processament SEQ_CAL (import + calibrate en thread)
+# =============================================================================
+
+class CalSeqWorker(QThread):
+    """Worker per processar una SEQ_CAL nova (import + calibrate).
+
+    Reutilitza el pipeline existent:
+    1. Carrega manifest o importa des de zero
+    2. ensure_data_loaded (si deferred)
+    3. calibrate_from_import → register_calibration a KHP_History
+    """
+    progress = Signal(int, str)
+    finished = Signal(dict)
+    error = Signal(str)
+
+    def __init__(self, seq_path, config=None):
+        super().__init__()
+        self.seq_path = seq_path
+        self.config = config
+
+    def run(self):
+        try:
+            from hpsec_import import (
+                load_manifest, import_from_manifest, import_sequence,
+                ensure_data_loaded,
+            )
+            from hpsec_calibrate import calibrate_from_import
+
+            def progress_cb(pct, msg):
+                self.progress.emit(int(pct), msg)
+
+            seq_name = os.path.basename(self.seq_path)
+            progress_cb(0, f"Processant {seq_name}...")
+
+            # Pas 1: Import
+            manifest = load_manifest(self.seq_path)
+            if manifest:
+                progress_cb(5, "Importat des del manifest...")
+                imported_data = import_from_manifest(
+                    self.seq_path, manifest=manifest,
+                    config=self.config,
+                    progress_callback=lambda p, m: progress_cb(5 + int(p * 0.3), m),
+                    load_data=True,
+                )
+            else:
+                progress_cb(5, "Importat des del sistema de fitxers...")
+                imported_data = import_sequence(
+                    self.seq_path,
+                    config=self.config,
+                    progress_callback=lambda p, m: progress_cb(5 + int(p * 0.3), m),
+                )
+
+            if not imported_data or not imported_data.get("success"):
+                self.error.emit(
+                    f"Error importat {seq_name}: "
+                    + str(imported_data.get("errors", ["Desconegut"]))
+                )
+                return
+
+            # Pas 1b: ensure_data_loaded si deferred
+            if imported_data.get("data_deferred"):
+                progress_cb(35, "Carregant senyals des del disc...")
+                ensure_data_loaded(
+                    imported_data,
+                    config=self.config,
+                    progress_callback=lambda p, m: progress_cb(35 + int(p * 0.15), m),
+                )
+
+            # Pas 2: Calibrate (internament registra a KHP_History)
+            progress_cb(50, "Calibrant KHP...")
+            calib_result = calibrate_from_import(
+                imported_data,
+                config=self.config,
+                progress_callback=lambda p, m: progress_cb(50 + int(p * 0.45), m),
+            )
+
+            progress_cb(95, "Finalitzant...")
+
+            # Preparar resultat
+            result = {
+                "success": True,
+                "seq_name": seq_name,
+                "seq_path": self.seq_path,
+                "imported_data": imported_data,
+                "calib_result": calib_result,
+            }
+            self.finished.emit(result)
+
+        except Exception as e:
+            import traceback
+            self.error.emit(f"{str(e)}\n{traceback.format_exc()}")
 
 
 class GlobalCalibrationPanel(QWidget):
@@ -93,6 +186,22 @@ class GlobalCalibrationPanel(QWidget):
         report_row.addStretch()
         layout.addLayout(report_row)
 
+        # Barra de progrés (per CalSeqWorker)
+        self._progress_bar = QProgressBar()
+        self._progress_bar.setVisible(False)
+        self._progress_bar.setTextVisible(True)
+        self._progress_bar.setStyleSheet("""
+            QProgressBar { border: 1px solid #bdc3c7; border-radius: 4px;
+                           text-align: center; height: 22px; }
+            QProgressBar::chunk { background-color: #2980B9; border-radius: 3px; }
+        """)
+        layout.addWidget(self._progress_bar)
+
+        self._progress_label = QLabel("")
+        self._progress_label.setVisible(False)
+        self._progress_label.setStyleSheet("color: #2980B9; font-style: italic;")
+        layout.addWidget(self._progress_label)
+
         # Tabs
         self.tabs = QTabWidget()
         self.cal_view = CalibrationLineView(self)
@@ -100,6 +209,9 @@ class GlobalCalibrationPanel(QWidget):
         self.tabs.addTab(self.cal_view, "📐 Recta de Calibració")
         self.tabs.addTab(self.qc_view, "📊 Control de Qualitat")
         layout.addWidget(self.tabs, 1)
+
+        # Worker (un sol actiu)
+        self._cal_worker = None
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -149,11 +261,74 @@ class GlobalCalibrationPanel(QWidget):
             self.tabs.setCurrentIndex(0)  # Tab Recta de Calibració
             self.cal_view.pre_select_seq(seq_name)
         else:
-            # No processada: cal processar (worker al Commit 2)
-            logger.info(f"  SEQ_CAL '{seq_name}' NO processada, caldrà processar")
+            # No processada: llançar worker per importar + calibrar
+            logger.info(f"  SEQ_CAL '{seq_name}' NO processada, processant...")
             self.tabs.setCurrentIndex(0)
             self.cal_view.show_processing_message(seq_name)
-            # TODO Commit 2: llançar CalSeqWorker per importar + calibrar
+            self._start_cal_worker(seq_path)
+
+    def _start_cal_worker(self, seq_path):
+        """Llança CalSeqWorker per importar i calibrar una SEQ_CAL."""
+        if self._cal_worker and self._cal_worker.isRunning():
+            logger.warning("CalSeqWorker ja en execució, ignorant nova petició")
+            return
+
+        seq_name = os.path.basename(seq_path)
+
+        # Mostrar progrés
+        self._progress_bar.setVisible(True)
+        self._progress_bar.setValue(0)
+        self._progress_label.setVisible(True)
+        self._progress_label.setText(f"Processant {seq_name}...")
+
+        self._cal_worker = CalSeqWorker(seq_path)
+        self._cal_worker.progress.connect(self._on_worker_progress)
+        self._cal_worker.finished.connect(self._on_worker_finished)
+        self._cal_worker.error.connect(self._on_worker_error)
+        self._cal_worker.start()
+
+    def _on_worker_progress(self, pct, msg):
+        """Actualitza barra de progrés."""
+        self._progress_bar.setValue(pct)
+        self._progress_label.setText(msg)
+
+    def _on_worker_finished(self, result):
+        """Worker completat: recarregar dades i pre-seleccionar."""
+        self._progress_bar.setVisible(False)
+        self._progress_label.setVisible(False)
+
+        seq_name = result.get("seq_name", "")
+        logger.info(f"CalSeqWorker completat per {seq_name}")
+
+        # Recarregar KHP_History (ara tindrà les noves entrades)
+        self._load_all_data()
+
+        # Pre-seleccionar la SEQ processada
+        self.cal_view.pre_select_seq(seq_name)
+
+        # Notificació
+        if self.main_window:
+            self.main_window.set_status(f"SEQ_CAL {seq_name} processada", 5000)
+
+    def _on_worker_error(self, error_msg):
+        """Error al processar la SEQ_CAL."""
+        self._progress_bar.setVisible(False)
+        self._progress_label.setVisible(False)
+
+        logger.error(f"CalSeqWorker error: {error_msg}")
+
+        # Mostrar error a la comparació
+        self.cal_view.comparison_label.setText(
+            f"<div style='text-align:center; padding:20px;'>"
+            f"<span style='font-size:14px; color:#E74C3C;'>"
+            f"❌ Error processant SEQ_CAL</span><br><br>"
+            f"<span style='color:#666;'>{error_msg[:200]}</span></div>"
+        )
+
+        QMessageBox.critical(
+            self, "Error processant SEQ_CAL",
+            f"Error al processar la seqüència de calibració:\n\n{error_msg[:500]}"
+        )
 
     def _on_generate_report(self):
         """Genera informe PDF de la calibració activa."""
