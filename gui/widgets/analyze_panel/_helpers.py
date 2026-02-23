@@ -282,3 +282,148 @@ def _set_font_cell(table, row, col, text, font):
 def _set_pct_cell(table, row, col, value, total):
     pct = (value / total * 100) if total > 0 else 0
     table.setItem(row, col, QTableWidgetItem(f"{pct:.1f}%"))
+
+
+# ---------------------------------------------------------------------------
+# Calibration comparison helpers (shared between AnalyzePanel and ReviewPanel)
+# ---------------------------------------------------------------------------
+
+def format_calibration_comparison_html(rf_vigent, int_vigent, rf_new, int_new,
+                                        r2_new=None, r2_vigent=None,
+                                        show_equation=False,
+                                        model_type="intercept"):
+    """
+    Genera HTML per taula comparació calibració vigent vs nova.
+
+    Args:
+        rf_vigent: RF actual
+        int_vigent: Intercept actual
+        rf_new: RF nou
+        int_new: Intercept nou
+        r2_new: R² de la nova regressió
+        r2_vigent: R² de la calibració vigent
+        show_equation: Si True, afegeix fila amb equació
+        model_type: "intercept" o "origin"
+
+    Returns:
+        str: HTML amb taula estilitzada
+    """
+    # Colors per deltas
+    def _delta_color(pct):
+        if abs(pct) < 5:
+            return "#27AE60"  # verd
+        elif abs(pct) < 15:
+            return "#E67E22"  # taronja
+        return "#E74C3C"  # vermell
+
+    # Delta RF
+    delta_rf = (rf_new - rf_vigent) / rf_vigent * 100 if rf_vigent and rf_vigent > 0 else 0
+
+    # Delta intercept (absolut, no relatiu)
+    delta_int = int_new - int_vigent if int_vigent is not None else 0
+
+    html = """
+    <table style='font-size: 11px; border-collapse: collapse; width: 100%;'>
+    <tr style='background-color: #2980B9; color: white;'>
+        <th style='padding: 4px 8px;'></th>
+        <th style='padding: 4px 8px;'>Vigent</th>
+        <th style='padding: 4px 8px;'>Nova</th>
+        <th style='padding: 4px 8px;'>Δ</th>
+    </tr>
+    """
+
+    # RF
+    html += f"""
+    <tr style='border-bottom: 1px solid #eee;'>
+        <td style='padding: 3px 8px;'><b>RF (slope)</b></td>
+        <td style='padding: 3px 8px; text-align: center;'>{rf_vigent:.1f}</td>
+        <td style='padding: 3px 8px; text-align: center;'><b>{rf_new:.1f}</b></td>
+        <td style='padding: 3px 8px; text-align: center; color: {_delta_color(delta_rf)};'>
+            {delta_rf:+.1f}%</td>
+    </tr>
+    """
+
+    # Intercept
+    html += f"""
+    <tr style='border-bottom: 1px solid #eee;'>
+        <td style='padding: 3px 8px;'><b>Intercept</b></td>
+        <td style='padding: 3px 8px; text-align: center;'>{int_vigent:.1f}</td>
+        <td style='padding: 3px 8px; text-align: center;'><b>{int_new:.1f}</b></td>
+        <td style='padding: 3px 8px; text-align: center;'>{delta_int:+.1f}</td>
+    </tr>
+    """
+
+    # R²
+    if r2_new is not None:
+        r2_color = "#27AE60" if r2_new >= 0.99 else ("#E67E22" if r2_new >= 0.95 else "#E74C3C")
+        r2_vig_str = f"{r2_vigent:.6f}" if r2_vigent else "—"
+        html += f"""
+        <tr style='border-bottom: 1px solid #eee;'>
+            <td style='padding: 3px 8px;'><b>R²</b></td>
+            <td style='padding: 3px 8px; text-align: center;'>{r2_vig_str}</td>
+            <td style='padding: 3px 8px; text-align: center;'>
+                <b style='color: {r2_color};'>{r2_new:.6f}</b></td>
+            <td style='padding: 3px 8px; text-align: center;'>—</td>
+        </tr>
+        """
+
+    # Equació (opcional)
+    if show_equation:
+        if model_type == 'origin':
+            eq = f"Àrea = {rf_new:.1f} × µg_DOC"
+        else:
+            eq = f"Àrea = {rf_new:.1f} × µg_DOC + {int_new:.1f}"
+        html += f"""
+        <tr style='background-color: #f8f9fa;'>
+            <td colspan='4' style='padding: 4px 8px; font-family: monospace; text-align: center;'>
+                {eq}</td>
+        </tr>
+        """
+
+    html += "</table>"
+    return html.strip()
+
+
+def compute_prediction_band(x_fit, rf, intercept, x_data, y_data, confidence=0.95):
+    """
+    Calcula la banda de predicció per una regressió lineal.
+
+    Args:
+        x_fit: array de punts x per la banda (np.linspace)
+        rf: slope de la regressió
+        intercept: intercept de la regressió
+        x_data: array de punts x observats
+        y_data: array de punts y observats
+        confidence: nivell de confiança (default 0.95)
+
+    Returns:
+        tuple (y_lower, y_upper) o None si error
+    """
+    import numpy as np
+    try:
+        from scipy.stats import t as t_dist
+    except ImportError:
+        return None
+
+    n = len(x_data)
+    if n < 3:
+        return None
+
+    x_arr = np.asarray(x_data, dtype=float)
+    y_arr = np.asarray(y_data, dtype=float)
+
+    y_pred_data = rf * x_arr + intercept
+    mse = np.sum((y_arr - y_pred_data) ** 2) / (n - 2)
+    x_mean = np.mean(x_arr)
+    Sxx = np.sum((x_arr - x_mean) ** 2)
+
+    if Sxx <= 0 or mse < 0:
+        return None
+
+    alpha = 1 - confidence
+    t_val = t_dist.ppf(1 - alpha / 2, n - 2)
+
+    y_fit = rf * x_fit + intercept
+    se_pred = np.sqrt(mse * (1 + 1.0 / n + (x_fit - x_mean) ** 2 / Sxx))
+
+    return (y_fit - t_val * se_pred, y_fit + t_val * se_pred)

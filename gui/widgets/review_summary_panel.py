@@ -590,13 +590,23 @@ class ReviewSummaryPanel(QWidget):
         self._cal_comparison_label.setStyleSheet("font-size: 11px; background: transparent;")
         layout.addWidget(self._cal_comparison_label)
 
+        # --- Equació ---
+        self._cal_equation_label = QLabel("")
+        self._cal_equation_label.setAlignment(Qt.AlignCenter)
+        self._cal_equation_label.setStyleSheet("""
+            font-family: Consolas, monospace; font-size: 11px;
+            background-color: #e8f4fd; border: 1px solid #b3d7f0;
+            border-radius: 4px; padding: 4px 8px;
+        """)
+        layout.addWidget(self._cal_equation_label)
+
         # --- Gràfic scatter miniatura ---
         if HAS_MATPLOTLIB:
-            self._cal_mini_figure = Figure(figsize=(6, 2.5), dpi=100)
+            self._cal_mini_figure = Figure(figsize=(7, 3), dpi=100)
             self._cal_mini_figure.set_facecolor("#f0f7ff")
             self._cal_mini_canvas = FigureCanvas(self._cal_mini_figure)
-            self._cal_mini_canvas.setMinimumHeight(160)
-            self._cal_mini_canvas.setMaximumHeight(220)
+            self._cal_mini_canvas.setMinimumHeight(200)
+            self._cal_mini_canvas.setMaximumHeight(280)
             layout.addWidget(self._cal_mini_canvas)
 
         # --- Separator ---
@@ -677,6 +687,13 @@ class ReviewSummaryPanel(QWidget):
         retro_layout.addLayout(sel_row)
 
         layout.addWidget(self._retro_frame)
+
+        # --- Retro count label ---
+        self._retro_count_label = QLabel("")
+        self._retro_count_label.setAlignment(Qt.AlignCenter)
+        self._retro_count_label.setStyleSheet("font-size: 11px; color: #666; border: none;")
+        self._retro_count_label.setVisible(False)
+        layout.addWidget(self._retro_count_label)
 
         # --- Botó aplicar ---
         btn_row = QHBoxLayout()
@@ -812,7 +829,8 @@ class ReviewSummaryPanel(QWidget):
 
     def _update_cal_comparison(self, rf_new, intercept_new, r2_new):
         """Taula HTML comparant calibració vigent vs nova."""
-        from hpsec_calibrate import get_active_global_calibration, get_rf_mass_cal, get_calibration_intercept
+        from hpsec_calibrate import get_active_global_calibration
+        from gui.widgets.analyze_panel._helpers import format_calibration_comparison_html
 
         cal = get_active_global_calibration()
         if not cal:
@@ -820,51 +838,34 @@ class ReviewSummaryPanel(QWidget):
             return
 
         method = self._seq_cal_method or "COLUMN"
-        is_bp = method.upper() == "BP"
-        mode_key = "bp" if is_bp else "column"
+        mode_key = "bp" if method.upper() == "BP" else "column"
 
-        rf_vigent = get_rf_mass_cal(cal, signal="direct", mode=mode_key)
-        intercept_vigent = get_calibration_intercept(cal, signal="direct", mode=mode_key)
+        # Extreure valors vigents del dict anidat
+        rf_dict = cal.get('rf_mass_cal', {})
+        rf_vigent = rf_dict.get('direct', {}).get(mode_key, 0) if isinstance(rf_dict, dict) else 0
 
-        # Deltas
-        if rf_vigent and rf_vigent > 0:
-            delta_rf = (rf_new - rf_vigent) / rf_vigent * 100
+        int_dict = cal.get('intercept', 0)
+        if isinstance(int_dict, dict):
+            intercept_vigent = int_dict.get('direct', {}).get(mode_key, 0)
         else:
-            delta_rf = 0.0
+            intercept_vigent = float(int_dict) if int_dict else 0
 
-        def delta_color(pct):
-            if abs(pct) < 5:
-                return COLOR_SUCCESS
-            elif abs(pct) < 15:
-                return COLOR_WARNING
-            return COLOR_ERROR
+        r2_dict = cal.get('r2', 0)
+        if isinstance(r2_dict, dict):
+            r2_vigent = r2_dict.get(mode_key, 0) or 0
+        else:
+            r2_vigent = float(r2_dict) if r2_dict else 0
 
-        html = f"""
-        <table style='font-size: 11px; border-collapse: collapse;'>
-        <tr style='border-bottom: 1px solid #ccc;'>
-            <th></th><th>Vigent</th><th>Nova</th><th>\u0394%</th>
-        </tr>
-        <tr>
-            <td><b>RF</b></td>
-            <td>{rf_vigent:.1f}</td>
-            <td><b>{rf_new:.1f}</b></td>
-            <td style='color:{delta_color(delta_rf)}'>{delta_rf:+.1f}%</td>
-        </tr>
-        <tr>
-            <td><b>Intercept</b></td>
-            <td>{intercept_vigent:.1f}</td>
-            <td><b>{intercept_new:.1f}</b></td>
-            <td>—</td>
-        </tr>
-        <tr>
-            <td><b>R\u00b2</b></td>
-            <td>—</td>
-            <td><b>{r2_new:.6f}</b></td>
-            <td>—</td>
-        </tr>
-        </table>
-        """
-        self._cal_comparison_label.setText(html.strip())
+        html = format_calibration_comparison_html(
+            rf_vigent=rf_vigent, int_vigent=intercept_vigent,
+            rf_new=rf_new, int_new=intercept_new,
+            r2_new=r2_new, r2_vigent=r2_vigent,
+        )
+        self._cal_comparison_label.setText(html)
+
+        # Actualitzar equació
+        eq = f"Àrea = {rf_new:.1f} × µg_DOC + {intercept_new:.1f}   (R² = {r2_new:.6f})"
+        self._cal_equation_label.setText(eq)
 
     def _plot_cal_mini_scatter(self, reg_result):
         """Gràfic scatter miniatura de la regressió."""
@@ -883,9 +884,11 @@ class ReviewSummaryPanel(QWidget):
         y_exc = [p['area'] for p in points if p.get('excluded')]
 
         if x_inc:
-            ax.scatter(x_inc, y_inc, c='#2980B9', s=30, zorder=5, label='Inclòs')
+            ax.scatter(x_inc, y_inc, c='#2980B9', s=35, zorder=5,
+                      edgecolors='white', linewidth=0.5, label='Inclòs')
         if x_exc:
-            ax.scatter(x_exc, y_exc, c='#E74C3C', s=30, marker='x', zorder=5, label='Exclòs')
+            ax.scatter(x_exc, y_exc, c='#E74C3C', s=35, marker='x',
+                      zorder=5, linewidth=1.5, label='Exclòs')
 
         # Recta regressió nova
         rf = reg_result.get('rf_mass_cal', 0)
@@ -897,20 +900,51 @@ class ReviewSummaryPanel(QWidget):
             ax.plot(x_line, y_line, '-', color='#27AE60', linewidth=1.5,
                     label=f'Nova (RF={rf:.0f})')
 
-        ax.set_xlabel('\u00b5g DOC', fontsize=8)
-        ax.set_ylabel('\u00c0rea', fontsize=8)
+            # Banda de predicció 95%
+            if len(x_inc) >= 3:
+                try:
+                    from gui.widgets.analyze_panel._helpers import compute_prediction_band
+                    band = compute_prediction_band(x_line, rf, intercept,
+                                                   np.array(x_inc), np.array(y_inc))
+                    if band:
+                        ax.fill_between(x_line, band[0], band[1],
+                                       alpha=0.10, color='#2980B9')
+                except Exception:
+                    pass
+
+        # Recta vigent (referència)
+        try:
+            from hpsec_calibrate import get_rf_mass_cal, get_calibration_intercept
+            method = self._seq_cal_method or "COLUMN"
+            mode_key = "bp" if method.upper() == "BP" else "column"
+            rf_vig = get_rf_mass_cal(signal='direct', mode=mode_key) or 0
+            int_vig = get_calibration_intercept(signal='direct', mode=mode_key) or 0
+            if rf_vig > 0 and all_x:
+                x_line_v = np.linspace(0, max(all_x) * 1.1, 100)
+                y_line_v = rf_vig * x_line_v + int_vig
+                ax.plot(x_line_v, y_line_v, '--', color='#E67E22', linewidth=1,
+                       alpha=0.7, label=f'Vigent (RF={rf_vig:.0f})')
+        except Exception:
+            pass
+
+        ax.set_xlabel('µg DOC', fontsize=8)
+        ax.set_ylabel('Àrea', fontsize=8)
         ax.tick_params(labelsize=7)
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
         ax.legend(fontsize=7, loc='upper left')
+        ax.grid(True, alpha=0.2)
         self._cal_mini_figure.tight_layout()
         self._cal_mini_canvas.draw()
 
     def _on_retroactive_toggled(self, checked):
         """Mostra/amaga la llista de SEQs retroactives."""
         self._retro_frame.setVisible(checked)
+        self._retro_count_label.setVisible(checked)
         if checked and not self._retro_seq_checkboxes:
             self._populate_retro_seq_list()
+        if checked:
+            self._update_retro_count()
 
     def _populate_retro_seq_list(self):
         """Carrega llista de SEQs processades posteriors a valid_from."""
@@ -962,8 +996,19 @@ class ReviewSummaryPanel(QWidget):
             cb.setChecked(True)
             cb.setProperty("json_path", json_path)
             cb.setStyleSheet("border: none; background: transparent; font-size: 10px;")
+            cb.toggled.connect(self._update_retro_count)
             self._retro_content_layout.addWidget(cb)
             self._retro_seq_checkboxes.append(cb)
+
+        self._update_retro_count()
+
+    def _update_retro_count(self, _=None):
+        """Actualitza el comptador de SEQs retroactives seleccionades."""
+        total = len(self._retro_seq_checkboxes)
+        selected = sum(1 for cb in self._retro_seq_checkboxes if cb.isChecked())
+        self._retro_count_label.setText(
+            f"<b>{selected}/{total}</b> SEQs seleccionades per requantificar"
+        )
 
     def _select_all_retro(self, select):
         """Selecciona o deselecciona totes les SEQs retroactives."""

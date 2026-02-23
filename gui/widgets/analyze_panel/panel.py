@@ -831,6 +831,8 @@ class AnalyzePanel(QWidget):
     def _update_seq_cal_comparison(self, new_rf, new_intercept, new_r2, method):
         """Mostra la comparació entre calibració vigent i la nova."""
         from hpsec_calibrate import get_active_global_calibration
+        from ._helpers import format_calibration_comparison_html
+
         current_cal = get_active_global_calibration()
         if not current_cal:
             self.seq_cal_comparison.setText("<i>No hi ha calibració vigent per comparar</i>")
@@ -855,39 +857,12 @@ class AnalyzePanel(QWidget):
         else:
             current_r2_val = float(current_r2) if current_r2 else 0
 
-        delta_rf_pct = (new_rf - current_rf) / current_rf * 100 if current_rf > 0 else 0
-        delta_intercept = new_intercept - current_intercept
-
-        html = f"""
-        <table style='border-collapse: collapse; width: 100%;'>
-        <tr style='background: #E8F8F5;'>
-            <th style='padding: 4px 8px; text-align: left;'>Paràmetre</th>
-            <th style='padding: 4px 8px; text-align: center;'>Vigent ({method})</th>
-            <th style='padding: 4px 8px; text-align: center;'>Nova</th>
-            <th style='padding: 4px 8px; text-align: center;'>Diferència</th>
-        </tr>
-        <tr>
-            <td style='padding: 4px 8px; font-weight: bold;'>RF (slope)</td>
-            <td style='padding: 4px 8px; text-align: center;'>{current_rf:.1f}</td>
-            <td style='padding: 4px 8px; text-align: center; font-weight: bold;'>{new_rf:.1f}</td>
-            <td style='padding: 4px 8px; text-align: center; color: {"#E74C3C" if abs(delta_rf_pct) > 15 else "#E67E22" if abs(delta_rf_pct) > 5 else "#27AE60"};'>
-                {delta_rf_pct:+.1f}%
-            </td>
-        </tr>
-        <tr style='background: #FAFAFA;'>
-            <td style='padding: 4px 8px; font-weight: bold;'>Intercept</td>
-            <td style='padding: 4px 8px; text-align: center;'>{current_intercept:.1f}</td>
-            <td style='padding: 4px 8px; text-align: center;'>{new_intercept:.1f}</td>
-            <td style='padding: 4px 8px; text-align: center;'>{delta_intercept:+.1f}</td>
-        </tr>
-        <tr>
-            <td style='padding: 4px 8px; font-weight: bold;'>R²</td>
-            <td style='padding: 4px 8px; text-align: center;'>{current_r2_val:.4f}</td>
-            <td style='padding: 4px 8px; text-align: center;'>{new_r2:.6f}</td>
-            <td style='padding: 4px 8px; text-align: center;'>—</td>
-        </tr>
-        </table>
-        """
+        html = format_calibration_comparison_html(
+            rf_vigent=current_rf, int_vigent=current_intercept,
+            rf_new=new_rf, int_new=new_intercept,
+            r2_new=new_r2, r2_vigent=current_r2_val,
+            show_equation=True,
+        )
         self.seq_cal_comparison.setText(html)
 
     def _update_seq_cal_graph(self, reg_result, method):
@@ -945,6 +920,19 @@ class AnalyzePanel(QWidget):
             ax_main.plot(x_line, y_line, '-', color='#27AE60', linewidth=2,
                          label=f'Nova: RF={new_rf:.0f}, int={new_intercept:.1f}, R²={r2:.4f}')
 
+            # Banda de predicció 95%
+            if len(x_inc) >= 3:
+                try:
+                    from ._helpers import compute_prediction_band
+                    band = compute_prediction_band(x_line, new_rf, new_intercept,
+                                                   np.array(x_inc), np.array(y_inc))
+                    if band:
+                        ax_main.fill_between(x_line, band[0], band[1],
+                                            alpha=0.10, color='#27AE60',
+                                            label='Predicció 95%')
+                except Exception:
+                    pass
+
             from hpsec_calibrate import get_rf_mass_cal, get_calibration_intercept
             current_rf = get_rf_mass_cal(signal='direct', mode=method.lower()) or 0
             current_intercept = get_calibration_intercept(signal='direct', mode=method.lower()) or 0
@@ -973,10 +961,23 @@ class AnalyzePanel(QWidget):
                 residuals.append(y_val - y_pred)
 
             if residuals:
-                colors = ['#27AE60' if abs(r) < 20 else '#E67E22' if abs(r) < 50 else '#E74C3C'
+                rms = reg_result.get('residuals_rms', 0)
+                colors = ['#27AE60' if abs(r) < rms * 2 else '#E67E22' if abs(r) < rms * 3 else '#E74C3C'
                           for r in residuals]
                 ax_res.bar(range(len(residuals)), residuals, color=colors, alpha=0.8, edgecolor='white')
                 ax_res.axhline(y=0, color='#333', linewidth=0.8)
+                if rms > 0:
+                    ax_res.axhline(y=rms, color='#E67E22', linewidth=0.5, linestyle='--', alpha=0.5)
+                    ax_res.axhline(y=-rms, color='#E67E22', linewidth=0.5, linestyle='--', alpha=0.5)
+
+                # Etiquetes x: concentracions
+                inc_pts = [p for j, p in enumerate(points) if j not in excluded]
+                if inc_pts:
+                    ax_res.set_xticks(range(len(inc_pts)))
+                    ax_res.set_xticklabels([f"{p.get('conc_ppm', 0):g}" for p in inc_pts],
+                                           fontsize=6, rotation=45)
+                    ax_res.set_xlabel('ppm', fontsize=7)
+
                 ax_res.set_title('Residuals', fontsize=9, fontweight='bold')
                 ax_res.set_ylabel('Àrea obs - pred', fontsize=8)
                 ax_res.tick_params(labelsize=7)
