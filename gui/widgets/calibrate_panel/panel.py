@@ -1834,6 +1834,15 @@ class CalibratePanel(QWidget):
             # Calcular Quality Score amb nova lògica
             quality, issues = self._calculate_quality_score(khp, signal)
 
+            # Backend quality_issues (de hpsec_calibrate.py) — no duplicar
+            backend_issues = khp.get('quality_issues', [])
+            issue_texts_set = set(issues)
+            for bi in backend_issues:
+                bi_str = str(bi)
+                if bi_str not in issue_texts_set:
+                    issues.append(bi_str)
+                    issue_texts_set.add(bi_str)
+
             # Col 15: Quality Score
             item_q = QTableWidgetItem(str(int(quality)))
             if quality >= 100:
@@ -1846,7 +1855,7 @@ class CalibratePanel(QWidget):
                 item_q.setBackground(QColor(150, 255, 150))
             self.metrics_table.setItem(row, 15, item_q)
 
-            # Col 16: Estat
+            # Col 16: Estat — combina quality_score + issues locals + backend
             valid_for_cal = khp.get('valid_for_calibration', True)
             if not valid_for_cal or quality >= 100:
                 status = "INVALID"
