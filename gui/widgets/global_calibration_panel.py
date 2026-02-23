@@ -14,9 +14,9 @@ from PySide6.QtWidgets import (
     QGridLayout, QTableWidget, QTableWidgetItem, QHeaderView,
     QComboBox, QMessageBox, QSplitter, QRadioButton, QButtonGroup,
     QSizePolicy, QCheckBox, QTabWidget, QListWidget,
-    QListWidgetItem, QFrame, QProgressBar
+    QListWidgetItem, QFrame, QProgressBar, QDateEdit, QScrollArea
 )
-from PySide6.QtCore import Qt, Signal, QThread
+from PySide6.QtCore import Qt, Signal, QThread, QDate
 from PySide6.QtGui import QFont, QColor
 
 from pathlib import Path
@@ -441,6 +441,9 @@ class CalibrationLineView(QWidget):
         )
         right_layout.addWidget(self.comparison_label)
 
+        # === Secció APLICAR CALIBRACIÓ ===
+        right_layout.addWidget(self._create_apply_section())
+
         splitter.addWidget(right)
         splitter.setStretchFactor(0, 2)
         splitter.setStretchFactor(1, 3)
@@ -605,20 +608,135 @@ class CalibrationLineView(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
 
         self.btn_recalculate = QPushButton("Recalcular")
-        self.btn_recalculate.setToolTip("Recalcular regressió per previsualització (no aplica canvis)")
+        self.btn_recalculate.setToolTip("Recalcular regressió amb els punts seleccionats")
         self.btn_recalculate.clicked.connect(self._recalculate_regression)
         layout.addWidget(self.btn_recalculate)
 
         layout.addStretch()
 
-        # Nota informativa: accions es fan des del wizard
-        info_label = QLabel(
-            "<i style='color: #7F8C8D;'>Per aplicar una nova calibració, "
-            "processar una SEQ_CAL pel wizard</i>"
-        )
-        layout.addWidget(info_label)
-
         return widget
+
+    def _create_apply_section(self):
+        """Secció per aplicar la calibració calculada."""
+        self._apply_group = QGroupBox("Aplicar Calibració")
+        self._apply_group.setStyleSheet("""
+            QGroupBox {
+                font-weight: bold; font-size: 12px;
+                border: 2px solid #27AE60;
+                border-radius: 8px;
+                margin-top: 12px;
+                padding-top: 20px;
+                background-color: #f0fff4;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 12px;
+                padding: 0 8px;
+                color: #27AE60;
+            }
+        """)
+        self._apply_group.setVisible(False)
+
+        apply_layout = QVBoxLayout(self._apply_group)
+        apply_layout.setContentsMargins(12, 8, 12, 12)
+        apply_layout.setSpacing(8)
+
+        # valid_from DateEdit
+        opts_row = QHBoxLayout()
+        opts_row.addWidget(QLabel("Vigent des de:"))
+        self._apply_valid_from = QDateEdit()
+        self._apply_valid_from.setCalendarPopup(True)
+        self._apply_valid_from.setDate(QDate.currentDate())
+        self._apply_valid_from.setDisplayFormat("yyyy-MM-dd")
+        opts_row.addWidget(self._apply_valid_from)
+        opts_row.addStretch()
+        apply_layout.addLayout(opts_row)
+
+        # Checkbox retroactiu
+        self._apply_retroactive_chk = QCheckBox("Aplicar retroactivament")
+        self._apply_retroactive_chk.setToolTip(
+            "Requantifica SEQs processades amb els nous RF/intercept\n"
+            "(les àrees no canvien, només ppm)"
+        )
+        self._apply_retroactive_chk.toggled.connect(self._on_retroactive_toggled)
+        apply_layout.addWidget(self._apply_retroactive_chk)
+
+        # Frame llista SEQs retroactives
+        self._retro_frame = QFrame()
+        self._retro_frame.setStyleSheet("""
+            QFrame {
+                background-color: #fff3e0;
+                border: 1px solid #ffcc80;
+                border-radius: 6px;
+            }
+        """)
+        self._retro_frame.setVisible(False)
+        retro_layout = QVBoxLayout(self._retro_frame)
+        retro_layout.setContentsMargins(10, 8, 10, 8)
+        retro_layout.setSpacing(4)
+
+        self._retro_info_label = QLabel("")
+        self._retro_info_label.setWordWrap(True)
+        self._retro_info_label.setStyleSheet("font-size: 11px; border: none;")
+        retro_layout.addWidget(self._retro_info_label)
+
+        self._retro_scroll = QScrollArea()
+        self._retro_scroll.setWidgetResizable(True)
+        self._retro_scroll.setMaximumHeight(120)
+        self._retro_scroll.setFrameShape(QFrame.NoFrame)
+        self._retro_content = QWidget()
+        self._retro_content_layout = QVBoxLayout(self._retro_content)
+        self._retro_content_layout.setContentsMargins(0, 0, 0, 0)
+        self._retro_content_layout.setSpacing(2)
+        self._retro_scroll.setWidget(self._retro_content)
+        retro_layout.addWidget(self._retro_scroll)
+
+        # Select all / none
+        sel_row = QHBoxLayout()
+        btn_sel_all = QPushButton("Seleccionar totes")
+        btn_sel_all.setFixedHeight(24)
+        btn_sel_all.setStyleSheet("font-size: 10px; border: none; color: #2980B9;")
+        btn_sel_all.clicked.connect(lambda: self._select_all_retro(True))
+        btn_sel_none = QPushButton("Cap")
+        btn_sel_none.setFixedHeight(24)
+        btn_sel_none.setStyleSheet("font-size: 10px; border: none; color: #2980B9;")
+        btn_sel_none.clicked.connect(lambda: self._select_all_retro(False))
+        sel_row.addWidget(btn_sel_all)
+        sel_row.addWidget(btn_sel_none)
+        sel_row.addStretch()
+        retro_layout.addLayout(sel_row)
+
+        apply_layout.addWidget(self._retro_frame)
+
+        # Botó aplicar
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        self._apply_btn = QPushButton("Aplicar com a Nova Calibració")
+        self._apply_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #27AE60; color: white;
+                border: none; border-radius: 6px;
+                padding: 10px 24px; font-size: 13px; font-weight: bold;
+            }
+            QPushButton:hover { background-color: #2ECC71; }
+            QPushButton:disabled { background-color: #BDC3C7; }
+        """)
+        self._apply_btn.clicked.connect(self._on_apply_calibration)
+        btn_row.addWidget(self._apply_btn)
+        btn_row.addStretch()
+        apply_layout.addLayout(btn_row)
+
+        # Estat
+        self._apply_status = QLabel("")
+        self._apply_status.setAlignment(Qt.AlignCenter)
+        self._apply_status.setStyleSheet("font-size: 11px; border: none;")
+        self._apply_status.setTextFormat(Qt.RichText)
+        apply_layout.addWidget(self._apply_status)
+
+        # Llista checkboxes retroactives
+        self._retro_seq_checkboxes = []
+
+        return self._apply_group
 
     # ---- Data & Refresh ----
 
@@ -927,6 +1045,7 @@ class CalibrationLineView(QWidget):
         self._update_stats_table(selected)
         self._update_preview_graph(result)
         self._update_comparison(result)
+        self._update_apply_visibility()
 
     def _update_stats_table(self, selected):
         """Estadístiques agrupades per concentració."""
@@ -1184,8 +1303,270 @@ class CalibrationLineView(QWidget):
 
     # ---- Aplicar calibració ----
 
-    # Nota: _apply_calibration i _run_retroactive_requantification
-    # s'han eliminat. Les accions es fan des del wizard (CalibratePanel).
+    def _update_apply_visibility(self):
+        """Mostra/amaga la secció d'aplicar segons si hi ha regressió vàlida."""
+        visible = (
+            self._last_result is not None
+            and self._last_result.get('success')
+            and self._last_result.get('r2', 0) > 0
+        )
+        self._apply_group.setVisible(visible)
+
+    def _on_retroactive_toggled(self, checked):
+        """Mostra/amaga llista SEQs retroactives."""
+        if checked:
+            self._populate_retro_list()
+        self._retro_frame.setVisible(checked)
+
+    def _populate_retro_list(self):
+        """Pobla la llista de SEQs disponibles per requantificació."""
+        # Netejar
+        for cb in self._retro_seq_checkboxes:
+            cb.deleteLater()
+        self._retro_seq_checkboxes = []
+
+        # Buscar JSONs d'anàlisi existents
+        from hpsec_config import get_config
+        cfg = get_config()
+        data_folder_root = cfg.get("paths", "data_folder")
+        if not data_folder_root or not os.path.isdir(data_folder_root):
+            self._retro_info_label.setText("No s'ha trobat la carpeta de dades")
+            return
+
+        valid_from = self._apply_valid_from.date().toString("yyyy-MM-dd")
+
+        analysis_jsons = []
+        for seq_dir in sorted(os.listdir(data_folder_root)):
+            seq_path = os.path.join(data_folder_root, seq_dir)
+            if not os.path.isdir(seq_path):
+                continue
+            if "_CAL" in seq_dir.upper():
+                continue  # No requantificar SEQ_CAL
+            json_path = os.path.join(seq_path, "CHECK", "data", "analysis.json")
+            if os.path.exists(json_path):
+                analysis_jsons.append((seq_dir, json_path))
+
+        if not analysis_jsons:
+            self._retro_info_label.setText("No hi ha SEQs analitzades per requantificar")
+            return
+
+        self._retro_info_label.setText(
+            f"SEQs analitzades disponibles ({len(analysis_jsons)}):"
+        )
+
+        for seq_dir, json_path in analysis_jsons:
+            cb = QCheckBox(seq_dir)
+            cb.setProperty("json_path", json_path)
+            cb.setChecked(True)
+            cb.setStyleSheet("border: none;")
+            self._retro_content_layout.addWidget(cb)
+            self._retro_seq_checkboxes.append(cb)
+
+    def _select_all_retro(self, checked):
+        """Selecciona/deselecciona totes les SEQs retroactives."""
+        for cb in self._retro_seq_checkboxes:
+            cb.setChecked(checked)
+
+    def _on_apply_calibration(self):
+        """Aplica la nova calibració (add_calibration + requantificació opcional)."""
+        if not self._last_result or not self._last_result.get('success'):
+            QMessageBox.warning(self, "Avís", "No hi ha regressió vàlida per aplicar.")
+            return
+
+        rf_new = self._last_result.get('rf_mass_cal', 0)
+        intercept_new = self._last_result.get('intercept', 0)
+        r2 = self._last_result.get('r2', 0)
+        n_pts = self._last_result.get('n_points', 0)
+        mode = self._get_mode()
+        signal = self._get_signal()
+        is_bp = mode.upper() == "BP"
+
+        # Validació mínima
+        if r2 < 0.95:
+            resp = QMessageBox.warning(
+                self, "R² baix",
+                f"La R² ({r2:.4f}) és inferior a 0.95.\n"
+                "Estàs segur que vols aplicar aquesta calibració?",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+            )
+            if resp != QMessageBox.Yes:
+                return
+
+        if n_pts < 3:
+            resp = QMessageBox.warning(
+                self, "Pocs punts",
+                f"Només {n_pts} punts a la regressió.\n"
+                "Es recomanen ≥5 punts. Vols continuar?",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+            )
+            if resp != QMessageBox.Yes:
+                return
+
+        valid_from = self._apply_valid_from.date().toString("yyyy-MM-dd")
+        retroactive = self._apply_retroactive_chk.isChecked()
+
+        # Comptar SEQs retroactives
+        retro_count = sum(1 for cb in self._retro_seq_checkboxes if cb.isChecked()) if retroactive else 0
+
+        # Confirmació
+        msg = (
+            f"S'aplicarà la nova calibració:\n\n"
+            f"  Mode: {mode}\n"
+            f"  Senyal: {signal}\n"
+            f"  RF: {rf_new:.1f}\n"
+            f"  Intercept: {intercept_new:.1f}\n"
+            f"  R²: {r2:.6f}\n"
+            f"  Vigent des de: {valid_from}\n"
+        )
+        if retroactive and retro_count > 0:
+            msg += f"\n  Retroactiu: {retro_count} SEQs es requantificaran\n"
+        msg += "\nConfirmar?"
+
+        resp = QMessageBox.question(
+            self, "Confirmar aplicació", msg,
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+        )
+        if resp != QMessageBox.Yes:
+            return
+
+        # --- Aplicar ---
+        self._apply_btn.setEnabled(False)
+        self._apply_status.setText("Aplicant...")
+
+        try:
+            import copy
+            from hpsec_calibrate import (
+                add_calibration, get_active_global_calibration,
+                get_rf_mass_cal, get_calibration_intercept,
+                requantify_analysis_json, compute_calibration_fingerprint
+            )
+
+            # Construir rf_mass_cal_values preservant l'altra branca
+            current_cal = get_active_global_calibration()
+            if current_cal:
+                rf_values = copy.deepcopy(dict(current_cal.get('rf_mass_cal', {})))
+                intercept_values = current_cal.get('intercept', {})
+                if isinstance(intercept_values, dict):
+                    intercept_values = copy.deepcopy(dict(intercept_values))
+                else:
+                    intercept_values = {"direct": {"column": 0, "bp": 0}}
+            else:
+                rf_values = {"direct": {"column": 0, "bp": 0}, "uib": {"column": 0, "bp": 0}}
+                intercept_values = {"direct": {"column": 0, "bp": 0}, "uib": {"column": 0, "bp": 0}}
+
+            # Actualitzar branca corresponent
+            mode_key = "bp" if is_bp else "column"
+            if isinstance(rf_values.get(signal), dict):
+                rf_values[signal][mode_key] = rf_new
+            else:
+                rf_values[signal] = {mode_key: rf_new}
+
+            if isinstance(intercept_values.get(signal), dict):
+                intercept_values[signal][mode_key] = intercept_new
+            else:
+                intercept_values[signal] = {mode_key: intercept_new}
+
+            # SEQs de referència
+            selected_seqs = self._get_selected_seq_names()
+            source = {
+                "type": "SEQ_CAL",
+                "description": f"Regressió from {', '.join(selected_seqs)}",
+                "seq_references": selected_seqs,
+                "mode": mode,
+            }
+
+            # regression_data per persistir al JSON
+            reg_data = dict(self._last_result)
+            reg_data['mode'] = mode
+            reg_data['signal'] = signal
+            reg_data['model'] = self._get_model()
+
+            # add_calibration
+            cal_id = add_calibration(
+                rf_mass_cal_values=rf_values,
+                source=source,
+                valid_from=valid_from,
+                r2=r2,
+                n_points=n_pts,
+                reason=f"SEQ_CAL panell: {', '.join(selected_seqs)}",
+                intercept_values=intercept_values,
+                regression_data=reg_data,
+            )
+
+            if not cal_id:
+                raise RuntimeError("add_calibration ha retornat None")
+
+            logger.info(f"Nova calibració aplicada: {cal_id} (RF={rf_new:.1f}, mode={mode})")
+
+            # --- Requantificació retroactiva ---
+            retro_results = []
+            if retroactive and retro_count > 0:
+                self._apply_status.setText(f"Requantificant {retro_count} SEQs...")
+
+                new_cal = get_active_global_calibration()
+                rf_col = get_rf_mass_cal(new_cal, signal=signal, mode="column")
+                int_col = get_calibration_intercept(new_cal, signal=signal, mode="column")
+                rf_bp = get_rf_mass_cal(new_cal, signal=signal, mode="bp")
+                int_bp = get_calibration_intercept(new_cal, signal=signal, mode="bp")
+
+                for cb in self._retro_seq_checkboxes:
+                    if not cb.isChecked():
+                        continue
+                    json_path = cb.property("json_path")
+                    if not json_path or not Path(json_path).exists():
+                        continue
+                    try:
+                        rq_result = requantify_analysis_json(
+                            json_path,
+                            new_rf_direct=rf_col,
+                            new_intercept_direct=int_col,
+                            new_rf_bp=rf_bp,
+                            new_intercept_bp=int_bp,
+                        )
+                        retro_results.append({
+                            'seq': cb.text(),
+                            'success': rq_result.get('success', False),
+                            'updated': rq_result.get('samples_updated', 0),
+                        })
+                    except Exception as e:
+                        retro_results.append({
+                            'seq': cb.text(),
+                            'success': False,
+                            'error': str(e),
+                        })
+
+            # --- Actualitzar UI ---
+            n_ok = sum(1 for r in retro_results if r.get('success'))
+            n_fail = len(retro_results) - n_ok
+
+            status_parts = [
+                f"<span style='color:#27AE60'>&#10003; Calibració {cal_id} aplicada</span>"
+            ]
+            if retro_results:
+                status_parts.append(f"<br>Requantificades: {n_ok} OK")
+                if n_fail:
+                    status_parts.append(f", <span style='color:#E74C3C'>{n_fail} errors</span>")
+
+            self._apply_status.setText("".join(status_parts))
+            self._apply_btn.setEnabled(False)
+
+            # Refrescar calibració actual mostrada
+            self._load_current_calibration()
+
+            # Refrescar dashboard
+            main_window = self.parent_panel.main_window
+            if hasattr(main_window, 'dashboard_panel') and main_window.dashboard_panel:
+                try:
+                    main_window.dashboard_panel.refresh_sequences()
+                except Exception:
+                    pass
+
+        except Exception as e:
+            logger.error(f"Error aplicant calibració: {e}")
+            self._apply_status.setText(
+                f"<span style='color:#E74C3C'>Error: {e}</span>"
+            )
+            self._apply_btn.setEnabled(True)
 
 
 # =============================================================================
