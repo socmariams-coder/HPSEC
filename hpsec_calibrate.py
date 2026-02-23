@@ -4438,8 +4438,10 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
 
         # Estadístiques bàsiques
         areas = [r['area'] for r in replicas]
+        areas_original = [r.get('area_original') or r['area'] for r in replicas]
         shifts = [r['shift_min'] for r in replicas]
         mean_area = float(np.mean(areas))
+        mean_area_original = float(np.mean(areas_original))
         std_area = float(np.std(areas))
         mean_shift = float(np.mean(shifts))
         rsd = float((std_area / mean_area) * 100.0) if mean_area > 0 else 100.0
@@ -4498,6 +4500,7 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
         # Aplicar selecció
         if selection_method == 'average' or selection_method == 'single':
             selected_area = mean_area
+            selected_area_original = mean_area_original
             selected_shift_min = mean_shift
             selected_shift_sec = mean_shift_sec
             selected_a254_ratio = mean_a254_ratio
@@ -4510,6 +4513,7 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
             rep_num = int(selection_method[1:])
             selected_rep = next((r for r in replicas if r.get('replica_num') == rep_num), replicas[0])
             selected_area = selected_rep['area']
+            selected_area_original = selected_rep.get('area_original') or selected_rep['area']
             selected_shift_min = selected_rep['shift_min']
             selected_shift_sec = selected_rep.get('shift_sec', 0)
             selected_a254_ratio = selected_rep.get('a254_doc_ratio', 0)
@@ -4521,6 +4525,7 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
             sorted_replicas = sorted(replicas, key=lambda x: x.get('quality_score', 0))
             best = sorted_replicas[0]
             selected_area = best['area']
+            selected_area_original = best.get('area_original') or best['area']
             selected_shift_min = best['shift_min']
             selected_shift_sec = best.get('shift_sec', 0)
             selected_a254_ratio = best.get('a254_doc_ratio', 0)
@@ -4543,6 +4548,8 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
             'name_full': f"KHP{group_conc}@{group_volume}µL",  # Condicions: conc + volum
             'conc_ppm': group_conc,
             'area': selected_area,
+            'area_original': selected_area_original if selected_area_original != selected_area else None,
+            'area_repaired': selected_area if selected_area_original != selected_area else None,
             'shift_min': selected_shift_min,
             'shift_sec': selected_shift_sec,
             'a254_doc_ratio': selected_a254_ratio,

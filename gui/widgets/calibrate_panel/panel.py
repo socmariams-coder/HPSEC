@@ -2739,6 +2739,7 @@ class CalibratePanel(QWidget):
                     'irregular_top_repaired': cal.get('irregular_top_repaired', False),
                     'area_uib': cal.get('area_uib', 0),
                     'area_original': cal.get('area_original', 0),
+                    'area_repaired': cal.get('area_repaired', 0),
                     'rf_mass_uib': cal.get('rf_mass_uib', 0),
                     'has_timeout': cal.get('has_timeout', False),
                     'timeout_severity': cal.get('timeout_severity', 'OK'),

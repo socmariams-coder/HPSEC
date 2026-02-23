@@ -631,11 +631,11 @@ class AnalyzePanel(QWidget):
         signal_layout = QHBoxLayout(signal_frame)
         signal_layout.setContentsMargins(8, 4, 8, 4)
 
-        signal_label = QLabel("Senyal de calibració:")
-        signal_label.setStyleSheet(
+        self.seq_cal_signal_label = QLabel("Senyal de calibració:")
+        self.seq_cal_signal_label.setStyleSheet(
             "font-weight: bold; color: #1A5276; font-size: 11px;"
         )
-        signal_layout.addWidget(signal_label)
+        signal_layout.addWidget(self.seq_cal_signal_label)
 
         self.seq_cal_signal_combo = QComboBox()
         self.seq_cal_signal_combo.setMaximumWidth(220)
@@ -647,6 +647,19 @@ class AnalyzePanel(QWidget):
             self._on_seq_cal_signal_changed
         )
         signal_layout.addWidget(self.seq_cal_signal_combo)
+
+        signal_layout.addSpacing(20)
+
+        self.seq_cal_repair_check = QCheckBox("Usar àrea reparada")
+        self.seq_cal_repair_check.setChecked(True)
+        self.seq_cal_repair_check.setToolTip(
+            "Quan activat, usa l'àrea corregida (paràbola) per pics amb cim irregular.\n"
+            "Desactivar per usar l'àrea original sense reparació."
+        )
+        self.seq_cal_repair_check.setStyleSheet("font-size: 11px; color: #1A5276;")
+        self.seq_cal_repair_check.stateChanged.connect(self._on_seq_cal_repair_toggled)
+        signal_layout.addWidget(self.seq_cal_repair_check)
+
         signal_layout.addStretch()
 
         self.seq_cal_signal_frame = signal_frame
@@ -827,8 +840,12 @@ class AnalyzePanel(QWidget):
         self.seq_cal_signal_combo.setCurrentIndex(0)
         self.seq_cal_signal_combo.blockSignals(False)
 
-        # Mostrar selector només si hi ha ambdós senyals
-        self.seq_cal_signal_frame.setVisible(has_direct and has_uib)
+        # Visibilitat: combo senyal només si hi ha ambdós senyals
+        has_both_signals = has_direct and has_uib
+        self.seq_cal_signal_label.setVisible(has_both_signals)
+        self.seq_cal_signal_combo.setVisible(has_both_signals)
+        # El frame complet es mostra si hi ha combo O reparació (calculat més avall)
+        self.seq_cal_signal_frame.setVisible(has_both_signals)
 
         # Sensibilitat UIB de la seqüència (una per SEQ, del 0-CHECK)
         self._seq_cal_sensitivity = None
@@ -838,6 +855,18 @@ class AnalyzePanel(QWidget):
                 if s:
                     self._seq_cal_sensitivity = s
                     break
+
+        # Checkbox reparació: visible només si hi ha entrades amb àrea reparada
+        any_repaired = any(
+            e.get('area_original') and e.get('area_original') != e.get('area', 0)
+            for entries_list in (self._seq_cal_entries_direct, self._seq_cal_entries_uib)
+            for e in entries_list
+        )
+        self.seq_cal_repair_check.setVisible(any_repaired)
+        if any_repaired:
+            self.seq_cal_repair_check.setChecked(True)
+            # Mostrar frame si hi ha reparació (pot estar ocult si un sol senyal)
+            self.seq_cal_signal_frame.setVisible(True)
 
         # Info text
         conc_str = ", ".join(f"{c:g}" for c in concs)
@@ -1178,6 +1207,37 @@ class AnalyzePanel(QWidget):
 
     def _on_seq_cal_recalculate(self):
         """Recalcula la regressió amb els punts seleccionats."""
+        if self._seq_cal_entries and self._seq_cal_method:
+            self._run_seq_cal_regression(self._seq_cal_entries, self._seq_cal_method)
+
+    def _on_seq_cal_repair_toggled(self, state):
+        """Toggle entre àrea reparada i àrea original per la regressió."""
+        use_repaired = (state != 0)
+
+        # Swap àrees a tots els entry lists (usar id() per evitar duplicats)
+        seen = set()
+        for entries in (self._seq_cal_entries_direct, self._seq_cal_entries_uib):
+            for entry in entries:
+                if id(entry) in seen:
+                    continue
+                seen.add(id(entry))
+                area_orig = entry.get('area_original')
+                if not area_orig:
+                    continue  # No hi ha reparació per aquest punt
+                if use_repaired:
+                    entry['area'] = entry.get('area_repaired', entry['area'])
+                else:
+                    entry['area'] = area_orig
+                # Recalcular RF_mass amb la nova àrea
+                conc = entry.get('conc_ppm', 0)
+                vol = entry.get('volume_uL', 0)
+                if conc > 0 and vol > 0:
+                    entry['rf_mass'] = entry['area'] * 1000.0 / (conc * vol)
+                # Actualitzar area_u per UIB
+                if 'area_u' in entry:
+                    entry['area_u'] = entry['area']
+
+        # Re-run regressió
         if self._seq_cal_entries and self._seq_cal_method:
             self._run_seq_cal_regression(self._seq_cal_entries, self._seq_cal_method)
 
