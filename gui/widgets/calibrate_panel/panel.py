@@ -551,6 +551,16 @@ class CalibratePanel(QWidget):
         self.placeholder.setStyleSheet("color: #888; font-size: 14px; padding: 40px;")
         content_layout.addWidget(self.placeholder)
 
+        # === INLINE STATUS (errors/warnings visibles) ===
+        self.cal_status_frame = QFrame()
+        self.cal_status_frame.setVisible(False)
+        cal_status_layout = QVBoxLayout(self.cal_status_frame)
+        cal_status_layout.setContentsMargins(12, 8, 12, 8)
+        self.cal_status_label = QLabel()
+        self.cal_status_label.setWordWrap(True)
+        cal_status_layout.addWidget(self.cal_status_label)
+        content_layout.addWidget(self.cal_status_frame)
+
         # === SECCIÓN: Resumen de Calibración (reorganitzat per senyals) ===
         self.summary_group = QGroupBox("Resum QA/QC KHP")
         self.summary_group.setVisible(False)
@@ -1016,7 +1026,21 @@ class CalibratePanel(QWidget):
             # Recarregar el selector de condicions
             self._reload_condition_selector()
 
-        # Nota: Els avisos es gestionen des del wizard header
+        # Mostrar warnings inline si n'hi ha
+        warnings = result.get("warnings_structured", [])
+        if warnings:
+            n_warn = len(warnings) if isinstance(warnings, list) else sum(
+                len(v) for v in warnings.values() if isinstance(v, list)
+            ) if isinstance(warnings, dict) else 0
+            if n_warn > 0:
+                self._show_cal_inline_message(
+                    f"{n_warn} avís(os) de calibració detectats",
+                    level="warning"
+                )
+            else:
+                self.cal_status_frame.setVisible(False)
+        else:
+            self.cal_status_frame.setVisible(False)
 
         self.main_window.enable_tab(2)
         self.main_window.set_status(
@@ -1145,13 +1169,33 @@ class CalibratePanel(QWidget):
         except Exception as e:
             logger.warning(f"Error a _update_delay_diagnostic (error path): {e}")
 
-        # Guardar avisos estructurats perquè el wizard els llegeixi
-        # (validation_group ja no es mostra, avisos van al header)
+        # Mostrar error inline
+        self._show_cal_inline_message(error_msg, level="error")
 
         self.main_window.enable_tab(2)
 
         # Emetre senyal perquè el wizard actualitzi el header
         self.calibration_completed.emit(self.calibration_data)
+
+    def _show_cal_inline_message(self, message, level="info"):
+        """Mostra un missatge inline al panell de calibració (error/warning/info)."""
+        colors = {
+            "error": ("background: #FADBD8; border: 1px solid #E74C3C; "
+                      "border-radius: 6px; padding: 10px;",
+                      "#922B21"),
+            "warning": ("background: #FCF3CF; border: 1px solid #F39C12; "
+                        "border-radius: 6px; padding: 10px;",
+                        "#7D6608"),
+            "info": ("background: #D6EAF8; border: 1px solid #2980B9; "
+                     "border-radius: 6px; padding: 10px;",
+                     "#1A5276"),
+        }
+        frame_style, text_color = colors.get(level, colors["info"])
+        icon = {"error": "\u274c", "warning": "\u26a0\ufe0f", "info": "\u2139\ufe0f"}.get(level, "")
+        self.cal_status_frame.setStyleSheet(f"QFrame {{ {frame_style} }}")
+        self.cal_status_label.setStyleSheet(f"color: {text_color}; font-size: 12px;")
+        self.cal_status_label.setText(f"{icon} {message}")
+        self.cal_status_frame.setVisible(True)
 
     def _ask_shift_decision(self):
         """Diàleg per decidir el shift quan no hi ha KHP vàlid.

@@ -532,13 +532,12 @@ class AnalyzePanel(QWidget):
 
         if not result or not result.get("success"):
             error_msg = result.get("error", "Error desconegut") if result else "Resultat buit"
-            QMessageBox.critical(self, "Error", f"Error durant l'anàlisi:\n{error_msg}")
+            # Mostrar error inline (visible i persistent)
+            self._show_inline_message(error_msg, level="error")
             self._update_status()
-            # Emetre signal amb error perquè el wizard pugui actualitzar l'estat
             self.analyze_completed.emit(result or {"success": False, "error": error_msg})
             return
 
-        self.status_frame.setVisible(False)
         self.main_window.processed_data = result
         self.samples_grouped = result.get("samples_grouped", {})
 
@@ -549,14 +548,55 @@ class AnalyzePanel(QWidget):
 
         self._populate_table()
         self.results_frame.setVisible(True)
+
+        # Mostrar warnings inline si n'hi ha
+        warnings = result.get("warnings_structured") or result.get("warnings", [])
+        if warnings:
+            if isinstance(warnings, dict):
+                parts = []
+                for cat, items in warnings.items():
+                    if items:
+                        parts.append(f"<b>{cat}:</b> {len(items)} avís(os)")
+                warn_text = "<br>".join(parts)
+            elif isinstance(warnings, list) and warnings:
+                warn_text = f"{len(warnings)} avís(os) detectats"
+            else:
+                warn_text = ""
+            if warn_text:
+                self._show_inline_message(warn_text, level="warning")
+            else:
+                self.status_frame.setVisible(False)
+        else:
+            self.status_frame.setVisible(False)
+
         self.analyze_completed.emit(result)
 
     def _on_error(self, error_msg):
         self.progress_frame.setVisible(False)
         self.analyze_btn.setEnabled(True)
-        QMessageBox.critical(self, "Error", f"Error durant l'anàlisi:\n{error_msg}")
-        # Emetre signal amb error perquè el wizard pugui actualitzar l'estat
+        # Mostrar error inline en lloc de QMessageBox
+        self._show_inline_message(str(error_msg), level="error")
         self.analyze_completed.emit({"success": False, "error": error_msg})
+
+    def _show_inline_message(self, message, level="info"):
+        """Mostra un missatge inline al panell (error/warning/info)."""
+        colors = {
+            "error": ("background: #FADBD8; border: 1px solid #E74C3C; "
+                      "border-radius: 6px; padding: 10px;",
+                      "#922B21"),
+            "warning": ("background: #FCF3CF; border: 1px solid #F39C12; "
+                        "border-radius: 6px; padding: 10px;",
+                        "#7D6608"),
+            "info": ("background: #D6EAF8; border: 1px solid #2980B9; "
+                     "border-radius: 6px; padding: 10px;",
+                     "#1A5276"),
+        }
+        frame_style, text_color = colors.get(level, colors["info"])
+        icon = {"error": "\u274c", "warning": "\u26a0\ufe0f", "info": "\u2139\ufe0f"}.get(level, "")
+        self.status_frame.setStyleSheet(f"QFrame {{ {frame_style} }}")
+        self.status_label.setStyleSheet(f"color: {text_color}; font-size: 12px;")
+        self.status_label.setText(f"{icon} {message}")
+        self.status_frame.setVisible(True)
 
     # ------------------------------------------------------------------
     # SEQ_CAL Regression (Fase 3)
