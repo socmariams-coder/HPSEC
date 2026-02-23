@@ -101,6 +101,7 @@ Mark features as DONE only when code is fully functional end-to-end, not when pl
   - Quan `inj_volume_source='default'` o `inj_volume=None`, diàleg confirmació a l'usuari
   - Validació creuada col13 vs 0-INFO quan ambdós existeixen i discrepan
   - Icona/tooltip a calibració si volum és estimat (no del manifest)
+- [x] Memory optimization: DAD filter 6λ, TOC release, cal cache, df cleanup (~112 MB/SEQ) — DONE (f7d03d4)
 - [ ] Architecture refactor: unify detection functions in hpsec_core.py — PENDING
 - [x] Integration: derivative-based peak boundaries (Agilent tangent projection) — DONE (find_peak_boundaries in hpsec_core.py)
 - [x] Integration: re-process all KHP data with new derivative method — DONE (batch re-calibrate 137 SEQs, KHP_History regenerated with 96 entries)
@@ -180,6 +181,39 @@ All exploratory scripts and results live in `research/` — NOT part of the prod
 ## Working notes
 
 > Last updated: 2026-02-23
+
+### Optimització memòria (2026-02-23)
+
+**Problema**: La Suite carregava ~115 MB per seqüència quan en necessitava ~3 MB.
+Causa principal: Export3D DAD (101 wavelengths quan en calen 6), DataFrame 2-TOC
+retingut en memòria, i fitxers de calibració rellegits del disc repetidament.
+
+**4 blocs implementats (commit f7d03d4):**
+
+1. **DAD filtrat a 6λ durant importació (~95 MB estalvi/SEQ)**:
+   - `llegir_dad_export3d(path, wavelengths_to_keep=None)`: filtra columnes just després de llegir CSV
+   - 6 call sites actualitzats (find_data_for_injection, import_from_manifest ×3, ensure_data_loaded, import_panel GUI)
+   - Wavelengths de `hpsec_config.json → wavelengths.selected` (220, 254, 272, 290, 362)
+   - **HCI no afectat**: `compute_hci()` a `hpsec_humic.py` rellegeix Export3D original del disc
+     via `dad_export3d_path` (path propagat a `_flatten_samples_for_processing`), no usa el DataFrame en memòria
+
+2. **Alliberar master_data["toc"] (~2 MB estalvi/SEQ)**:
+   - `master_data["toc"] = None` al final de `import_sequence()` i `ensure_data_loaded()`
+   - Si es necessita de nou (reimportació), `ensure_data_loaded()` rellegeix MasterFile des del disc
+
+3. **Cache calibració amb verificació mtime (estalvi I/O)**:
+   - `load_calibration_reference()`: cache `_cal_ref_cache` + `_cal_ref_mtime`
+   - `load_khp_history()`: cache `_khp_cache` + `_khp_mtime` + `_khp_cache_path`
+   - Invalidació automàtica a `save_calibration_reference()` i `save_khp_history()`
+   - ~15 crides/sessió passen de lectura disc a lectura memòria
+
+4. **Eliminar "df" redundant de rep_data["direct"] (~12 MB estalvi/SEQ)**:
+   - `"df": df_doc` eliminat de 3 llocs (find_data_for_injection, import_from_manifest, ensure_data_loaded)
+   - Verificat: cap codi extern accedeix a `rep_data["direct"]["df"]`, només `"t"` i `"y"`
+
+**Safety guards mantinguts** a `hpsec_analyze.py`:
+- `_flatten_samples_for_processing` L2254: `len(columns) > 8` → no-op (DAD ja filtrat)
+- `analyze_sample` L1617: idem
 
 ### UIB Downsample + Saturació (2026-02-23)
 
