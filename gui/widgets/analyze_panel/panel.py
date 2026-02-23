@@ -1277,15 +1277,19 @@ class AnalyzePanel(QWidget):
             cal_data = self.main_window.calibration_data or {}
             is_seq_cal = cal_data.get('is_seq_cal', False)
             seq_cal_reg = None
+            cal_entries_lookup = {}
             if is_seq_cal:
-                # Buscar regressió al calibrate panel (via wizard)
-                wizard = getattr(self.main_window, 'process_panel', None)
-                cal_panel = getattr(wizard, 'calibrate_panel', None) if wizard else None
-                if cal_panel:
-                    seq_cal_reg = getattr(cal_panel, '_seq_cal_regression', None)
-                # Fallback: buscar al calibration_data
+                # Buscar regressió (primer aquí al AnalyzePanel, després al calibration_data)
+                seq_cal_reg = self._seq_cal_regression
                 if not seq_cal_reg:
                     seq_cal_reg = cal_data.get('seq_cal_regression')
+                # Lookup àrees calibració per usar com a font autoritativa
+                from hpsec_import import extract_khp_conc
+                seq_cal_data = cal_data.get('seq_cal_data', {})
+                for entry in seq_cal_data.get('entries', []):
+                    conc_key = round(entry.get('conc_ppm', 0), 4)
+                    if conc_key > 0 and conc_key not in cal_entries_lookup:
+                        cal_entries_lookup[conc_key] = entry
 
             # Títol separator adaptat
             sep_title = "--- KHP VALIDACIÓ CALIBRACIÓ ---" if is_seq_cal else "--- KHP STANDARDS ---"
@@ -1334,20 +1338,35 @@ class AnalyzePanel(QWidget):
                 self.results_table.setItem(row, 1, QTableWidgetItem("-"))
                 self.results_table.setItem(row, 2, QTableWidgetItem("-"))
 
-                # Col 3: A_DOC
+                # Col 3: A_DOC — usar àrea de calibració per SEQ_CAL (font autoritativa)
                 areas = doc_rep.get("areas", {})
-                area_doc = areas.get("DOC", {}).get("total", 0) if areas else 0
-                self.results_table.setItem(row, 3, QTableWidgetItem(
-                    f"{area_doc:.0f}" if area_doc else "-"))
+                area_analysis = areas.get("DOC", {}).get("total", 0) if areas else 0
+                cal_entry = None
+                if is_seq_cal and cal_entries_lookup:
+                    sample_conc = round(extract_khp_conc(sample_name), 4)
+                    cal_entry = cal_entries_lookup.get(sample_conc)
+                if cal_entry:
+                    area_doc = cal_entry['area']
+                    area_item = QTableWidgetItem(f"{area_doc:.0f}" if area_doc else "-")
+                    area_item.setToolTip(
+                        f"Àrea calibració: {area_doc:.0f}\n"
+                        f"Àrea anàlisi: {area_analysis:.0f}")
+                else:
+                    area_doc = area_analysis
+                    area_item = QTableWidgetItem(f"{area_doc:.0f}" if area_doc else "-")
+                self.results_table.setItem(row, 3, area_item)
 
                 # Col 4-6: ppm validació (SEQ_CAL) o dashes
                 if is_seq_cal and seq_cal_reg and seq_cal_reg.get('success') and area_doc:
                     # Calcular ppm_observat amb la regressió nova
-                    from hpsec_import import extract_khp_conc
                     rf_reg = seq_cal_reg.get('rf_mass_cal', 0)
                     intercept_reg = seq_cal_reg.get('intercept', 0)
-                    # Obtenir volum de la replica
-                    vol = doc_rep.get('volume_uL', 0) or doc_rep.get('injection_volume', 0)
+                    # Obtenir volum: prioritat cal_entry > replica > imported
+                    vol = 0
+                    if cal_entry:
+                        vol = cal_entry.get('volume_uL', 0)
+                    if not vol:
+                        vol = doc_rep.get('volume_uL', 0) or doc_rep.get('injection_volume', 0)
                     if not vol:
                         imported = self.main_window.imported_data or {}
                         vol = imported.get('injection_volume', 100)
@@ -1396,10 +1415,22 @@ class AnalyzePanel(QWidget):
                     snr_item.setForeground(QBrush(QColor(COLOR_WARNING)))
                 self.results_table.setItem(row, 7, snr_item)
 
-                # Col 8: A_254
-                a254 = areas.get("254nm", {}).get("total", 0) if areas else 0
-                self.results_table.setItem(row, 8, QTableWidgetItem(
-                    f"{a254:.0f}" if a254 else "-"))
+                # Col 8: A_254 — usar àrea calibració per SEQ_CAL, provar keys "254nm" i "A254"
+                a254_analysis = 0
+                if areas:
+                    a254_analysis = (areas.get("254nm", {}).get("total", 0) or
+                                     areas.get("A254", {}).get("total", 0))
+                if cal_entry and cal_entry.get('a254_area', 0):
+                    a254 = cal_entry['a254_area']
+                    a254_item = QTableWidgetItem(f"{a254:.0f}" if a254 else "-")
+                    if a254_analysis:
+                        a254_item.setToolTip(
+                            f"A254 calibració: {a254:.0f}\n"
+                            f"A254 anàlisi: {a254_analysis:.0f}")
+                else:
+                    a254 = a254_analysis
+                    a254_item = QTableWidgetItem(f"{a254:.0f}" if a254 else "-")
+                self.results_table.setItem(row, 8, a254_item)
 
                 # Col 9: SNR_254
                 snr_254 = snr_info.get("snr_254", 0) if snr_info else 0

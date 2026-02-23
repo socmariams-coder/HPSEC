@@ -2686,6 +2686,16 @@ class CalibratePanel(QWidget):
                 'rf_mass': cal.get('rf_mass', 0),
                 'quality_score': cal.get('quality_score', 0),
                 'name_full': cal.get('name_full', ''),
+                # Dades addicionals per unificació àrees i visibilitat qualitat
+                'a254_area': cal.get('a254_area', 0),
+                'a254_doc_ratio': cal.get('a254_doc_ratio', 0),
+                'has_irregular_top': cal.get('has_irregular_top', False),
+                'irregular_top_repaired': cal.get('irregular_top_repaired', False),
+                'area_uib': cal.get('area_uib', 0),
+                'area_original': cal.get('area_original', 0),
+                'rf_mass_uib': cal.get('rf_mass_uib', 0),
+                'has_timeout': cal.get('has_timeout', False),
+                'timeout_severity': cal.get('timeout_severity', 'OK'),
             })
 
         # Guardar dades per l'AnalyzePanel
