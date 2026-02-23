@@ -56,6 +56,7 @@ class GlobalCalibrationPanel(QWidget):
         super().__init__()
         self.main_window = main_window
         self._all_calibrations = []
+        self._active_seq_path = None  # SEQ_CAL activa (des de Dashboard)
         self._setup_ui()
 
     def _setup_ui(self):
@@ -120,6 +121,39 @@ class GlobalCalibrationPanel(QWidget):
 
         self.cal_view.set_data(cal_entries)
         self.qc_view.set_data(prod_entries)
+
+    def load_seq_cal(self, seq_path):
+        """Carrega una SEQ_CAL des del Dashboard.
+
+        Comprova si KHP_History ja té entrades per aquesta SEQ.
+        Si SÍ: carrega directament i pre-selecciona.
+        Si NO: llança worker per processar (Commit 2).
+        """
+        self._active_seq_path = seq_path
+        seq_name = os.path.basename(seq_path)
+
+        logger.info(f"load_seq_cal: {seq_name}")
+
+        # Recarregar totes les dades de KHP_History
+        self._load_all_data()
+
+        # Comprovar si ja hi ha entrades per aquesta SEQ a KHP_History
+        has_entries = any(
+            entry.get("seq_name", "") == seq_name
+            for entry in self._all_calibrations
+        )
+
+        if has_entries:
+            # Ja processada: pre-seleccionar la SEQ al CalibrationLineView
+            logger.info(f"  SEQ_CAL '{seq_name}' ja processada, pre-seleccionant")
+            self.tabs.setCurrentIndex(0)  # Tab Recta de Calibració
+            self.cal_view.pre_select_seq(seq_name)
+        else:
+            # No processada: cal processar (worker al Commit 2)
+            logger.info(f"  SEQ_CAL '{seq_name}' NO processada, caldrà processar")
+            self.tabs.setCurrentIndex(0)
+            self.cal_view.show_processing_message(seq_name)
+            # TODO Commit 2: llançar CalSeqWorker per importar + calibrar
 
     def _on_generate_report(self):
         """Genera informe PDF de la calibració activa."""
@@ -421,6 +455,59 @@ class CalibrationLineView(QWidget):
         self._populate_seq_list()
         self._loading = False
         self._refresh_points_and_recalculate()
+
+    def pre_select_seq(self, seq_name):
+        """Pre-selecciona una SEQ específica (des de Dashboard).
+
+        Detecta automàticament el mode (COLUMN/BP) de la SEQ i ajusta el selector.
+        Desmarca les altres SEQs i marca només la indicada.
+        """
+        # Detectar mode de la SEQ a partir de les entrades
+        seq_modes = set()
+        for entry in self._cal_entries:
+            if entry.get("seq_name", "") == seq_name:
+                seq_modes.add(entry.get("mode", "").upper())
+
+        if "BP" in seq_modes and "COLUMN" not in seq_modes:
+            self.radio_bp.setChecked(True)
+        elif "COLUMN" in seq_modes:
+            self.radio_column.setChecked(True)
+
+        # Repoblar llista amb el mode detectat
+        self._loading = True
+        self._populate_seq_list()
+
+        # Desmarcar totes i marcar només la SEQ indicada
+        for i in range(self.seq_list.count()):
+            item = self.seq_list.item(i)
+            item_seq = item.data(Qt.UserRole)
+            item.setCheckState(Qt.Checked if item_seq == seq_name else Qt.Unchecked)
+
+        self._loading = False
+        self._refresh_points_and_recalculate()
+
+        logger.info(f"  Pre-seleccionat {seq_name} (modes: {seq_modes})")
+
+    def show_processing_message(self, seq_name):
+        """Mostra missatge 'Processant...' mentre s'importa/calibra una SEQ_CAL nova."""
+        # Netejar gràfic i taula
+        self.points_table.setRowCount(0)
+        self.figure.clear()
+        self.canvas.draw()
+
+        # Mostrar missatge a la comparació
+        self.comparison_label.setText(
+            f"<div style='text-align:center; padding:20px;'>"
+            f"<span style='font-size:14px; color:#2980B9;'>"
+            f"⏳ Processant <b>{seq_name}</b>...</span><br><br>"
+            f"<span style='color:#666;'>Important dades i calibrant.<br>"
+            f"Això pot trigar uns segons.</span></div>"
+        )
+
+        # Netejar resultats
+        for lbl in [self.res_rf_label, self.res_intercept_label,
+                     self.res_r2_label, self.res_npoints_label, self.res_rms_label]:
+            lbl.setText("⏳")
 
     def _get_mode(self):
         return "COLUMN" if self.radio_column.isChecked() else "BP"
