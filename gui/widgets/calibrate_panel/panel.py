@@ -2723,17 +2723,25 @@ class CalibratePanel(QWidget):
             'has_uib': len(entries_uib) > 0,
         }
 
-        # Actualitzar info label
+        # Actualitzar info label amb detalls complets
         conc_str = ", ".join(f"{c:g}" for c in sorted(concs))
+        signals_info = []
+        if entries_direct:
+            signals_info.append(f"Direct ({len(entries_direct)} punts)")
+        if entries_uib:
+            signals_info.append(f"UIB ({len(entries_uib)} punts)")
+        signals_str = " + ".join(signals_info) if signals_info else "cap"
+
         self._seq_cal_info_label.setText(
             f"<b>Seqüència de calibració detectada</b><br><br>"
-            f"<b>Mode:</b> {method} &nbsp;|&nbsp; "
-            f"<b>Punts:</b> {len(cal_entries)} &nbsp;|&nbsp; "
-            f"<b>Concentracions:</b> {conc_str} ppm<br><br>"
-            f"La <b>regressió de calibració</b> es realitzarà al pas "
-            f"<b>Analitzar</b> (pas 3).<br>"
-            f"L'<b>aplicació</b> de la calibració es farà al pas "
-            f"<b>Revisar</b> (pas 4)."
+            f"<table cellpadding='3'>"
+            f"<tr><td><b>Mode:</b></td><td>{method}</td></tr>"
+            f"<tr><td><b>Concentracions:</b></td><td>{conc_str} ppm</td></tr>"
+            f"<tr><td><b>Senyals:</b></td><td>{signals_str}</td></tr>"
+            f"</table><br>"
+            f"<b>Pas 3 (Analitzar):</b> Regressió de calibració amb selecció "
+            f"de senyal Direct/UIB<br>"
+            f"<b>Pas 4 (Revisar):</b> Aplicació de la nova calibració"
         )
 
         # Propagar al main_window
