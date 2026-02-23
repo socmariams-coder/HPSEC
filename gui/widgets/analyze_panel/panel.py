@@ -654,10 +654,10 @@ class AnalyzePanel(QWidget):
 
         # Taula de punts de calibració
         self.seq_cal_points_table = QTableWidget()
-        self.seq_cal_points_table.setColumnCount(11)
+        self.seq_cal_points_table.setColumnCount(12)
         self.seq_cal_points_table.setHorizontalHeaderLabels([
             "Sel", "Condició", "Conc (ppm)", "Vol (µL)", "µg DOC",
-            "Àrea", "RF_mass", "A254", "DOC/254", "Anomalies", "Status"
+            "Àrea", "RF_mass", "A254", "DOC/254", "Anomalies", "Sens.", "Status"
         ])
         self.seq_cal_points_table.horizontalHeaderItem(0).setToolTip("Incloure punt a la regressió")
         self.seq_cal_points_table.horizontalHeaderItem(4).setToolTip("µg DOC injectat = ppm × µL / 1000")
@@ -665,6 +665,7 @@ class AnalyzePanel(QWidget):
         self.seq_cal_points_table.horizontalHeaderItem(7).setToolTip("Àrea integrada a 254nm (DAD)")
         self.seq_cal_points_table.horizontalHeaderItem(8).setToolTip("Ratio àrea DOC / àrea 254nm")
         self.seq_cal_points_table.horizontalHeaderItem(9).setToolTip("Indicadors d'anomalies detectades")
+        self.seq_cal_points_table.horizontalHeaderItem(10).setToolTip("Sensibilitat UIB (ppb) — només rellevant per senyal UIB")
         self.seq_cal_points_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         self.seq_cal_points_table.setAlternatingRowColors(True)
         self.seq_cal_points_table.setMaximumHeight(220)
@@ -829,13 +830,23 @@ class AnalyzePanel(QWidget):
         # Mostrar selector només si hi ha ambdós senyals
         self.seq_cal_signal_frame.setVisible(has_direct and has_uib)
 
+        # Sensibilitat UIB de la seqüència (una per SEQ, del 0-CHECK)
+        self._seq_cal_sensitivity = None
+        if has_uib and self._seq_cal_entries_uib:
+            for e in self._seq_cal_entries_uib:
+                s = e.get('uib_sensitivity')
+                if s:
+                    self._seq_cal_sensitivity = s
+                    break
+
         # Info text
         conc_str = ", ".join(f"{c:g}" for c in concs)
         signals_str = []
         if has_direct:
             signals_str.append(f"Direct ({len(self._seq_cal_entries_direct)})")
         if has_uib:
-            signals_str.append(f"UIB ({len(self._seq_cal_entries_uib)})")
+            sens_info = f", sens={self._seq_cal_sensitivity} ppb" if self._seq_cal_sensitivity else ""
+            signals_str.append(f"UIB ({len(self._seq_cal_entries_uib)}{sens_info})")
         self.seq_cal_info.setText(
             f"<b>Seqüència de calibració</b> — "
             f"{len(entries)} punts, {len(concs)} concentracions "
@@ -869,8 +880,9 @@ class AnalyzePanel(QWidget):
         reg_result = fit_calibration_from_history(
             enabled, mode=method, signal=self._seq_cal_signal, model="intercept"
         )
-        # Guardar senyal seleccionat al resultat per ReviewPanel
+        # Guardar senyal i sensibilitat al resultat per ReviewPanel
         reg_result['signal'] = self._seq_cal_signal
+        reg_result['uib_sensitivity'] = getattr(self, '_seq_cal_sensitivity', None)
 
         self._seq_cal_regression = reg_result
 
@@ -999,7 +1011,14 @@ class AnalyzePanel(QWidget):
                     anomaly_item.setForeground(QBrush(QColor("#E67E22")))
             self.seq_cal_points_table.setItem(i, 9, anomaly_item)
 
-            # Col 10: Status badge amb fons color
+            # Col 10: Sensibilitat UIB
+            sens = entry.get('uib_sensitivity')
+            sens_text = f"{sens}" if sens else "-"
+            sens_item = QTableWidgetItem(sens_text)
+            sens_item.setFlags(sens_item.flags() & ~Qt.ItemIsEditable)
+            self.seq_cal_points_table.setItem(i, 10, sens_item)
+
+            # Col 11: Status badge amb fons color
             badge_colors = {
                 "OK": ("#D5F5E3", "#27AE60"),
                 "CHECK": ("#FCF3CF", "#E67E22"),
@@ -1017,7 +1036,7 @@ class AnalyzePanel(QWidget):
             badge_l.addWidget(badge)
             badge_l.setAlignment(Qt.AlignCenter)
             badge_l.setContentsMargins(2, 1, 2, 1)
-            self.seq_cal_points_table.setCellWidget(i, 10, badge_w)
+            self.seq_cal_points_table.setCellWidget(i, 11, badge_w)
 
     def _on_seq_cal_row_clicked(self, row, col):
         """Mostra preview cromatograma quan l'usuari clica una fila de la taula."""

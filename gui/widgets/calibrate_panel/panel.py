@@ -2742,6 +2742,7 @@ class CalibratePanel(QWidget):
                     'rf_mass_uib': cal.get('rf_mass_uib', 0),
                     'has_timeout': cal.get('has_timeout', False),
                     'timeout_severity': cal.get('timeout_severity', 'OK'),
+                    'uib_sensitivity': cal.get('uib_sensitivity'),
                     # Dades cromatograma per preview al pas 3
                     'replicas': cal.get('replicas', []),
                 }
