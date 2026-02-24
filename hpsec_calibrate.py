@@ -2793,23 +2793,29 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
 
     # =========================================================================
     # STEP 1: Integrar DOC alineat a t_max_254 (o independent si no hi ha 254)
+    # Si no hi ha 254nm, usar t_ret_expected del metadata (2-pass approach)
     # =========================================================================
+    t_ret_expected = metadata.get("t_ret_expected")  # De 2n pass (conc altes)
     all_peaks = detect_all_peaks(t_doc, y_doc_net, config["peak_min_prominence_pct"])
 
-    if t_max_254 is not None and len(all_peaks) > 0:
-        # Buscar pic DOC més proper a t_max_254
-        best_peak = min(all_peaks, key=lambda pk: abs(pk['t'] - t_max_254))
+    # Referència temporal: 254nm > t_ret_expected > cap
+    t_ref = t_max_254 if t_max_254 is not None else t_ret_expected
+
+    if t_ref is not None and len(all_peaks) > 0:
+        # Buscar pic DOC més proper a la referència temporal
+        best_peak = min(all_peaks, key=lambda pk: abs(pk['t'] - t_ref))
+        ref_source = "254nm" if t_max_254 is not None else "t_ret_expected"
         # Si el pic més proper és massa lluny (>2 min), usar detect_main_peak normal
-        if abs(best_peak['t'] - t_max_254) > 2.0:
+        if abs(best_peak['t'] - t_ref) > 2.0:
             dad_quality_warnings.append(
-                f"T_RETENTION_MISMATCH: pic DOC a {best_peak['t']:.2f} vs 254 a {t_max_254:.2f} min")
+                f"T_RETENTION_MISMATCH: pic DOC a {best_peak['t']:.2f} vs {ref_source} a {t_ref:.2f} min")
             peak_info = detect_main_peak(t_doc, y_doc_net, config["peak_min_prominence_pct"])
         else:
-            # Usar el pic DOC alineat al 254
+            # Usar el pic DOC alineat a la referència
             peak_info = detect_main_peak(t_doc, y_doc_net, config["peak_min_prominence_pct"])
             # Si detect_main_peak no ha trobat el pic alineat, forçar-lo
             if peak_info.get('valid') and abs(peak_info['t_max'] - best_peak['t']) > 0.5:
-                # El pic principal DOC no coincideix amb el 254 → usar el proper al 254
+                # El pic principal DOC no coincideix amb la referència → usar el proper
                 peak_info['peak_idx'] = best_peak['idx']
                 peak_info['t_max'] = best_peak['t']
                 peak_info['left_idx'] = best_peak['left_idx']
@@ -2818,7 +2824,39 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
                     y_doc_net[best_peak['left_idx']:best_peak['right_idx']+1],
                     t_doc[best_peak['left_idx']:best_peak['right_idx']+1]))
                 dad_quality_warnings.append(
-                    f"DOC_ALIGNED_TO_254: pic DOC seleccionat per alineació amb 254nm (t={best_peak['t']:.2f})")
+                    f"DOC_ALIGNED_TO_{ref_source.upper()}: pic DOC seleccionat per alineació "
+                    f"amb {ref_source} (t={best_peak['t']:.2f})")
+    elif t_ref is not None and len(all_peaks) == 0:
+        # Cap pic detectat, però tenim referència temporal →
+        # Buscar en una finestra al voltant de t_ref amb prominència reduïda
+        low_prom = max(1.0, config["peak_min_prominence_pct"] / 5)
+        all_peaks_low = detect_all_peaks(t_doc, y_doc_net, low_prom)
+        if all_peaks_low:
+            best_peak_low = min(all_peaks_low, key=lambda pk: abs(pk['t'] - t_ref))
+            if abs(best_peak_low['t'] - t_ref) <= 2.0:
+                ref_source = "254nm" if t_max_254 is not None else "t_ret_expected"
+                peak_info = {
+                    'valid': True,
+                    'peak_idx': best_peak_low['idx'],
+                    't_max': best_peak_low['t'],
+                    'left_idx': best_peak_low['left_idx'],
+                    'right_idx': best_peak_low['right_idx'],
+                    'area': float(trapezoid(
+                        y_doc_net[best_peak_low['left_idx']:best_peak_low['right_idx']+1],
+                        t_doc[best_peak_low['left_idx']:best_peak_low['right_idx']+1])),
+                    'height': float(y_doc_net[best_peak_low['idx']]),
+                    'prominence': best_peak_low.get('prominence', 0),
+                    'is_bp': is_bp_chromato,
+                    'baseline_level': 0,
+                    'low_prominence_rescue': True,
+                }
+                dad_quality_warnings.append(
+                    f"LOW_PROM_RESCUE: pic DOC amb prominència reduïda ({low_prom:.1f}%) "
+                    f"alineat a {ref_source} (t={best_peak_low['t']:.2f})")
+            else:
+                peak_info = detect_main_peak(t_doc, y_doc_net, config["peak_min_prominence_pct"])
+        else:
+            peak_info = detect_main_peak(t_doc, y_doc_net, config["peak_min_prominence_pct"])
     else:
         peak_info = detect_main_peak(t_doc, y_doc_net, config["peak_min_prominence_pct"])
 
@@ -2899,26 +2937,23 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
     has_irregular = anomaly_info.get('is_irregular', False)
     smoothness = anomaly_info.get('smoothness', 100.0)
 
-    # Reparació cim irregular: intentar reparar amb paràbola si detectat
-    # Aplica tant per IRREGULAR_TOP (pic-vall-pic) com ROUGH_TOP (smoothness baixa)
+    # Detecció cim irregular: intentar reparar amb paràbola si detectat
+    # IMPORTANT: NO sobreescrivim l'àrea original — guardem area_repaired
+    # per separat. La UI decideix si usar l'àrea reparada (toggle checkbox).
     irregular_top_repaired = False
     repair_info = None
     area_original = peak_info['area']
     if has_irregular_top or has_irregular:
         try:
-            # force=True si ROUGH_TOP sense valls profundes (has_irregular sense has_irregular_top)
             force_repair = has_irregular and not has_irregular_top
             y_repaired_seg, repair_info, was_repaired = repair_with_parabola(
                 t_peak_seg, y_peak_seg, force=force_repair
             )
             if was_repaired:
                 irregular_top_repaired = True
-                # Recalcular àrea amb senyal reparat
                 area_repaired = float(trapezoid(y_repaired_seg, t_peak_seg))
-                peak_info['area_original'] = area_original
-                peak_info['area'] = area_repaired
                 peak_info['area_repaired'] = area_repaired
-                # Actualitzar senyal al segment
+                # NO sobreescrivim peak_info['area'] — queda l'original
                 y_doc_net_repaired = y_doc_net.copy()
                 y_doc_net_repaired[left_idx:right_idx+1] = y_repaired_seg
         except Exception:
@@ -3118,7 +3153,7 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
         'has_irregular_top': has_irregular_top,
         'irregular_top_repaired': irregular_top_repaired,
         'repair_info': repair_info,
-        'area_original': area_original if irregular_top_repaired else None,
+        'area_repaired': peak_info.get('area_repaired') if irregular_top_repaired else None,
         'has_timeout': has_timeout,
         'timeout_info': timeout_info,
         'timeout_severity': timeout_severity,
@@ -4246,6 +4281,132 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
                     khp_result_uib["doc_source"] = "uib"
                     khp_data_uib_list.append(khp_result_uib)
 
+    # =========================================================================
+    # 2-PASS: Reprocessar entrades amb concentració baixa (≤0.25 ppm) si t_ret anòmal
+    # Utilitza t_ret median de les entrades fiables (conc >= 0.5) com a referència.
+    # =========================================================================
+    def _compute_median_t_ret(entries_list, min_conc=0.5):
+        """Calcula t_ret median de les entrades amb concentració >= min_conc."""
+        t_rets = []
+        for e in entries_list:
+            c = e.get('conc_ppm', 0)
+            t_r = e.get('t_retention', 0)
+            if c >= min_conc and t_r > 0:
+                t_rets.append(t_r)
+        return float(np.median(t_rets)) if t_rets else None
+
+    t_ret_median_direct = _compute_median_t_ret(khp_data_direct_list)
+    t_ret_median_uib = _compute_median_t_ret(khp_data_uib_list)
+
+    # Reprocessar entrades de baixa concentració amb t_ret anòmal
+    reprocessed_count = 0
+    if t_ret_median_direct or t_ret_median_uib:
+        for khp_name in khp_names:
+            sample = samples.get(khp_name, {})
+            conc = extract_khp_conc(khp_name)
+            if conc > 0.25:
+                continue  # Només reprocessar concentracions baixes
+            replicas = sample.get("replicas", {})
+
+            for rep_num, rep_data in replicas.items():
+                direct = rep_data.get("direct") or {}
+                uib = rep_data.get("uib") or {}
+                dad_data = rep_data.get("dad", {})
+                df_dad = dad_data.get("df") if dad_data else None
+                injection_info = rep_data.get("injection_info", {})
+                inj_volume = injection_info.get("inj_volume", 100)
+
+                base_metadata = {
+                    "name": khp_name,
+                    "conc_ppm": conc,
+                    "volume_uL": inj_volume,
+                    "replica": str(rep_num),
+                    "method": method,
+                    "seq_path": os.path.basename(seq_path),
+                }
+
+                # DIRECT: comprovar si t_ret de la 1a passada és anòmal
+                if t_ret_median_direct and direct.get("t") is not None and direct.get("y_net") is not None:
+                    # Buscar l'entrada existent
+                    existing = None
+                    existing_idx = None
+                    for idx, e in enumerate(khp_data_direct_list):
+                        if (e.get('name') == khp_name and
+                            str(e.get('replica', '')) == str(rep_num) and
+                            e.get('doc_source') == 'direct'):
+                            existing = e
+                            existing_idx = idx
+                            break
+
+                    needs_reprocess = False
+                    if existing:
+                        t_r = existing.get('t_retention', 0)
+                        if abs(t_r - t_ret_median_direct) > 1.0:
+                            needs_reprocess = True
+                    else:
+                        # No es va trobar pic la 1a vegada
+                        needs_reprocess = True
+
+                    if needs_reprocess:
+                        meta = {**base_metadata, "doc_source": "direct",
+                                "t_ret_expected": t_ret_median_direct}
+                        new_result = analizar_khp_data(
+                            direct["t"], direct["y_net"], meta, df_dad, config)
+                        if new_result:
+                            new_result["doc_source"] = "direct"
+                            new_result["reprocessed_with_t_ret"] = True
+                            if existing_idx is not None:
+                                khp_data_direct_list[existing_idx] = new_result
+                            else:
+                                khp_data_direct_list.append(new_result)
+                            reprocessed_count += 1
+                            logger.info(
+                                "2-pass: %s R%s direct reprocessat amb t_ret_expected=%.2f "
+                                "(t_ret: %.2f → %.2f)",
+                                khp_name, rep_num, t_ret_median_direct,
+                                existing.get('t_retention', 0) if existing else 0,
+                                new_result.get('t_retention', 0))
+
+                # UIB: mateixa lògica
+                if t_ret_median_uib and uib.get("t") is not None and uib.get("y_net") is not None:
+                    existing = None
+                    existing_idx = None
+                    for idx, e in enumerate(khp_data_uib_list):
+                        if (e.get('name') == khp_name and
+                            str(e.get('replica', '')) == str(rep_num) and
+                            e.get('doc_source') == 'uib'):
+                            existing = e
+                            existing_idx = idx
+                            break
+
+                    needs_reprocess = False
+                    if existing:
+                        t_r = existing.get('t_retention', 0)
+                        if abs(t_r - t_ret_median_uib) > 1.0:
+                            needs_reprocess = True
+                    else:
+                        needs_reprocess = True
+
+                    if needs_reprocess:
+                        meta = {**base_metadata, "doc_source": "uib",
+                                "t_ret_expected": t_ret_median_uib}
+                        new_result = analizar_khp_data(
+                            uib["t"], uib["y_net"], meta, df_dad, config)
+                        if new_result:
+                            new_result["doc_source"] = "uib"
+                            new_result["reprocessed_with_t_ret"] = True
+                            if existing_idx is not None:
+                                khp_data_uib_list[existing_idx] = new_result
+                            else:
+                                khp_data_uib_list.append(new_result)
+                            reprocessed_count += 1
+
+    if reprocessed_count > 0:
+        result["warnings"].append(
+            f"ℹ️ {reprocessed_count} punt(s) de baixa concentració reprocessat(s) "
+            f"amb t_ret de referència (2-pass)")
+        logger.info("2-pass: %d entrades reprocessades", reprocessed_count)
+
     # Warnings per concentració i DAD 254
     for khp_result in khp_data_direct_list + khp_data_uib_list:
         kname = khp_result.get('name', 'KHP')
@@ -4456,11 +4617,11 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
         group_name = "KHP"
 
         # Estadístiques bàsiques
-        areas = [r['area'] for r in replicas]
-        areas_original = [r.get('area_original') or r['area'] for r in replicas]
+        areas = [r['area'] for r in replicas]  # Sempre originals (post-fix: backend no sobreescriu)
+        areas_repaired = [r.get('area_repaired') or r['area'] for r in replicas]
         shifts = [r['shift_min'] for r in replicas]
         mean_area = float(np.mean(areas))
-        mean_area_original = float(np.mean(areas_original))
+        mean_area_repaired = float(np.mean(areas_repaired))
         std_area = float(np.std(areas))
         mean_shift = float(np.mean(shifts))
         rsd = float((std_area / mean_area) * 100.0) if mean_area > 0 else 100.0
@@ -4519,7 +4680,7 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
         # Aplicar selecció
         if selection_method == 'average' or selection_method == 'single':
             selected_area = mean_area
-            selected_area_original = mean_area_original
+            selected_area_repaired = mean_area_repaired
             selected_shift_min = mean_shift
             selected_shift_sec = mean_shift_sec
             selected_a254_ratio = mean_a254_ratio
@@ -4532,7 +4693,7 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
             rep_num = int(selection_method[1:])
             selected_rep = next((r for r in replicas if r.get('replica_num') == rep_num), replicas[0])
             selected_area = selected_rep['area']
-            selected_area_original = selected_rep.get('area_original') or selected_rep['area']
+            selected_area_repaired = selected_rep.get('area_repaired') or selected_rep['area']
             selected_shift_min = selected_rep['shift_min']
             selected_shift_sec = selected_rep.get('shift_sec', 0)
             selected_a254_ratio = selected_rep.get('a254_doc_ratio', 0)
@@ -4545,7 +4706,7 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
             best = sorted_replicas[0]
             best_quality = best.get('quality_score', 0)
             selected_area = best['area']
-            selected_area_original = best.get('area_original') or best['area']
+            selected_area_repaired = best.get('area_repaired') or best['area']
             selected_shift_min = best['shift_min']
             selected_shift_sec = best.get('shift_sec', 0)
             selected_a254_ratio = best.get('a254_doc_ratio', 0)
@@ -4573,8 +4734,7 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
             'name_full': f"KHP{group_conc}@{group_volume}µL",  # Condicions: conc + volum
             'conc_ppm': group_conc,
             'area': selected_area,
-            'area_original': selected_area_original if selected_area_original != selected_area else None,
-            'area_repaired': selected_area if selected_area_original != selected_area else None,
+            'area_repaired': selected_area_repaired if group_irregular_top_repaired else None,
             'shift_min': selected_shift_min,
             'shift_sec': selected_shift_sec,
             'a254_doc_ratio': selected_a254_ratio,

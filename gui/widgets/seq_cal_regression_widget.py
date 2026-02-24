@@ -7,11 +7,10 @@ Mostra:
 - Checkbox àrea reparada
 - Warning sensibilitats UIB barrejades
 - Taula de punts (12 cols) amb checkboxes per incloure/excloure
-- Preview cromatograma (clic a fila → R1+R2 overlay amb DOC+254nm)
+- Popup cromatograma interactiu (doble clic a fila → zoom/pan)
 - Resultats regressió (RF, Intercept, R², Punts, RMS, Model)
 - Comparació amb calibració vigent (taula HTML)
 - Scatter regressió + residuals (matplotlib, banda predicció 95%)
-- Botó recalcular
 
 Adaptat del codi eliminat al commit 973ea03 (analyze_panel ~950 línies).
 Sense dependència de main_window — totalment autònom.
@@ -24,12 +23,260 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QFrame, QGroupBox, QGridLayout, QCheckBox, QComboBox,
     QTableWidget, QTableWidgetItem, QHeaderView, QScrollArea,
-    QSizePolicy,
+    QSizePolicy, QDialog,
 )
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont, QColor, QBrush
 
 logger = logging.getLogger(__name__)
+
+
+# =========================================================================
+# DIALOG: Popup amb cromatograma interactiu i detalls d'un punt KHP
+# =========================================================================
+
+class KHPDetailDialog(QDialog):
+    """Popup amb cromatograma interactiu (zoom/pan) i detalls de l'entrada KHP.
+
+    S'obre amb doble clic a una fila de la taula de regressió.
+    """
+
+    def __init__(self, entry, t_ret_expected=0, parent=None):
+        super().__init__(parent)
+        self._entry = entry
+        self._t_ret_expected = t_ret_expected
+
+        conc = entry.get('conc_ppm', 0)
+        name = entry.get('name_full', entry.get('condition_key', ''))
+        self.setWindowTitle(f"Detall KHP: {name} ({conc:g} ppm)")
+        self.setMinimumSize(900, 650)
+        self.resize(1000, 700)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(8)
+
+        # --- Cromatograma amb toolbar interactiu ---
+        try:
+            import matplotlib
+            matplotlib.use('QtAgg')
+            from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+            from matplotlib.backends.backend_qtagg import NavigationToolbar2QT
+            from matplotlib.figure import Figure
+            import numpy as np
+
+            fig = Figure(figsize=(10, 4.5), dpi=100)
+            fig.set_facecolor("#FAFAFA")
+            canvas = FigureCanvas(fig)
+            toolbar = NavigationToolbar2QT(canvas, self)
+            toolbar.setStyleSheet("QToolBar { spacing: 6px; padding: 2px; }")
+            layout.addWidget(toolbar)
+            layout.addWidget(canvas, 1)
+
+            self._plot_chromatogram(fig, entry, np)
+            fig.tight_layout()
+            canvas.draw()
+
+        except Exception as e:
+            logger.warning(f"Error creant gràfic popup: {e}")
+            err_lbl = QLabel(f"Error creant gràfic: {e}")
+            err_lbl.setStyleSheet("color: #E74C3C;")
+            layout.addWidget(err_lbl)
+
+        # --- Detalls de l'entrada (mètriques + anomalies) ---
+        detail_frame = QFrame()
+        detail_frame.setStyleSheet(
+            "QFrame { background: #F8F9FA; border: 1px solid #DEE2E6; "
+            "border-radius: 4px; padding: 8px; }"
+        )
+        detail_layout = QGridLayout(detail_frame)
+        detail_layout.setSpacing(4)
+
+        self._add_detail_rows(detail_layout, entry)
+        layout.addWidget(detail_frame)
+
+        # Botó tancar
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+        close_btn = QPushButton("Tancar")
+        close_btn.setStyleSheet(
+            "QPushButton { background: #7F8C8D; color: white; border: none; "
+            "border-radius: 4px; padding: 6px 20px; font-weight: bold; }"
+            "QPushButton:hover { background: #95A5A6; }"
+        )
+        close_btn.clicked.connect(self.accept)
+        btn_layout.addWidget(close_btn)
+        layout.addLayout(btn_layout)
+
+    def _plot_chromatogram(self, fig, entry, np):
+        """Dibuixa cromatograma amb R1+R2 DOC + 254nm."""
+        replicas = entry.get('replicas', [])
+        if not replicas:
+            ax = fig.add_subplot(111)
+            ax.text(0.5, 0.5, "Sense dades de cromatograma",
+                    ha='center', va='center', fontsize=12, color='#999')
+            return
+
+        ax = fig.add_subplot(111)
+        doc_colors = ['#2196F3', '#1565C0']
+        doc_styles = ['-', '--']
+        fill_colors = ['#2196F3', '#1565C0']
+        dad_colors = ['#9B59B6', '#8E44AD']
+        dad_styles = ['-', ':']
+        ax2 = None
+
+        for r_idx, rep in enumerate(replicas[:2]):
+            r_label = f"R{r_idx + 1}"
+            color = doc_colors[r_idx]
+            style = doc_styles[r_idx]
+
+            t_doc = rep.get('t_doc')
+            y_doc = rep.get('y_doc')
+            y_repaired = rep.get('y_doc_repaired')
+
+            if t_doc is not None and y_doc is not None:
+                t_doc = np.asarray(t_doc)
+                y_doc = np.asarray(y_doc)
+                ax.plot(t_doc, y_doc, color=color, linewidth=1.2,
+                        linestyle=style, label=f'{r_label} DOC',
+                        alpha=0.9 if r_idx == 0 else 0.6)
+
+                if y_repaired is not None:
+                    y_repaired = np.asarray(y_repaired)
+                    ax.plot(t_doc, y_repaired, color='#E74C3C', linewidth=1,
+                            linestyle='--', label=f'{r_label} Reparat',
+                            alpha=0.7 if r_idx == 0 else 0.4)
+
+                peak_info = rep.get('peak_info', {})
+                t_start = peak_info.get('t_start')
+                t_end = peak_info.get('t_end')
+                if t_start is not None and t_end is not None:
+                    mask = (t_doc >= t_start) & (t_doc <= t_end)
+                    if np.any(mask):
+                        y_fill = y_repaired[mask] if y_repaired is not None else y_doc[mask]
+                        ax.fill_between(t_doc[mask], 0, y_fill,
+                                        color=fill_colors[r_idx], alpha=0.12)
+                    if r_idx == 0:
+                        ax.axvline(t_start, color='gray', linewidth=0.5,
+                                   linestyle=':', alpha=0.6)
+                        ax.axvline(t_end, color='gray', linewidth=0.5,
+                                   linestyle=':', alpha=0.6)
+
+            t_dad = rep.get('t_dad')
+            y_254 = rep.get('y_dad_254')
+            if t_dad is not None and y_254 is not None:
+                t_dad = np.asarray(t_dad)
+                y_254 = np.asarray(y_254)
+                if ax2 is None:
+                    ax2 = ax.twinx()
+                    ax2.set_ylabel('254nm (mAU)', color='#9B59B6', fontsize=9)
+                    ax2.tick_params(axis='y', labelcolor='#9B59B6', labelsize=8)
+                ax2.plot(t_dad, y_254, color=dad_colors[r_idx], linewidth=0.8,
+                         linestyle=dad_styles[r_idx],
+                         label=f'{r_label} 254nm',
+                         alpha=0.6 if r_idx == 0 else 0.35)
+
+        # t_ret esperat (línia vertical)
+        if self._t_ret_expected > 0:
+            ax.axvline(self._t_ret_expected, color='#27AE60', linewidth=1,
+                       linestyle='-.', alpha=0.5, label=f't_ret ref ({self._t_ret_expected:.1f} min)')
+
+        conc = entry.get('conc_ppm', 0)
+        name = entry.get('name_full', entry.get('condition_key', ''))
+        n_rep = min(len(replicas), 2)
+        ax.set_title(f"{name} ({conc:g} ppm) — {n_rep} rèpliques",
+                     fontsize=11, fontweight='bold')
+        ax.set_xlabel('Temps (min)', fontsize=9)
+        ax.set_ylabel('Senyal DOC (ppb)', fontsize=9, color='#2196F3')
+        ax.tick_params(labelsize=8)
+
+        lines, labels = ax.get_legend_handles_labels()
+        if ax2:
+            lines2, labels2 = ax2.get_legend_handles_labels()
+            lines += lines2
+            labels += labels2
+        ax.legend(lines, labels, loc='upper right', fontsize=7, ncol=2)
+
+    def _add_detail_rows(self, grid, entry):
+        """Afegeix files de detall al grid layout."""
+        row = 0
+        conc = entry.get('conc_ppm', 0)
+        vol = entry.get('volume_uL', 0)
+        area = entry.get('area', 0)
+        ug_doc = conc * vol / 1000.0 if conc > 0 and vol > 0 else 0
+        rf_mass = entry.get('rf_mass', area / ug_doc if ug_doc > 0 else 0)
+
+        # Fila 1: Mètriques principals
+        metrics = [
+            ("Concentració", f"{conc:g} ppm"),
+            ("Volum", f"{vol:.0f} µL"),
+            ("µg DOC", f"{ug_doc:.3f}"),
+            ("Àrea DOC", f"{area:.1f}"),
+            ("RF_mass", f"{rf_mass:.0f}"),
+            ("A254", f"{entry.get('a254_area', 0):.0f}" if entry.get('a254_area') else "-"),
+        ]
+        for col, (label, value) in enumerate(metrics):
+            lbl = QLabel(f"<b>{label}:</b>")
+            lbl.setStyleSheet("font-size: 11px; color: #2C3E50;")
+            val = QLabel(value)
+            val.setStyleSheet("font-size: 11px;")
+            grid.addWidget(lbl, row, col * 2)
+            grid.addWidget(val, row, col * 2 + 1)
+        row += 1
+
+        # Fila 2: Mètriques addicionals
+        extra = []
+        if entry.get('a254_doc_ratio'):
+            extra.append(f"DOC/254 = {entry['a254_doc_ratio']:.2f}")
+        if entry.get('fwhm_doc'):
+            extra.append(f"FWHM = {entry['fwhm_doc']:.2f} min")
+        if entry.get('snr'):
+            extra.append(f"SNR = {entry['snr']:.0f}")
+        if entry.get('t_retention'):
+            extra.append(f"t_ret = {entry['t_retention']:.2f} min")
+        if entry.get('area_original') and entry['area_original'] != area:
+            extra.append(f"Àrea original = {entry['area_original']:.1f}")
+        if extra:
+            extra_lbl = QLabel(" | ".join(extra))
+            extra_lbl.setStyleSheet("font-size: 10px; color: #555;")
+            grid.addWidget(extra_lbl, row, 0, 1, 12)
+            row += 1
+
+        # Fila 3: Anomalies explicades
+        anomaly_parts = []
+        if entry.get('uib_saturated'):
+            anomaly_parts.append("Senyal UIB saturat (y_max >= 95% sensibilitat)")
+        if entry.get('irregular_top_repaired'):
+            anomaly_parts.append("Cim irregular reparat amb paràbola")
+        elif entry.get('has_irregular_top'):
+            anomaly_parts.append("Cim irregular detectat (pic-vall-pic)")
+        if entry.get('has_timeout') and entry.get('timeout_severity', 'OK') != 'OK':
+            anomaly_parts.append(f"Timeout TOC ({entry.get('timeout_severity', '?')})")
+        issues = entry.get('quality_issues', [])
+        for iss in issues:
+            iss_str = str(iss)
+            if 'MULTI_PEAK' in iss_str and 'MILD' not in iss_str:
+                anomaly_parts.append(f"Multi-peak sever: {iss_str}")
+            elif 'MULTI_PEAK_MILD' in iss_str:
+                anomaly_parts.append(f"Multi-peak lleu: {iss_str}")
+            elif 'T_RET' in iss_str or 'T_RETENTION' in iss_str:
+                anomaly_parts.append(f"Temps retenció anòmal: {iss_str}")
+            elif 'VOL_SUSPECT' in iss_str:
+                anomaly_parts.append(f"Volum sospitós: {iss_str}")
+            elif 'FALLBACK' in iss_str:
+                anomaly_parts.append(f"Fallback integració: {iss_str}")
+        if entry.get('reprocessed_with_t_ret'):
+            anomaly_parts.append("Reprocessat amb t_ret de referència (2-pass)")
+
+        if anomaly_parts:
+            anom_text = "<br>".join(f"- {a}" for a in anomaly_parts)
+            anom_lbl = QLabel(f"<b>Anomalies:</b><br>{anom_text}")
+            anom_lbl.setWordWrap(True)
+            anom_lbl.setStyleSheet("font-size: 10px; color: #E67E22; padding: 4px;")
+            grid.addWidget(anom_lbl, row, 0, 1, 12)
+        else:
+            ok_lbl = QLabel("<b>Anomalies:</b> Cap detectada")
+            ok_lbl.setStyleSheet("font-size: 10px; color: #27AE60;")
+            grid.addWidget(ok_lbl, row, 0, 1, 12)
 
 
 class SeqCalRegressionWidget(QWidget):
@@ -178,25 +425,8 @@ class SeqCalRegressionWidget(QWidget):
                 border-bottom: 2px solid #ddd;
             }
         """)
-        self._points_table.cellClicked.connect(self._on_row_clicked)
+        self._points_table.cellDoubleClicked.connect(self._on_table_double_click)
         main_layout.addWidget(self._points_table)
-
-        # Preview cromatograma (inicialment ocult)
-        try:
-            import matplotlib
-            matplotlib.use('QtAgg')
-            from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
-            from matplotlib.figure import Figure
-            self._chrom_figure = Figure(figsize=(8, 3), dpi=100)
-            self._chrom_figure.set_facecolor("#FAFAFA")
-            self._chrom_canvas = FigureCanvas(self._chrom_figure)
-            self._chrom_canvas.setMinimumHeight(200)
-            self._chrom_canvas.setMaximumHeight(250)
-            self._chrom_canvas.setVisible(False)
-            main_layout.addWidget(self._chrom_canvas)
-            self._has_chrom = True
-        except Exception:
-            self._has_chrom = False
 
         # Resultats regressió
         reg_frame = QFrame()
@@ -322,10 +552,18 @@ class SeqCalRegressionWidget(QWidget):
             method = "BP"
         self._method = method
 
-        # Sensibilitat UIB
+        # Sensibilitat UIB (pot ser escalar, llista, o None)
         self._sensitivity = None
         if imported_data:
-            self._sensitivity = imported_data.get("uib_sensitivity")
+            sens = imported_data.get("uib_sensitivity")
+            if isinstance(sens, (list, tuple)):
+                # Agafar el primer valor no-nul
+                for s in sens:
+                    if s and isinstance(s, (int, float)) and s > 0:
+                        self._sensitivity = float(s)
+                        break
+            elif isinstance(sens, (int, float)) and sens > 0:
+                self._sensitivity = float(sens)
 
         # Construir entrades per senyal
         self._entries_direct = self._build_entries(cals_direct, 'direct', method, seq_name)
@@ -695,109 +933,33 @@ class SeqCalRegressionWidget(QWidget):
             self._points_table.setCellWidget(i, 11, badge_w)
 
     # =====================================================================
-    # CHROMATOGRAM PREVIEW
+    # CHROMATOGRAM POPUP (doble clic a fila → diàleg interactiu)
     # =====================================================================
 
-    def _on_row_clicked(self, row, col):
-        """Mostra preview cromatograma amb R1+R2 superposades i àrees ombrejades."""
-        if not getattr(self, '_has_chrom', False):
-            return
+    def _on_table_double_click(self, row, col):
+        """Obre popup amb cromatograma interactiu i detalls de l'entrada KHP."""
         if row < 0 or row >= len(self._entries):
             return
 
         entry = self._entries[row]
         replicas = entry.get('replicas', [])
         if not replicas:
-            self._chrom_canvas.setVisible(False)
             return
 
-        try:
+        # Calcular t_ret esperat des de les entrades fiables
+        t_ret_expected = 0
+        t_rets = [e.get('t_retention', 0) for i, e in enumerate(self._entries)
+                  if i not in self._excluded and e.get('conc_ppm', 0) >= 0.5
+                  and e.get('t_retention', 0) > 0]
+        if t_rets:
             import numpy as np
+            t_ret_expected = float(np.median(t_rets))
 
-            fig = self._chrom_figure
-            fig.clear()
-            ax = fig.add_subplot(111)
-
-            doc_colors = ['#2196F3', '#1565C0']
-            doc_styles = ['-', '--']
-            fill_colors = ['#2196F3', '#1565C0']
-            dad_colors = ['#9B59B6', '#8E44AD']
-            dad_styles = ['-', ':']
-            ax2 = None
-
-            for r_idx, rep in enumerate(replicas[:2]):
-                r_label = f"R{r_idx + 1}"
-                color = doc_colors[r_idx]
-                style = doc_styles[r_idx]
-
-                t_doc = rep.get('t_doc')
-                y_doc = rep.get('y_doc')
-                y_repaired = rep.get('y_doc_repaired')
-
-                if t_doc is not None and y_doc is not None:
-                    t_doc = np.asarray(t_doc)
-                    y_doc = np.asarray(y_doc)
-                    ax.plot(t_doc, y_doc, color=color, linewidth=1.2,
-                            linestyle=style, label=f'{r_label} DOC',
-                            alpha=0.9 if r_idx == 0 else 0.6)
-
-                    if y_repaired is not None:
-                        y_repaired = np.asarray(y_repaired)
-                        ax.plot(t_doc, y_repaired, color='#E74C3C', linewidth=1,
-                                linestyle='--', label=f'{r_label} Reparat',
-                                alpha=0.7 if r_idx == 0 else 0.4)
-
-                    peak_info = rep.get('peak_info', {})
-                    t_start = peak_info.get('t_start')
-                    t_end = peak_info.get('t_end')
-                    if t_start is not None and t_end is not None:
-                        mask = (t_doc >= t_start) & (t_doc <= t_end)
-                        if np.any(mask):
-                            y_fill = y_repaired[mask] if y_repaired is not None else y_doc[mask]
-                            ax.fill_between(t_doc[mask], 0, y_fill,
-                                            color=fill_colors[r_idx], alpha=0.12)
-                        if r_idx == 0:
-                            ax.axvline(t_start, color='gray', linewidth=0.5,
-                                       linestyle=':', alpha=0.6)
-                            ax.axvline(t_end, color='gray', linewidth=0.5,
-                                       linestyle=':', alpha=0.6)
-
-                t_dad = rep.get('t_dad')
-                y_254 = rep.get('y_dad_254')
-                if t_dad is not None and y_254 is not None:
-                    t_dad = np.asarray(t_dad)
-                    y_254 = np.asarray(y_254)
-                    if ax2 is None:
-                        ax2 = ax.twinx()
-                        ax2.set_ylabel('254nm', color='#9B59B6', fontsize=9)
-                        ax2.tick_params(axis='y', labelcolor='#9B59B6', labelsize=8)
-                    ax2.plot(t_dad, y_254, color=dad_colors[r_idx], linewidth=0.8,
-                             linestyle=dad_styles[r_idx],
-                             label=f'{r_label} 254nm',
-                             alpha=0.6 if r_idx == 0 else 0.35)
-
-            conc = entry.get('conc_ppm', 0)
-            name = entry.get('name_full', entry.get('condition_key', ''))
-            n_rep = min(len(replicas), 2)
-            ax.set_title(f"{name} ({conc:g} ppm) — {n_rep} rèpliques",
-                         fontsize=10, fontweight='bold')
-            ax.set_xlabel('Temps (min)', fontsize=9)
-            ax.set_ylabel('Senyal DOC', fontsize=9, color='#2196F3')
-            ax.tick_params(labelsize=8)
-
-            lines, labels = ax.get_legend_handles_labels()
-            if ax2:
-                lines2, labels2 = ax2.get_legend_handles_labels()
-                lines += lines2
-                labels += labels2
-            ax.legend(lines, labels, loc='upper right', fontsize=7, ncol=2)
-
-            fig.tight_layout()
-            self._chrom_canvas.setVisible(True)
-            self._chrom_canvas.draw()
+        try:
+            dlg = KHPDetailDialog(entry, t_ret_expected=t_ret_expected, parent=self)
+            dlg.exec()
         except Exception as e:
-            logger.warning(f"Error preview cromatograma: {e}")
-            self._chrom_canvas.setVisible(False)
+            logger.warning(f"Error obrint popup cromatograma: {e}")
 
     # =====================================================================
     # COMPARISON
@@ -1001,11 +1163,14 @@ class SeqCalRegressionWidget(QWidget):
     # =====================================================================
 
     def _on_point_toggled(self, idx, state):
-        """Quan l'usuari marca/desmarca un punt."""
+        """Quan l'usuari marca/desmarca un punt — auto-recalcula regressió."""
         if state == 0:
             self._excluded.add(idx)
         else:
             self._excluded.discard(idx)
+        # Auto-recalcular regressió al canviar selecció
+        if self._entries and self._method:
+            self._run_regression()
 
     def _on_signal_changed(self, index):
         """Quan l'usuari canvia el senyal (Direct/UIB)."""

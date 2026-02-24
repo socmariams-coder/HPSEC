@@ -74,6 +74,9 @@ Mark features as DONE only when code is fully functional end-to-end, not when pl
 - [x] Wizard SEQ_CAL: validació ppm_obs vs ppm_teòric al pas 3 (AnalyzePanel) — DONE
 - [x] Wizard SEQ_CAL: resum regressió al pas 4 (ReviewSummaryPanel) — DONE
 - [x] GlobalCalibrationPanel: convertit a consulta-only (sense aplicar/requantificar) — DONE
+- [x] GlobalCalibrationPanel: Tab 0 Diagnòstic SEQ_CAL interactiu (SeqCalRegressionWidget) — DONE
+- [x] GlobalCalibrationPanel: redisseny vista única (sense sub-tabs), layout professional — DONE
+- [x] HistoryPanel: Levey-Jennings QC chart (desviació % vs recta vigent) — DONE
 - [x] Wizard: Rename step 2 "Calibrar" → "Verificar" (TAB_NAMES + tab_names) — DONE
 - [x] Wizard: Delay diagnostic tool at step 2 (shift indicator, slider, impact preview, reimport) — DONE
 - [x] Wizard: Apply calibration at step 4 (Revisar) + retroactive requantification + SEQ list — DONE
@@ -179,7 +182,83 @@ All exploratory scripts and results live in `research/` — NOT part of the prod
 
 ## Working notes
 
-> Last updated: 2026-02-23
+> Last updated: 2026-02-24
+
+### Fixes sessió 2026-02-24 (continuació)
+
+**1. Cache resultat CalSeqWorker per evitar re-lectura MasterFile:**
+- `global_calibration_panel.py`: `_result_cache = {}` a `__init__`
+- `load_seq_cal()`: comprova cache abans de llançar worker
+- `_on_worker_finished(result, from_cache=False)`: guarda al cache
+- Si `from_cache=True`, no recarrega `_load_all_data()` (ja carregat)
+- Resultat: clicar 2x la mateixa SEQ_CAL → instantani (0 lectures disc)
+
+**2. Fix 0.1 ppm àrea (detect_main_peak agafa pic erroni a baixa conc):**
+- **Problema**: A 0.1 ppm, el pic KHP DOC és tan petit que `detect_main_peak()` selecciona
+  soroll o artefactes més alts. El 254nm també és massa dèbil per servir de referència.
+- **Solució: 2-pass approach a `calibrate_from_import()`**:
+  - 1r pass: processa tots els KHP normalment
+  - Calcula `t_ret_median` des de les entrades amb conc >= 0.5 ppm (pics fiables)
+  - 2n pass: reprocessa entrades amb conc <= 0.25 ppm SI t_ret anòmal (>1 min vs mediana)
+  - Passa `t_ret_expected` via metadata a `analizar_khp_data()`
+- **`analizar_khp_data()` modificat**: STEP 1 ara usa `t_ref = t_max_254 || t_ret_expected`
+  - Si hi ha t_ref i els pics detectats normalment no coincideixen, força el pic proper
+  - Si cap pic amb prominència normal, busca amb prominència reduïda (1/5) prop de t_ref
+  - Nou warning `LOW_PROM_RESCUE` quan s'usa prominència reduïda
+- Marker `reprocessed_with_t_ret=True` a les entrades del 2n pass
+
+**3. Popup cromatograma interactiu (KHPDetailDialog):**
+- **Abans**: cromatograma inline a la taula (ocupava espai, no zoom)
+- **Ara**: doble clic a fila → popup `KHPDetailDialog` amb:
+  - `NavigationToolbar2QT` (zoom, pan, home, save) — NOU al codebase
+  - Cromatograma complet R1+R2 DOC + 254nm amb àrees ombrejades
+  - Línia vertical `t_ret_expected` (mediana de les conc fiables)
+  - Detalls: mètriques (conc, vol, àrea, RF, A254, FWHM, SNR, t_ret)
+  - Anomalies explicades en text clar (no codis críptics)
+  - Indicador `reprocessed_with_t_ret` si aplica
+
+**4. Checkbox auto-recalcula regressió:**
+- `_on_point_toggled()` ara crida `_run_regression()` automàticament
+- Abans només actualitzava `self._excluded` sense recalcular
+
+### GlobalCalibrationPanel: Redisseny vista única (2026-02-24)
+
+**Evolució**: El commit `973ea03` va eliminar codi SEQ_CAL del wizard. La primera
+iteració va crear `SeqCalRegressionWidget` com a Tab 0, però amb 3 sub-tabs
+(Diagnòstic + Recta + QC) que duplicaven funcionalitat i deixaven la taula amb prou
+feines visible (massa stacking vertical de GroupBoxes).
+
+**Redisseny final — vista única sense sub-tabs (~650 línies, era ~2090):**
+
+1. **`gui/widgets/global_calibration_panel.py`** reescriptura completa:
+   - **Eliminats**: CalibrationLineView (~700 línies), QCMonitorView (~230 línies)
+   - **Layout**: toolbar → SEQ selector horitzontal → splitter (taula | scatter+comparació) → apply
+   - Toolbar compacte: mode/senyal/model radio buttons, repair checkbox, PDF, cal vigent
+   - SEQ selector: QListWidget flow horitzontal amb checkboxes (max-height 50px)
+   - Taula 10 cols: ☑ SEQ ppm Vol µg Àrea RF SNR t_ret Estat
+   - Doble clic fila → KHPDetailDialog popup (importat de seq_cal_regression_widget.py)
+   - Scatter+residuals matplotlib amb recta nova + recta vigent
+   - Comparació inline (RF/Int/R²/impacte) sense GroupBox
+   - Apply section: data vigència, retroactiu, botó
+
+2. **`gui/widgets/history_panel.py`** — afegit Levey-Jennings com a Tab 7:
+   - Filtra producció KHP (no _CAL), calcula desviació % vs calibració vigent
+   - Scatter amb colors per zona: verd ≤±10%, taronja ±10-20%, vermell >±20%
+   - Bandes de control ±10% (warning) i ±20% (crític)
+   - Símbols per mode (cercle=COLUMN, quadrat=BP)
+   - Indicador global: EN CONTROL / ATENCIÓ / FORA DE CONTROL
+   - Tendència lineal
+
+3. **Fix false positive irregular_top repair** (`hpsec_calibrate.py`):
+   - `analizar_khp_data()` ja NO sobreescriu `peak_info['area']` amb àrea reparada
+   - Nou camp `peak_info['area_repaired']` (separat de l'original)
+   - UI decideix quin usar via toggle checkbox "Àrea reparada"
+
+**Arquitectura conceptual:**
+- **Tab 4 "Històric"** (HistoryPanel) = QA/QC seguiment sistemàtic del sistema
+  - Taula completa 22 cols, gràfics evolutius, Levey-Jennings
+- **Tab 5 "Calibració Global"** (GlobalCalibrationPanel) = gestió calibració
+  - Vista única per construir/aplicar recta des de SEQ_CAL
 
 ### UIB Downsample + Saturació (2026-02-23)
 

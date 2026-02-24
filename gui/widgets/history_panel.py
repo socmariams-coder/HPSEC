@@ -21,7 +21,12 @@ import json
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from hpsec_calibrate import load_khp_history
+from hpsec_calibrate import (
+    load_khp_history,
+    get_active_global_calibration,
+    get_rf_mass_cal,
+    get_calibration_intercept,
+)
 
 import logging
 import numpy as np
@@ -276,6 +281,17 @@ class HistoryPanel(QWidget):
         uib_layout.addWidget(self.uib_canvas)
 
         self.content_tabs.addTab(uib_widget, "🔬 UIB Ratio")
+
+        # === TAB 8: Levey-Jennings (QC) ===
+        lj_widget = QWidget()
+        lj_layout = QVBoxLayout(lj_widget)
+        lj_layout.setContentsMargins(0, 8, 0, 0)
+
+        self.lj_figure = Figure(figsize=(10, 5), dpi=100)
+        self.lj_canvas = FigureCanvas(self.lj_figure)
+        lj_layout.addWidget(self.lj_canvas)
+
+        self.content_tabs.addTab(lj_widget, "📊 Levey-Jennings")
 
         layout.addWidget(self.content_tabs)
 
@@ -1182,6 +1198,161 @@ class HistoryPanel(QWidget):
 
         self.uib_figure.tight_layout()
         self.uib_canvas.draw()
+
+        # =====================================================================
+        # Gràfic 7: Levey-Jennings (desviació % vs calibració vigent)
+        # =====================================================================
+        self.lj_figure.clear()
+        ax7 = self.lj_figure.add_subplot(111)
+
+        # Obtenir calibració vigent
+        active_cal = get_active_global_calibration()
+
+        # Filtrar: només producció (no _CAL), amb àrea vàlida
+        prod_indices = []
+        prod_deviations = []
+        prod_modes_lj = []
+        prod_valid_lj = []
+        prod_names = []
+
+        for i, cal_entry in enumerate(sorted_cals):
+            sn = cal_entry.get('seq_name', '')
+            if '_CAL' in sn.upper():
+                continue
+            if not is_valids[i]:
+                continue
+
+            area = areas_d[i]
+            conc = concs[i]
+            vol = volumes[i]
+            mode = modes[i]
+
+            if area <= 0 or conc <= 0 or vol <= 0:
+                continue
+
+            # Obtenir RF i intercept per aquest mode/senyal
+            if active_cal:
+                rf_cur = get_rf_mass_cal(active_cal, signal='direct', mode=mode.lower())
+                int_cur = get_calibration_intercept(active_cal, signal='direct', mode=mode.lower())
+            else:
+                rf_cur = None
+                int_cur = 0
+
+            if not rf_cur or rf_cur <= 0:
+                continue
+
+            # Àrea esperada = RF * µg + intercept
+            ug_doc = conc * vol / 1000.0
+            expected_area = rf_cur * ug_doc + int_cur
+            if expected_area <= 0:
+                continue
+
+            deviation_pct = (area - expected_area) / expected_area * 100.0
+
+            prod_indices.append(len(prod_deviations))
+            prod_deviations.append(deviation_pct)
+            prod_modes_lj.append(mode)
+            prod_valid_lj.append(True)
+            prod_names.append(seq_names[i])
+
+        if prod_deviations:
+            dev_arr = np.array(prod_deviations)
+            x_lj = np.arange(len(dev_arr))
+
+            # Colors per zona de control
+            colors_lj = []
+            for d in dev_arr:
+                if abs(d) <= 10:
+                    colors_lj.append('#27AE60')  # Verd — EN CONTROL
+                elif abs(d) <= 20:
+                    colors_lj.append('#F39C12')  # Taronja — ATENCIÓ
+                else:
+                    colors_lj.append('#E74C3C')  # Vermell — FORA DE CONTROL
+
+            # Scatter amb símbols per mode
+            for j, (xj, dj, mj, cj) in enumerate(zip(x_lj, dev_arr, prod_modes_lj, colors_lj)):
+                marker = 's' if mj == 'BP' else 'o'
+                ax7.scatter(xj, dj, c=cj, s=70, marker=marker,
+                            edgecolors='white', linewidth=0.5, zorder=3)
+
+            # Línia zero
+            ax7.axhline(0, color='black', linewidth=1, zorder=2)
+
+            # Bandes de control
+            ax7.axhspan(-10, 10, alpha=0.08, color='#27AE60', zorder=0)
+            ax7.axhline(10, color='#F39C12', linewidth=1.2, linestyle='--', alpha=0.7)
+            ax7.axhline(-10, color='#F39C12', linewidth=1.2, linestyle='--', alpha=0.7)
+            ax7.axhline(20, color='#E74C3C', linewidth=1.2, linestyle='--', alpha=0.7)
+            ax7.axhline(-20, color='#E74C3C', linewidth=1.2, linestyle='--', alpha=0.7)
+
+            # Etiquetes bandes
+            xlim_max = max(x_lj) + 0.5 if len(x_lj) > 0 else 1
+            ax7.text(xlim_max, 10, '±10%', fontsize=7, color='#F39C12', va='center')
+            ax7.text(xlim_max, 20, '±20%', fontsize=7, color='#E74C3C', va='center')
+
+            # Tendència
+            if len(dev_arr) > 3:
+                z = np.polyfit(x_lj, dev_arr, 1)
+                p = np.poly1d(z)
+                ax7.plot(x_lj, p(x_lj), '--', color='#8E44AD', alpha=0.5, linewidth=1.2,
+                         label=f'Tendència: {z[0]:.2f}%/pt')
+
+            # Estadístiques
+            n_ok = np.sum(np.abs(dev_arr) <= 10)
+            n_warn = np.sum((np.abs(dev_arr) > 10) & (np.abs(dev_arr) <= 20))
+            n_out = np.sum(np.abs(dev_arr) > 20)
+            mean_dev = np.mean(dev_arr)
+            std_dev = np.std(dev_arr) if len(dev_arr) > 1 else 0
+
+            # Indicador estat global
+            if n_out > 0:
+                status_lj = "⛔ FORA DE CONTROL"
+                status_color = '#E74C3C'
+            elif n_warn > len(dev_arr) * 0.3:
+                status_lj = "⚠️ ATENCIÓ"
+                status_color = '#F39C12'
+            else:
+                status_lj = "✅ EN CONTROL"
+                status_color = '#27AE60'
+
+            ax7.set_title(
+                f"Levey-Jennings QC — {status_lj}  ·  "
+                f"µ={mean_dev:+.1f}%  σ={std_dev:.1f}%  ·  "
+                f"OK:{n_ok}  Atenció:{n_warn}  Fora:{n_out}",
+                fontsize=11, fontweight='bold', color=status_color
+            )
+
+            ax7.set_xticks(x_lj)
+            ax7.set_xticklabels(prod_names, rotation=45, ha='right', fontsize=7)
+            ax7.set_ylabel("Desviació vs recta vigent (%)", fontsize=10)
+            ax7.grid(True, alpha=0.2)
+
+            # Llegenda
+            legend_elements = [
+                Line2D([0], [0], marker='o', color='w', markerfacecolor='#27AE60',
+                       markersize=8, label='≤±10% (OK)'),
+                Line2D([0], [0], marker='o', color='w', markerfacecolor='#F39C12',
+                       markersize=8, label='±10-20% (Atenció)'),
+                Line2D([0], [0], marker='o', color='w', markerfacecolor='#E74C3C',
+                       markersize=8, label='>±20% (Fora)'),
+                Line2D([0], [0], marker='o', color='w', markerfacecolor='white',
+                       markeredgecolor='black', markersize=8, label='COLUMN'),
+                Line2D([0], [0], marker='s', color='w', markerfacecolor='white',
+                       markeredgecolor='black', markersize=8, label='BP'),
+            ]
+            ax7.legend(handles=legend_elements, loc='upper right', fontsize=7)
+
+        else:
+            if not active_cal:
+                msg = "No hi ha calibració vigent per calcular desviacions"
+            else:
+                msg = "No hi ha dades de producció KHP (excloses _CAL)"
+            ax7.text(0.5, 0.5, msg, ha='center', va='center', fontsize=12, color='gray')
+            ax7.set_xlim(0, 1)
+            ax7.set_ylim(0, 1)
+
+        self.lj_figure.tight_layout()
+        self.lj_canvas.draw()
 
     def _export_csv(self):
         """Exporta les calibracions visibles a CSV."""
