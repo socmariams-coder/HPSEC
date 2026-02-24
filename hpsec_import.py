@@ -791,9 +791,13 @@ def netejar_nom_uib(nom_fitxer):
 # LECTURA FITXERS DAD
 # =============================================================================
 
-def llegir_dad_export3d(path):
+def llegir_dad_export3d(path, wavelengths_to_keep=None):
     """
     Llegeix fitxer DAD Export3D (CSV comma-separated).
+
+    Args:
+        path: Camí al fitxer CSV
+        wavelengths_to_keep: Llista de wavelengths (int) a conservar. Si None, retorna tot.
 
     Returns:
         (DataFrame, status): DataFrame amb temps i wavelengths, status string
@@ -814,6 +818,11 @@ def llegir_dad_export3d(path):
                 except Exception:
                     out_cols.append(sc)
             df.columns = out_cols
+            # Filtrar a wavelengths seleccionades (estalvi memòria ~95%)
+            if wavelengths_to_keep:
+                keep = ["time (min)"] + [str(w) for w in wavelengths_to_keep if str(w) in out_cols]
+                if len(keep) > 1:  # Almenys 1 wavelength trobada
+                    df = df[keep]
             return df, f"OK{' (UTF-8)' if enc == 'utf-8' else ''}"
         except Exception:
             continue
@@ -2627,7 +2636,6 @@ def find_data_for_injection(injection, seq_path, uib_files, dad_files, dad_csv_f
 
                 result["direct"] = {
                     "path": "MasterFile:2-TOC",
-                    "df": df_doc,
                     "t": t_direct,
                     "y": y_direct,
                     "row_start": row_start,
@@ -2781,7 +2789,8 @@ def find_data_for_injection(injection, seq_path, uib_files, dad_files, dad_csv_f
                 rep_match = (file_rep_int == inj_num)
 
             if rep_match:
-                df_dad, status = llegir_dad_export3d(dad_path)
+                wl_keep = config.get("wavelengths", "selected") if config else None
+                df_dad, status = llegir_dad_export3d(dad_path, wavelengths_to_keep=wl_keep)
                 if status.startswith("OK"):
                     used_files.setdefault("dad", set()).add(dad_path)
                     result["dad"] = {
@@ -3532,6 +3541,10 @@ def import_sequence(seq_path, config=None, progress_callback=None):
         result["errors"].append(str(e))
         result["errors"].append(traceback.format_exc())
 
+    # Alliberar 2-TOC DataFrame (les dades DOC ja estan extretes a rep_data["direct"]["t"/"y"])
+    if result.get("master_data") and result["master_data"].get("toc") is not None:
+        result["master_data"]["toc"] = None
+
     # Generar avisos estructurats (nou sistema)
     result["warnings_structured"] = _generate_import_warnings(result)
     result["warning_level"] = get_max_warning_level(result["warnings_structured"])
@@ -4265,7 +4278,6 @@ def import_from_manifest(seq_path, manifest=None, config=None, progress_callback
 
                             rep_data["direct"] = {
                                 "path": f"MasterFile:2-TOC",
-                                "df": df_doc,
                                 "t": t_direct,
                                 "y": y_direct,
                                 "row_start": row_start,
@@ -4383,6 +4395,8 @@ def import_from_manifest(seq_path, manifest=None, config=None, progress_callback
                 dad_loaded = rep_data.get("dad") is not None
 
                 # 1. Intentar carregar des de manual_file
+                wl_keep = config.get("wavelengths", "selected") if config else None
+
                 if manual_dad_file and not dad_loaded:
                     # Buscar el fitxer manual
                     dad_dirs = ["Export3d", "Export3D", "CSV", "csv", ""]
@@ -4390,7 +4404,7 @@ def import_from_manifest(seq_path, manifest=None, config=None, progress_callback
                         test_path = os.path.join(seq_path, subdir, manual_dad_file) if subdir else os.path.join(seq_path, manual_dad_file)
                         if os.path.exists(test_path):
                             try:
-                                df_dad, status = llegir_dad_export3d(test_path)
+                                df_dad, status = llegir_dad_export3d(test_path, wavelengths_to_keep=wl_keep)
                                 if df_dad is not None and status.startswith("OK"):
                                     rep_data["dad"] = {
                                         "df": df_dad,
@@ -4432,7 +4446,7 @@ def import_from_manifest(seq_path, manifest=None, config=None, progress_callback
                         test_path = os.path.join(seq_path, subdir, dad_file_from_manifest) if subdir else os.path.join(seq_path, dad_file_from_manifest)
                         if os.path.exists(test_path):
                             try:
-                                df_dad, status = llegir_dad_export3d(test_path)
+                                df_dad, status = llegir_dad_export3d(test_path, wavelengths_to_keep=wl_keep)
                                 if df_dad is not None and status.startswith("OK"):
                                     rep_data["dad"] = {"df": df_dad, "path": test_path, "file": dad_file_from_manifest}
                                     rep_data["dad_source"] = "export3d"
@@ -4457,7 +4471,7 @@ def import_from_manifest(seq_path, manifest=None, config=None, progress_callback
                             sname = sample_name.upper().replace(" ", "").replace("_", "")
                             if sname in fname.replace(" ", "").replace("_", ""):
                                 try:
-                                    df_dad, status = llegir_dad_export3d(df_path)
+                                    df_dad, status = llegir_dad_export3d(df_path, wavelengths_to_keep=wl_keep)
                                     if df_dad is not None and status.startswith("OK"):
                                         rep_data["dad"] = {"df": df_dad, "path": df_path}
                                         rep_data["dad_source"] = "export3d"
@@ -4620,6 +4634,7 @@ def ensure_data_loaded(imported_data, config=None, progress_callback=None):
         return imported_data  # Ja té les dades carregades
 
     config = config or get_config()
+    wl_keep = config.get("wavelengths", "selected") if config else None
 
     def report_progress(pct, msg):
         if progress_callback:
@@ -4689,7 +4704,6 @@ def ensure_data_loaded(imported_data, config=None, progress_callback=None):
 
                             rep_data["direct"] = {
                                 "path": f"MasterFile:2-TOC",
-                                "df": df_doc,
                                 "t": t_direct,
                                 "y": y_direct,
                                 "row_start": row_start,
@@ -4768,7 +4782,7 @@ def ensure_data_loaded(imported_data, config=None, progress_callback=None):
                         test_path = os.path.join(seq_path, subdir, dad_file) if subdir else os.path.join(seq_path, dad_file)
                         if os.path.exists(test_path):
                             try:
-                                df_dad, status = llegir_dad_export3d(test_path)
+                                df_dad, status = llegir_dad_export3d(test_path, wavelengths_to_keep=wl_keep)
                                 if df_dad is not None and status.startswith("OK"):
                                     rep_data["dad"] = {
                                         "df": df_dad,
@@ -4808,6 +4822,10 @@ def ensure_data_loaded(imported_data, config=None, progress_callback=None):
                     rep_data["dad"] = dad_result
                     rep_data["dad_source"] = dad_src
                     rep_data["has_data"] = True
+
+    # Alliberar 2-TOC DataFrame (les dades DOC ja estan extretes a rep_data["direct"]["t"/"y"])
+    if imported_data.get("master_data") and imported_data["master_data"].get("toc") is not None:
+        imported_data["master_data"]["toc"] = None
 
     imported_data["data_deferred"] = False
     report_progress(100, "Dades carregades")

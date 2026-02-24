@@ -74,9 +74,6 @@ Mark features as DONE only when code is fully functional end-to-end, not when pl
 - [x] Wizard SEQ_CAL: validació ppm_obs vs ppm_teòric al pas 3 (AnalyzePanel) — DONE
 - [x] Wizard SEQ_CAL: resum regressió al pas 4 (ReviewSummaryPanel) — DONE
 - [x] GlobalCalibrationPanel: convertit a consulta-only (sense aplicar/requantificar) — DONE
-- [x] GlobalCalibrationPanel: Tab 0 Diagnòstic SEQ_CAL interactiu (SeqCalRegressionWidget) — DONE
-- [x] GlobalCalibrationPanel: redisseny vista única (sense sub-tabs), layout professional — DONE
-- [x] HistoryPanel: Levey-Jennings QC chart (desviació % vs recta vigent) — DONE
 - [x] Wizard: Rename step 2 "Calibrar" → "Verificar" (TAB_NAMES + tab_names) — DONE
 - [x] Wizard: Delay diagnostic tool at step 2 (shift indicator, slider, impact preview, reimport) — DONE
 - [x] Wizard: Apply calibration at step 4 (Revisar) + retroactive requantification + SEQ list — DONE
@@ -104,12 +101,19 @@ Mark features as DONE only when code is fully functional end-to-end, not when pl
   - Quan `inj_volume_source='default'` o `inj_volume=None`, diàleg confirmació a l'usuari
   - Validació creuada col13 vs 0-INFO quan ambdós existeixen i discrepan
   - Icona/tooltip a calibració si volum és estimat (no del manifest)
+- [x] Memory optimization: DAD filter 6λ, TOC release, cal cache, df cleanup (~112 MB/SEQ) — DONE (f7d03d4)
 - [ ] Architecture refactor: unify detection functions in hpsec_core.py — PENDING
 - [x] Integration: derivative-based peak boundaries (Agilent tangent projection) — DONE (find_peak_boundaries in hpsec_core.py)
 - [x] Integration: re-process all KHP data with new derivative method — DONE (batch re-calibrate 137 SEQs, KHP_History regenerated with 96 entries)
-- [x] Config panel: 3 tabs per impacte (Anàlisi/Seqüència/Sistema), tots params editables — DONE
+- [x] Config panel: 3 tabs per impacte (Anàlisi/Seqüència/Sistema), ~30 params editables — DONE
 - [x] Config panel: badges d'impacte (retroactiu/futur), diàleg de reprocessament — DONE
 - [x] Config panel: TimeFractionsEditor, TimeoutZonesEditor, WavelengthSelector, PatternListEditor — DONE
+- [x] Config panel: simplificat (22 params interns eliminats del GUI) + contrasenya "LEQUIA" al guardar — DONE (7b275f7)
+- [x] Warnings: ANOMALY_CATALOG unificat — 26 codis (16 analyze + 10 KHP calibrate), camp `action` a tots — DONE
+- [x] Warnings: quality_issues reemplaçat per create_anomaly() a hpsec_calibrate.py — DONE
+- [x] Warnings: dashboard alimenta Verificar/Revisar (calibrate_warnings, review_warnings) — DONE
+- [x] Warnings: calibrate_panel badges severitat (icona+color+tooltip acció) en lloc de score numèric — DONE
+- [x] Warnings: analyze_panel tooltips amb guia d'acció ("→ Excloure rèplica", etc.) — DONE
 - [x] Config backend: config fingerprint (SHA-256 16 chars) per detectar obsolescència — DONE
 - [x] Config backend: migració batman_max_sep → batman_max_sep_min — DONE
 - [x] Config backend: REPROCESS_SECTIONS/FUTURE_SECTIONS/IMMEDIATE_SECTIONS constants — DONE
@@ -117,6 +121,15 @@ Mark features as DONE only when code is fully functional end-to-end, not when pl
 - [x] Wizard: Delay diagnostic tool at step 2 (shift indicator, slider, impact preview, reimport) — DONE
 - [x] Wizard: SEQ_CAL detection at step 2 (CalibratePanel) + regression moved to step 3 (AnalyzePanel) — DONE
 - [x] Wizard: Apply calibration at step 4 (Revisar) + retroactive requantification + SEQ list — DONE
+- [x] Dashboard: diferenciar SEQ_CAL visualment (fons blau, [CAL] prefix, fases 2-4 = "—") — DONE (347c6b4)
+- [ ] **Dashboard: redisseny minimalista** — PENDING
+  - Eliminar columnes #, Tipus, Mode, PC, PR (integrar a tooltip del nom)
+  - Capçaleres fases abreujades (I V A R) en lloc de noms complets
+  - Treure `setFixedWidth` dels botons (es tallen amb fonts grans/DPI alt)
+  - Moure botó Reset al menú contextual (clic dret) — acció rara, no mereix botó permanent
+  - Compactar estadístiques: `I:45 V:42 A:38 R:12 /120` en lloc de text llarg
+  - Afegir "CAL" al filtre Estat o Tipus per filtrar SEQ_CAL
+  - Header: comptador + carpeta abreujada en lloc de path complet
 
 ## Research / Exploration (not integrated into Suite)
 
@@ -184,81 +197,86 @@ All exploratory scripts and results live in `research/` — NOT part of the prod
 
 > Last updated: 2026-02-24
 
-### Fixes sessió 2026-02-24 (continuació)
+### Unificació sistema d'avisos (2026-02-24)
 
-**1. Cache resultat CalSeqWorker per evitar re-lectura MasterFile:**
-- `global_calibration_panel.py`: `_result_cache = {}` a `__init__`
-- `load_seq_cal()`: comprova cache abans de llançar worker
-- `_on_worker_finished(result, from_cache=False)`: guarda al cache
-- Si `from_cache=True`, no recarrega `_load_all_data()` (ja carregat)
-- Resultat: clicar 2x la mateixa SEQ_CAL → instantani (0 lectures disc)
+**Problema**: 3 sistemes paral·lels d'avisos que no s'integren:
+1. ANOMALY_CATALOG (18 codis) — usat per analyze, ben estructurat
+2. quality_issues (strings lliures) — usat per calibrate, no estructurat
+3. WARNING_DEFINITIONS (56 codis) — bridge fràgil amb parsing strings
 
-**2. Fix 0.1 ppm àrea (detect_main_peak agafa pic erroni a baixa conc):**
-- **Problema**: A 0.1 ppm, el pic KHP DOC és tan petit que `detect_main_peak()` selecciona
-  soroll o artefactes més alts. El 254nm també és massa dèbil per servir de referència.
-- **Solució: 2-pass approach a `calibrate_from_import()`**:
-  - 1r pass: processa tots els KHP normalment
-  - Calcula `t_ret_median` des de les entrades amb conc >= 0.5 ppm (pics fiables)
-  - 2n pass: reprocessa entrades amb conc <= 0.25 ppm SI t_ret anòmal (>1 min vs mediana)
-  - Passa `t_ret_expected` via metadata a `analizar_khp_data()`
-- **`analizar_khp_data()` modificat**: STEP 1 ara usa `t_ref = t_max_254 || t_ret_expected`
-  - Si hi ha t_ref i els pics detectats normalment no coincideixen, força el pic proper
-  - Si cap pic amb prominència normal, busca amb prominència reduïda (1/5) prop de t_ref
-  - Nou warning `LOW_PROM_RESCUE` quan s'usa prominència reduïda
-- Marker `reprocessed_with_t_ret=True` a les entrades del 2n pass
+**Símptomes**: Dashboard "Verificar" sempre buit (hardcoded []), quality_score numèric inintel·ligible,
+sense context de mostra ni guia d'acció.
 
-**3. Popup cromatograma interactiu (KHPDetailDialog):**
-- **Abans**: cromatograma inline a la taula (ocupava espai, no zoom)
-- **Ara**: doble clic a fila → popup `KHPDetailDialog` amb:
-  - `NavigationToolbar2QT` (zoom, pan, home, save) — NOU al codebase
-  - Cromatograma complet R1+R2 DOC + 254nm amb àrees ombrejades
-  - Línia vertical `t_ret_expected` (mediana de les conc fiables)
-  - Detalls: mètriques (conc, vol, àrea, RF, A254, FWHM, SNR, t_ret)
-  - Anomalies explicades en text clar (no codis críptics)
-  - Indicador `reprocessed_with_t_ret` si aplica
+**Solució implementada — ANOMALY_CATALOG com a font única:**
 
-**4. Checkbox auto-recalcula regressió:**
-- `_on_point_toggled()` ara crida `_run_regression()` automàticament
-- Abans només actualitzava `self._excluded` sense recalcular
+1. **hpsec_warnings.py**: +10 codis KHP (KHP_IRREGULAR_TOP, KHP_MULTI_PEAK, KHP_TIMEOUT_PEAK,
+   KHP_SNR_LOW, KHP_RSD_HIGH, KHP_FWHM_HIGH, KHP_ASYMMETRY, KHP_CR_LOW, KHP_BASELINE_DRIFT,
+   KHP_NO_DAD). Camp `action` afegit a les 26 entrades. `create_anomaly()` retorna `action`.
 
-### GlobalCalibrationPanel: Redisseny vista única (2026-02-24)
+2. **hpsec_calibrate.py**: `analizar_khp_data()` genera `calibration_anomalies` amb `create_anomaly()`
+   en lloc de strings quality_issues. quality_score derivat automàticament. `calibration_anomalies`
+   propagat al return dict, a l'agregació de rèpliques, i a `register_calibration()`.
+   `_generate_calibration_warnings()` simplificada: recull anomalies ja estructurades.
 
-**Evolució**: El commit `973ea03` va eliminar codi SEQ_CAL del wizard. La primera
-iteració va crear `SeqCalRegressionWidget` com a Tab 0, però amb 3 sub-tabs
-(Diagnòstic + Recta + QC) que duplicaven funcionalitat i deixaven la taula amb prou
-feines visible (massa stacking vertical de GroupBoxes).
+3. **sequence_state.py**: Nous camps `calibrate_warnings` i `review_warnings`. `_extract_metadata()`
+   extreu avisos blocker/warning de `calibration_anomalies`. `calibrate_state` ara retorna 'warning'
+   si KHP local té anomalies (era sempre 'ok').
 
-**Redisseny final — vista única sense sub-tabs (~650 línies, era ~2090):**
+4. **dashboard_panel.py**: `phases_data` alimenta Verificar i Revisar (era hardcoded []). Tooltip
+   prioritza avisos concrets sobre "KHP sibling" genèric. Fallback quality_issues per JSONs antics.
 
-1. **`gui/widgets/global_calibration_panel.py`** reescriptura completa:
-   - **Eliminats**: CalibrationLineView (~700 línies), QCMonitorView (~230 línies)
-   - **Layout**: toolbar → SEQ selector horitzontal → splitter (taula | scatter+comparació) → apply
-   - Toolbar compacte: mode/senyal/model radio buttons, repair checkbox, PDF, cal vigent
-   - SEQ selector: QListWidget flow horitzontal amb checkboxes (max-height 50px)
-   - Taula 10 cols: ☑ SEQ ppm Vol µg Àrea RF SNR t_ret Estat
-   - Doble clic fila → KHPDetailDialog popup (importat de seq_cal_regression_widget.py)
-   - Scatter+residuals matplotlib amb recta nova + recta vigent
-   - Comparació inline (RF/Int/R²/impacte) sense GroupBox
-   - Apply section: data vigència, retroactiu, botó
+5. **calibrate_panel/panel.py**: Col 15-16 substituïdes: score numèric → badge icona+color
+   (✔/ℹ/⚠/✘) amb tooltip que inclou label + acció del catàleg. Fallback per dades sense
+   calibration_anomalies. `_update_validation()` prioritza anomalies sobre quality_issues strings.
 
-2. **`gui/widgets/history_panel.py`** — afegit Levey-Jennings com a Tab 7:
-   - Filtra producció KHP (no _CAL), calcula desviació % vs calibració vigent
-   - Scatter amb colors per zona: verd ≤±10%, taronja ±10-20%, vermell >±20%
-   - Bandes de control ±10% (warning) i ±20% (crític)
-   - Símbols per mode (cercle=COLUMN, quadrat=BP)
-   - Indicador global: EN CONTROL / ATENCIÓ / FORA DE CONTROL
-   - Tendència lineal
+6. **analyze_panel/panel.py**: `_classify_sample_status()` tooltips enriquits amb `action` del catàleg
+   (format: "CRÍTIC: label\n   → acció recomanada").
 
-3. **Fix false positive irregular_top repair** (`hpsec_calibrate.py`):
-   - `analizar_khp_data()` ja NO sobreescriu `peak_info['area']` amb àrea reparada
-   - Nou camp `peak_info['area_repaired']` (separat de l'original)
-   - UI decideix quin usar via toggle checkbox "Àrea reparada"
+**WARNING_DEFINITIONS marcat com deprecated** (no eliminat per backward compat JSONs antics).
 
-**Arquitectura conceptual:**
-- **Tab 4 "Històric"** (HistoryPanel) = QA/QC seguiment sistemàtic del sistema
-  - Taula completa 22 cols, gràfics evolutius, Levey-Jennings
-- **Tab 5 "Calibració Global"** (GlobalCalibrationPanel) = gestió calibració
-  - Vista única per construir/aplicar recta des de SEQ_CAL
+### Config panel simplificat + contrasenya (2026-02-24)
+
+**Eliminats 22 paràmetres del GUI** (segueixen al JSON, però no editables per l'usuari):
+- Detecció d'Anomalies (8 params): interns algorisme
+- Càlcul Baseline (6 params): 4 interns + method="mode" + min_noise
+- Cromatograma (5 params): max_duration duplicat, smoothing calibrats
+- Calibració (3 params): quality_max, min_cals_average, use_historical_fallback
+
+**Contrasenya fixa "LEQUIA"** a `_save_config()` i `_reset_defaults()`.
+
+### Optimització memòria (2026-02-23)
+
+**Problema**: La Suite carregava ~115 MB per seqüència quan en necessitava ~3 MB.
+Causa principal: Export3D DAD (101 wavelengths quan en calen 6), DataFrame 2-TOC
+retingut en memòria, i fitxers de calibració rellegits del disc repetidament.
+
+**4 blocs implementats (commit f7d03d4):**
+
+1. **DAD filtrat a 6λ durant importació (~95 MB estalvi/SEQ)**:
+   - `llegir_dad_export3d(path, wavelengths_to_keep=None)`: filtra columnes just després de llegir CSV
+   - 6 call sites actualitzats (find_data_for_injection, import_from_manifest ×3, ensure_data_loaded, import_panel GUI)
+   - Wavelengths de `hpsec_config.json → wavelengths.selected` (220, 254, 272, 290, 362)
+   - **HCI no afectat**: `compute_hci()` a `hpsec_humic.py` rellegeix Export3D original del disc
+     via `dad_export3d_path` (path propagat a `_flatten_samples_for_processing`), no usa el DataFrame en memòria
+
+2. **Alliberar master_data["toc"] (~2 MB estalvi/SEQ)**:
+   - `master_data["toc"] = None` al final de `import_sequence()` i `ensure_data_loaded()`
+   - Si es necessita de nou (reimportació), `ensure_data_loaded()` rellegeix MasterFile des del disc
+
+3. **Cache calibració amb verificació mtime (estalvi I/O)**:
+   - `load_calibration_reference()`: cache `_cal_ref_cache` + `_cal_ref_mtime` (5x speedup)
+   - `load_khp_history()`: cache `_khp_cache` + `_khp_mtime` + `_khp_cache_path` (94x speedup)
+   - `load_local_calibrations()`: cache `_local_cal_cache` + `_local_cal_mtime` + `_local_cal_path` (31x speedup, 10 call sites)
+   - Invalidació automàtica als corresponents `save_*()` functions
+   - ~25 crides/sessió passen de lectura disc a lectura memòria
+
+4. **Eliminar "df" redundant de rep_data["direct"] (~12 MB estalvi/SEQ)**:
+   - `"df": df_doc` eliminat de 3 llocs (find_data_for_injection, import_from_manifest, ensure_data_loaded)
+   - Verificat: cap codi extern accedeix a `rep_data["direct"]["df"]`, només `"t"` i `"y"`
+
+**Safety guards mantinguts** a `hpsec_analyze.py`:
+- `_flatten_samples_for_processing` L2254: `len(columns) > 8` → no-op (DAD ja filtrat)
+- `analyze_sample` L1617: idem
 
 ### UIB Downsample + Saturació (2026-02-23)
 

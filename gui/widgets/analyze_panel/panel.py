@@ -1087,13 +1087,12 @@ class AnalyzePanel(QWidget):
 
         status_text = " ".join(status_parts) if status_parts else "\u2713"
 
-        # Build tooltip with catalog labels
+        # Build tooltip with catalog labels + action hints
         tooltip_parts = []
         for key, label_prefix in [("blocker", "CRÍTIC"), ("repaired", "REPARAT"),
                                     ("warning", "Avís"), ("info", "Info")]:
             items = classified[key]
             if items:
-                labels = []
                 for a in items:
                     code = a.get("code") if isinstance(a, dict) else str(a).replace("_REPAIRED", "")
                     entry = ANOMALY_CATALOG.get(code, {})
@@ -1101,8 +1100,11 @@ class AnalyzePanel(QWidget):
                     det = a.get("details", {}) if isinstance(a, dict) else {}
                     if det.get("snr"):
                         lbl += f" (SNR={det['snr']:.1f})"
-                    labels.append(lbl)
-                tooltip_parts.append(f"{label_prefix}: {', '.join(labels)}")
+                    line = f"{label_prefix}: {lbl}"
+                    action = entry.get("action", "")
+                    if action:
+                        line += f"\n   \u2192 {action}"
+                    tooltip_parts.append(line)
 
         if n_timeouts > 0:
             zones = timeout_info.get("zones", [])

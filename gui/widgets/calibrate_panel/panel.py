@@ -1831,49 +1831,95 @@ class CalibratePanel(QWidget):
                 item_pics.setBackground(QColor(150, 255, 150))
             self.metrics_table.setItem(row, 14, item_pics)
 
-            # Calcular Quality Score amb nova lògica
-            quality, issues = self._calculate_quality_score(khp, signal)
+            # Col 15-16: Anomalies + Estat (de calibration_anomalies del catàleg)
+            from hpsec_warnings import ANOMALY_CATALOG, classify_anomalies
+            cal_anomalies = khp.get('calibration_anomalies', [])
 
-            # Backend quality_issues (de hpsec_calibrate.py) — no duplicar
-            backend_issues = khp.get('quality_issues', [])
-            issue_texts_set = set(issues)
-            for bi in backend_issues:
-                bi_str = str(bi)
-                if bi_str not in issue_texts_set:
-                    issues.append(bi_str)
-                    issue_texts_set.add(bi_str)
-
-            # Col 15: Quality Score
-            item_q = QTableWidgetItem(str(int(quality)))
-            if quality >= 100:
-                item_q.setBackground(QColor(255, 150, 150))
-            elif quality > 50:
-                item_q.setBackground(QColor(255, 200, 100))
-            elif quality > 20:
-                item_q.setBackground(QColor(255, 255, 150))
+            # Fallback: si no hi ha calibration_anomalies, usar quality_score antic
+            if not cal_anomalies:
+                quality, issues = self._calculate_quality_score(khp, signal)
+                # Col 15: Quality Score (backwards compat)
+                item_q = QTableWidgetItem(str(int(quality)))
+                if quality >= 100:
+                    item_q.setBackground(QColor(255, 150, 150))
+                elif quality > 50:
+                    item_q.setBackground(QColor(255, 200, 100))
+                elif quality > 20:
+                    item_q.setBackground(QColor(255, 255, 150))
+                else:
+                    item_q.setBackground(QColor(150, 255, 150))
+                self.metrics_table.setItem(row, 15, item_q)
+                # Col 16: Estat antic
+                valid_for_cal = khp.get('valid_for_calibration', True)
+                if not valid_for_cal or quality >= 100:
+                    status_text, color = "\u2718 INVALID", QColor(255, 150, 150)
+                elif quality > 50:
+                    status_text, color = "\u26a0 CHECK", QColor(255, 200, 100)
+                elif quality > 20 or issues:
+                    status_text, color = f"\u2139 INFO", QColor(255, 255, 150)
+                else:
+                    status_text, color = "\u2714 OK", QColor(150, 255, 150)
+                item_status = QTableWidgetItem(status_text)
+                item_status.setBackground(color)
+                if issues:
+                    item_status.setToolTip("\n".join(issues))
+                self.metrics_table.setItem(row, 16, item_status)
             else:
-                item_q.setBackground(QColor(150, 255, 150))
-            self.metrics_table.setItem(row, 15, item_q)
+                # Classificar anomalies per severitat
+                classified = classify_anomalies(cal_anomalies)
+                has_blockers = len(classified["blocker"]) > 0
+                has_warnings = len(classified["warning"]) > 0
 
-            # Col 16: Estat — combina quality_score + issues locals + backend
-            valid_for_cal = khp.get('valid_for_calibration', True)
-            if not valid_for_cal or quality >= 100:
-                status = "INVALID"
-                color = QColor(255, 150, 150)
-            elif quality > 50:
-                status = "CHECK"
-                color = QColor(255, 200, 100)
-            elif quality > 20 or len(issues) > 0:
-                status = f"INFO ({len(issues)})" if issues else "INFO"
-                color = QColor(255, 255, 150)
-            else:
-                status = "OK"
-                color = QColor(150, 255, 150)
-            item_status = QTableWidgetItem(status)
-            item_status.setBackground(color)
-            if issues:
-                item_status.setToolTip("\n".join(issues))
-            self.metrics_table.setItem(row, 16, item_status)
+                # Col 15: Nombre d'anomalies (amb color)
+                n_anom = len(classified["blocker"]) + len(classified["warning"]) + len(classified["info"])
+                item_q = QTableWidgetItem(str(n_anom) if n_anom > 0 else "-")
+                if has_blockers:
+                    item_q.setBackground(QColor(255, 150, 150))
+                elif has_warnings:
+                    item_q.setBackground(QColor(255, 200, 100))
+                elif n_anom > 0:
+                    item_q.setBackground(QColor(255, 255, 150))
+                else:
+                    item_q.setBackground(QColor(150, 255, 150))
+                self.metrics_table.setItem(row, 15, item_q)
+
+                # Col 16: Badge severitat + tooltip amb accions
+                if has_blockers:
+                    status_text = "\u2718"
+                    color = QColor(255, 150, 150)
+                elif has_warnings:
+                    status_text = "\u26a0"
+                    color = QColor(255, 200, 100)
+                elif n_anom > 0:
+                    status_text = "\u2139"
+                    color = QColor(255, 255, 150)
+                else:
+                    status_text = "\u2714"
+                    color = QColor(150, 255, 150)
+
+                item_status = QTableWidgetItem(status_text)
+                item_status.setBackground(color)
+
+                # Tooltip: icona + label + acció per cada anomalia
+                tooltip_lines = []
+                for a in cal_anomalies:
+                    if isinstance(a, dict):
+                        code = a.get("code", "")
+                        entry = ANOMALY_CATALOG.get(code, {})
+                        label = a.get("label", code)
+                        action = entry.get("action", "")
+                        sev_icon = {
+                            "blocker": "\u2718",
+                            "warning": "\u26a0",
+                            "info": "\u2139",
+                        }.get(a.get("severity", "info"), "")
+                        line = f"{sev_icon} {label}"
+                        if action:
+                            line += f"\n   \u2192 {action}"
+                        tooltip_lines.append(line)
+                if tooltip_lines:
+                    item_status.setToolTip("\n".join(tooltip_lines))
+                self.metrics_table.setItem(row, 16, item_status)
 
     def _update_replica_selection(self, result):
         """Actualitza la secció de selecció de rèpliques."""
@@ -2370,17 +2416,29 @@ class CalibratePanel(QWidget):
                 "message": str(e),
             })
 
-        # Convertir quality_issues a warnings_structured
-        for signal_name in ["Direct", "UIB"]:
-            signal_issues = issues_by_signal[signal_name]
-            for rep_num, issues in signal_issues.items():
-                for issue in issues:
-                    warnings_structured.append({
-                        "code": "QUALITY_ISSUE",
-                        "level": "warning",
-                        "message": f"{signal_name} {rep_num}: {issue}",
-                        "sample": f"{signal_name}_{rep_num}",
-                    })
+        # Convertir calibration_anomalies (ANOMALY_CATALOG) a warnings_structured
+        anomalies_added = False
+        for signal_key in ["khp_data_direct", "khp_data_uib"]:
+            signal_data = result.get(signal_key)
+            if signal_data:
+                for rep in self._extract_all_replicas(signal_data):
+                    for anom in rep.get('calibration_anomalies', []):
+                        if isinstance(anom, dict):
+                            warnings_structured.append(anom)
+                            anomalies_added = True
+
+        # Fallback: quality_issues strings per JSONs antics
+        if not anomalies_added:
+            for signal_name in ["Direct", "UIB"]:
+                signal_issues = issues_by_signal[signal_name]
+                for rep_num, issues in signal_issues.items():
+                    for issue in issues:
+                        warnings_structured.append({
+                            "code": "QUALITY_ISSUE",
+                            "level": "warning",
+                            "message": f"{signal_name} {rep_num}: {issue}",
+                            "sample": f"{signal_name}_{rep_num}",
+                        })
 
         # Determinar warning_level
         max_level = "none"

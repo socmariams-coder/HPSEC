@@ -50,6 +50,8 @@ class WarningLevel(str, Enum):
 # DEFINICIONS D'AVISOS PER ETAPA
 # =============================================================================
 
+# DEPRECATED: Usat per create_warning() i JSONs antics pre-unificació.
+# Nous avisos de calibració van a ANOMALY_CATALOG amb codis KHP_*.
 # Format: code -> (level, message_template, dismissable)
 WARNING_DEFINITIONS = {
     # === IMPORTAR ===
@@ -385,6 +387,7 @@ ANOMALY_CATALOG = {
         "stage": "analyze",
         "repairable": True,
         "invalidates": False,
+        "action": "Revisar reparació paràbola al detall",
     },
     "IRREGULAR_TOP_UIB": {  # formerly BATMAN_UIB — jagged/batman artifact
         "severity": WarningLevel.BLOCKER,
@@ -394,6 +397,7 @@ ANOMALY_CATALOG = {
         "stage": "analyze",
         "repairable": True,
         "invalidates": False,
+        "action": "Revisar reparació paràbola al detall",
     },
     "IRREGULAR_TOP": {  # formerly BATMAN — jagged/batman artifact
         "severity": WarningLevel.BLOCKER,
@@ -403,6 +407,7 @@ ANOMALY_CATALOG = {
         "stage": "analyze",
         "repairable": True,
         "invalidates": False,
+        "action": "Revisar reparació paràbola al detall",
     },
     "NO_PEAK": {
         "severity": WarningLevel.BLOCKER,
@@ -412,6 +417,7 @@ ANOMALY_CATALOG = {
         "stage": "analyze",
         "repairable": False,
         "invalidates": True,
+        "action": "Verificar que la injecció s'ha realitzat correctament",
     },
     "TIMEOUT_IN_PEAK": {
         "severity": WarningLevel.BLOCKER,
@@ -421,6 +427,7 @@ ANOMALY_CATALOG = {
         "stage": "analyze",
         "repairable": False,
         "invalidates": True,
+        "action": "Mostra invàlida — repetir injecció si possible",
     },
     "LOW_SNR": {
         "severity": WarningLevel.WARNING,
@@ -430,6 +437,7 @@ ANOMALY_CATALOG = {
         "stage": "analyze",
         "repairable": False,
         "invalidates": False,
+        "action": "Considerar concentrar la mostra o augmentar volum injecció",
     },
     "BELOW_LOD": {
         "severity": WarningLevel.WARNING,
@@ -439,6 +447,7 @@ ANOMALY_CATALOG = {
         "stage": "analyze",
         "repairable": False,
         "invalidates": False,
+        "action": "Senyal no fiable — reportar com <LOD",
     },
     "BELOW_LOQ": {
         "severity": WarningLevel.WARNING,
@@ -448,6 +457,7 @@ ANOMALY_CATALOG = {
         "stage": "analyze",
         "repairable": False,
         "invalidates": False,
+        "action": "Quantificació orientativa — reportar com <LOQ",
     },
     "UIB_SATURATED": {
         "severity": WarningLevel.BLOCKER,
@@ -457,6 +467,7 @@ ANOMALY_CATALOG = {
         "stage": "analyze",
         "repairable": False,
         "invalidates": True,
+        "action": "Usar només senyal DOC Direct per aquesta mostra",
     },
     "UIB_NO_BASELINE": {
         "severity": WarningLevel.INFO,
@@ -466,6 +477,7 @@ ANOMALY_CATALOG = {
         "stage": "analyze",
         "repairable": False,
         "invalidates": False,
+        "action": "Informatiu — baseline estimada automàticament",
     },
 
     # === Comparació de rèpliques ===
@@ -477,6 +489,7 @@ ANOMALY_CATALOG = {
         "stage": "analyze",
         "repairable": False,
         "invalidates": False,
+        "action": "Revisar rèpliques i seleccionar la més representativa",
     },
     "AREA_DIFF_HIGH": {
         "severity": WarningLevel.WARNING,
@@ -486,6 +499,7 @@ ANOMALY_CATALOG = {
         "stage": "analyze",
         "repairable": False,
         "invalidates": False,
+        "action": "Revisar rèpliques — possible problema d'injecció",
     },
     "FRACTION_DIFF_HIGH": {
         "severity": WarningLevel.WARNING,
@@ -495,6 +509,7 @@ ANOMALY_CATALOG = {
         "stage": "analyze",
         "repairable": False,
         "invalidates": False,
+        "action": "Revisar distribució per fraccions de cada rèplica",
     },
     "REPLICA_NOT_PROCESSED": {
         "severity": WarningLevel.BLOCKER,
@@ -504,6 +519,7 @@ ANOMALY_CATALOG = {
         "stage": "analyze",
         "repairable": False,
         "invalidates": False,
+        "action": "Tornar a executar l'anàlisi",
     },
     "LOW_CORRELATION_254": {
         "severity": WarningLevel.WARNING,
@@ -513,6 +529,7 @@ ANOMALY_CATALOG = {
         "stage": "analyze",
         "repairable": False,
         "invalidates": False,
+        "action": "Revisar perfils DAD de les rèpliques",
     },
     "AREA_DIFF_HIGH_254": {
         "severity": WarningLevel.WARNING,
@@ -522,6 +539,109 @@ ANOMALY_CATALOG = {
         "stage": "analyze",
         "repairable": False,
         "invalidates": False,
+        "action": "Revisar perfils DAD — possible interferència",
+    },
+
+    # === Anomalies de calibració KHP (per rèplica KHP) ===
+    "KHP_IRREGULAR_TOP": {
+        "severity": WarningLevel.BLOCKER,
+        "label": "KHP pic irregular",
+        "icon": "B",
+        "description": "Pic KHP amb cim irregular (jagged/batman)",
+        "stage": "calibrate",
+        "repairable": False,
+        "invalidates": True,
+        "action": "Excloure rèplica de la calibració",
+    },
+    "KHP_MULTI_PEAK": {
+        "severity": WarningLevel.BLOCKER,
+        "label": "KHP múltiples pics",
+        "icon": "MP",
+        "description": "Múltiples pics significatius a la zona KHP",
+        "stage": "calibrate",
+        "repairable": False,
+        "invalidates": True,
+        "action": "Excloure rèplica — possible contaminació",
+    },
+    "KHP_TIMEOUT_PEAK": {
+        "severity": WarningLevel.BLOCKER,
+        "label": "KHP timeout al pic",
+        "icon": "T!",
+        "description": "Timeout del detector afecta el pic KHP",
+        "stage": "calibrate",
+        "repairable": False,
+        "invalidates": True,
+        "action": "Excloure rèplica — àrea compromesa",
+    },
+    "KHP_SNR_LOW": {
+        "severity": WarningLevel.WARNING,
+        "label": "KHP SNR baix",
+        "icon": "SNR",
+        "description": "SNR del pic KHP per sota del llindar",
+        "stage": "calibrate",
+        "repairable": False,
+        "invalidates": False,
+        "action": "Verificar concentració del patró KHP",
+    },
+    "KHP_RSD_HIGH": {
+        "severity": WarningLevel.WARNING,
+        "label": "KHP RSD alt",
+        "icon": "RSD",
+        "description": "Variabilitat entre rèpliques KHP elevada",
+        "stage": "calibrate",
+        "repairable": False,
+        "invalidates": False,
+        "action": "Revisar preparació o pipeteig del patró",
+    },
+    "KHP_FWHM_HIGH": {
+        "severity": WarningLevel.WARNING,
+        "label": "KHP pic ample",
+        "icon": "W",
+        "description": "FWHM del pic KHP superior a l'esperat",
+        "stage": "calibrate",
+        "repairable": False,
+        "invalidates": False,
+        "action": "Verificar estat de la columna",
+    },
+    "KHP_ASYMMETRY": {
+        "severity": WarningLevel.INFO,
+        "label": "KHP asimètric",
+        "icon": "As",
+        "description": "Asimetria del pic KHP fora del rang normal",
+        "stage": "calibrate",
+        "repairable": False,
+        "invalidates": False,
+        "action": "Informatiu — possible cua de columna",
+    },
+    "KHP_CR_LOW": {
+        "severity": WarningLevel.INFO,
+        "label": "KHP puresa baixa",
+        "icon": "CR",
+        "description": "Ratio àrea pic principal vs total per sota de l'esperat",
+        "stage": "calibrate",
+        "repairable": False,
+        "invalidates": False,
+        "action": "Informatiu — verificar absència de contaminants",
+    },
+    "KHP_BASELINE_DRIFT": {
+        "severity": WarningLevel.INFO,
+        "label": "KHP drift baseline",
+        "icon": "BL",
+        "description": "Deriva de baseline superior al normal",
+        "stage": "calibrate",
+        "repairable": False,
+        "invalidates": False,
+        "action": "Informatiu — verificar estabilitat del detector",
+    },
+    "KHP_NO_DAD": {
+        "severity": WarningLevel.INFO,
+        "label": "KHP sense DAD",
+        "icon": "",
+        "description": "Sense dades DAD 254nm per aquest KHP",
+        "stage": "calibrate",
+        "repairable": False,
+        "invalidates": False,
+        "action": "Informatiu — no afecta calibració DOC",
     },
 }
 
@@ -541,6 +661,7 @@ def create_anomaly(code: str, details: dict = None, replica: str = None, sample:
         "label": entry.get("label", code),
         "icon": entry.get("icon", ""),
         "message": entry.get("description", code),
+        "action": entry.get("action", ""),
         "repairable": entry.get("repairable", False),
         "repaired": False,
         "repair_info": None,

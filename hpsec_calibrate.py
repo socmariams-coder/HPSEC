@@ -66,7 +66,7 @@ from hpsec_utils import t_at_max
 # Import sistema d'avisos estructurats
 from hpsec_warnings import (
     create_warning, get_max_warning_level, WarningLevel,
-    migrate_warnings_list
+    migrate_warnings_list, create_anomaly, ANOMALY_CATALOG
 )
 
 # =============================================================================
@@ -214,20 +214,31 @@ def load_qc_history():
         return []
 
 
+_cal_ref_cache = None
+_cal_ref_mtime = 0
+
+
 def load_calibration_reference():
     """
-    Carrega la calibració de referència global.
+    Carrega la calibració de referència global (amb cache mtime).
 
     Returns:
         dict amb les dades de calibració o None si no existeix
     """
+    global _cal_ref_cache, _cal_ref_mtime
     ref_path = get_calibration_reference_path()
     if not ref_path or not os.path.exists(ref_path):
         return None
 
     try:
+        mtime = os.path.getmtime(ref_path)
+        if _cal_ref_cache is not None and mtime == _cal_ref_mtime:
+            return _cal_ref_cache
         with open(ref_path, 'r', encoding='utf-8') as f:
-            return json.load(f)
+            data = json.load(f)
+        _cal_ref_cache = data
+        _cal_ref_mtime = mtime
+        return data
     except Exception as e:
         logger.error(f"Error carregant calibració de referència: {e}")
         return None
@@ -243,6 +254,7 @@ def save_calibration_reference(data):
     Returns:
         bool indicant èxit
     """
+    global _cal_ref_cache, _cal_ref_mtime
     ref_path = get_calibration_reference_path()
     if not ref_path:
         return False
@@ -251,6 +263,8 @@ def save_calibration_reference(data):
         data['updated'] = datetime.now().strftime('%Y-%m-%d')
         with open(ref_path, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
+        _cal_ref_cache = None  # Invalidar cache
+        _cal_ref_mtime = 0
         return True
     except Exception as e:
         logger.error(f"Error guardant calibració de referència: {e}")
@@ -2339,11 +2353,17 @@ def ensure_local_data_folder(seq_path):
 
 
 
+_local_cal_cache = None
+_local_cal_mtime = 0
+_local_cal_path = None
+
+
 def load_local_calibrations(seq_path):
     """
-    Carrega l'historial LOCAL de calibracions d'una SEQ.
+    Carrega l'historial LOCAL de calibracions d'una SEQ (amb cache mtime).
     Ubicació: CHECK/data/calibration_result.json
     """
+    global _local_cal_cache, _local_cal_mtime, _local_cal_path
     data_path = get_local_data_path(seq_path)
     if not data_path:
         return []
@@ -2353,9 +2373,16 @@ def load_local_calibrations(seq_path):
         return []
 
     try:
+        mtime = os.path.getmtime(filepath)
+        if _local_cal_cache is not None and mtime == _local_cal_mtime and filepath == _local_cal_path:
+            return _local_cal_cache
         with open(filepath, 'r', encoding='utf-8') as f:
             data = json.load(f)
-            return data.get("calibrations", [])
+        cals = data.get("calibrations", [])
+        _local_cal_cache = cals
+        _local_cal_mtime = mtime
+        _local_cal_path = filepath
+        return cals
     except Exception as e:
         logger.error(f"Error carregant calibracions: {e}")
         return []
@@ -2365,6 +2392,7 @@ def save_local_calibrations(seq_path, calibrations):
     """
     Guarda l'historial LOCAL de calibracions d'una SEQ a CHECK/data/.
     """
+    global _local_cal_cache, _local_cal_mtime, _local_cal_path
     data_path = ensure_local_data_folder(seq_path)
     if not data_path:
         return False
@@ -2380,6 +2408,9 @@ def save_local_calibrations(seq_path, calibrations):
         }
         with open(filepath, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2, ensure_ascii=False, cls=NumpyEncoder)
+        _local_cal_cache = None  # Invalidar cache
+        _local_cal_mtime = 0
+        _local_cal_path = None
         return True
     except Exception as e:
         logger.error(f"Error guardant CHECK/data: {e}")
@@ -2526,19 +2557,32 @@ def get_samples_history_path(seq_path):
     return os.path.join(registry, SAMPLES_HISTORY_FILENAME)
 
 
+_khp_cache = None
+_khp_mtime = 0
+_khp_cache_path = None
+
+
 def load_khp_history(seq_path):
     """
-    Carrega l'històric de calibracions KHP.
+    Carrega l'històric de calibracions KHP (amb cache mtime).
     Ubicació: PARENT_FOLDER/REGISTRY/KHP_History.json
     """
+    global _khp_cache, _khp_mtime, _khp_cache_path
     history_path = get_history_path(seq_path)
     if not history_path or not os.path.exists(history_path):
         return []
 
     try:
+        mtime = os.path.getmtime(history_path)
+        if _khp_cache is not None and mtime == _khp_mtime and history_path == _khp_cache_path:
+            return _khp_cache
         with open(history_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
-            return data.get("calibrations", [])
+        cals = data.get("calibrations", [])
+        _khp_cache = cals
+        _khp_mtime = mtime
+        _khp_cache_path = history_path
+        return cals
     except Exception as e:
         logger.error(f"Error carregant històric KHP: {e}")
         return []
@@ -2548,6 +2592,7 @@ def save_khp_history(seq_path, calibrations):
     """
     Guarda l'històric de calibracions KHP.
     """
+    global _khp_cache, _khp_mtime, _khp_cache_path
     history_path = get_history_path(seq_path)
     if not history_path:
         return False
@@ -2560,6 +2605,9 @@ def save_khp_history(seq_path, calibrations):
         }
         with open(history_path, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2, ensure_ascii=False, cls=NumpyEncoder)
+        _khp_cache = None  # Invalidar cache
+        _khp_mtime = 0
+        _khp_cache_path = None
         return True
     except Exception as e:
         logger.error(f"Error guardant històric KHP: {e}")
@@ -2793,29 +2841,23 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
 
     # =========================================================================
     # STEP 1: Integrar DOC alineat a t_max_254 (o independent si no hi ha 254)
-    # Si no hi ha 254nm, usar t_ret_expected del metadata (2-pass approach)
     # =========================================================================
-    t_ret_expected = metadata.get("t_ret_expected")  # De 2n pass (conc altes)
     all_peaks = detect_all_peaks(t_doc, y_doc_net, config["peak_min_prominence_pct"])
 
-    # Referència temporal: 254nm > t_ret_expected > cap
-    t_ref = t_max_254 if t_max_254 is not None else t_ret_expected
-
-    if t_ref is not None and len(all_peaks) > 0:
-        # Buscar pic DOC més proper a la referència temporal
-        best_peak = min(all_peaks, key=lambda pk: abs(pk['t'] - t_ref))
-        ref_source = "254nm" if t_max_254 is not None else "t_ret_expected"
+    if t_max_254 is not None and len(all_peaks) > 0:
+        # Buscar pic DOC més proper a t_max_254
+        best_peak = min(all_peaks, key=lambda pk: abs(pk['t'] - t_max_254))
         # Si el pic més proper és massa lluny (>2 min), usar detect_main_peak normal
-        if abs(best_peak['t'] - t_ref) > 2.0:
+        if abs(best_peak['t'] - t_max_254) > 2.0:
             dad_quality_warnings.append(
-                f"T_RETENTION_MISMATCH: pic DOC a {best_peak['t']:.2f} vs {ref_source} a {t_ref:.2f} min")
+                f"T_RETENTION_MISMATCH: pic DOC a {best_peak['t']:.2f} vs 254 a {t_max_254:.2f} min")
             peak_info = detect_main_peak(t_doc, y_doc_net, config["peak_min_prominence_pct"])
         else:
-            # Usar el pic DOC alineat a la referència
+            # Usar el pic DOC alineat al 254
             peak_info = detect_main_peak(t_doc, y_doc_net, config["peak_min_prominence_pct"])
             # Si detect_main_peak no ha trobat el pic alineat, forçar-lo
             if peak_info.get('valid') and abs(peak_info['t_max'] - best_peak['t']) > 0.5:
-                # El pic principal DOC no coincideix amb la referència → usar el proper
+                # El pic principal DOC no coincideix amb el 254 → usar el proper al 254
                 peak_info['peak_idx'] = best_peak['idx']
                 peak_info['t_max'] = best_peak['t']
                 peak_info['left_idx'] = best_peak['left_idx']
@@ -2824,39 +2866,7 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
                     y_doc_net[best_peak['left_idx']:best_peak['right_idx']+1],
                     t_doc[best_peak['left_idx']:best_peak['right_idx']+1]))
                 dad_quality_warnings.append(
-                    f"DOC_ALIGNED_TO_{ref_source.upper()}: pic DOC seleccionat per alineació "
-                    f"amb {ref_source} (t={best_peak['t']:.2f})")
-    elif t_ref is not None and len(all_peaks) == 0:
-        # Cap pic detectat, però tenim referència temporal →
-        # Buscar en una finestra al voltant de t_ref amb prominència reduïda
-        low_prom = max(1.0, config["peak_min_prominence_pct"] / 5)
-        all_peaks_low = detect_all_peaks(t_doc, y_doc_net, low_prom)
-        if all_peaks_low:
-            best_peak_low = min(all_peaks_low, key=lambda pk: abs(pk['t'] - t_ref))
-            if abs(best_peak_low['t'] - t_ref) <= 2.0:
-                ref_source = "254nm" if t_max_254 is not None else "t_ret_expected"
-                peak_info = {
-                    'valid': True,
-                    'peak_idx': best_peak_low['idx'],
-                    't_max': best_peak_low['t'],
-                    'left_idx': best_peak_low['left_idx'],
-                    'right_idx': best_peak_low['right_idx'],
-                    'area': float(trapezoid(
-                        y_doc_net[best_peak_low['left_idx']:best_peak_low['right_idx']+1],
-                        t_doc[best_peak_low['left_idx']:best_peak_low['right_idx']+1])),
-                    'height': float(y_doc_net[best_peak_low['idx']]),
-                    'prominence': best_peak_low.get('prominence', 0),
-                    'is_bp': is_bp_chromato,
-                    'baseline_level': 0,
-                    'low_prominence_rescue': True,
-                }
-                dad_quality_warnings.append(
-                    f"LOW_PROM_RESCUE: pic DOC amb prominència reduïda ({low_prom:.1f}%) "
-                    f"alineat a {ref_source} (t={best_peak_low['t']:.2f})")
-            else:
-                peak_info = detect_main_peak(t_doc, y_doc_net, config["peak_min_prominence_pct"])
-        else:
-            peak_info = detect_main_peak(t_doc, y_doc_net, config["peak_min_prominence_pct"])
+                    f"DOC_ALIGNED_TO_254: pic DOC seleccionat per alineació amb 254nm (t={best_peak['t']:.2f})")
     else:
         peak_info = detect_main_peak(t_doc, y_doc_net, config["peak_min_prominence_pct"])
 
@@ -2937,23 +2947,26 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
     has_irregular = anomaly_info.get('is_irregular', False)
     smoothness = anomaly_info.get('smoothness', 100.0)
 
-    # Detecció cim irregular: intentar reparar amb paràbola si detectat
-    # IMPORTANT: NO sobreescrivim l'àrea original — guardem area_repaired
-    # per separat. La UI decideix si usar l'àrea reparada (toggle checkbox).
+    # Reparació cim irregular: intentar reparar amb paràbola si detectat
+    # Aplica tant per IRREGULAR_TOP (pic-vall-pic) com ROUGH_TOP (smoothness baixa)
     irregular_top_repaired = False
     repair_info = None
     area_original = peak_info['area']
     if has_irregular_top or has_irregular:
         try:
+            # force=True si ROUGH_TOP sense valls profundes (has_irregular sense has_irregular_top)
             force_repair = has_irregular and not has_irregular_top
             y_repaired_seg, repair_info, was_repaired = repair_with_parabola(
                 t_peak_seg, y_peak_seg, force=force_repair
             )
             if was_repaired:
                 irregular_top_repaired = True
+                # Recalcular àrea amb senyal reparat
                 area_repaired = float(trapezoid(y_repaired_seg, t_peak_seg))
+                peak_info['area_original'] = area_original
+                peak_info['area'] = area_repaired
                 peak_info['area_repaired'] = area_repaired
-                # NO sobreescrivim peak_info['area'] — queda l'original
+                # Actualitzar senyal al segment
                 y_doc_net_repaired = y_doc_net.copy()
                 y_doc_net_repaired[left_idx:right_idx+1] = y_repaired_seg
         except Exception:
@@ -3000,65 +3013,84 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
                        os.path.basename(seq_path) if seq_path else "?")
         volume_uL = 100  # Fallback últim recurs per no crashejar
 
-    # Qualitat
-    quality_score = 0
-    quality_issues = []
+    # Qualitat — anomalies estructurades (ANOMALY_CATALOG com a font única)
+    sample_label = f"{name}_R{replica}"
+    calibration_anomalies = []
 
-    # Afegir warnings de DAD 254nm (detectats a STEP 0)
-    for dw in dad_quality_warnings:
-        quality_issues.append(dw)
-        if "ANOMAL" in dw or "MISMATCH" in dw:
-            quality_score += 50
-        elif "MULTI_PEAK" in dw:
-            quality_score += 30
-        elif "NO_DAD_254" in dw or "NO_254_PEAK" in dw:
-            quality_score += 20
+    # DAD 254nm warnings (detectats a STEP 0)
+    if dad_quality_warnings:
+        calibration_anomalies.append(create_anomaly(
+            "KHP_NO_DAD",
+            details={"dad_warnings": dad_quality_warnings},
+            sample=sample_label,
+        ))
 
     # Check DOC: àrea pic principal vs total (90% check)
     if concentration_ratio < 0.90 and area_total > 0:
-        quality_issues.append(
-            f"MULTI_PEAK_DOC: pic principal={concentration_ratio:.0%} de l'àrea total DOC")
-        quality_score += 30
+        calibration_anomalies.append(create_anomaly(
+            "KHP_MULTI_PEAK",
+            details={"concentration_ratio": concentration_ratio,
+                     "source": "DOC area ratio"},
+            sample=sample_label,
+        ))
 
     # C11: Simetria i smoothness irrellevants per BP (senyal molt variable)
     if not is_bp_chromato:
-        # Simetria alta (>1.5) NO es penalitza per KHP - és normal per un patró
         if symmetry < 0.8:
-            quality_score += 10
-            quality_issues.append(f"Simetria baixa ({symmetry:.2f})")
+            calibration_anomalies.append(create_anomaly(
+                "KHP_ASYMMETRY",
+                details={"symmetry": symmetry},
+                sample=sample_label,
+            ))
         if has_irregular:
-            quality_score += 30
-            quality_issues.append(f"Pic irregular (smoothness={smoothness:.0f}%)")
+            calibration_anomalies.append(create_anomaly(
+                "KHP_MULTI_PEAK",
+                details={"smoothness": smoothness, "source": "irregular shape"},
+                sample=sample_label,
+            ))
 
     if snr < 10:
-        quality_score += 20
-        quality_issues.append(f"SNR baix ({snr:.1f})")
+        calibration_anomalies.append(create_anomaly(
+            "KHP_SNR_LOW",
+            details={"snr": snr},
+            sample=sample_label,
+        ))
     if has_irregular_top:
-        quality_score += 100
-        quality_issues.append("Pic amb cim irregular (jagged/batman)")
+        calibration_anomalies.append(create_anomaly(
+            "KHP_IRREGULAR_TOP",
+            details={"smoothness": smoothness},
+            sample=sample_label,
+        ))
     # Timeout: només penalitza si afecta l'interval d'integració del pic
     if has_timeout:
         peak_timeout = timeout_affects_peak(timeout_info, t_doc, left_idx, right_idx)
         if peak_timeout['affects_peak']:
             overlap = peak_timeout['overlap_pct']
-            if overlap > 30:  # >30% del pic afectat
-                quality_score += 150
-                quality_issues.append(f"TIMEOUT CRÍTIC (afecta {overlap:.0f}% del pic)")
-            elif overlap > 10:  # 10-30% afectat
-                quality_score += 100
-                quality_issues.append(f"TimeOUT en pic ({overlap:.0f}% afectat)")
-            else:  # <10% afectat
-                quality_score += 20
-                quality_issues.append(f"TimeOUT marginal ({overlap:.0f}% afectat)")
-        # else: Timeout fora del pic - NO penalitza ni mostra warning
+            calibration_anomalies.append(create_anomaly(
+                "KHP_TIMEOUT_PEAK",
+                details={"overlap_pct": overlap},
+                sample=sample_label,
+            ))
     if len(all_peaks) > 3:
-        quality_score += 5 * (len(all_peaks) - 3)
-        quality_issues.append(f"Múltiples pics ({len(all_peaks)})")
-    if limits_expanded:
-        quality_issues.append("Límits expandits")
+        calibration_anomalies.append(create_anomaly(
+            "KHP_MULTI_PEAK",
+            details={"n_peaks": len(all_peaks), "source": "peak count"},
+            sample=sample_label,
+        ))
     if bl_drift_pct > 8:
-        quality_score += 10
-        quality_issues.append(f"Baseline drift alt ({bl_drift_pct:.0f}%)")
+        calibration_anomalies.append(create_anomaly(
+            "KHP_BASELINE_DRIFT",
+            details={"drift_pct": bl_drift_pct},
+            sample=sample_label,
+        ))
+
+    # Derivar quality_score i quality_issues per backwards compat
+    quality_score = sum(
+        100 if a.get("severity") == "blocker" else
+        20 if a.get("severity") == "warning" else 5
+        for a in calibration_anomalies
+    )
+    quality_issues = [a.get("label", a.get("code", "")) for a in calibration_anomalies]
 
     # =========================================================================
     # NOVES MÈTRIQUES: FWHM, RF, RF_MASS, CR per tots els senyals
@@ -3150,10 +3182,11 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
         'all_peaks': all_peaks,
         'quality_score': quality_score,
         'quality_issues': quality_issues,
+        'calibration_anomalies': calibration_anomalies,
         'has_irregular_top': has_irregular_top,
         'irregular_top_repaired': irregular_top_repaired,
         'repair_info': repair_info,
-        'area_repaired': peak_info.get('area_repaired') if irregular_top_repaired else None,
+        'area_original': area_original if irregular_top_repaired else None,
         'has_timeout': has_timeout,
         'timeout_info': timeout_info,
         'timeout_severity': timeout_severity,
@@ -3500,6 +3533,7 @@ def register_calibration(seq_path, khp_data, khp_source, mode="COLUMN"):
         "replica_comparison": khp_data.get('replica_comparison', {}),
         "quality_score": quality_score,
         "quality_issues": quality_issues,
+        "calibration_anomalies": khp_data.get('calibration_anomalies', []),
         "has_irregular_top": khp_data.get('has_irregular_top', False),
         "has_timeout": khp_data.get('has_timeout', False),
 
@@ -3892,19 +3926,19 @@ def _generate_calibration_warnings(result: dict, method: str = "COLUMN") -> list
     """
     Genera avisos estructurats a partir del resultat de calibració.
 
-    Analitza el resultat i crea avisos amb nivells (BLOCKER/WARNING/INFO)
-    segons la jerarquia definida a docs/SISTEMA_AVISOS.md.
+    Combina calibration_anomalies (ANOMALY_CATALOG) de cada calibració
+    amb avisos de nivell seqüència (errors, SENSE_KHP, outliers).
 
     Args:
         result: Dict del resultat de calibrate_from_import()
         method: "COLUMN" o "BP"
 
     Returns:
-        Llista d'avisos estructurats
+        Llista d'avisos estructurats (mix de ANOMALY_CATALOG dicts i create_warning dicts)
     """
     warnings = []
 
-    # 1. Errors crítics (BLOCKER)
+    # 1. Errors crítics (BLOCKER) — nivell seqüència
     if not result.get("success"):
         for error in result.get("errors", []):
             if "no s'han trobat" in error.lower() or "no khp" in error.lower():
@@ -3918,7 +3952,6 @@ def _generate_calibration_warnings(result: dict, method: str = "COLUMN") -> list
                     stage="calibrate",
                 ))
             else:
-                # Error genèric
                 warnings.append(create_warning(
                     code="CAL_ERROR",
                     level=WarningLevel.BLOCKER,
@@ -3926,160 +3959,19 @@ def _generate_calibration_warnings(result: dict, method: str = "COLUMN") -> list
                     stage="calibrate",
                 ))
 
-    # 2. Analitzar cada calibració
+    # 2. Recollir calibration_anomalies de cada calibració (font: ANOMALY_CATALOG)
     for cal in result.get("calibrations", []) + result.get("calibrations_direct", []) + result.get("calibrations_uib", []):
-        condition_key = f"{method}_{cal.get('conc_ppm', 0)}_{cal.get('volume_uL', 0)}"
+        for anom in cal.get("calibration_anomalies", []):
+            warnings.append(anom)
 
-        # Timeout
-        if cal.get("timeout_info", {}).get("n_timeouts", 0) > 0:
-            severity = cal.get("timeout_info", {}).get("severity", "CRITICAL")
-            if severity == "CRITICAL":
-                warnings.append(create_warning(
-                    code="CAL_TIMEOUT",
-                    stage="calibrate",
-                    condition_key=condition_key,
-                    details={
-                        "n_timeouts": cal["timeout_info"]["n_timeouts"],
-                        "zones": cal["timeout_info"].get("zone_summary", {}),
-                    },
-                ))
-            elif severity == "WARNING":
-                warnings.append(create_warning(
-                    code="CAL_TIMEOUT",
-                    level=WarningLevel.WARNING,
-                    message=f"Timeout detectat (zones no crítiques)",
-                    stage="calibrate",
-                    condition_key=condition_key,
-                ))
-
-        # Cim irregular (jagged/batman)
-        irr_top_info = (cal.get("irregular_top_info") or cal.get("anomalies", {}).get("irregular_top")
-                        or cal.get("batman_info", {}) or cal.get("anomalies", {}).get("batman", {}))
-        if irr_top_info and irr_top_info.get("is_irregular_top", irr_top_info.get("is_batman", False)):
-            warnings.append(create_warning(
-                code="CAL_IRREGULAR_TOP",
-                stage="calibrate",
-                condition_key=condition_key,
-                details={
-                    "valley_depth": irr_top_info.get("max_depth", 0),
-                },
-            ))
-
-        # RSD alt
+        # RSD alt (nivell grup, no per-rèplica)
         rsd = cal.get("rsd", 0)
         if rsd > 10:
-            warnings.append(create_warning(
-                code="CAL_RSD_HIGH",
-                stage="calibrate",
-                condition_key=condition_key,
+            warnings.append(create_anomaly(
+                "KHP_RSD_HIGH",
                 details={"rsd": rsd, "threshold": 10},
+                sample=cal.get("khp_name", "KHP"),
             ))
-
-        # Quality issues
-        for issue in cal.get("calibration_issues", []):
-            if "MULTI" in issue.upper():
-                warnings.append(create_warning(
-                    code="CAL_MULTI_PEAK",
-                    stage="calibrate",
-                    condition_key=condition_key,
-                ))
-            elif "SNR" in issue.upper():
-                snr = cal.get("snr", 0)
-                if "extrema" in issue.lower() or snr < 5:
-                    warnings.append(create_warning(
-                        code="CAL_SNR_VERY_LOW",
-                        stage="calibrate",
-                        condition_key=condition_key,
-                        details={"snr": snr},
-                    ))
-                else:
-                    warnings.append(create_warning(
-                        code="CAL_SNR_LOW",
-                        stage="calibrate",
-                        condition_key=condition_key,
-                        details={"snr": snr},
-                    ))
-            elif "CR" in issue.upper() or "CONCENTRATION_RATIO" in issue.upper():
-                cr = cal.get("concentration_ratio", 0)
-                if cr < 0.5:
-                    warnings.append(create_warning(
-                        code="CAL_CR_VERY_LOW",
-                        stage="calibrate",
-                        condition_key=condition_key,
-                        details={"cr": cr},
-                    ))
-                else:
-                    warnings.append(create_warning(
-                        code="CAL_CR_LOW",
-                        stage="calibrate",
-                        condition_key=condition_key,
-                        details={"cr": cr},
-                    ))
-            elif "INTENSITY" in issue.upper():
-                intensity = cal.get("intensity_max", 0)
-                if "extreme" in issue.lower():
-                    warnings.append(create_warning(
-                        code="CAL_INTENSITY_EXTREME",
-                        stage="calibrate",
-                        condition_key=condition_key,
-                        details={"val": intensity},
-                    ))
-                else:
-                    warnings.append(create_warning(
-                        code="CAL_INTENSITY_LOW",
-                        stage="calibrate",
-                        condition_key=condition_key,
-                        details={"val": intensity},
-                    ))
-
-        # Calibration warnings (INFO level mostly)
-        for warn in cal.get("calibration_warnings", []):
-            if "ASYMMETRY" in warn.upper() or "SIMETRIA" in warn.upper():
-                sym = cal.get("symmetry", 0)
-                warnings.append(create_warning(
-                    code="CAL_SYMMETRY_LOW",
-                    stage="calibrate",
-                    condition_key=condition_key,
-                    details={"sym": sym},
-                ))
-            elif "SMOOTHNESS" in warn.upper() or "IRREGULAR" in warn.upper():
-                warnings.append(create_warning(
-                    code="CAL_SMOOTHNESS_LOW",
-                    stage="calibrate",
-                    condition_key=condition_key,
-                    details={"val": cal.get("smoothness", 0)},
-                ))
-            elif "EXPANSION" in warn.upper():
-                warnings.append(create_warning(
-                    code="CAL_EXPANSION_HIGH",
-                    stage="calibrate",
-                    condition_key=condition_key,
-                    details={"pct": 0},  # TODO: extreure de warn
-                ))
-            elif "HISTORICAL" in warn.upper():
-                hist = cal.get("historical_comparison", {})
-                dev = hist.get("area_deviation_pct", 0)
-                if dev > 15:
-                    warnings.append(create_warning(
-                        code="CAL_DEVIATION_HIGH",
-                        stage="calibrate",
-                        condition_key=condition_key,
-                        details={"dev": dev},
-                    ))
-                elif dev > 5:
-                    warnings.append(create_warning(
-                        code="CAL_DEVIATION_MINOR",
-                        stage="calibrate",
-                        condition_key=condition_key,
-                        details={"dev": dev},
-                    ))
-                else:
-                    # Històric insuficient
-                    warnings.append(create_warning(
-                        code="CAL_HISTORICAL_INSUFFICIENT",
-                        stage="calibrate",
-                        condition_key=condition_key,
-                    ))
 
     # 3. Sense KHP local — shift no verificable
     if result.get("khp_source") == "SENSE_KHP":
@@ -4093,7 +3985,6 @@ def _generate_calibration_warnings(result: dict, method: str = "COLUMN") -> list
     for cal in result.get("calibrations", []):
         selection = cal.get("selection", {})
         if selection.get("reason") == "rsd_high" and selection.get("n_replicas_available", 0) > 1:
-            # Alguna rèplica exclosa
             selected = selection.get("selected_replicas", [])
             n_available = selection.get("n_replicas_available", 0)
             if len(selected) < n_available:
@@ -4280,132 +4171,6 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
                 if khp_result_uib:
                     khp_result_uib["doc_source"] = "uib"
                     khp_data_uib_list.append(khp_result_uib)
-
-    # =========================================================================
-    # 2-PASS: Reprocessar entrades amb concentració baixa (≤0.25 ppm) si t_ret anòmal
-    # Utilitza t_ret median de les entrades fiables (conc >= 0.5) com a referència.
-    # =========================================================================
-    def _compute_median_t_ret(entries_list, min_conc=0.5):
-        """Calcula t_ret median de les entrades amb concentració >= min_conc."""
-        t_rets = []
-        for e in entries_list:
-            c = e.get('conc_ppm', 0)
-            t_r = e.get('t_retention', 0)
-            if c >= min_conc and t_r > 0:
-                t_rets.append(t_r)
-        return float(np.median(t_rets)) if t_rets else None
-
-    t_ret_median_direct = _compute_median_t_ret(khp_data_direct_list)
-    t_ret_median_uib = _compute_median_t_ret(khp_data_uib_list)
-
-    # Reprocessar entrades de baixa concentració amb t_ret anòmal
-    reprocessed_count = 0
-    if t_ret_median_direct or t_ret_median_uib:
-        for khp_name in khp_names:
-            sample = samples.get(khp_name, {})
-            conc = extract_khp_conc(khp_name)
-            if conc > 0.25:
-                continue  # Només reprocessar concentracions baixes
-            replicas = sample.get("replicas", {})
-
-            for rep_num, rep_data in replicas.items():
-                direct = rep_data.get("direct") or {}
-                uib = rep_data.get("uib") or {}
-                dad_data = rep_data.get("dad", {})
-                df_dad = dad_data.get("df") if dad_data else None
-                injection_info = rep_data.get("injection_info", {})
-                inj_volume = injection_info.get("inj_volume", 100)
-
-                base_metadata = {
-                    "name": khp_name,
-                    "conc_ppm": conc,
-                    "volume_uL": inj_volume,
-                    "replica": str(rep_num),
-                    "method": method,
-                    "seq_path": os.path.basename(seq_path),
-                }
-
-                # DIRECT: comprovar si t_ret de la 1a passada és anòmal
-                if t_ret_median_direct and direct.get("t") is not None and direct.get("y_net") is not None:
-                    # Buscar l'entrada existent
-                    existing = None
-                    existing_idx = None
-                    for idx, e in enumerate(khp_data_direct_list):
-                        if (e.get('name') == khp_name and
-                            str(e.get('replica', '')) == str(rep_num) and
-                            e.get('doc_source') == 'direct'):
-                            existing = e
-                            existing_idx = idx
-                            break
-
-                    needs_reprocess = False
-                    if existing:
-                        t_r = existing.get('t_retention', 0)
-                        if abs(t_r - t_ret_median_direct) > 1.0:
-                            needs_reprocess = True
-                    else:
-                        # No es va trobar pic la 1a vegada
-                        needs_reprocess = True
-
-                    if needs_reprocess:
-                        meta = {**base_metadata, "doc_source": "direct",
-                                "t_ret_expected": t_ret_median_direct}
-                        new_result = analizar_khp_data(
-                            direct["t"], direct["y_net"], meta, df_dad, config)
-                        if new_result:
-                            new_result["doc_source"] = "direct"
-                            new_result["reprocessed_with_t_ret"] = True
-                            if existing_idx is not None:
-                                khp_data_direct_list[existing_idx] = new_result
-                            else:
-                                khp_data_direct_list.append(new_result)
-                            reprocessed_count += 1
-                            logger.info(
-                                "2-pass: %s R%s direct reprocessat amb t_ret_expected=%.2f "
-                                "(t_ret: %.2f → %.2f)",
-                                khp_name, rep_num, t_ret_median_direct,
-                                existing.get('t_retention', 0) if existing else 0,
-                                new_result.get('t_retention', 0))
-
-                # UIB: mateixa lògica
-                if t_ret_median_uib and uib.get("t") is not None and uib.get("y_net") is not None:
-                    existing = None
-                    existing_idx = None
-                    for idx, e in enumerate(khp_data_uib_list):
-                        if (e.get('name') == khp_name and
-                            str(e.get('replica', '')) == str(rep_num) and
-                            e.get('doc_source') == 'uib'):
-                            existing = e
-                            existing_idx = idx
-                            break
-
-                    needs_reprocess = False
-                    if existing:
-                        t_r = existing.get('t_retention', 0)
-                        if abs(t_r - t_ret_median_uib) > 1.0:
-                            needs_reprocess = True
-                    else:
-                        needs_reprocess = True
-
-                    if needs_reprocess:
-                        meta = {**base_metadata, "doc_source": "uib",
-                                "t_ret_expected": t_ret_median_uib}
-                        new_result = analizar_khp_data(
-                            uib["t"], uib["y_net"], meta, df_dad, config)
-                        if new_result:
-                            new_result["doc_source"] = "uib"
-                            new_result["reprocessed_with_t_ret"] = True
-                            if existing_idx is not None:
-                                khp_data_uib_list[existing_idx] = new_result
-                            else:
-                                khp_data_uib_list.append(new_result)
-                            reprocessed_count += 1
-
-    if reprocessed_count > 0:
-        result["warnings"].append(
-            f"ℹ️ {reprocessed_count} punt(s) de baixa concentració reprocessat(s) "
-            f"amb t_ret de referència (2-pass)")
-        logger.info("2-pass: %d entrades reprocessades", reprocessed_count)
 
     # Warnings per concentració i DAD 254
     for khp_result in khp_data_direct_list + khp_data_uib_list:
@@ -4617,11 +4382,11 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
         group_name = "KHP"
 
         # Estadístiques bàsiques
-        areas = [r['area'] for r in replicas]  # Sempre originals (post-fix: backend no sobreescriu)
-        areas_repaired = [r.get('area_repaired') or r['area'] for r in replicas]
+        areas = [r['area'] for r in replicas]
+        areas_original = [r.get('area_original') or r['area'] for r in replicas]
         shifts = [r['shift_min'] for r in replicas]
         mean_area = float(np.mean(areas))
-        mean_area_repaired = float(np.mean(areas_repaired))
+        mean_area_original = float(np.mean(areas_original))
         std_area = float(np.std(areas))
         mean_shift = float(np.mean(shifts))
         rsd = float((std_area / mean_area) * 100.0) if mean_area > 0 else 100.0
@@ -4653,10 +4418,13 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
         quality_scores = [r.get('quality_score', 0) for r in replicas]
         max_quality_score = max(quality_scores) if quality_scores else 0
         all_quality_issues = []
+        all_calibration_anomalies = []
         for r in replicas:
             for issue in r.get('quality_issues', []):
                 if issue not in all_quality_issues:
                     all_quality_issues.append(issue)
+            for anom in r.get('calibration_anomalies', []):
+                all_calibration_anomalies.append(anom)
         group_has_irregular_top = any(r.get('has_irregular_top', False) for r in replicas)
         group_has_irregular = any(r.get('has_irregular', False) for r in replicas)
         group_has_timeout = any(r.get('has_timeout', False) for r in replicas)
@@ -4680,7 +4448,7 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
         # Aplicar selecció
         if selection_method == 'average' or selection_method == 'single':
             selected_area = mean_area
-            selected_area_repaired = mean_area_repaired
+            selected_area_original = mean_area_original
             selected_shift_min = mean_shift
             selected_shift_sec = mean_shift_sec
             selected_a254_ratio = mean_a254_ratio
@@ -4693,7 +4461,7 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
             rep_num = int(selection_method[1:])
             selected_rep = next((r for r in replicas if r.get('replica_num') == rep_num), replicas[0])
             selected_area = selected_rep['area']
-            selected_area_repaired = selected_rep.get('area_repaired') or selected_rep['area']
+            selected_area_original = selected_rep.get('area_original') or selected_rep['area']
             selected_shift_min = selected_rep['shift_min']
             selected_shift_sec = selected_rep.get('shift_sec', 0)
             selected_a254_ratio = selected_rep.get('a254_doc_ratio', 0)
@@ -4706,7 +4474,7 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
             best = sorted_replicas[0]
             best_quality = best.get('quality_score', 0)
             selected_area = best['area']
-            selected_area_repaired = best.get('area_repaired') or best['area']
+            selected_area_original = best.get('area_original') or best['area']
             selected_shift_min = best['shift_min']
             selected_shift_sec = best.get('shift_sec', 0)
             selected_a254_ratio = best.get('a254_doc_ratio', 0)
@@ -4734,7 +4502,8 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
             'name_full': f"KHP{group_conc}@{group_volume}µL",  # Condicions: conc + volum
             'conc_ppm': group_conc,
             'area': selected_area,
-            'area_repaired': selected_area_repaired if group_irregular_top_repaired else None,
+            'area_original': selected_area_original if selected_area_original != selected_area else None,
+            'area_repaired': selected_area if selected_area_original != selected_area else None,
             'shift_min': selected_shift_min,
             'shift_sec': selected_shift_sec,
             'a254_doc_ratio': selected_a254_ratio,
@@ -4772,6 +4541,7 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
             # Anomalies i qualitat (pitjor cas de totes les rèpliques)
             'quality_score': max_quality_score,
             'quality_issues': all_quality_issues,
+            'calibration_anomalies': all_calibration_anomalies,
             'has_irregular_top': group_has_irregular_top,
             'has_irregular': group_has_irregular,
             'has_timeout': group_has_timeout,
