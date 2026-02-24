@@ -105,9 +105,15 @@ Mark features as DONE only when code is fully functional end-to-end, not when pl
 - [ ] Architecture refactor: unify detection functions in hpsec_core.py — PENDING
 - [x] Integration: derivative-based peak boundaries (Agilent tangent projection) — DONE (find_peak_boundaries in hpsec_core.py)
 - [x] Integration: re-process all KHP data with new derivative method — DONE (batch re-calibrate 137 SEQs, KHP_History regenerated with 96 entries)
-- [x] Config panel: 3 tabs per impacte (Anàlisi/Seqüència/Sistema), tots params editables — DONE
+- [x] Config panel: 3 tabs per impacte (Anàlisi/Seqüència/Sistema), ~30 params editables — DONE
 - [x] Config panel: badges d'impacte (retroactiu/futur), diàleg de reprocessament — DONE
 - [x] Config panel: TimeFractionsEditor, TimeoutZonesEditor, WavelengthSelector, PatternListEditor — DONE
+- [x] Config panel: simplificat (22 params interns eliminats del GUI) + contrasenya "LEQUIA" al guardar — DONE (7b275f7)
+- [x] Warnings: ANOMALY_CATALOG unificat — 26 codis (16 analyze + 10 KHP calibrate), camp `action` a tots — DONE
+- [x] Warnings: quality_issues reemplaçat per create_anomaly() a hpsec_calibrate.py — DONE
+- [x] Warnings: dashboard alimenta Verificar/Revisar (calibrate_warnings, review_warnings) — DONE
+- [x] Warnings: calibrate_panel badges severitat (icona+color+tooltip acció) en lloc de score numèric — DONE
+- [x] Warnings: analyze_panel tooltips amb guia d'acció ("→ Excloure rèplica", etc.) — DONE
 - [x] Config backend: config fingerprint (SHA-256 16 chars) per detectar obsolescència — DONE
 - [x] Config backend: migració batman_max_sep → batman_max_sep_min — DONE
 - [x] Config backend: REPROCESS_SECTIONS/FUTURE_SECTIONS/IMMEDIATE_SECTIONS constants — DONE
@@ -189,7 +195,54 @@ All exploratory scripts and results live in `research/` — NOT part of the prod
 
 ## Working notes
 
-> Last updated: 2026-02-23
+> Last updated: 2026-02-24
+
+### Unificació sistema d'avisos (2026-02-24)
+
+**Problema**: 3 sistemes paral·lels d'avisos que no s'integren:
+1. ANOMALY_CATALOG (18 codis) — usat per analyze, ben estructurat
+2. quality_issues (strings lliures) — usat per calibrate, no estructurat
+3. WARNING_DEFINITIONS (56 codis) — bridge fràgil amb parsing strings
+
+**Símptomes**: Dashboard "Verificar" sempre buit (hardcoded []), quality_score numèric inintel·ligible,
+sense context de mostra ni guia d'acció.
+
+**Solució implementada — ANOMALY_CATALOG com a font única:**
+
+1. **hpsec_warnings.py**: +10 codis KHP (KHP_IRREGULAR_TOP, KHP_MULTI_PEAK, KHP_TIMEOUT_PEAK,
+   KHP_SNR_LOW, KHP_RSD_HIGH, KHP_FWHM_HIGH, KHP_ASYMMETRY, KHP_CR_LOW, KHP_BASELINE_DRIFT,
+   KHP_NO_DAD). Camp `action` afegit a les 26 entrades. `create_anomaly()` retorna `action`.
+
+2. **hpsec_calibrate.py**: `analizar_khp_data()` genera `calibration_anomalies` amb `create_anomaly()`
+   en lloc de strings quality_issues. quality_score derivat automàticament. `calibration_anomalies`
+   propagat al return dict, a l'agregació de rèpliques, i a `register_calibration()`.
+   `_generate_calibration_warnings()` simplificada: recull anomalies ja estructurades.
+
+3. **sequence_state.py**: Nous camps `calibrate_warnings` i `review_warnings`. `_extract_metadata()`
+   extreu avisos blocker/warning de `calibration_anomalies`. `calibrate_state` ara retorna 'warning'
+   si KHP local té anomalies (era sempre 'ok').
+
+4. **dashboard_panel.py**: `phases_data` alimenta Verificar i Revisar (era hardcoded []). Tooltip
+   prioritza avisos concrets sobre "KHP sibling" genèric. Fallback quality_issues per JSONs antics.
+
+5. **calibrate_panel/panel.py**: Col 15-16 substituïdes: score numèric → badge icona+color
+   (✔/ℹ/⚠/✘) amb tooltip que inclou label + acció del catàleg. Fallback per dades sense
+   calibration_anomalies. `_update_validation()` prioritza anomalies sobre quality_issues strings.
+
+6. **analyze_panel/panel.py**: `_classify_sample_status()` tooltips enriquits amb `action` del catàleg
+   (format: "CRÍTIC: label\n   → acció recomanada").
+
+**WARNING_DEFINITIONS marcat com deprecated** (no eliminat per backward compat JSONs antics).
+
+### Config panel simplificat + contrasenya (2026-02-24)
+
+**Eliminats 22 paràmetres del GUI** (segueixen al JSON, però no editables per l'usuari):
+- Detecció d'Anomalies (8 params): interns algorisme
+- Càlcul Baseline (6 params): 4 interns + method="mode" + min_noise
+- Cromatograma (5 params): max_duration duplicat, smoothing calibrats
+- Calibració (3 params): quality_max, min_cals_average, use_historical_fallback
+
+**Contrasenya fixa "LEQUIA"** a `_save_config()` i `_reset_defaults()`.
 
 ### Optimització memòria (2026-02-23)
 

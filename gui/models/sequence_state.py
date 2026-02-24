@@ -217,7 +217,9 @@ class SequenceState:
         """Extreu metadata dels JSONs per mostrar info addicional."""
         self.warnings = []
         self.import_warnings = []
+        self.calibrate_warnings = []
         self.analyze_warnings = []
+        self.review_warnings = []
         self.notes = ""
 
         # Del manifest d'importació
@@ -305,6 +307,17 @@ class SequenceState:
                     khp_upper in ('LOCAL', 'SEQ', 'DIRECT', 'UIB', 'DUAL') or
                     khp_upper.startswith('SIBLING')
                 )
+
+            # Extreure avisos de calibració (calibration_anomalies del catàleg)
+            for cal in calibrations:
+                for a in cal.get('calibration_anomalies', []):
+                    if isinstance(a, dict):
+                        sev = a.get('severity', 'info')
+                        if sev in ('blocker', 'warning'):
+                            label = a.get('label', a.get('code', ''))
+                            sample = a.get('sample', '')
+                            text = f"{label} ({sample})" if sample else label
+                            self.calibrate_warnings.append(text)
 
         # De l'anàlisi
         if self.analyze_status.data:
@@ -416,8 +429,8 @@ class SequenceState:
     def calibrate_state(self) -> str:
         """
         Estat de la fase Calibrar per determinar color.
-        - ok: KHP local (SEQ/DIRECT/UIB/DUAL)
-        - warning: KHP sibling o sense KHP (shift no verificable, però quantificació OK)
+        - ok: KHP local sense anomalies
+        - warning: KHP sibling/sense KHP, o KHP local amb anomalies
         - error: Error real de calibració
         Returns: 'ok', 'warning', 'error', 'pending'
         """
@@ -427,8 +440,10 @@ class SequenceState:
             return 'error'
 
         khp_upper = self.khp_source.upper()
-        # KHP local = verd
+        # KHP local = verd (amb triangle si té avisos)
         if khp_upper in ('LOCAL', 'SEQ', 'DIRECT', 'UIB', 'DUAL'):
+            if self.calibrate_warnings:
+                return 'warning'
             return 'ok'
         # KHP sibling o sense KHP = taronja (shift no verificable, quantificació OK)
         if khp_upper.startswith('SIBLING') or khp_upper == 'SENSE_KHP':

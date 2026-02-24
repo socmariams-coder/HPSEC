@@ -777,9 +777,9 @@ class DashboardPanel(QWidget):
             # Fases (Importar, Verificar, Analitzar, Revisar)
             phases_data = [
                 (seq.import_status, seq.import_state, "Importar", seq.import_warnings),
-                (seq.calibrate_status, seq.calibrate_state, "Verificar", []),
+                (seq.calibrate_status, seq.calibrate_state, "Verificar", seq.calibrate_warnings),
                 (seq.analyze_status, seq.analyze_state, "Analitzar", seq.analyze_warnings),
-                (seq.review_status, seq.review_state, "Revisar", []),
+                (seq.review_status, seq.review_state, "Revisar", seq.review_warnings),
             ]
 
             current_phase_idx = None
@@ -832,12 +832,12 @@ class DashboardPanel(QWidget):
                 elif state == 'warning':
                     item.setText("⚠")
                     item.setForeground(QColor(COLOR_WARNING))
-                    if phase_name == "Verificar":
-                        tooltip = f"{phase_name}: KHP sibling ({seq.khp_source})"
-                    elif phase_warnings:
+                    if phase_warnings:
                         tooltip = f"{phase_name}: Avisos\n" + "\n".join(phase_warnings[:3])
                         if len(phase_warnings) > 3:
                             tooltip += f"\n... i {len(phase_warnings)-3} més"
+                    elif phase_name == "Verificar":
+                        tooltip = f"{phase_name}: KHP sibling ({seq.khp_source})"
                     else:
                         tooltip = f"{phase_name}: Avisos"
                     item.setToolTip(tooltip)
@@ -1341,13 +1341,27 @@ class DashboardPanel(QWidget):
                                     "type": "ANOM",
                                     "content": "KHP amb timeout",
                                 })
-                        # Quality issues
-                        for issue in cal.get("quality_issues", [])[:2]:
-                            notes.append({
-                                "stage": stage_name,
-                                "type": "QUAL",
-                                "content": issue[:60],
-                            })
+                        # Calibration anomalies (ANOMALY_CATALOG)
+                        for anom in cal.get("calibration_anomalies", [])[:3]:
+                            if isinstance(anom, dict):
+                                sev = anom.get("severity", "info")
+                                if sev in ("blocker", "warning"):
+                                    label = anom.get("label", anom.get("code", ""))
+                                    sample = anom.get("sample", "")
+                                    content = f"{label} ({sample})" if sample else label
+                                    notes.append({
+                                        "stage": stage_name,
+                                        "type": "QUAL",
+                                        "content": content[:60],
+                                    })
+                        # Fallback: quality_issues strings (JSONs antics)
+                        if not cal.get("calibration_anomalies"):
+                            for issue in cal.get("quality_issues", [])[:2]:
+                                notes.append({
+                                    "stage": stage_name,
+                                    "type": "QUAL",
+                                    "content": issue[:60],
+                                })
 
                 # 4. NOTES D'USUARI (confirmació warnings)
                 wc = data.get("warnings_confirmed")

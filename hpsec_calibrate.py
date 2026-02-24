@@ -66,7 +66,7 @@ from hpsec_utils import t_at_max
 # Import sistema d'avisos estructurats
 from hpsec_warnings import (
     create_warning, get_max_warning_level, WarningLevel,
-    migrate_warnings_list
+    migrate_warnings_list, create_anomaly, ANOMALY_CATALOG
 )
 
 # =============================================================================
@@ -3013,65 +3013,84 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
                        os.path.basename(seq_path) if seq_path else "?")
         volume_uL = 100  # Fallback últim recurs per no crashejar
 
-    # Qualitat
-    quality_score = 0
-    quality_issues = []
+    # Qualitat — anomalies estructurades (ANOMALY_CATALOG com a font única)
+    sample_label = f"{name}_R{replica}"
+    calibration_anomalies = []
 
-    # Afegir warnings de DAD 254nm (detectats a STEP 0)
-    for dw in dad_quality_warnings:
-        quality_issues.append(dw)
-        if "ANOMAL" in dw or "MISMATCH" in dw:
-            quality_score += 50
-        elif "MULTI_PEAK" in dw:
-            quality_score += 30
-        elif "NO_DAD_254" in dw or "NO_254_PEAK" in dw:
-            quality_score += 20
+    # DAD 254nm warnings (detectats a STEP 0)
+    if dad_quality_warnings:
+        calibration_anomalies.append(create_anomaly(
+            "KHP_NO_DAD",
+            details={"dad_warnings": dad_quality_warnings},
+            sample=sample_label,
+        ))
 
     # Check DOC: àrea pic principal vs total (90% check)
     if concentration_ratio < 0.90 and area_total > 0:
-        quality_issues.append(
-            f"MULTI_PEAK_DOC: pic principal={concentration_ratio:.0%} de l'àrea total DOC")
-        quality_score += 30
+        calibration_anomalies.append(create_anomaly(
+            "KHP_MULTI_PEAK",
+            details={"concentration_ratio": concentration_ratio,
+                     "source": "DOC area ratio"},
+            sample=sample_label,
+        ))
 
     # C11: Simetria i smoothness irrellevants per BP (senyal molt variable)
     if not is_bp_chromato:
-        # Simetria alta (>1.5) NO es penalitza per KHP - és normal per un patró
         if symmetry < 0.8:
-            quality_score += 10
-            quality_issues.append(f"Simetria baixa ({symmetry:.2f})")
+            calibration_anomalies.append(create_anomaly(
+                "KHP_ASYMMETRY",
+                details={"symmetry": symmetry},
+                sample=sample_label,
+            ))
         if has_irregular:
-            quality_score += 30
-            quality_issues.append(f"Pic irregular (smoothness={smoothness:.0f}%)")
+            calibration_anomalies.append(create_anomaly(
+                "KHP_MULTI_PEAK",
+                details={"smoothness": smoothness, "source": "irregular shape"},
+                sample=sample_label,
+            ))
 
     if snr < 10:
-        quality_score += 20
-        quality_issues.append(f"SNR baix ({snr:.1f})")
+        calibration_anomalies.append(create_anomaly(
+            "KHP_SNR_LOW",
+            details={"snr": snr},
+            sample=sample_label,
+        ))
     if has_irregular_top:
-        quality_score += 100
-        quality_issues.append("Pic amb cim irregular (jagged/batman)")
+        calibration_anomalies.append(create_anomaly(
+            "KHP_IRREGULAR_TOP",
+            details={"smoothness": smoothness},
+            sample=sample_label,
+        ))
     # Timeout: només penalitza si afecta l'interval d'integració del pic
     if has_timeout:
         peak_timeout = timeout_affects_peak(timeout_info, t_doc, left_idx, right_idx)
         if peak_timeout['affects_peak']:
             overlap = peak_timeout['overlap_pct']
-            if overlap > 30:  # >30% del pic afectat
-                quality_score += 150
-                quality_issues.append(f"TIMEOUT CRÍTIC (afecta {overlap:.0f}% del pic)")
-            elif overlap > 10:  # 10-30% afectat
-                quality_score += 100
-                quality_issues.append(f"TimeOUT en pic ({overlap:.0f}% afectat)")
-            else:  # <10% afectat
-                quality_score += 20
-                quality_issues.append(f"TimeOUT marginal ({overlap:.0f}% afectat)")
-        # else: Timeout fora del pic - NO penalitza ni mostra warning
+            calibration_anomalies.append(create_anomaly(
+                "KHP_TIMEOUT_PEAK",
+                details={"overlap_pct": overlap},
+                sample=sample_label,
+            ))
     if len(all_peaks) > 3:
-        quality_score += 5 * (len(all_peaks) - 3)
-        quality_issues.append(f"Múltiples pics ({len(all_peaks)})")
-    if limits_expanded:
-        quality_issues.append("Límits expandits")
+        calibration_anomalies.append(create_anomaly(
+            "KHP_MULTI_PEAK",
+            details={"n_peaks": len(all_peaks), "source": "peak count"},
+            sample=sample_label,
+        ))
     if bl_drift_pct > 8:
-        quality_score += 10
-        quality_issues.append(f"Baseline drift alt ({bl_drift_pct:.0f}%)")
+        calibration_anomalies.append(create_anomaly(
+            "KHP_BASELINE_DRIFT",
+            details={"drift_pct": bl_drift_pct},
+            sample=sample_label,
+        ))
+
+    # Derivar quality_score i quality_issues per backwards compat
+    quality_score = sum(
+        100 if a.get("severity") == "blocker" else
+        20 if a.get("severity") == "warning" else 5
+        for a in calibration_anomalies
+    )
+    quality_issues = [a.get("label", a.get("code", "")) for a in calibration_anomalies]
 
     # =========================================================================
     # NOVES MÈTRIQUES: FWHM, RF, RF_MASS, CR per tots els senyals
@@ -3163,6 +3182,7 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
         'all_peaks': all_peaks,
         'quality_score': quality_score,
         'quality_issues': quality_issues,
+        'calibration_anomalies': calibration_anomalies,
         'has_irregular_top': has_irregular_top,
         'irregular_top_repaired': irregular_top_repaired,
         'repair_info': repair_info,
@@ -3513,6 +3533,7 @@ def register_calibration(seq_path, khp_data, khp_source, mode="COLUMN"):
         "replica_comparison": khp_data.get('replica_comparison', {}),
         "quality_score": quality_score,
         "quality_issues": quality_issues,
+        "calibration_anomalies": khp_data.get('calibration_anomalies', []),
         "has_irregular_top": khp_data.get('has_irregular_top', False),
         "has_timeout": khp_data.get('has_timeout', False),
 
@@ -3905,19 +3926,19 @@ def _generate_calibration_warnings(result: dict, method: str = "COLUMN") -> list
     """
     Genera avisos estructurats a partir del resultat de calibració.
 
-    Analitza el resultat i crea avisos amb nivells (BLOCKER/WARNING/INFO)
-    segons la jerarquia definida a docs/SISTEMA_AVISOS.md.
+    Combina calibration_anomalies (ANOMALY_CATALOG) de cada calibració
+    amb avisos de nivell seqüència (errors, SENSE_KHP, outliers).
 
     Args:
         result: Dict del resultat de calibrate_from_import()
         method: "COLUMN" o "BP"
 
     Returns:
-        Llista d'avisos estructurats
+        Llista d'avisos estructurats (mix de ANOMALY_CATALOG dicts i create_warning dicts)
     """
     warnings = []
 
-    # 1. Errors crítics (BLOCKER)
+    # 1. Errors crítics (BLOCKER) — nivell seqüència
     if not result.get("success"):
         for error in result.get("errors", []):
             if "no s'han trobat" in error.lower() or "no khp" in error.lower():
@@ -3931,7 +3952,6 @@ def _generate_calibration_warnings(result: dict, method: str = "COLUMN") -> list
                     stage="calibrate",
                 ))
             else:
-                # Error genèric
                 warnings.append(create_warning(
                     code="CAL_ERROR",
                     level=WarningLevel.BLOCKER,
@@ -3939,160 +3959,19 @@ def _generate_calibration_warnings(result: dict, method: str = "COLUMN") -> list
                     stage="calibrate",
                 ))
 
-    # 2. Analitzar cada calibració
+    # 2. Recollir calibration_anomalies de cada calibració (font: ANOMALY_CATALOG)
     for cal in result.get("calibrations", []) + result.get("calibrations_direct", []) + result.get("calibrations_uib", []):
-        condition_key = f"{method}_{cal.get('conc_ppm', 0)}_{cal.get('volume_uL', 0)}"
+        for anom in cal.get("calibration_anomalies", []):
+            warnings.append(anom)
 
-        # Timeout
-        if cal.get("timeout_info", {}).get("n_timeouts", 0) > 0:
-            severity = cal.get("timeout_info", {}).get("severity", "CRITICAL")
-            if severity == "CRITICAL":
-                warnings.append(create_warning(
-                    code="CAL_TIMEOUT",
-                    stage="calibrate",
-                    condition_key=condition_key,
-                    details={
-                        "n_timeouts": cal["timeout_info"]["n_timeouts"],
-                        "zones": cal["timeout_info"].get("zone_summary", {}),
-                    },
-                ))
-            elif severity == "WARNING":
-                warnings.append(create_warning(
-                    code="CAL_TIMEOUT",
-                    level=WarningLevel.WARNING,
-                    message=f"Timeout detectat (zones no crítiques)",
-                    stage="calibrate",
-                    condition_key=condition_key,
-                ))
-
-        # Cim irregular (jagged/batman)
-        irr_top_info = (cal.get("irregular_top_info") or cal.get("anomalies", {}).get("irregular_top")
-                        or cal.get("batman_info", {}) or cal.get("anomalies", {}).get("batman", {}))
-        if irr_top_info and irr_top_info.get("is_irregular_top", irr_top_info.get("is_batman", False)):
-            warnings.append(create_warning(
-                code="CAL_IRREGULAR_TOP",
-                stage="calibrate",
-                condition_key=condition_key,
-                details={
-                    "valley_depth": irr_top_info.get("max_depth", 0),
-                },
-            ))
-
-        # RSD alt
+        # RSD alt (nivell grup, no per-rèplica)
         rsd = cal.get("rsd", 0)
         if rsd > 10:
-            warnings.append(create_warning(
-                code="CAL_RSD_HIGH",
-                stage="calibrate",
-                condition_key=condition_key,
+            warnings.append(create_anomaly(
+                "KHP_RSD_HIGH",
                 details={"rsd": rsd, "threshold": 10},
+                sample=cal.get("khp_name", "KHP"),
             ))
-
-        # Quality issues
-        for issue in cal.get("calibration_issues", []):
-            if "MULTI" in issue.upper():
-                warnings.append(create_warning(
-                    code="CAL_MULTI_PEAK",
-                    stage="calibrate",
-                    condition_key=condition_key,
-                ))
-            elif "SNR" in issue.upper():
-                snr = cal.get("snr", 0)
-                if "extrema" in issue.lower() or snr < 5:
-                    warnings.append(create_warning(
-                        code="CAL_SNR_VERY_LOW",
-                        stage="calibrate",
-                        condition_key=condition_key,
-                        details={"snr": snr},
-                    ))
-                else:
-                    warnings.append(create_warning(
-                        code="CAL_SNR_LOW",
-                        stage="calibrate",
-                        condition_key=condition_key,
-                        details={"snr": snr},
-                    ))
-            elif "CR" in issue.upper() or "CONCENTRATION_RATIO" in issue.upper():
-                cr = cal.get("concentration_ratio", 0)
-                if cr < 0.5:
-                    warnings.append(create_warning(
-                        code="CAL_CR_VERY_LOW",
-                        stage="calibrate",
-                        condition_key=condition_key,
-                        details={"cr": cr},
-                    ))
-                else:
-                    warnings.append(create_warning(
-                        code="CAL_CR_LOW",
-                        stage="calibrate",
-                        condition_key=condition_key,
-                        details={"cr": cr},
-                    ))
-            elif "INTENSITY" in issue.upper():
-                intensity = cal.get("intensity_max", 0)
-                if "extreme" in issue.lower():
-                    warnings.append(create_warning(
-                        code="CAL_INTENSITY_EXTREME",
-                        stage="calibrate",
-                        condition_key=condition_key,
-                        details={"val": intensity},
-                    ))
-                else:
-                    warnings.append(create_warning(
-                        code="CAL_INTENSITY_LOW",
-                        stage="calibrate",
-                        condition_key=condition_key,
-                        details={"val": intensity},
-                    ))
-
-        # Calibration warnings (INFO level mostly)
-        for warn in cal.get("calibration_warnings", []):
-            if "ASYMMETRY" in warn.upper() or "SIMETRIA" in warn.upper():
-                sym = cal.get("symmetry", 0)
-                warnings.append(create_warning(
-                    code="CAL_SYMMETRY_LOW",
-                    stage="calibrate",
-                    condition_key=condition_key,
-                    details={"sym": sym},
-                ))
-            elif "SMOOTHNESS" in warn.upper() or "IRREGULAR" in warn.upper():
-                warnings.append(create_warning(
-                    code="CAL_SMOOTHNESS_LOW",
-                    stage="calibrate",
-                    condition_key=condition_key,
-                    details={"val": cal.get("smoothness", 0)},
-                ))
-            elif "EXPANSION" in warn.upper():
-                warnings.append(create_warning(
-                    code="CAL_EXPANSION_HIGH",
-                    stage="calibrate",
-                    condition_key=condition_key,
-                    details={"pct": 0},  # TODO: extreure de warn
-                ))
-            elif "HISTORICAL" in warn.upper():
-                hist = cal.get("historical_comparison", {})
-                dev = hist.get("area_deviation_pct", 0)
-                if dev > 15:
-                    warnings.append(create_warning(
-                        code="CAL_DEVIATION_HIGH",
-                        stage="calibrate",
-                        condition_key=condition_key,
-                        details={"dev": dev},
-                    ))
-                elif dev > 5:
-                    warnings.append(create_warning(
-                        code="CAL_DEVIATION_MINOR",
-                        stage="calibrate",
-                        condition_key=condition_key,
-                        details={"dev": dev},
-                    ))
-                else:
-                    # Històric insuficient
-                    warnings.append(create_warning(
-                        code="CAL_HISTORICAL_INSUFFICIENT",
-                        stage="calibrate",
-                        condition_key=condition_key,
-                    ))
 
     # 3. Sense KHP local — shift no verificable
     if result.get("khp_source") == "SENSE_KHP":
@@ -4106,7 +3985,6 @@ def _generate_calibration_warnings(result: dict, method: str = "COLUMN") -> list
     for cal in result.get("calibrations", []):
         selection = cal.get("selection", {})
         if selection.get("reason") == "rsd_high" and selection.get("n_replicas_available", 0) > 1:
-            # Alguna rèplica exclosa
             selected = selection.get("selected_replicas", [])
             n_available = selection.get("n_replicas_available", 0)
             if len(selected) < n_available:
@@ -4540,10 +4418,13 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
         quality_scores = [r.get('quality_score', 0) for r in replicas]
         max_quality_score = max(quality_scores) if quality_scores else 0
         all_quality_issues = []
+        all_calibration_anomalies = []
         for r in replicas:
             for issue in r.get('quality_issues', []):
                 if issue not in all_quality_issues:
                     all_quality_issues.append(issue)
+            for anom in r.get('calibration_anomalies', []):
+                all_calibration_anomalies.append(anom)
         group_has_irregular_top = any(r.get('has_irregular_top', False) for r in replicas)
         group_has_irregular = any(r.get('has_irregular', False) for r in replicas)
         group_has_timeout = any(r.get('has_timeout', False) for r in replicas)
@@ -4660,6 +4541,7 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
             # Anomalies i qualitat (pitjor cas de totes les rèpliques)
             'quality_score': max_quality_score,
             'quality_issues': all_quality_issues,
+            'calibration_anomalies': all_calibration_anomalies,
             'has_irregular_top': group_has_irregular_top,
             'has_irregular': group_has_irregular,
             'has_timeout': group_has_timeout,
