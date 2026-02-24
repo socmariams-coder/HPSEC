@@ -2,7 +2,7 @@
   "paths": {
     "data_folder": "C:/Users/Lequia/Desktop/Dades3",
     "registry_folder": "C:/Users/Lequia/Desktop/Dades3/REGISTRY",
-    "maintenance_excel": ""
+    "maintenance_excel": "C:/Users/Lequia/Desktop/Manteniment/Registre manteniment HPLC-DAD-TOC.xlsx"
   },
   "time_fractions": {
     "BioP": {
@@ -52,7 +52,8 @@
     "flow_rate_column": 0.75,
     "flow_rate_bp": 0.75,
     "toc_cycle_min": 77.2,
-    "toc_timeout_sec": 74
+    "toc_timeout_sec": 74,
+    "toc_pre_margin_min": 1.5
   },
   "quality": {
     "r2_valid": 0.987,
@@ -104,9 +105,9 @@
     "column_change_seq": 275
   },
   "detection": {
-    "batman_max_sep_min": 0.5,
-    "batman_drop_min": 0.05,
-    "batman_drop_max": 0.5,
+    "irregular_top_max_sep_min": 0.5,
+    "irregular_top_drop_min": 0.05,
+    "irregular_top_drop_max": 0.5,
     "timeout_min_duration": 5.0,
     "timeout_major": 74.0,
     "ears_threshold": 0.1,
@@ -177,7 +178,7 @@
     "volume_column": 400,
     "volume_bp": 100,
     "min_cals_average": 2,
-    "use_historical_fallback": true
+    "use_historical_fallback": false
   },
   "blank_injections": {
     "patterns": [

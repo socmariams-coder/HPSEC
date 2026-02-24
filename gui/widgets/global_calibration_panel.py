@@ -2,9 +2,9 @@
 HPSEC Suite - Global Calibration Panel
 ========================================
 
-Panell de calibració global amb tres pestanyes:
-- Tab 0: Diagnòstic SEQ_CAL — regressió interactiva (taula punts, scatter, residuals)
-- Tab 1: Recta de Calibració — des de SEQ_CAL dedicades (inclou aplicar)
+Panell de calibració global amb tres vistes:
+- Tab 0: Diagnòstic KHP — vista completa CalibratePanel (cromatogrames, mètriques, rèpliques)
+- Tab 1: Recta de Calibració — regressió des de SEQ_CAL dedicades (inclou aplicar)
 - Tab 2: Control de Qualitat — Levey-Jennings per KHP de producció
 
 Les SEQ_CAL arriben directament des del Dashboard (sense passar pel wizard).
@@ -43,6 +43,32 @@ from matplotlib.figure import Figure
 import numpy as np
 
 logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# PROXY: Permet CalibratePanel funcionar fora del wizard
+# =============================================================================
+
+class _MainWindowProxy:
+    """Proxy per satisfer les dependències de CalibratePanel.main_window.
+
+    CalibratePanel accedeix a main_window.seq_path, main_window.imported_data
+    i main_window.calibration_data (lectura/escriptura). La resta de mètodes
+    (set_status, show_progress, enable_tab) són no-op fora del wizard.
+    """
+    def __init__(self):
+        self.seq_path = None
+        self.imported_data = None
+        self.calibration_data = None
+
+    def set_status(self, msg, duration=None):
+        logger.debug(f"[CalProxy] {msg}")
+
+    def show_progress(self, pct):
+        pass
+
+    def enable_tab(self, idx):
+        pass
 
 
 # =============================================================================
@@ -140,19 +166,19 @@ class CalSeqWorker(QThread):
 
 
 class GlobalCalibrationPanel(QWidget):
-    """Panell de calibració global: diagnòstic, regressió i control de qualitat.
+    """Panell de calibració global amb diagnòstic complet per SEQ_CAL.
 
-    Tab 0: Diagnòstic SEQ_CAL — regressió interactiva amb taula punts, scatter,
-           residuals, comparació vigent, selector senyal Direct/UIB
-    Tab 1: Recta de Calibració — històric des de KHP_History
-    Tab 2: Control de Qualitat — Levey-Jennings per KHP de producció
+    Tab 0 (Diagnòstic KHP): CalibratePanel embegut — cromatogrames, mètriques,
+    rèpliques, delay, validació, històric QC. Exactament el que es veia al wizard.
+    Tab 1 (Recta): Regressió amb tots els punts KHP_History.
+    Tab 2 (QC): Levey-Jennings per KHP de producció.
     """
 
     def __init__(self, main_window):
         super().__init__()
         self.main_window = main_window
         self._all_calibrations = []
-        self._active_seq_path = None  # SEQ_CAL activa (des de Dashboard)
+        self._active_seq_path = None
         self._setup_ui()
 
     def _setup_ui(self):
@@ -165,8 +191,7 @@ class GlobalCalibrationPanel(QWidget):
         layout.addWidget(title)
 
         subtitle = QLabel(
-            "Gestió de rf_mass_cal i intercept — "
-            "Recta des de SEQ_CAL + Control de Qualitat de producció"
+            "Diagnòstic KHP · Recta de Calibració · Control de Qualitat"
         )
         subtitle.setFont(QFont("Segoe UI", 9))
         subtitle.setStyleSheet("color: #666;")
@@ -208,12 +233,17 @@ class GlobalCalibrationPanel(QWidget):
         # Tabs
         self.tabs = QTabWidget()
 
-        # Tab 0: Regressió SEQ_CAL — taula punts, scatter, residuals, cromatogrames
-        from gui.widgets.seq_cal_regression_widget import SeqCalRegressionWidget
-        self.regression_widget = SeqCalRegressionWidget()
-        self.tabs.addTab(self.regression_widget, "🔬 Anàlisi SEQ_CAL")
+        # Tab 0: Diagnòstic KHP — CalibratePanel embegut amb proxy
+        self._proxy = _MainWindowProxy()
+        try:
+            from gui.widgets.calibrate_panel.panel import CalibratePanel
+            self.diag_panel = CalibratePanel(self._proxy)
+        except Exception as e:
+            logger.error(f"Error creant CalibratePanel embegut: {e}")
+            self.diag_panel = QLabel(f"Error carregant vista diagnòstica:\n{e}")
+        self.tabs.addTab(self.diag_panel, "🔬 Diagnòstic KHP")
 
-        # Tab 1: Recta de Calibració (històric KHP_History)
+        # Tab 1: Recta de Calibració — regressió històrica
         self.cal_view = CalibrationLineView(self)
         self.tabs.addTab(self.cal_view, "📐 Recta de Calibració")
 
@@ -250,20 +280,20 @@ class GlobalCalibrationPanel(QWidget):
     def load_seq_cal(self, seq_path):
         """Carrega una SEQ_CAL des del Dashboard.
 
-        Sempre processa per obtenir cromatogrames i mètriques riques
-        per al diagnòstic interactiu (Tab 0).
+        Sempre processa via CalSeqWorker per tenir les dades de cromatograma
+        necessàries per la vista diagnòstica (Tab 0).
         """
         self._active_seq_path = seq_path
         seq_name = os.path.basename(seq_path)
 
         logger.info(f"load_seq_cal: {seq_name}")
 
-        # Recarregar totes les dades de KHP_History
+        # Recarregar KHP_History per les vistes de regressió i QC
         self._load_all_data()
 
-        # Sempre processar per tenir dades completes (cromatogrames, mètriques)
+        # Sempre processar per obtenir cromatogrames i mètriques riques
         logger.info(f"  Processant SEQ_CAL '{seq_name}' per diagnòstic complet...")
-        self.tabs.setCurrentIndex(0)  # Tab Diagnòstic SEQ_CAL
+        self.tabs.setCurrentIndex(0)  # Tab Diagnòstic KHP
         self._start_cal_worker(seq_path)
 
     def _start_cal_worker(self, seq_path):
@@ -292,7 +322,7 @@ class GlobalCalibrationPanel(QWidget):
         self._progress_label.setText(msg)
 
     def _on_worker_finished(self, result):
-        """Worker completat: alimentar SeqCalRegressionWidget i recarregar dades."""
+        """Worker completat: alimentar CalibratePanel i recarregar dades."""
         self._progress_bar.setVisible(False)
         self._progress_label.setVisible(False)
 
@@ -300,25 +330,30 @@ class GlobalCalibrationPanel(QWidget):
         seq_path = result.get("seq_path", "")
         logger.info(f"CalSeqWorker completat per {seq_name}")
 
+        # --- Tab 0: Alimentar CalibratePanel amb el resultat complet ---
         calib_result = result.get("calib_result")
-        imported_data = result.get("imported_data")
-
-        # --- Tab 0: Alimentar regressió amb el resultat complet ---
-        if calib_result:
+        if calib_result and hasattr(self.diag_panel, '_on_finished'):
+            # Configurar proxy perquè CalibratePanel trobi les dades
+            self._proxy.seq_path = seq_path
+            self._proxy.imported_data = result.get("imported_data")
             try:
-                self.regression_widget.set_data(
-                    calib_result, seq_name, seq_path, imported_data
-                )
+                self.diag_panel._on_finished(calib_result)
             except Exception as e:
-                logger.error(f"Error alimentant regressió: {e}")
+                logger.error(f"Error mostrant diagnòstic CalibratePanel: {e}")
                 import traceback; traceback.print_exc()
+
+            # Mostrar tab diagnòstic
             self.tabs.setCurrentIndex(0)
 
         # --- Tabs 1 i 2: Recarregar dades regressió i QC ---
+        self._load_all_data()
+
+        # Pre-seleccionar la SEQ a la vista regressió
+        self.cal_view.pre_select_seq(seq_name)
+
+        # Guardar calib_result per ús futur (diagnòstic, reprocessar)
         if calib_result:
             self.cal_view.set_active_calib_result(seq_name, calib_result)
-        self._load_all_data()
-        self.cal_view.pre_select_seq(seq_name)
 
         # Notificació
         if self.main_window:

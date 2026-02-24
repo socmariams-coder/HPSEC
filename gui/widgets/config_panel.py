@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
     QGridLayout, QFrame, QSpinBox, QDoubleSpinBox, QComboBox,
     QCheckBox, QLineEdit, QMessageBox, QScrollArea, QTabWidget,
     QFileDialog, QTableWidget, QTableWidgetItem, QHeaderView,
-    QStyledItemDelegate, QSizePolicy
+    QStyledItemDelegate, QSizePolicy, QInputDialog
 )
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
@@ -283,6 +283,9 @@ class WavelengthSelector(QWidget):
 # CONFIG PANEL PRINCIPAL
 # =============================================================================
 
+_CONFIG_PASSWORD = "LEQUIA"
+
+
 class ConfigPanel(QWidget):
     """Panel de configuració del sistema amb 3 tabs per impacte."""
 
@@ -343,30 +346,6 @@ class ConfigPanel(QWidget):
         layout = QVBoxLayout(container)
         layout.setSpacing(16)
 
-        # --- Secció: Detecció ---
-        sec_det = ConfigSection("Detecció d'Anomalies", "Retroactiu", STYLE_BADGE_RETROACTIVE)
-        g = sec_det.content_layout
-        row = 0
-
-        row = self._add_double_spin(g, row, "detection.irregular_top_max_sep_min",
-            "Separació màx. cim irregular (min):", 0.1, 2.0, 0.5, 2)
-        row = self._add_double_spin(g, row, "detection.irregular_top_drop_min",
-            "Caiguda mín. cim irregular:", 0.01, 0.50, 0.05, 2)
-        row = self._add_double_spin(g, row, "detection.irregular_top_drop_max",
-            "Caiguda màx. cim irregular:", 0.10, 1.00, 0.50, 2)
-        row = self._add_double_spin(g, row, "detection.timeout_min_duration",
-            "Durada mín. timeout (s):", 1.0, 30.0, 5.0, 1)
-        row = self._add_double_spin(g, row, "detection.timeout_major",
-            "Timeout major (s):", 30.0, 120.0, 74.0, 1)
-        row = self._add_double_spin(g, row, "detection.ears_threshold",
-            "Llindar ears (% alçada):", 0.01, 0.50, 0.10, 2)
-        row = self._add_double_spin(g, row, "detection.ears_max_sep_min",
-            "Separació màx. ears (min):", 0.1, 2.0, 0.5, 2)
-        row = self._add_double_spin(g, row, "detection.irr_smoothness_threshold",
-            "Llindar irregularitat (%):", 0.05, 0.50, 0.18, 2)
-
-        layout.addWidget(sec_det)
-
         # --- Secció: Qualitat ---
         sec_qual = ConfigSection("Llindars de Qualitat", "Retroactiu", STYLE_BADGE_RETROACTIVE)
         g = sec_qual.content_layout
@@ -404,44 +383,6 @@ class ConfigPanel(QWidget):
         self._widgets["timeout_zones"] = self.timeout_zones_editor
         sec_tz.content_layout.addWidget(self.timeout_zones_editor, 0, 0, 1, 2)
         layout.addWidget(sec_tz)
-
-        # --- Secció: Baseline ---
-        sec_bl = ConfigSection("Càlcul Baseline", "Retroactiu", STYLE_BADGE_RETROACTIVE)
-        g = sec_bl.content_layout
-        row = 0
-
-        row = self._add_int_spin(g, row, "baseline.bp_end_pct",
-            "BP final (% cromatograma):", 5, 50, 20)
-        row = self._add_int_spin(g, row, "baseline.column_start_pct",
-            "COLUMN inici (% cromatograma):", 5, 50, 15)
-        row = self._add_combo(g, row, "baseline.method",
-            "Mètode:", ["mode", "median"], "mode")
-        row = self._add_int_spin(g, row, "baseline.stats_percentile_low",
-            "Percentil baix:", 1, 20, 5)
-        row = self._add_int_spin(g, row, "baseline.stats_percentile_high",
-            "Percentil alt:", 20, 80, 40)
-        row = self._add_double_spin(g, row, "baseline.min_noise_mau",
-            "Soroll mínim (mAU):", 0.001, 1.0, 0.01, 3, step=0.001)
-
-        layout.addWidget(sec_bl)
-
-        # --- Secció: Cromatograma ---
-        sec_chrom = ConfigSection("Cromatograma", "Retroactiu", STYLE_BADGE_RETROACTIVE)
-        g = sec_chrom.content_layout
-        row = 0
-
-        row = self._add_double_spin(g, row, "chromatogram.max_duration_min",
-            "Durada màxima (min):", 10.0, 120.0, 78.65, 2)
-        row = self._add_double_spin(g, row, "chromatogram.baseline_window_bp",
-            "Finestra baseline BP (min):", 0.1, 5.0, 1.0, 1)
-        row = self._add_double_spin(g, row, "chromatogram.baseline_window_column",
-            "Finestra baseline COLUMN (min):", 1.0, 30.0, 10.0, 1)
-        row = self._add_int_spin(g, row, "chromatogram.smoothing_window",
-            "Finestra suavitzat:", 3, 51, 11)
-        row = self._add_int_spin(g, row, "chromatogram.smoothing_order",
-            "Ordre suavitzat:", 1, 5, 3)
-
-        layout.addWidget(sec_chrom)
 
         # --- Secció: Wavelengths ---
         sec_wl = ConfigSection("Longituds d'Ona (DAD)", "Retroactiu", STYLE_BADGE_RETROACTIVE)
@@ -495,17 +436,10 @@ class ConfigPanel(QWidget):
             "Concentració KHP (ppm):", 1.0, 20.0, 5.0, 1)
         row = self._add_double_spin(g, row, "calibration.rsd_max",
             "RSD màxim (%):", 1.0, 30.0, 10.0, 1)
-        row = self._add_int_spin(g, row, "calibration.quality_max",
-            "Quality score màxim:", 50, 200, 100)
         row = self._add_int_spin(g, row, "calibration.volume_column",
             "Volum COLUMN (µL):", 50, 1000, 400)
         row = self._add_int_spin(g, row, "calibration.volume_bp",
             "Volum BP (µL):", 50, 500, 100)
-        row = self._add_int_spin(g, row, "calibration.min_cals_average",
-            "Mín. calibracions per mitjana:", 2, 10, 2)
-        row = self._add_checkbox(g, row, "calibration.use_historical_fallback",
-            "Usar mitjana històrica si KHP falla", True)
-
         layout.addWidget(sec_cal)
 
         # --- Secció: Injeccions Blanc ---
@@ -787,8 +721,25 @@ class ConfigPanel(QWidget):
     # SAVE CONFIG
     # =========================================================================
 
+    def _check_password(self):
+        """Demana contrasenya. Retorna True si correcta."""
+        pwd, ok = QInputDialog.getText(
+            self, "Contrasenya requerida",
+            "Introdueix la contrasenya per modificar la configuració:",
+            QLineEdit.Password
+        )
+        if not ok:
+            return False
+        if pwd != _CONFIG_PASSWORD:
+            QMessageBox.warning(self, "Accés denegat", "Contrasenya incorrecta.")
+            return False
+        return True
+
     def _save_config(self):
         """Guarda la configuració amb diàleg d'impacte si cal."""
+        if not self._check_password():
+            return
+
         # Validar fraccions
         frac_errors = self.fractions_editor.validate()
         if frac_errors:
@@ -893,6 +844,9 @@ class ConfigPanel(QWidget):
 
     def _reset_defaults(self):
         """Restaura els valors per defecte."""
+        if not self._check_password():
+            return
+
         reply = QMessageBox.question(
             self, "Confirmar",
             "Vols restaurar tots els valors per defecte?\n"
