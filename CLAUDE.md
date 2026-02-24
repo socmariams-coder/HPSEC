@@ -114,6 +114,15 @@ Mark features as DONE only when code is fully functional end-to-end, not when pl
 - [x] Warnings: dashboard alimenta Verificar/Revisar (calibrate_warnings, review_warnings) — DONE
 - [x] Warnings: calibrate_panel badges severitat (icona+color+tooltip acció) en lloc de score numèric — DONE
 - [x] Warnings: analyze_panel tooltips amb guia d'acció ("→ Excloure rèplica", etc.) — DONE
+- [ ] **⚡ Consolidació BP+COLUMN al Revisar (Pas 4)** — PENDENT (PRIORITAT ALTA)
+  - Pla complet a `~/.claude/plans/synthetic-tinkering-hoare.md` (6 fases)
+  - Bug: review_result.json MAI s'escriu → dashboard Revisar sempre pendent
+  - Nova secció Revisar: taula mostres BP vinculades + dropdown override SEQ BP
+  - BPDiscoveryWorker (cerca proximitat + nom mostra per SEQs antigues)
+  - export_sequence() accepta bp_resolved pre-resolt (evita doble cerca)
+  - Dashboard: indicador ⟳ quan BP actualitzada post-revisió (is_bp_stale)
+  - Cleanup: eliminar ConsolidatePanel (489 línies mortes)
+  - Fitxers: review_summary_panel.py, hpsec_export.py, sequence_state.py, dashboard_panel.py, hpsec_consolidate.py
 - [x] Config backend: config fingerprint (SHA-256 16 chars) per detectar obsolescència — DONE
 - [x] Config backend: migració batman_max_sep → batman_max_sep_min — DONE
 - [x] Config backend: REPROCESS_SECTIONS/FUTURE_SECTIONS/IMMEDIATE_SECTIONS constants — DONE

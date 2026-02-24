@@ -2,19 +2,15 @@
 HPSEC Suite - Global Calibration Panel
 ========================================
 
-Panell de calibració global amb tres vistes:
-- Tab 0: Diagnòstic KHP — vista completa CalibratePanel (cromatogrames, mètriques, rèpliques)
-- Tab 1: Recta de Calibració — regressió des de SEQ_CAL dedicades (inclou aplicar)
-- Tab 2: Control de Qualitat — Levey-Jennings per KHP de producció
-
-Les SEQ_CAL arriben directament des del Dashboard (sense passar pel wizard).
+Panell de calibració global — vista única amb regressió des de SEQ_CAL.
+El Levey-Jennings QC es mostra al HistoryPanel (Tab 7).
+Les SEQ_CAL arriben directament des del Dashboard.
 """
-
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QGroupBox,
     QGridLayout, QTableWidget, QTableWidgetItem, QHeaderView,
     QComboBox, QMessageBox, QSplitter, QRadioButton, QButtonGroup,
-    QSizePolicy, QCheckBox, QTabWidget, QListWidget,
+    QSizePolicy, QCheckBox, QListWidget,
     QListWidgetItem, QFrame, QProgressBar, QDateEdit, QScrollArea
 )
 from PySide6.QtCore import Qt, Signal, QThread, QDate
@@ -34,6 +30,7 @@ from hpsec_calibrate import (
     fit_calibration_from_history,
     load_calibration_reference,
     compute_calibration_fingerprint,
+    detect_seq_cal_data,
 )
 
 import matplotlib
@@ -43,32 +40,6 @@ from matplotlib.figure import Figure
 import numpy as np
 
 logger = logging.getLogger(__name__)
-
-
-# =============================================================================
-# PROXY: Permet CalibratePanel funcionar fora del wizard
-# =============================================================================
-
-class _MainWindowProxy:
-    """Proxy per satisfer les dependències de CalibratePanel.main_window.
-
-    CalibratePanel accedeix a main_window.seq_path, main_window.imported_data
-    i main_window.calibration_data (lectura/escriptura). La resta de mètodes
-    (set_status, show_progress, enable_tab) són no-op fora del wizard.
-    """
-    def __init__(self):
-        self.seq_path = None
-        self.imported_data = None
-        self.calibration_data = None
-
-    def set_status(self, msg, duration=None):
-        logger.debug(f"[CalProxy] {msg}")
-
-    def show_progress(self, pct):
-        pass
-
-    def enable_tab(self, idx):
-        pass
 
 
 # =============================================================================
@@ -148,6 +119,16 @@ class CalSeqWorker(QThread):
                 progress_callback=lambda p, m: progress_cb(50 + int(p * 0.45), m),
             )
 
+            progress_cb(90, "Detectant SEQ_CAL...")
+
+            # Detectar SEQ_CAL i extreure dades riques
+            method = imported_data.get("method", "COLUMN")
+            uib_sensitivity = imported_data.get("uib_sensitivity")
+            seq_cal_data = detect_seq_cal_data(
+                calib_result, self.seq_path,
+                method=method, uib_sensitivity=uib_sensitivity,
+            )
+
             progress_cb(95, "Finalitzant...")
 
             # Preparar resultat
@@ -157,6 +138,7 @@ class CalSeqWorker(QThread):
                 "seq_path": self.seq_path,
                 "imported_data": imported_data,
                 "calib_result": calib_result,
+                "seq_cal_data": seq_cal_data,
             }
             self.finished.emit(result)
 
@@ -165,13 +147,13 @@ class CalSeqWorker(QThread):
             self.error.emit(f"{str(e)}\n{traceback.format_exc()}")
 
 
-class GlobalCalibrationPanel(QWidget):
-    """Panell de calibració global amb diagnòstic complet per SEQ_CAL.
 
-    Tab 0 (Diagnòstic KHP): CalibratePanel embegut — cromatogrames, mètriques,
-    rèpliques, delay, validació, històric QC. Exactament el que es veia al wizard.
-    Tab 1 (Recta): Regressió amb tots els punts KHP_History.
-    Tab 2 (QC): Levey-Jennings per KHP de producció.
+class GlobalCalibrationPanel(QWidget):
+    """Panell de calibració global — vista única amb regressió des de SEQ_CAL.
+
+    Les SEQ_CAL arriben des del Dashboard. CalSeqWorker importa + calibra,
+    i la CalibrationLineView mostra la regressió amb scatter, residuals,
+    comparació amb la calibració vigent, i secció d'aplicar.
     """
 
     def __init__(self, main_window):
@@ -179,40 +161,41 @@ class GlobalCalibrationPanel(QWidget):
         self.main_window = main_window
         self._all_calibrations = []
         self._active_seq_path = None
+        self._result_cache = {}
         self._setup_ui()
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 8, 12, 8)
 
-        # Títol
+        # Header: títol + botó PDF
+        header = QHBoxLayout()
         title = QLabel("Calibració Global")
         title.setFont(QFont("Segoe UI", 16, QFont.Bold))
-        layout.addWidget(title)
+        header.addWidget(title)
 
         subtitle = QLabel(
-            "Diagnòstic KHP · Recta de Calibració · Control de Qualitat"
+            "Regressió des de SEQ_CAL · Aplicar calibració"
         )
         subtitle.setFont(QFont("Segoe UI", 9))
         subtitle.setStyleSheet("color: #666;")
-        layout.addWidget(subtitle)
+        header.addWidget(subtitle)
 
-        # Botó generar informe PDF
-        report_row = QHBoxLayout()
-        report_row.addStretch()
-        self._report_btn = QPushButton("📄 Generar Informe Calibració (PDF)")
+        header.addStretch()
+
+        self._report_btn = QPushButton("📄 Informe PDF")
         self._report_btn.setStyleSheet("""
             QPushButton {
                 background-color: #2980B9; color: white;
                 border: none; border-radius: 6px;
-                padding: 8px 20px; font-size: 12px; font-weight: bold;
+                padding: 8px 16px; font-size: 11px; font-weight: bold;
             }
             QPushButton:hover { background-color: #3498DB; }
         """)
         self._report_btn.clicked.connect(self._on_generate_report)
-        report_row.addWidget(self._report_btn)
-        report_row.addStretch()
-        layout.addLayout(report_row)
+        header.addWidget(self._report_btn)
+
+        layout.addLayout(header)
 
         # Barra de progrés (per CalSeqWorker)
         self._progress_bar = QProgressBar()
@@ -230,28 +213,9 @@ class GlobalCalibrationPanel(QWidget):
         self._progress_label.setStyleSheet("color: #2980B9; font-style: italic;")
         layout.addWidget(self._progress_label)
 
-        # Tabs
-        self.tabs = QTabWidget()
-
-        # Tab 0: Diagnòstic KHP — CalibratePanel embegut amb proxy
-        self._proxy = _MainWindowProxy()
-        try:
-            from gui.widgets.calibrate_panel.panel import CalibratePanel
-            self.diag_panel = CalibratePanel(self._proxy)
-        except Exception as e:
-            logger.error(f"Error creant CalibratePanel embegut: {e}")
-            self.diag_panel = QLabel(f"Error carregant vista diagnòstica:\n{e}")
-        self.tabs.addTab(self.diag_panel, "🔬 Diagnòstic KHP")
-
-        # Tab 1: Recta de Calibració — regressió històrica
+        # Vista principal: CalibrationLineView (sense tabs)
         self.cal_view = CalibrationLineView(self)
-        self.tabs.addTab(self.cal_view, "📐 Recta de Calibració")
-
-        # Tab 2: Control de Qualitat — Levey-Jennings
-        self.qc_view = QCMonitorView(self)
-        self.tabs.addTab(self.qc_view, "📊 Control de Qualitat")
-
-        layout.addWidget(self.tabs, 1)
+        layout.addWidget(self.cal_view, 1)
 
         # Worker (un sol actiu)
         self._cal_worker = None
@@ -261,39 +225,28 @@ class GlobalCalibrationPanel(QWidget):
         self._load_all_data()
 
     def _load_all_data(self):
-        """Carrega KHP_History i distribueix a les dues vistes."""
+        """Carrega KHP_History i filtra entrades _CAL."""
         self._all_calibrations = load_khp_history(None)
-
-        # Separar CAL vs producció per convenció _CAL al nom
-        cal_entries = []
-        prod_entries = []
-        for entry in self._all_calibrations:
-            seq_name = entry.get("seq_name", "")
-            if "_CAL" in seq_name.upper():
-                cal_entries.append(entry)
-            else:
-                prod_entries.append(entry)
-
+        cal_entries = [
+            e for e in self._all_calibrations
+            if "_CAL" in e.get("seq_name", "").upper()
+        ]
         self.cal_view.set_data(cal_entries)
-        self.qc_view.set_data(prod_entries)
 
     def load_seq_cal(self, seq_path):
-        """Carrega una SEQ_CAL des del Dashboard.
-
-        Sempre processa via CalSeqWorker per tenir les dades de cromatograma
-        necessàries per la vista diagnòstica (Tab 0).
-        """
+        """Carrega una SEQ_CAL des del Dashboard."""
         self._active_seq_path = seq_path
         seq_name = os.path.basename(seq_path)
-
         logger.info(f"load_seq_cal: {seq_name}")
 
-        # Recarregar KHP_History per les vistes de regressió i QC
-        self._load_all_data()
+        # Comprovar cache
+        if seq_path in self._result_cache:
+            logger.info(f"  Cache hit per {seq_name}")
+            self._on_worker_finished(self._result_cache[seq_path], from_cache=True)
+            return
 
-        # Sempre processar per obtenir cromatogrames i mètriques riques
-        logger.info(f"  Processant SEQ_CAL '{seq_name}' per diagnòstic complet...")
-        self.tabs.setCurrentIndex(0)  # Tab Diagnòstic KHP
+        # Recarregar dades i processar
+        self._load_all_data()
         self._start_cal_worker(seq_path)
 
     def _start_cal_worker(self, seq_path):
@@ -310,6 +263,8 @@ class GlobalCalibrationPanel(QWidget):
         self._progress_label.setVisible(True)
         self._progress_label.setText(f"Processant {seq_name}...")
 
+        self.cal_view.show_processing_message(seq_name)
+
         self._cal_worker = CalSeqWorker(seq_path)
         self._cal_worker.progress.connect(self._on_worker_progress)
         self._cal_worker.finished.connect(self._on_worker_finished)
@@ -321,8 +276,8 @@ class GlobalCalibrationPanel(QWidget):
         self._progress_bar.setValue(pct)
         self._progress_label.setText(msg)
 
-    def _on_worker_finished(self, result):
-        """Worker completat: alimentar CalibratePanel i recarregar dades."""
+    def _on_worker_finished(self, result, from_cache=False):
+        """Worker completat: recarregar dades i pre-seleccionar SEQ."""
         self._progress_bar.setVisible(False)
         self._progress_label.setVisible(False)
 
@@ -330,28 +285,24 @@ class GlobalCalibrationPanel(QWidget):
         seq_path = result.get("seq_path", "")
         logger.info(f"CalSeqWorker completat per {seq_name}")
 
-        # --- Tab 0: Alimentar CalibratePanel amb el resultat complet ---
-        calib_result = result.get("calib_result")
-        if calib_result and hasattr(self.diag_panel, '_on_finished'):
-            # Configurar proxy perquè CalibratePanel trobi les dades
-            self._proxy.seq_path = seq_path
-            self._proxy.imported_data = result.get("imported_data")
-            try:
-                self.diag_panel._on_finished(calib_result)
-            except Exception as e:
-                logger.error(f"Error mostrant diagnòstic CalibratePanel: {e}")
-                import traceback; traceback.print_exc()
+        # Guardar al cache
+        if not from_cache and seq_path:
+            self._result_cache[seq_path] = result
 
-            # Mostrar tab diagnòstic
-            self.tabs.setCurrentIndex(0)
+        # Recarregar KHP_History (les noves entrades ja hi són)
+        if not from_cache:
+            self._load_all_data()
 
-        # --- Tabs 1 i 2: Recarregar dades regressió i QC ---
-        self._load_all_data()
+        # Passar dades riques SEQ_CAL si disponibles
+        seq_cal_data = result.get("seq_cal_data")
+        if seq_cal_data:
+            self.cal_view.set_seq_cal_data(seq_name, seq_cal_data)
 
-        # Pre-seleccionar la SEQ a la vista regressió
+        # Pre-seleccionar la SEQ processada
         self.cal_view.pre_select_seq(seq_name)
 
-        # Guardar calib_result per ús futur (diagnòstic, reprocessar)
+        # Guardar calib_result per diagnòstic
+        calib_result = result.get("calib_result")
         if calib_result:
             self.cal_view.set_active_calib_result(seq_name, calib_result)
 
@@ -366,7 +317,6 @@ class GlobalCalibrationPanel(QWidget):
 
         logger.error(f"CalSeqWorker error: {error_msg}")
 
-        # Mostrar error a la comparació
         self.cal_view.comparison_label.setText(
             f"<div style='text-align:center; padding:20px;'>"
             f"<span style='font-size:14px; color:#E74C3C;'>"
@@ -403,7 +353,6 @@ class GlobalCalibrationPanel(QWidget):
                     self, "Informe generat",
                     f"Informe de calibració generat:\n{pdf_path}"
                 )
-                # Obrir el PDF
                 try:
                     os.startfile(pdf_path)
                 except AttributeError:
@@ -415,13 +364,16 @@ class GlobalCalibrationPanel(QWidget):
             logger.error(f"Error generant informe calibració: {e}")
             QMessageBox.critical(self, "Error", f"Error generant informe:\n{e}")
 
-
 # =============================================================================
 # VISTA 1: RECTA DE CALIBRACIÓ (des de SEQ_CAL)
 # =============================================================================
 
 class CalibrationLineView(QWidget):
-    """Vista per construir recta de calibració des de SEQ_CAL dedicades."""
+    """Vista per construir recta de calibració des de SEQ_CAL dedicades.
+
+    Combina dades de KHP_History (SEQs anteriors) amb dades riques
+    de CalSeqWorker (SEQ acabada de processar, amb replicas per preview).
+    """
 
     def __init__(self, parent_panel):
         super().__init__()
@@ -432,6 +384,10 @@ class CalibrationLineView(QWidget):
         self._last_result = None
         self._loading = False
         self._active_calib_results = {}  # {seq_name: calib_result}
+        # Rich SEQ_CAL data (from CalSeqWorker via detect_seq_cal_data)
+        self._seq_cal_rich_data = {}  # {seq_name: seq_cal_data}
+        # Excluded indices (auto-excluded or manually unchecked)
+        self._excluded_indices = set()
         self._setup_ui()
 
     def _setup_ui(self):
@@ -453,14 +409,32 @@ class CalibrationLineView(QWidget):
         # Selectors mode/senyal/model
         left_layout.addWidget(self._create_selectors_group())
 
+        # Warning sensibilitat UIB barrejada
+        self.sensitivity_warning = QLabel()
+        self.sensitivity_warning.setWordWrap(True)
+        self.sensitivity_warning.setStyleSheet(
+            "background: #FCF3CF; border: 1px solid #F39C12; border-radius: 4px; "
+            "padding: 8px; color: #7D6608; font-size: 11px;"
+        )
+        self.sensitivity_warning.setVisible(False)
+        left_layout.addWidget(self.sensitivity_warning)
+
         # Selector de SEQ_CAL
         left_layout.addWidget(self._create_seq_selector())
 
         # Taula punts (protagonista — stretch=3)
         left_layout.addWidget(self._create_points_table(), 3)
 
+        # Preview cromatograma (ocult fins que es clica un punt)
+        self._chrom_figure = Figure(figsize=(8, 2.5), dpi=100)
+        self._chrom_figure.set_facecolor("#FAFAFA")
+        self._chrom_canvas = FigureCanvas(self._chrom_figure)
+        self._chrom_canvas.setMaximumHeight(220)
+        self._chrom_canvas.setVisible(False)
+        left_layout.addWidget(self._chrom_canvas)
+
         # Detall del punt seleccionat
-        left_layout.addWidget(self._create_detail_group(), 2)
+        left_layout.addWidget(self._create_detail_group())
 
         # Resultats regressió + botons
         left_layout.addWidget(self._create_results_group())
@@ -561,12 +535,25 @@ class CalibrationLineView(QWidget):
         layout.addWidget(self.radio_intercept)
         layout.addWidget(self.radio_origin)
 
+        layout.addSpacing(12)
+
+        # Repair toggle (per pics amb cim irregular)
+        self.repair_check = QCheckBox("Usar àrea reparada")
+        self.repair_check.setChecked(True)
+        self.repair_check.setToolTip(
+            "Quan activat, usa l'àrea corregida (paràbola) per pics amb cim irregular.\n"
+            "Desactivar per usar l'àrea original sense reparació."
+        )
+        self.repair_check.setVisible(False)  # Visible quan hi ha entrades reparades
+        layout.addWidget(self.repair_check)
+
         layout.addStretch()
 
         # Connexions
         self.mode_group.buttonClicked.connect(self._on_params_changed)
-        self.signal_combo.currentIndexChanged.connect(self._on_params_changed)
+        self.signal_combo.currentIndexChanged.connect(self._on_signal_changed)
         self.model_group.buttonClicked.connect(self._on_params_changed)
+        self.repair_check.stateChanged.connect(self._on_repair_toggled)
 
         return group
 
@@ -695,6 +682,20 @@ class CalibrationLineView(QWidget):
         return widget
 
     # ---- Calib result / Diagnòstic ----
+
+    def set_seq_cal_data(self, seq_name, seq_cal_data):
+        """Guarda dades riques SEQ_CAL (amb replicas per preview cromatograma).
+
+        Quan disponible, les entrades d'aquesta SEQ s'utilitzen en lloc de
+        les entrades KHP_History (que no tenen replicas ni àrea reparada).
+        """
+        self._seq_cal_rich_data[seq_name] = seq_cal_data
+        logger.info(
+            f"Rich SEQ_CAL data per {seq_name}: "
+            f"{seq_cal_data.get('n_entries', 0)} entries, "
+            f"Direct={len(seq_cal_data.get('entries_direct', []))}, "
+            f"UIB={len(seq_cal_data.get('entries_uib', []))}"
+        )
 
     def set_active_calib_result(self, seq_name, calib_result):
         """Guarda el resultat de calibració ric per diagnòstic posterior."""
@@ -1064,7 +1065,11 @@ class CalibrationLineView(QWidget):
         self._recalculate_regression()
 
     def _refresh_points_table(self):
-        """Pobla la taula amb punts de les SEQs seleccionades (14 columnes)."""
+        """Pobla la taula amb punts de les SEQs seleccionades (14 columnes).
+
+        Usa rich entries (de seq_cal_data) quan disponibles, amb swap per senyal.
+        Fallback a KHP_History per SEQs sense dades riques.
+        """
         mode = self._get_mode()
         signal = self._get_signal()
         selected_seqs = self._get_selected_seq_names()
@@ -1072,11 +1077,40 @@ class CalibrationLineView(QWidget):
         self.points_table.setRowCount(0)
         self.points_table.blockSignals(True)
 
-        # Recollir punts de les SEQs seleccionades
+        # Recollir punts: rich entries (si disponibles) o KHP_History
         self._filtered_entries = []
+        self._excluded_indices = set()
+        any_repaired = False
+
         for seq_name in selected_seqs:
-            for entry in self._grouped_by_seq.get(seq_name, []):
-                self._filtered_entries.append(entry)
+            rich = self._seq_cal_rich_data.get(seq_name)
+            if rich:
+                # Usar rich entries amb swap per senyal
+                sig = signal.lower()
+                if sig == 'uib' and rich.get('entries_uib'):
+                    entries = rich['entries_uib']
+                elif sig == 'direct' and rich.get('entries_direct'):
+                    entries = rich['entries_direct']
+                else:
+                    entries = rich.get('entries', [])
+                start_idx = len(self._filtered_entries)
+                for i, entry in enumerate(entries):
+                    self._filtered_entries.append(entry)
+                    # Auto-excloure UIB saturats
+                    if entry.get('uib_saturated'):
+                        self._excluded_indices.add(start_idx + i)
+                    # Check si hi ha àrees reparades
+                    if entry.get('area_original') and entry.get('area_original') != entry.get('area', 0):
+                        any_repaired = True
+            else:
+                for entry in self._grouped_by_seq.get(seq_name, []):
+                    self._filtered_entries.append(entry)
+
+        # Detectar barreja sensibilitats UIB
+        self._check_uib_sensitivity_mixing()
+
+        # Visibilitat repair toggle
+        self.repair_check.setVisible(any_repaired)
 
         self.points_table.setRowCount(len(self._filtered_entries))
 
@@ -1129,10 +1163,13 @@ class CalibrationLineView(QWidget):
             else:
                 estat = "OK"
 
-            # Col 0: Checkbox
+            # Col 0: Checkbox (excluded = auto-excluded or bad_point)
+            excluded = row in self._excluded_indices or bad_point
             chk = QCheckBox()
-            chk.setChecked(not bad_point)
-            chk.stateChanged.connect(self._on_point_toggled)
+            chk.setChecked(not excluded)
+            chk.stateChanged.connect(
+                lambda state, idx=row: self._on_point_toggled_idx(idx, state)
+            )
             chk_widget = QWidget()
             chk_layout = QHBoxLayout(chk_widget)
             chk_layout.addWidget(chk)
@@ -1207,6 +1244,17 @@ class CalibrationLineView(QWidget):
     # ---- Events ----
 
     def _on_params_changed(self, *args):
+        """Mode o model canviat — reload complet."""
+        if self._loading:
+            return
+        self._loading = True
+        self._load_current_calibration()
+        self._populate_seq_list()
+        self._loading = False
+        self._refresh_points_and_recalculate()
+
+    def _on_signal_changed(self, *args):
+        """Senyal canviat (Direct/UIB/254) — swap entries per SEQs amb dades riques."""
         if self._loading:
             return
         self._loading = True
@@ -1219,24 +1267,95 @@ class CalibrationLineView(QWidget):
         if not self._loading:
             self._refresh_points_and_recalculate()
 
-    def _on_point_toggled(self, *args):
+    def _on_point_toggled_idx(self, idx, state):
+        """Checkbox d'un punt toggled (amb índex explícit)."""
+        if state == 0:  # Unchecked
+            self._excluded_indices.add(idx)
+        else:
+            self._excluded_indices.discard(idx)
         if not self._loading:
             self._recalculate_regression()
+
+    def _on_repair_toggled(self, state):
+        """Toggle entre àrea reparada i àrea original."""
+        use_repaired = (state != 0)
+        seen = set()
+        for seq_name, rich in self._seq_cal_rich_data.items():
+            for entries_list in (rich.get('entries_direct', []), rich.get('entries_uib', [])):
+                for entry in entries_list:
+                    if id(entry) in seen:
+                        continue
+                    seen.add(id(entry))
+                    area_orig = entry.get('area_original')
+                    if not area_orig:
+                        continue
+                    if use_repaired:
+                        entry['area'] = entry.get('area_repaired', entry['area'])
+                    else:
+                        entry['area'] = area_orig
+                    # Recalcular RF_mass
+                    conc = entry.get('conc_ppm', 0)
+                    vol = entry.get('volume_uL', 0)
+                    if conc > 0 and vol > 0:
+                        entry['rf_mass'] = entry['area'] * 1000.0 / (conc * vol)
+                    if 'area_u' in entry:
+                        entry['area_u'] = entry['area']
+        if not self._loading:
+            self._refresh_points_and_recalculate()
+
+    def _check_uib_sensitivity_mixing(self):
+        """Detecta barreja de sensibilitats UIB i auto-exclou la minoria."""
+        signal = self._get_signal().lower()
+        if signal != 'uib':
+            self.sensitivity_warning.setVisible(False)
+            return
+
+        sens_counts = {}  # {sensibilitat: [índexos]}
+        for i, e in enumerate(self._filtered_entries):
+            if i in self._excluded_indices:
+                continue
+            s = e.get('uib_sensitivity')
+            if s and s > 0:
+                sens_counts.setdefault(s, []).append(i)
+
+        if len(sens_counts) <= 1:
+            self.sensitivity_warning.setVisible(False)
+            return
+
+        # Auto-excloure minoria
+        majority_sens = max(sens_counts, key=lambda s: len(sens_counts[s]))
+        minority_count = 0
+        for s, indices in sens_counts.items():
+            if s != majority_sens:
+                for idx in indices:
+                    self._excluded_indices.add(idx)
+                    minority_count += 1
+
+        sens_str = ", ".join(
+            f"{s:g} ppb ({len(sens_counts[s])} punts)" for s in sorted(sens_counts)
+        )
+        self.sensitivity_warning.setText(
+            f"<b>Barreja de sensibilitats UIB detectada:</b> {sens_str}<br>"
+            f"S'han auto-exclòs {minority_count} punt(s) amb sensibilitat "
+            f"diferent de {majority_sens:g} ppb."
+        )
+        self.sensitivity_warning.setVisible(True)
 
     # ---- Regressió ----
 
     def _get_selected_calibrations(self):
-        """Retorna llista d'entrades seleccionades (checkbox marcat a la taula)."""
+        """Retorna llista d'entrades seleccionades (no excloses)."""
         filtered = getattr(self, '_filtered_entries', [])
-
         selected = []
-        for row in range(self.points_table.rowCount()):
-            chk_widget = self.points_table.cellWidget(row, 0)
-            if chk_widget:
-                chk = chk_widget.findChild(QCheckBox)
-                if chk and chk.isChecked() and row < len(filtered):
-                    selected.append(filtered[row])
-
+        for i, entry in enumerate(filtered):
+            if i not in self._excluded_indices:
+                # Also check the checkbox widget state
+                chk_widget = self.points_table.cellWidget(i, 0)
+                if chk_widget:
+                    chk = chk_widget.findChild(QCheckBox)
+                    if chk and not chk.isChecked():
+                        continue
+                selected.append(entry)
         return selected
 
     def _recalculate_regression(self):
@@ -1368,6 +1487,98 @@ class CalibrationLineView(QWidget):
                 lines.append(f"  <i>... i {len(all_iss)-6} més</i>")
 
         self._detail_label.setText("<br>".join(lines))
+
+        # Preview cromatograma si l'entrada té replicas (dades riques)
+        self._update_chromatogram_preview(cal)
+
+    def _update_chromatogram_preview(self, entry):
+        """Mostra preview cromatograma R1+R2 si l'entrada té replicas."""
+        replicas = entry.get('replicas', [])
+        if not replicas:
+            self._chrom_canvas.setVisible(False)
+            return
+
+        try:
+            fig = self._chrom_figure
+            fig.clear()
+            ax = fig.add_subplot(111)
+
+            doc_colors = ['#2196F3', '#1565C0']
+            doc_styles = ['-', '--']
+            ax2 = None
+
+            for r_idx, rep in enumerate(replicas[:2]):
+                r_label = f"R{r_idx + 1}"
+                color = doc_colors[r_idx]
+                style = doc_styles[r_idx]
+
+                t_doc = rep.get('t_doc')
+                y_doc = rep.get('y_doc')
+                y_repaired = rep.get('y_doc_repaired')
+
+                if t_doc is not None and y_doc is not None:
+                    t_arr = np.asarray(t_doc)
+                    y_arr = np.asarray(y_doc)
+                    ax.plot(t_arr, y_arr, color=color, linewidth=1.2,
+                            linestyle=style, label=f'{r_label} DOC',
+                            alpha=0.9 if r_idx == 0 else 0.6)
+
+                    if y_repaired is not None:
+                        y_rep = np.asarray(y_repaired)
+                        ax.plot(t_arr, y_rep, color='#E74C3C', linewidth=1,
+                                linestyle='--', label=f'{r_label} Reparat',
+                                alpha=0.7 if r_idx == 0 else 0.4)
+
+                    # Ombrejat àrea d'integració
+                    peak_info = rep.get('peak_info', {})
+                    t_start = peak_info.get('t_start')
+                    t_end = peak_info.get('t_end')
+                    if t_start is not None and t_end is not None:
+                        mask = (t_arr >= t_start) & (t_arr <= t_end)
+                        if np.any(mask):
+                            y_fill = (np.asarray(y_repaired)[mask]
+                                      if y_repaired is not None else y_arr[mask])
+                            ax.fill_between(t_arr[mask], 0, y_fill,
+                                            color=color, alpha=0.12)
+                        if r_idx == 0:
+                            ax.axvline(t_start, color='gray', linewidth=0.5,
+                                       linestyle=':', alpha=0.6)
+                            ax.axvline(t_end, color='gray', linewidth=0.5,
+                                       linestyle=':', alpha=0.6)
+
+                # 254nm signal (eix secundari)
+                t_dad = rep.get('t_dad')
+                y_254 = rep.get('y_dad_254')
+                if t_dad is not None and y_254 is not None:
+                    if ax2 is None:
+                        ax2 = ax.twinx()
+                        ax2.set_ylabel('254nm', color='#9B59B6', fontsize=8)
+                        ax2.tick_params(axis='y', labelcolor='#9B59B6', labelsize=7)
+                    ax2.plot(np.asarray(t_dad), np.asarray(y_254),
+                             color='#9B59B6', linewidth=0.8,
+                             linestyle='-' if r_idx == 0 else ':',
+                             alpha=0.5, label=f'{r_label} 254nm')
+
+            conc = entry.get('conc_ppm', 0)
+            name = entry.get('name_full', entry.get('condition_key', ''))
+            ax.set_title(f"{name} ({conc:g} ppm)", fontsize=9, fontweight='bold')
+            ax.set_xlabel('Temps (min)', fontsize=8)
+            ax.set_ylabel('DOC', fontsize=8, color='#2196F3')
+            ax.tick_params(labelsize=7)
+
+            lines_h, labels_h = ax.get_legend_handles_labels()
+            if ax2:
+                l2, lb2 = ax2.get_legend_handles_labels()
+                lines_h += l2
+                labels_h += lb2
+            ax.legend(lines_h, labels_h, loc='upper right', fontsize=6, ncol=2)
+
+            fig.tight_layout()
+            self._chrom_canvas.setVisible(True)
+            self._chrom_canvas.draw()
+        except Exception as e:
+            logger.warning(f"Error preview cromatograma: {e}")
+            self._chrom_canvas.setVisible(False)
 
     # ---- Gràfic ----
 
@@ -1869,236 +2080,3 @@ class CalibrationLineView(QWidget):
             )
             self._apply_btn.setEnabled(True)
 
-
-# =============================================================================
-# VISTA 2: CONTROL DE QUALITAT (Levey-Jennings)
-# =============================================================================
-
-class QCMonitorView(QWidget):
-    """Vista QC: Levey-Jennings de KHP producció vs recta vigent."""
-
-    def __init__(self, parent_panel):
-        super().__init__()
-        self.parent_panel = parent_panel
-        self._prod_entries = []
-        self._setup_ui()
-
-    def _setup_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 4, 0, 0)
-        layout.setSpacing(8)
-
-        # Selectors
-        sel_widget = QWidget()
-        sel_layout = QHBoxLayout(sel_widget)
-        sel_layout.setContentsMargins(0, 0, 0, 0)
-
-        sel_layout.addWidget(QLabel("Mode:"))
-        self.mode_group = QButtonGroup(self)
-        self.radio_column = QRadioButton("COLUMN")
-        self.radio_bp = QRadioButton("BP")
-        self.radio_column.setChecked(True)
-        self.mode_group.addButton(self.radio_column, 0)
-        self.mode_group.addButton(self.radio_bp, 1)
-        sel_layout.addWidget(self.radio_column)
-        sel_layout.addWidget(self.radio_bp)
-
-        sel_layout.addSpacing(16)
-
-        sel_layout.addWidget(QLabel("Senyal:"))
-        self.signal_combo = QComboBox()
-        self.signal_combo.addItems(["direct", "uib", "254"])
-        self.signal_combo.setFixedWidth(80)
-        sel_layout.addWidget(self.signal_combo)
-
-        sel_layout.addStretch()
-
-        self.mode_group.buttonClicked.connect(self._refresh)
-        self.signal_combo.currentIndexChanged.connect(self._refresh)
-
-        layout.addWidget(sel_widget)
-
-        # Gràfic Levey-Jennings
-        self.figure = Figure(figsize=(10, 5), dpi=100)
-        self.canvas = FigureCanvas(self.figure)
-        self.canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        layout.addWidget(self.canvas, 1)
-
-        # Resum estadístic
-        self.stats_label = QLabel("")
-        self.stats_label.setWordWrap(True)
-        self.stats_label.setTextFormat(Qt.RichText)
-        self.stats_label.setStyleSheet(
-            "QLabel { background: #f8f9fa; border: 1px solid #dee2e6; "
-            "border-radius: 4px; padding: 8px; }"
-        )
-        layout.addWidget(self.stats_label)
-
-    def _get_mode(self):
-        return "COLUMN" if self.radio_column.isChecked() else "BP"
-
-    def _get_signal(self):
-        return self.signal_combo.currentText()
-
-    def set_data(self, prod_entries):
-        """Rep les entrades de producció (no _CAL)."""
-        self._prod_entries = prod_entries
-        self._refresh()
-
-    def _refresh(self, *args):
-        """Actualitza gràfic i estadístiques."""
-        mode = self._get_mode()
-        signal = self._get_signal()
-
-        # Obtenir calibració activa
-        cal = get_active_global_calibration()
-        if not cal:
-            self.stats_label.setText("<i>No hi ha calibració activa.</i>")
-            self.figure.clear()
-            self.canvas.draw()
-            return
-
-        # RF i intercept actuals
-        rf_data = cal.get('rf_mass_cal', {})
-        int_data = cal.get('intercept', 0)
-        rf = None
-        intercept = 0
-
-        if isinstance(rf_data, dict):
-            sig_rf = rf_data.get(signal, {})
-            if isinstance(sig_rf, dict):
-                rf = sig_rf.get(mode.lower())
-        if isinstance(int_data, dict):
-            sig_int = int_data.get(signal, {})
-            if isinstance(sig_int, dict):
-                intercept = sig_int.get(mode.lower(), 0)
-        elif isinstance(int_data, (int, float)):
-            intercept = int_data
-
-        if rf is None or rf <= 0:
-            self.stats_label.setText(
-                f"<i>No hi ha RF per {mode} {signal}.</i>"
-            )
-            self.figure.clear()
-            self.canvas.draw()
-            return
-
-        # Filtrar entrades per mode
-        entries = []
-        for e in self._prod_entries:
-            if e.get('mode', '').upper() != mode.upper():
-                continue
-            conc = e.get('conc_ppm', 0)
-            vol = e.get('volume_uL', 0)
-            if conc <= 0 or vol <= 0:
-                continue
-
-            if signal.lower() == 'uib':
-                area = e.get('area_u', 0)
-            elif signal.lower() == '254':
-                area = e.get('area_254', 0) or 0
-            else:
-                area = e.get('area', 0)
-
-            if area <= 0:
-                continue
-
-            ug = conc * vol / 1000.0
-            area_pred = rf * ug + intercept
-            dev_pct = (area - area_pred) / area_pred * 100 if area_pred > 0 else 0
-
-            entries.append({
-                'seq_name': e.get('seq_name', ''),
-                'date': e.get('date', ''),
-                'conc_ppm': conc,
-                'area': area,
-                'area_pred': area_pred,
-                'dev_pct': dev_pct,
-                'is_outlier': e.get('is_outlier', False),
-            })
-
-        # Ordenar cronològicament
-        entries.sort(key=lambda x: x['date'])
-
-        # Gràfic Levey-Jennings
-        self.figure.clear()
-        ax = self.figure.add_subplot(111)
-
-        if not entries:
-            ax.text(0.5, 0.5, "No hi ha dades QC per aquest mode/senyal",
-                    ha='center', va='center', fontsize=12, color='#666')
-            self.stats_label.setText("<i>No hi ha entrades QC de producció.</i>")
-            self.canvas.draw()
-            return
-
-        devs = [e['dev_pct'] for e in entries]
-        x_pos = range(len(entries))
-        colors = []
-        for d in devs:
-            if abs(d) > 20:
-                colors.append('#dc3545')  # vermell
-            elif abs(d) > 10:
-                colors.append('#ffc107')  # taronja
-            else:
-                colors.append('#28a745')  # verd
-
-        ax.bar(x_pos, devs, color=colors, alpha=0.7, width=0.8)
-
-        # Línies de referència
-        ax.axhline(0, color='black', linewidth=1)
-        ax.axhline(10, color='#ffc107', linewidth=0.8, linestyle='--', alpha=0.7, label='±10%')
-        ax.axhline(-10, color='#ffc107', linewidth=0.8, linestyle='--', alpha=0.7)
-        ax.axhline(20, color='#dc3545', linewidth=0.8, linestyle='--', alpha=0.7, label='±20%')
-        ax.axhline(-20, color='#dc3545', linewidth=0.8, linestyle='--', alpha=0.7)
-
-        # Línia tendència
-        if len(devs) >= 3:
-            x_arr = np.arange(len(devs))
-            coeffs = np.polyfit(x_arr, devs, 1)
-            trend_line = np.polyval(coeffs, x_arr)
-            ax.plot(x_arr, trend_line, 'b-', linewidth=1.5, alpha=0.6,
-                    label=f"Tendència ({coeffs[0]:+.2f}%/SEQ)")
-
-        # Etiquetes eix X (noms SEQ cada N)
-        n_labels = min(15, len(entries))
-        step = max(1, len(entries) // n_labels)
-        tick_pos = list(range(0, len(entries), step))
-        tick_labels = [entries[i]['seq_name'][:15] for i in tick_pos]
-        ax.set_xticks(tick_pos)
-        ax.set_xticklabels(tick_labels, rotation=45, ha='right', fontsize=7)
-
-        ax.set_ylabel("Desviació vs recta (%)")
-        ax.set_title(f"QC Levey-Jennings — {mode} {signal} (RF={rf:.0f}, int={intercept:.0f})")
-        ax.legend(fontsize=7, loc='upper right')
-        ax.grid(True, alpha=0.2, axis='y')
-        ax.set_ylim(min(min(devs) - 5, -25), max(max(devs) + 5, 25))
-
-        self.figure.tight_layout()
-        self.canvas.draw()
-
-        # Estadístiques
-        mean_dev = np.mean(devs)
-        std_dev = np.std(devs)
-        n_total = len(devs)
-        n_out_10 = sum(1 for d in devs if abs(d) > 10)
-        n_out_20 = sum(1 for d in devs if abs(d) > 20)
-
-        trend_slope = coeffs[0] if len(devs) >= 3 else 0
-
-        # Indicador d'estat global
-        if n_out_20 > n_total * 0.1 or abs(mean_dev) > 15:
-            status = "<span style='color:#dc3545; font-weight:bold;'>⚠ FORA DE CONTROL</span>"
-        elif n_out_10 > n_total * 0.2 or abs(mean_dev) > 10:
-            status = "<span style='color:#ffc107; font-weight:bold;'>⚠ ATENCIÓ</span>"
-        else:
-            status = "<span style='color:#28a745; font-weight:bold;'>✓ EN CONTROL</span>"
-
-        self.stats_label.setText(
-            f"{status} — "
-            f"n={n_total}, "
-            f"Desv. mitjana: <b>{mean_dev:+.1f}%</b>, "
-            f"SD: {std_dev:.1f}%, "
-            f"Fora ±10%: {n_out_10} ({n_out_10/n_total*100:.0f}%), "
-            f"Fora ±20%: {n_out_20} ({n_out_20/n_total*100:.0f}%), "
-            f"Tendència: {trend_slope:+.2f}%/SEQ"
-        )

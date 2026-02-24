@@ -4000,6 +4000,132 @@ def _generate_calibration_warnings(result: dict, method: str = "COLUMN") -> list
 
 
 # =============================================================================
+# DETECCIÓ SEQ_CAL (backend — extret del wizard)
+# =============================================================================
+
+def detect_seq_cal_data(calib_result, seq_path, method=None, uib_sensitivity=None):
+    """Extreu dades SEQ_CAL del resultat de calibrate_from_import().
+
+    Criteri SEQ_CAL:
+    - Nom conté _CAL, O
+    - ≥3 calibracions amb ≥2 concentracions
+
+    Args:
+        calib_result: Dict retornat per calibrate_from_import()
+        seq_path: Path de la seqüència
+        method: "COLUMN" o "BP" (auto-detectat si None)
+        uib_sensitivity: Sensibilitat UIB en ppb (per detecció saturació)
+
+    Returns:
+        dict or None: seq_cal_data amb entries, entries_direct, entries_uib, etc.
+            None si no és SEQ_CAL.
+    """
+    cals_direct = calib_result.get('calibrations_direct', [])
+    cals_uib = calib_result.get('calibrations_uib', [])
+    cals = cals_direct or cals_uib or calib_result.get('calibrations', [])
+
+    if not cals or len(cals) < 3:
+        return None
+
+    seq_name_upper = os.path.basename(seq_path).upper() if seq_path else ""
+    name_has_cal = "_CAL" in seq_name_upper
+
+    # Concentracions úniques
+    concs = set()
+    for cal in cals:
+        c = cal.get('conc_ppm', 0)
+        if c > 0:
+            concs.add(round(c, 4))
+    auto_detect = len(cals) >= 3 and len(concs) >= 2
+
+    if not name_has_cal and not auto_detect:
+        return None
+
+    # Determinar mode
+    if method is None:
+        method = "COLUMN"
+        if any(c.get('is_bp', False) for c in cals):
+            method = "BP"
+        elif "_BP" in seq_name_upper:
+            method = "BP"
+
+    seq_basename = os.path.basename(seq_path) if seq_path else ''
+
+    def _build_entries(cal_list, signal_name):
+        """Construeix llista d'entrades de calibració per un senyal."""
+        entries = []
+        for cal in cal_list:
+            conc = cal.get('conc_ppm', 0)
+            vol = cal.get('volume_uL', 0)
+            area = cal.get('area', 0)
+            if conc <= 0 or vol <= 0 or area <= 0:
+                continue
+
+            # Detectar saturació UIB
+            uib_saturated = False
+            if signal_name == 'uib' and uib_sensitivity:
+                replicas = cal.get('replicas', [])
+                for rep in replicas:
+                    y_max = rep.get('metrics', {}).get('intensity_doc', 0)
+                    if y_max >= uib_sensitivity * 0.95:
+                        uib_saturated = True
+                        break
+
+            entry = {
+                'seq_name': seq_basename,
+                'mode': method,
+                'conc_ppm': conc,
+                'volume_uL': vol,
+                'area': area,
+                'is_outlier': False,
+                'valid_for_calibration': not uib_saturated,
+                'condition_key': cal.get('condition_key', f"KHP{conc:g}@{vol}µL"),
+                'rf_mass': cal.get('rf_mass', 0),
+                'quality_score': cal.get('quality_score', 0),
+                'name_full': cal.get('name_full', ''),
+                'a254_area': cal.get('a254_area', 0),
+                'a254_doc_ratio': cal.get('a254_doc_ratio', 0),
+                'has_irregular_top': cal.get('has_irregular_top', False),
+                'irregular_top_repaired': cal.get('irregular_top_repaired', False),
+                'area_uib': cal.get('area_uib', 0),
+                'area_original': cal.get('area_original', 0),
+                'area_repaired': cal.get('area_repaired', 0),
+                'rf_mass_uib': cal.get('rf_mass_uib', 0),
+                'has_timeout': cal.get('has_timeout', False),
+                'timeout_severity': cal.get('timeout_severity', 'OK'),
+                'uib_sensitivity': cal.get('uib_sensitivity'),
+                'uib_saturated': uib_saturated,
+                # Replicas per chromatogram preview
+                'replicas': cal.get('replicas', []),
+            }
+            if signal_name == 'uib':
+                entry['area_u'] = area
+            entries.append(entry)
+        return entries
+
+    entries_direct = _build_entries(cals_direct, 'direct')
+    entries_uib = _build_entries(cals_uib, 'uib')
+    cal_entries = entries_direct or entries_uib
+
+    logger.info(
+        f"SEQ_CAL detectada: {len(cal_entries)} entries, "
+        f"{len(concs)} concentracions ({sorted(concs)}), "
+        f"Direct={len(entries_direct)}, UIB={len(entries_uib)}"
+    )
+
+    return {
+        'entries': cal_entries,
+        'entries_direct': entries_direct,
+        'entries_uib': entries_uib,
+        'method': method,
+        'concs': sorted(concs),
+        'n_entries': len(cal_entries),
+        'has_direct': len(entries_direct) > 0,
+        'has_uib': len(entries_uib) > 0,
+    }
+
+
+# =============================================================================
 # CALIBRACIÓ DES D'IMPORT (NOVA API)
 # =============================================================================
 
