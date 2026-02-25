@@ -55,6 +55,16 @@ CONFIDENCE_THRESHOLD = 85.0  # Llindar per acceptar match automàticament
 DATA_FOLDER_NAME = "data"  # Subcarpeta dins CHECK per JSONs
 
 
+def _safe_float(val):
+    """Converteix un valor a float de forma segura (per uib_sensitivity, etc.)."""
+    if val is None:
+        return None
+    try:
+        return float(val)
+    except (ValueError, TypeError):
+        return None
+
+
 # =============================================================================
 # CARPETA DADES (JSONs)
 # =============================================================================
@@ -3049,7 +3059,13 @@ def import_sequence(seq_path, config=None, progress_callback=None):
         master_info = result["master_data"].get("info", {})
         uib_sensitivity = master_info.get("uib_sensitivity")
         if uib_sensitivity is not None:
-            result["uib_sensitivity"] = uib_sensitivity
+            # Guard: pot ser string des d'Excel
+            try:
+                uib_sensitivity = float(uib_sensitivity)
+            except (ValueError, TypeError):
+                uib_sensitivity = None
+            if uib_sensitivity is not None:
+                result["uib_sensitivity"] = uib_sensitivity
 
         report_progress(20, "Parsejant injeccions del MasterFile...")
 
@@ -4129,7 +4145,7 @@ def import_from_manifest(seq_path, manifest=None, config=None, progress_callback
         "seq_name": seq_info.get("name", os.path.basename(seq_path)),
         "method": seq_info.get("method", "COLUMN"),
         "data_mode": seq_info.get("data_mode", "DUAL"),
-        "uib_sensitivity": seq_info.get("uib_sensitivity"),  # Restaurar sensibilitat UIB
+        "uib_sensitivity": _safe_float(seq_info.get("uib_sensitivity")),  # Restaurar sensibilitat UIB
         "date": seq_info.get("date", ""),
         "master_file": mf_info.get("path", ""),
         "master_format": mf_info.get("format", "NEW"),

@@ -4020,6 +4020,13 @@ def detect_seq_cal_data(calib_result, seq_path, method=None, uib_sensitivity=Non
         dict or None: seq_cal_data amb entries, entries_direct, entries_uib, etc.
             None si no és SEQ_CAL.
     """
+    # Guard defensiu: uib_sensitivity pot arribar com a string des d'Excel/JSON
+    if uib_sensitivity is not None:
+        try:
+            uib_sensitivity = float(uib_sensitivity)
+        except (ValueError, TypeError):
+            uib_sensitivity = None
+
     cals_direct = calib_result.get('calibrations_direct', [])
     cals_uib = calib_result.get('calibrations_uib', [])
     cals = cals_direct or cals_uib or calib_result.get('calibrations', [])
