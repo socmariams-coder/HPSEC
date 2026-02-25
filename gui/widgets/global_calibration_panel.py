@@ -1025,7 +1025,7 @@ class CalibrationLineView(QWidget):
             self.seq_cal_labels['rms'].setText(f"{rms:.2f}")
             self.seq_cal_labels['model'].setText("intercept (lliure)")
 
-            self._update_seq_cal_comparison(rf, intercept, r2, method)
+            self._update_seq_cal_comparison(reg_result, method)
             self._update_seq_cal_graph(reg_result, method)
         else:
             error = reg_result.get('error', 'Error desconegut') if reg_result else 'No result'
@@ -1527,7 +1527,7 @@ class CalibrationLineView(QWidget):
             self.seq_cal_labels['n_points'].setText(f"{n_pts}")
             self.seq_cal_labels['rms'].setText(f"{rms:.2f}")
 
-            self._update_seq_cal_comparison(rf, intercept, r2, method)
+            self._update_seq_cal_comparison(reg_result, method)
             self._update_seq_cal_graph(reg_result, method)
 
     def _on_seq_cal_signal_changed(self, index):
@@ -1603,10 +1603,56 @@ class CalibrationLineView(QWidget):
 
         # El cromatograma ara es mostra en popup (no cal redibuixar)
 
-    def _update_seq_cal_comparison(self, new_rf, new_intercept, new_r2, method):
-        """Mostra la comparació vigent vs nova amb diagrama de barres."""
+    def _update_seq_cal_comparison(self, reg_result, method):
+        """Mostra la comparació vigent vs nova: barres + resum numèric explícit."""
+        new_rf = reg_result.get('rf_mass_cal', 0)
+        new_intercept = reg_result.get('intercept', 0)
+        new_r2 = reg_result.get('r2', 0)
+        new_n = reg_result.get('n_points', 0)
+        new_rms = reg_result.get('residuals_rms', 0)
+
         current_cal = get_active_global_calibration()
-        if not current_cal:
+
+        # Extreure dades vigent
+        current_rf = 0
+        current_intercept = 0
+        current_r2_val = 0
+        current_n = 0
+        current_rms = 0
+        current_id = ""
+        has_vigent = False
+
+        if current_cal:
+            has_vigent = True
+            signal = self._seq_cal_signal
+            rf_cal = current_cal.get('rf_mass_cal', {})
+            intercept_cal = current_cal.get('intercept', 0)
+
+            if isinstance(rf_cal, dict):
+                current_rf = rf_cal.get(signal, {}).get(method.lower(), 0)
+            else:
+                current_rf = float(rf_cal) if rf_cal else 0
+
+            if isinstance(intercept_cal, dict):
+                current_intercept = intercept_cal.get(signal, {}).get(method.lower(), 0)
+            else:
+                current_intercept = float(intercept_cal) if intercept_cal else 0
+
+            current_r2_raw = current_cal.get('r2', {})
+            if isinstance(current_r2_raw, dict):
+                current_r2_val = current_r2_raw.get(method.lower(), 0) or 0
+            else:
+                current_r2_val = float(current_r2_raw) if current_r2_raw else 0
+
+            current_n = current_cal.get('n_points', 0) or 0
+            current_id = current_cal.get('id', '')
+
+            # RMS de regression_data si existeix
+            rd = current_cal.get('regression_data', {})
+            if rd:
+                current_rms = rd.get('residuals_rms', 0) or 0
+
+        if not has_vigent:
             if getattr(self, '_has_comparison_mpl', False):
                 self._comparison_figure.clear()
                 self.seq_cal_comparison_canvas.draw()
@@ -1616,113 +1662,159 @@ class CalibrationLineView(QWidget):
             self.seq_cal_comparison.setVisible(True)
             return
 
-        signal = self._seq_cal_signal
+        # --- Diagrama de barres ---
+        if getattr(self, '_has_comparison_mpl', False):
+            self._comparison_figure.clear()
 
-        rf_cal = current_cal.get('rf_mass_cal', {})
-        intercept_cal = current_cal.get('intercept', 0)
+            # 4 subplots: RF | Intercept | R² | RMS/n
+            axes = self._comparison_figure.subplots(1, 4, width_ratios=[1, 1, 1, 0.8])
 
-        if isinstance(rf_cal, dict):
-            current_rf = rf_cal.get(signal, {}).get(method.lower(), 0)
-        else:
-            current_rf = float(rf_cal) if rf_cal else 0
+            bar_w = 0.35
+            c_vig = '#E67E22'
+            c_new = '#27AE60'
 
-        if isinstance(intercept_cal, dict):
-            current_intercept = intercept_cal.get(signal, {}).get(method.lower(), 0)
-        else:
-            current_intercept = float(intercept_cal) if intercept_cal else 0
+            # --- RF ---
+            ax = axes[0]
+            ax.bar([-bar_w/2], [current_rf], bar_w, color=c_vig, label='Vigent')
+            ax.bar([bar_w/2], [new_rf], bar_w, color=c_new, label='Nova')
+            ax.set_xticks([])
+            ax.set_title('RF (slope)', fontsize=9, fontweight='bold')
+            ax.text(-bar_w/2, current_rf, f'{current_rf:.0f}', ha='center', va='bottom', fontsize=8)
+            ax.text(bar_w/2, new_rf, f'{new_rf:.0f}', ha='center', va='bottom', fontsize=8,
+                    fontweight='bold')
+            if current_rf > 0:
+                delta_rf = (new_rf - current_rf) / current_rf * 100
+                dc = '#27AE60' if abs(delta_rf) < 5 else '#E67E22' if abs(delta_rf) < 15 else '#E74C3C'
+                ax.set_xlabel(f'\u0394 {delta_rf:+.1f}%', fontsize=9, color=dc, fontweight='bold')
 
-        current_r2 = current_cal.get('r2', {})
-        if isinstance(current_r2, dict):
-            current_r2_val = current_r2.get(method.lower(), 0) or 0
-        else:
-            current_r2_val = float(current_r2) if current_r2 else 0
+            # --- Intercept ---
+            ax = axes[1]
+            ax.bar([-bar_w/2], [current_intercept], bar_w, color=c_vig)
+            ax.bar([bar_w/2], [new_intercept], bar_w, color=c_new)
+            ax.set_xticks([])
+            ax.set_title('Intercept', fontsize=9, fontweight='bold')
+            va_v = 'bottom' if current_intercept >= 0 else 'top'
+            va_n = 'bottom' if new_intercept >= 0 else 'top'
+            ax.text(-bar_w/2, current_intercept, f'{current_intercept:.1f}',
+                    ha='center', va=va_v, fontsize=8)
+            ax.text(bar_w/2, new_intercept, f'{new_intercept:.1f}',
+                    ha='center', va=va_n, fontsize=8, fontweight='bold')
+            d_int = new_intercept - current_intercept
+            ax.set_xlabel(f'\u0394 {d_int:+.1f}', fontsize=9,
+                           color='#27AE60' if abs(d_int) < 10 else '#E67E22')
 
-        if not getattr(self, '_has_comparison_mpl', False):
-            # Fallback text
-            self.seq_cal_comparison.setText(
-                f"Vigent: RF={current_rf:.1f}, int={current_intercept:.1f}, R²={current_r2_val:.4f} | "
-                f"Nova: RF={new_rf:.1f}, int={new_intercept:.1f}, R²={new_r2:.6f}"
+            # --- R² ---
+            ax = axes[2]
+            r2_base = 0.9
+            r2_v = max(0, current_r2_val - r2_base) if current_r2_val else 0
+            r2_n = max(0, new_r2 - r2_base)
+            ax.bar([-bar_w/2], [r2_v], bar_w, color=c_vig, bottom=r2_base)
+            ax.bar([bar_w/2], [r2_n], bar_w, color=c_new, bottom=r2_base)
+            ax.set_xticks([])
+            ax.set_ylim(r2_base, 1.001)
+            ax.set_title('R²', fontsize=9, fontweight='bold')
+            if current_r2_val:
+                ax.text(-bar_w/2, current_r2_val, f'{current_r2_val:.4f}',
+                        ha='center', va='bottom', fontsize=7)
+            ax.text(bar_w/2, new_r2, f'{new_r2:.6f}',
+                    ha='center', va='bottom', fontsize=7, fontweight='bold')
+
+            # --- RMS + n_points (taula textual) ---
+            ax = axes[3]
+            ax.axis('off')
+            ax.set_title('Detalls', fontsize=9, fontweight='bold')
+
+            rows = [
+                ('n punts', f'{current_n}' if current_n else '—', f'{new_n}'),
+                ('RMS', f'{current_rms:.1f}' if current_rms else '—', f'{new_rms:.1f}'),
+            ]
+            # Equació nova
+            if abs(new_intercept) > 0.5:
+                eq_str = f'A = {new_rf:.0f}\u00b7\u00b5g + {new_intercept:.0f}'
+            else:
+                eq_str = f'A = {new_rf:.0f}\u00b7\u00b5g'
+
+            cell_text = [[r[0], r[1], r[2]] for r in rows]
+            col_labels = ['', 'Vigent', 'Nova']
+            tbl = ax.table(
+                cellText=cell_text,
+                colLabels=col_labels,
+                loc='center',
+                cellLoc='center',
             )
-            self.seq_cal_comparison.setVisible(True)
-            return
+            tbl.auto_set_font_size(False)
+            tbl.set_fontsize(8)
+            tbl.scale(1, 1.3)
+            # Style cells
+            for (r, c), cell in tbl.get_celld().items():
+                cell.set_edgecolor('#ddd')
+                cell.set_linewidth(0.5)
+                if r == 0:  # header
+                    cell.set_facecolor('#f0f0f0')
+                    cell.set_text_props(fontweight='bold', fontsize=7)
+                elif c == 0:  # row labels
+                    cell.set_text_props(fontweight='bold', fontsize=8)
+                    cell.set_facecolor('#fafafa')
+                elif c == 2:  # nova column
+                    cell.set_text_props(fontweight='bold', color='#27AE60')
 
-        self.seq_cal_comparison.setVisible(False)
+            # Llegenda
+            axes[0].legend(fontsize=7, loc='upper right', framealpha=0.8)
 
-        # Dibuixar diagrama de barres comparatiu
-        self._comparison_figure.clear()
+            for ax in axes[:3]:
+                ax.tick_params(labelsize=7)
+                ax.grid(True, alpha=0.2, axis='y')
 
-        # 3 subplots: RF | Intercept | R²
-        axes = self._comparison_figure.subplots(1, 3)
+            try:
+                self._comparison_figure.tight_layout(pad=1.2)
+            except Exception:
+                pass
+            self.seq_cal_comparison_canvas.draw()
 
-        bar_w = 0.35
-        colors_vigent = '#E67E22'
-        colors_nova = '#27AE60'
+        # --- Resum textual explícit (sempre visible sota el gràfic) ---
+        # Equació
+        if abs(new_intercept) > 0.5:
+            eq_nova = f"Àrea = {new_rf:.1f} × µg_DOC + {new_intercept:.1f}"
+        else:
+            eq_nova = f"Àrea = {new_rf:.1f} × µg_DOC"
+        if abs(current_intercept) > 0.5:
+            eq_vigent = f"Àrea = {current_rf:.1f} × µg_DOC + {current_intercept:.1f}"
+        else:
+            eq_vigent = f"Àrea = {current_rf:.1f} × µg_DOC"
 
-        # --- RF ---
-        ax = axes[0]
-        ax.bar([0 - bar_w/2], [current_rf], bar_w, color=colors_vigent, label='Vigent')
-        ax.bar([0 + bar_w/2], [new_rf], bar_w, color=colors_nova, label='Nova')
-        ax.set_ylabel('RF', fontsize=9)
-        ax.set_xticks([])
-        ax.set_title('RF (slope)', fontsize=9, fontweight='bold')
-        # Valors sobre barres
-        ax.text(0 - bar_w/2, current_rf, f'{current_rf:.0f}', ha='center', va='bottom', fontsize=8)
-        ax.text(0 + bar_w/2, new_rf, f'{new_rf:.0f}', ha='center', va='bottom', fontsize=8,
-                fontweight='bold')
-        # Delta
-        if current_rf > 0:
-            delta_rf = (new_rf - current_rf) / current_rf * 100
-            delta_color = '#27AE60' if abs(delta_rf) < 5 else '#E67E22' if abs(delta_rf) < 15 else '#E74C3C'
-            ax.set_xlabel(f'\u0394 {delta_rf:+.1f}%', fontsize=9, color=delta_color, fontweight='bold')
-
-        # --- Intercept ---
-        ax = axes[1]
-        ax.bar([0 - bar_w/2], [current_intercept], bar_w, color=colors_vigent)
-        ax.bar([0 + bar_w/2], [new_intercept], bar_w, color=colors_nova)
-        ax.set_xticks([])
-        ax.set_title('Intercept', fontsize=9, fontweight='bold')
-        # Posicionar text sobre o sota la barra segons signe
-        va_vig = 'bottom' if current_intercept >= 0 else 'top'
-        va_new = 'bottom' if new_intercept >= 0 else 'top'
-        ax.text(0 - bar_w/2, current_intercept, f'{current_intercept:.1f}',
-                ha='center', va=va_vig, fontsize=8)
-        ax.text(0 + bar_w/2, new_intercept, f'{new_intercept:.1f}',
-                ha='center', va=va_new, fontsize=8, fontweight='bold')
+        # Deltes
+        delta_rf_pct = (new_rf - current_rf) / current_rf * 100 if current_rf else 0
         delta_int = new_intercept - current_intercept
-        ax.set_xlabel(f'\u0394 {delta_int:+.1f}', fontsize=9,
-                       color='#27AE60' if abs(delta_int) < 10 else '#E67E22')
 
-        # --- R² ---
-        ax = axes[2]
-        # Escalar per veure bé la diferència (base a 0.9)
-        r2_base = 0.9
-        r2_vigent_plot = max(0, current_r2_val - r2_base) if current_r2_val else 0
-        r2_nova_plot = max(0, new_r2 - r2_base)
-        ax.bar([0 - bar_w/2], [r2_vigent_plot], bar_w, color=colors_vigent,
-               bottom=r2_base)
-        ax.bar([0 + bar_w/2], [r2_nova_plot], bar_w, color=colors_nova,
-               bottom=r2_base)
-        ax.set_xticks([])
-        ax.set_ylim(r2_base, 1.001)
-        ax.set_title('R²', fontsize=9, fontweight='bold')
-        if current_r2_val:
-            ax.text(0 - bar_w/2, current_r2_val, f'{current_r2_val:.4f}',
-                    ha='center', va='bottom', fontsize=7)
-        ax.text(0 + bar_w/2, new_r2, f'{new_r2:.6f}',
-                ha='center', va='bottom', fontsize=7, fontweight='bold')
+        # Colors HTML
+        def _dc(val, thres_ok, thres_warn):
+            """Color HTML per delta."""
+            if abs(val) < thres_ok:
+                return '#27AE60'
+            elif abs(val) < thres_warn:
+                return '#E67E22'
+            return '#E74C3C'
 
-        # Llegenda compacta
-        axes[0].legend(fontsize=7, loc='upper right', framealpha=0.8)
+        lines = [
+            f"<b>Vigent</b> ({current_id}): {eq_vigent} &nbsp; "
+            f"R²={current_r2_val:.4f}, n={current_n}"
+            + (f", RMS={current_rms:.1f}" if current_rms else ""),
 
-        for ax in axes:
-            ax.tick_params(labelsize=7)
-            ax.grid(True, alpha=0.2, axis='y')
+            f"<b style='color:#27AE60'>Nova</b> ({self._seq_name}): {eq_nova} &nbsp; "
+            f"R²={new_r2:.6f}, n={new_n}, RMS={new_rms:.1f}",
 
-        try:
-            self._comparison_figure.tight_layout(pad=1.5)
-        except Exception:
-            pass
-        self.seq_cal_comparison_canvas.draw()
+            f"<b>Canvi</b>: "
+            f"\u0394RF = <b style='color:{_dc(delta_rf_pct, 5, 15)}'>{delta_rf_pct:+.1f}%</b> "
+            f"({current_rf:.0f} \u2192 {new_rf:.0f}), "
+            f"\u0394int = <b style='color:{_dc(delta_int, 10, 30)}'>{delta_int:+.1f}</b> "
+            f"({current_intercept:.1f} \u2192 {new_intercept:.1f})",
+        ]
+
+        self.seq_cal_comparison.setText(
+            "<div style='font-family: Consolas, monospace; font-size: 11px; "
+            "line-height: 1.5;'>" + "<br>".join(lines) + "</div>"
+        )
+        self.seq_cal_comparison.setVisible(True)
 
     def _update_seq_cal_graph(self, reg_result, method):
         """Actualitza el gràfic scatter de regressió SEQ_CAL."""

@@ -3099,29 +3099,32 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
             sample=sample_label,
         ))
 
-    # Check DOC: àrea pic principal vs total (90% check)
+    # Check MULTI_PEAK: 3 evidències possibles → UNA sola anomalia
+    multi_peak_evidence = []
     if concentration_ratio < 0.90 and area_total > 0:
+        multi_peak_evidence.append(f"CR={concentration_ratio:.2f}")
+    if not is_bp_chromato and has_irregular:
+        multi_peak_evidence.append(f"irregular (smooth={smoothness:.1f})")
+    if len(all_peaks) > 3:
+        multi_peak_evidence.append(f"{len(all_peaks)} pics")
+
+    if multi_peak_evidence:
         calibration_anomalies.append(create_anomaly(
             "KHP_MULTI_PEAK",
-            details={"concentration_ratio": concentration_ratio,
-                     "source": "DOC area ratio"},
+            details={"evidence": multi_peak_evidence,
+                     "concentration_ratio": concentration_ratio,
+                     "n_peaks": len(all_peaks),
+                     "smoothness": smoothness},
             sample=sample_label,
         ))
 
-    # C11: Simetria i smoothness irrellevants per BP (senyal molt variable)
-    if not is_bp_chromato:
-        if symmetry < 0.8:
-            calibration_anomalies.append(create_anomaly(
-                "KHP_ASYMMETRY",
-                details={"symmetry": symmetry},
-                sample=sample_label,
-            ))
-        if has_irregular:
-            calibration_anomalies.append(create_anomaly(
-                "KHP_MULTI_PEAK",
-                details={"smoothness": smoothness, "source": "irregular shape"},
-                sample=sample_label,
-            ))
+    # C11: Simetria (irrellevant per BP)
+    if not is_bp_chromato and symmetry < 0.8:
+        calibration_anomalies.append(create_anomaly(
+            "KHP_ASYMMETRY",
+            details={"symmetry": symmetry},
+            sample=sample_label,
+        ))
 
     if snr < 10:
         calibration_anomalies.append(create_anomaly(
@@ -3145,12 +3148,6 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
                 details={"overlap_pct": overlap},
                 sample=sample_label,
             ))
-    if len(all_peaks) > 3:
-        calibration_anomalies.append(create_anomaly(
-            "KHP_MULTI_PEAK",
-            details={"n_peaks": len(all_peaks), "source": "peak count"},
-            sample=sample_label,
-        ))
     if bl_drift_pct > 8:
         calibration_anomalies.append(create_anomaly(
             "KHP_BASELINE_DRIFT",
