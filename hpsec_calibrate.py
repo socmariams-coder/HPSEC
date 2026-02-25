@@ -3376,7 +3376,6 @@ def _extract_replicas_info(khp_data):
         return [{
             "filename": khp_data.get('filename', 'N/A'),
             "area": khp_data.get('area', 0),
-            "height": khp_data.get('height', 0),
             "t_start": peak_info.get('t_start', 0),
             "t_end": peak_info.get('t_end', 0),
             "t_max": peak_info.get('t_max', khp_data.get('t_retention', 0)),
@@ -3389,7 +3388,6 @@ def _extract_replicas_info(khp_data):
         replicas_info.append({
             "filename": rep.get('filename', 'N/A'),
             "area": rep.get('area', peak_info.get('area', 0)),
-            "height": rep.get('height', 0),
             "t_start": peak_info.get('t_start', 0),
             "t_end": peak_info.get('t_end', 0),
             "t_max": peak_info.get('t_max', rep.get('t_retention', 0)),
@@ -3692,12 +3690,6 @@ def register_calibration(seq_path, khp_data, khp_source, mode="COLUMN"):
         "status": "INVALID_CAL" if not valid_for_calibration else (
             "INVALID_SHIFT" if not valid_for_shift else "OK"
         ),
-
-        # =====================================================================
-        # SATURACIÓ UIB
-        # =====================================================================
-        "uib_saturated": khp_data.get('uib_saturated', False),
-        "height": khp_data.get('height', 0),
 
         # =====================================================================
         # ALTRES (detall / compatibilitat)
@@ -4208,19 +4200,15 @@ def detect_seq_cal_data(calib_result, seq_path, method=None, uib_sensitivity=Non
             if conc <= 0 or vol <= 0 or area <= 0:
                 continue
 
-            # Detectar saturació UIB (NOMÉS per senyal UIB)
-            # Direct NO té límit de sensibilitat → uib_saturated sempre False
-            uib_saturated = False
-            if signal_name == 'uib':
-                uib_saturated = cal.get('uib_saturated', False)
-                if not uib_saturated and uib_sensitivity:
-                    # Fallback: height (net) + baseline → raw vs threshold
-                    for rep in cal.get('replicas', []):
-                        h = rep.get('height', 0) or 0
-                        bl = rep.get('baseline', 0) or 0
-                        if h > 0 and (h + bl) >= uib_sensitivity * 0.95:
-                            uib_saturated = True
-                            break
+            # Detectar saturació UIB (backend o fallback intensity_doc)
+            uib_saturated = cal.get('uib_saturated', False)
+            if not uib_saturated and signal_name == 'uib' and uib_sensitivity:
+                replicas = cal.get('replicas', [])
+                for rep in replicas:
+                    y_max = rep.get('metrics', {}).get('intensity_doc', 0)
+                    if y_max >= uib_sensitivity * 0.95:
+                        uib_saturated = True
+                        break
 
             entry = {
                 'seq_name': seq_basename,
