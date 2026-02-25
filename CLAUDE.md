@@ -18,7 +18,7 @@ pip install -r requirements.txt
 
 ## Architecture summary
 
-- **hpsec_core.py** — shared math (bi-Gaussian, Batman, SNR, peak repair)
+- **hpsec_core.py** — shared math (bi-Gaussian, irregular top, SNR, peak repair, saturation detection)
 - **hpsec_calibrate.py** — calibration engine (rf_mass_cal, intercept, QC)
 - **hpsec_consolidate.py** — .D file consolidation to Excel
 - **gui/** — PyQt6 GUI panels (consolidate, calibrate, process/analyze, dashboard)
@@ -311,20 +311,26 @@ retallant pics d'alta concentració.
 3. **`gui/widgets/import_panel/panel.py`**: 4t punt d'entrada UIB (reassignació manual).
 
 4. **`hpsec_warnings.py`**: Nova anomalia `UIB_SATURATED` (BLOCKER, invalidates=True).
-   - Icon: "SAT", description: "Senyal UIB saturat (y_max >= 95% sensibilitat)"
+   - Icon: "SAT", description: "Senyal UIB saturat"
 
-5. **`hpsec_analyze.py`**: Detecció saturació a `analyze_sample()`:
-   - Compara y_max_raw UIB vs 95% de uib_sensitivity
-   - Flag `uib_saturated=True` + anomalia BLOCKER
-   - `uib_sensitivity` propagada via `_flatten_samples_for_processing`
+5. **Detecció saturació per forma del pic** (refactored 2026-02-25):
+   - **`hpsec_core.py`**: `detect_peak_clipping(t, y)` — detecta retall/clipping per
+     **plateau/FWHM ratio**. Gaussiana normal ≈ 0.17, threshold > 0.40 = saturat.
+     Inclou estimació automàtica de baseline (median bottom 20%).
+     **Independent de qualsevol paràmetre de sensibilitat** — basat en forma intrínseca.
+   - **`hpsec_calibrate.py`**: `analizar_khp_data()` crida `detect_peak_clipping` quan
+     `doc_source == "uib"`. Guard: Direct MAI entra al codi de saturació.
+     Enrichment Direct←UIB: `uib_saturated` propagat de l'entrada UIB (L5020).
+   - **`hpsec_analyze.py`**: `analyze_sample()` crida `detect_peak_clipping` per UIB.
+   - **`_build_entries()`** (2 implementacions: `hpsec_calibrate.py` + `seq_cal_regression_widget.py`):
+     llegeixen `uib_saturated` del backend (ja calculat), guard `signal_name == 'uib'`.
+   - **Verificat amb 293_SEQ_CAL**: 5ppm ratio=0.65 → SAT, 2ppm ratio=0.17 → ok
+     (y_max=828 > sens=700, però forma normal → correcte: sensibilitat és rang recomanat,
+     no límit dur de retall).
 
-6. **`gui/widgets/calibrate_panel/panel.py`**: `_build_entries` detecta saturació UIB:
-   - Mira `intensity_doc` de les rèpliques vs sensibilitat
-   - Marca entry amb `uib_saturated=True`, `valid_for_calibration=False`
-
-7. **`gui/widgets/analyze_panel/panel.py`**: Auto-exclusió i UI:
+6. **`gui/widgets/analyze_panel/panel.py`**: Auto-exclusió i UI:
    - Punts UIB saturats auto-exclosos de la regressió (`_seq_cal_excluded`)
-   - Columna anomalies mostra "⛔ SAT" en vermell
+   - Columna anomalies mostra "SAT" en vermell
    - Swap senyal Direct/UIB recalcula exclusions
 
 **Verificació**: Downsample 15000→1125 pts (13.3x), dt 0.005→0.0675 min.
