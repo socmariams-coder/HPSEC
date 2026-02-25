@@ -633,8 +633,15 @@ class CalibrationLineView(QWidget):
             "Àrea", "RF", "A254", "DOC/254",
             "R²bg", "RSD%", "Anomalies", "Selecció"
         ])
-        self.seq_cal_points_table.horizontalHeaderItem(0).setToolTip("Incloure punt a la regressió")
+        self.seq_cal_points_table.horizontalHeaderItem(0).setToolTip(
+            "Incloure/excloure punt de la regressió.\n"
+            "Desmarcar = Outlier (fila gris, exclòs del càlcul)."
+        )
+        self.seq_cal_points_table.horizontalHeaderItem(1).setToolTip("Nom de la mostra i rèplica")
+        self.seq_cal_points_table.horizontalHeaderItem(2).setToolTip("Concentració KHP (ppm)")
+        self.seq_cal_points_table.horizontalHeaderItem(3).setToolTip("Volum d'injecció (µL)")
         self.seq_cal_points_table.horizontalHeaderItem(4).setToolTip("µg DOC injectat = ppm × µL / 1000")
+        self.seq_cal_points_table.horizontalHeaderItem(5).setToolTip("Àrea integrada del pic DOC")
         self.seq_cal_points_table.horizontalHeaderItem(6).setToolTip("RF_mass = Àrea × 1000 / (ppm × µL)")
         self.seq_cal_points_table.horizontalHeaderItem(7).setToolTip("Àrea integrada a 254nm (DAD)")
         self.seq_cal_points_table.horizontalHeaderItem(8).setToolTip("Ratio àrea DOC / àrea 254nm")
@@ -649,8 +656,12 @@ class CalibrationLineView(QWidget):
         )
         self.seq_cal_points_table.horizontalHeaderItem(11).setToolTip("Indicadors d'anomalies detectades")
         self.seq_cal_points_table.horizontalHeaderItem(12).setToolTip(
-            "Selecció de rèplica per la regressió.\n"
-            "L'usuari pot canviar la selecció manualment."
+            "Control de selecció per punt:\n"
+            "· Promig: mitjana de totes les rèpliques\n"
+            "· R1, R2: rèplica individual\n"
+            "· Millor Q: rèplica amb millor qualitat (R²bg)\n"
+            "· Original: àrea sense reparació (si pic irregular)\n"
+            "· Outlier: exclou de la regressió"
         )
         self.seq_cal_points_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         self.seq_cal_points_table.setAlternatingRowColors(True)
@@ -668,6 +679,17 @@ class CalibrationLineView(QWidget):
 
         # Connectar click a la taula per preview cromatograma
         self.seq_cal_points_table.cellClicked.connect(self._on_seq_cal_row_clicked)
+
+        # Hint UX: bombeta amb consells d'ús
+        hint_label = QLabel(
+            "\U0001F4A1 <i>Clic a una fila per veure el cromatograma</i> &nbsp;·&nbsp; "
+            "<i>Columna <b>Selecció</b>: canviar rèplica, excloure (Outlier) o usar àrea original</i>"
+        )
+        hint_label.setStyleSheet(
+            "color: #7F8C8D; font-size: 10px; padding: 2px 4px; "
+            "background: transparent;"
+        )
+        seq_cal_layout.addWidget(hint_label)
 
         # Chromatogram preview via popup (no inline)
         self._has_seq_cal_chrom = True
@@ -1142,6 +1164,13 @@ class CalibrationLineView(QWidget):
             n_available = sel_info.get('n_replicas_available', n_rep)
 
             # Opcions: [Promig], R1, R2, ..., [Millor Q], [Original], Outlier
+            # Cada opció porta tooltip descriptiu
+            _combo_tooltips = {
+                "average": "Mitjana de totes les rèpliques disponibles",
+                "best_quality": "Rèplica amb millor R² bigaussià",
+                "original": "Àrea sense reparació de pic irregular",
+                "outlier": "Excloure d'la regressió (no es compta)",
+            }
             combo_options = []
             if n_available > 1:
                 combo_options.append(("Promig", "average"))
@@ -1168,12 +1197,16 @@ class CalibrationLineView(QWidget):
                 current_method = 'outlier'
             for opt_idx, (label, method_key) in enumerate(combo_options):
                 sel_combo.addItem(label, method_key)
+                # Tooltip individual per cada opció del dropdown
+                tip = _combo_tooltips.get(method_key, f"Usar rèplica {label}")
+                sel_combo.setItemData(opt_idx, tip, Qt.ToolTipRole)
                 if method_key == current_method:
                     current_idx = opt_idx
                 elif current_method == 'single' and method_key == 'R1':
                     current_idx = opt_idx
 
             sel_combo.setCurrentIndex(current_idx)
+            sel_combo.setToolTip("Seleccionar rèplica o excloure com a outlier")
             sel_combo.currentIndexChanged.connect(
                 lambda _idx, row=i: self._on_selection_combo_changed(row)
             )
