@@ -4182,6 +4182,12 @@ def detect_seq_cal_data(calib_result, seq_path, method=None, uib_sensitivity=Non
                 'std_area': cal.get('std_area', 0),
                 'rsd': cal.get('rsd', 0),
                 'n_replicas': cal.get('n_replicas', 1),
+                # Mètriques de qualitat per taula
+                'snr': cal.get('snr', 0),
+                'symmetry': cal.get('symmetry', 1.0),
+                'bigaussian_doc': cal.get('bigaussian_doc'),
+                'bigaussian_254': cal.get('bigaussian_254'),
+                'replica_comparison': cal.get('replica_comparison', {}),
                 # Replicas per chromatogram preview
                 'replicas': cal.get('replicas', []),
             }

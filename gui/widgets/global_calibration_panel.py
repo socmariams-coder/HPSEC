@@ -381,6 +381,7 @@ class CalibrationLineView(QWidget):
         self._seq_path = ""
         self._imported_data = None
         self._retro_seq_checkboxes = []
+        self._sel_combos = {}
         self._cal_applied = False
 
         self._setup_ui()
@@ -637,19 +638,34 @@ class CalibrationLineView(QWidget):
         seq_cal_layout.addWidget(self.seq_cal_sensitivity_warning)
 
         # Taula de punts de calibració
+        # Columnes: Sel | Condició | Conc | Vol | µg DOC | Àrea | RF_mass |
+        #           A254 | DOC/254 | R²bg | RSD% | Anomalies | Selecció
         self.seq_cal_points_table = QTableWidget()
-        self.seq_cal_points_table.setColumnCount(11)
+        self.seq_cal_points_table.setColumnCount(13)
         self.seq_cal_points_table.setHorizontalHeaderLabels([
-            "Sel", "Condició", "Conc (ppm)", "Vol (µL)", "µg DOC",
-            "Àrea", "RF_mass", "A254", "DOC/254", "Anomalies", "Status"
+            "Sel", "Condició", "Conc", "Vol", "µg DOC",
+            "Àrea", "RF", "A254", "DOC/254",
+            "R²bg", "RSD%", "Anomalies", "Selecció"
         ])
         self.seq_cal_points_table.horizontalHeaderItem(0).setToolTip("Incloure punt a la regressió")
         self.seq_cal_points_table.horizontalHeaderItem(4).setToolTip("µg DOC injectat = ppm × µL / 1000")
         self.seq_cal_points_table.horizontalHeaderItem(6).setToolTip("RF_mass = Àrea × 1000 / (ppm × µL)")
         self.seq_cal_points_table.horizontalHeaderItem(7).setToolTip("Àrea integrada a 254nm (DAD)")
         self.seq_cal_points_table.horizontalHeaderItem(8).setToolTip("Ratio àrea DOC / àrea 254nm")
-        self.seq_cal_points_table.horizontalHeaderItem(9).setToolTip("Indicadors d'anomalies detectades")
-        self.seq_cal_points_table.horizontalHeaderItem(10).setToolTip("Selecció rèpliques (R1, R2, Promig)")
+        self.seq_cal_points_table.horizontalHeaderItem(9).setToolTip(
+            "R² del fit bigaussià al pic DOC.\n"
+            "Valors > 0.98 = pic ben definit.\n"
+            "< 0.95 = pic irregular o multi-pic."
+        )
+        self.seq_cal_points_table.horizontalHeaderItem(10).setToolTip(
+            "RSD (%) entre àrees de rèpliques.\n"
+            "< 10% = promig; ≥ 10% = millor qualitat."
+        )
+        self.seq_cal_points_table.horizontalHeaderItem(11).setToolTip("Indicadors d'anomalies detectades")
+        self.seq_cal_points_table.horizontalHeaderItem(12).setToolTip(
+            "Selecció de rèplica per la regressió.\n"
+            "L'usuari pot canviar la selecció manualment."
+        )
         self.seq_cal_points_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         self.seq_cal_points_table.setAlternatingRowColors(True)
         self.seq_cal_points_table.verticalHeader().setVisible(False)
@@ -700,17 +716,28 @@ class CalibrationLineView(QWidget):
 
         seq_cal_layout.addWidget(reg_results_frame)
 
-        # Comparació amb calibració vigent
+        # Comparació amb calibració vigent — diagrama de barres
+        try:
+            self._comparison_figure = Figure(figsize=(8, 2.2), dpi=100)
+            self._comparison_figure.set_facecolor("#FAFAFA")
+            self.seq_cal_comparison_canvas = FigureCanvas(self._comparison_figure)
+            self.seq_cal_comparison_canvas.setMinimumHeight(140)
+            self.seq_cal_comparison_canvas.setMaximumHeight(180)
+            seq_cal_layout.addWidget(self.seq_cal_comparison_canvas)
+            self._has_comparison_mpl = True
+        except Exception:
+            self._has_comparison_mpl = False
+
+        # Fallback label (per si mpl falla o per text addicional)
         self.seq_cal_comparison = QLabel()
         self.seq_cal_comparison.setWordWrap(True)
         self.seq_cal_comparison.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.seq_cal_comparison.setStyleSheet(
-            "padding: 8px; font-size: 12px; background: #FEFEFE; "
+            "padding: 4px; font-size: 11px; background: #FEFEFE; "
             "border: 1px solid #E0E0E0; border-radius: 4px;"
         )
+        self.seq_cal_comparison.setVisible(False)
         seq_cal_layout.addWidget(self.seq_cal_comparison)
-
-        # Also expose as comparison_label for backward compat
         self.comparison_label = self.seq_cal_comparison
 
         # Gràfic scatter + residuals (matplotlib)
@@ -1009,10 +1036,17 @@ class CalibrationLineView(QWidget):
             )
 
     def _populate_seq_cal_table(self, cal_entries):
-        """Omple la taula de punts de la regressió SEQ_CAL (12 columnes)."""
-        # Forçar rebuild complet: clear + set row count
+        """Omple la taula de punts de la regressió SEQ_CAL (13 columnes).
+
+        Cols: Sel | Condició | Conc | Vol | µg DOC | Àrea | RF |
+              A254 | DOC/254 | R²bg | RSD% | Anomalies | Selecció(combo)
+        """
+        self.seq_cal_points_table.blockSignals(True)
         self.seq_cal_points_table.clearContents()
         self.seq_cal_points_table.setRowCount(len(cal_entries))
+
+        # Guardar referència als combos per accedir-hi
+        self._sel_combos = {}
 
         for i, entry in enumerate(cal_entries):
             conc = entry.get('conc_ppm', 0)
@@ -1020,17 +1054,6 @@ class CalibrationLineView(QWidget):
             area = entry.get('area', 0)
             ug_doc = conc * vol / 1000.0
             rf_mass = entry.get('rf_mass', area / ug_doc if ug_doc > 0 else 0)
-
-            issues = entry.get('quality_issues', [])
-            has_severe = any('MULTI_PEAK' in str(iss) and 'MILD' not in str(iss) for iss in issues)
-            if area <= 0 or conc <= 0 or vol <= 0:
-                status_text = "INVALID"
-            elif has_severe:
-                status_text = "CHECK"
-            elif rf_mass > 0 and (rf_mass < 100 or rf_mass > 3000):
-                status_text = "CHECK"
-            else:
-                status_text = "OK"
 
             # Checkbox (Col 0)
             cb = QCheckBox()
@@ -1069,89 +1092,134 @@ class CalibrationLineView(QWidget):
                 ratio = area / a254
             ratio_item = QTableWidgetItem(f"{ratio:.2f}" if ratio else "-")
             ratio_item.setFlags(ratio_item.flags() & ~Qt.ItemIsEditable)
-            # Typical DOC/254 range: ~0.3-8 depending on concentration; flag extreme outliers only
             if ratio and (ratio < 0.1 or ratio > 20):
                 ratio_item.setForeground(QBrush(QColor("#E67E22")))
             self.seq_cal_points_table.setItem(i, 8, ratio_item)
 
-            # Col 9: Anomalies
+            # Col 9: R²bg (bigaussian DOC)
+            bg_doc = entry.get('bigaussian_doc') or {}
+            bg_r2 = bg_doc.get('r2', 0) if bg_doc.get('status') not in ('ERROR', None, '') else 0
+            if bg_r2 > 0:
+                r2bg_item = QTableWidgetItem(f"{bg_r2:.3f}")
+                if bg_r2 < 0.95:
+                    r2bg_item.setForeground(QBrush(QColor("#E74C3C")))
+                elif bg_r2 < 0.98:
+                    r2bg_item.setForeground(QBrush(QColor("#E67E22")))
+                else:
+                    r2bg_item.setForeground(QBrush(QColor("#27AE60")))
+                # Tooltip amb info bigaussiana addicional
+                asym = bg_doc.get('asymmetry', 0)
+                bg_tooltip = f"Bigaussian fit DOC\nR² = {bg_r2:.4f}"
+                if asym:
+                    bg_tooltip += f"\nAsimetria = {asym:.2f}"
+                # 254nm bigaussian si disponible
+                bg_254 = entry.get('bigaussian_254') or {}
+                r2_254 = bg_254.get('r2', 0) if bg_254.get('status') not in ('ERROR', None, '') else 0
+                if r2_254 > 0:
+                    bg_tooltip += f"\nR² 254nm = {r2_254:.4f}"
+                r2bg_item.setToolTip(bg_tooltip)
+            else:
+                r2bg_item = QTableWidgetItem("-")
+            r2bg_item.setFlags(r2bg_item.flags() & ~Qt.ItemIsEditable)
+            self.seq_cal_points_table.setItem(i, 9, r2bg_item)
+
+            # Col 10: RSD%
+            rsd = entry.get('rsd', 0)
+            n_rep = entry.get('n_replicas', 1)
+            if n_rep > 1 and rsd > 0:
+                rsd_item = QTableWidgetItem(f"{rsd:.1f}")
+                if rsd >= 10:
+                    rsd_item.setForeground(QBrush(QColor("#E67E22")))
+                # Tooltip amb detalls rèpliques
+                comp = entry.get('replica_comparison', {})
+                rsd_tooltip = f"RSD àrees: {rsd:.1f}%\nSD: {entry.get('std_area', 0):.1f}\n{n_rep} rèpliques"
+                pearson = comp.get('pearson_profiles')
+                if pearson is not None:
+                    rsd_tooltip += f"\nPearson perfils: {pearson:.4f}"
+                diff_pct = comp.get('diff_area_pct', 0)
+                if diff_pct > 0:
+                    rsd_tooltip += f"\nDif. àrea: {diff_pct:.1f}%"
+                rsd_item.setToolTip(rsd_tooltip)
+            else:
+                rsd_item = QTableWidgetItem("-" if n_rep <= 1 else f"{rsd:.1f}")
+            rsd_item.setFlags(rsd_item.flags() & ~Qt.ItemIsEditable)
+            self.seq_cal_points_table.setItem(i, 10, rsd_item)
+
+            # Col 11: Anomalies (icones compactes)
+            issues = entry.get('quality_issues', [])
             anomaly_parts = []
             if entry.get('uib_saturated'):
                 anomaly_parts.append("\u26d4 SAT")
             if entry.get('irregular_top_repaired'):
-                anomaly_parts.append("\u2705 reparat")
+                anomaly_parts.append("\u2705 rep")
             elif entry.get('has_irregular_top'):
-                anomaly_parts.append("\u26a0 irregular")
+                anomaly_parts.append("\u26a0 irr")
             if entry.get('has_timeout') and entry.get('timeout_severity', 'OK') != 'OK':
-                anomaly_parts.append("timeout")
+                anomaly_parts.append("TO")
             if any('MULTI_PEAK' in str(iss) for iss in issues):
-                anomaly_parts.append("multi-peak")
-            anomaly_text = ", ".join(anomaly_parts) if anomaly_parts else "-"
+                anomaly_parts.append("MP")
+            anomaly_text = " ".join(anomaly_parts) if anomaly_parts else "-"
             anomaly_item = QTableWidgetItem(anomaly_text)
             anomaly_item.setFlags(anomaly_item.flags() & ~Qt.ItemIsEditable)
             if anomaly_parts:
                 if any("SAT" in p for p in anomaly_parts):
                     anomaly_item.setForeground(QBrush(QColor("#E74C3C")))
-                elif any("reparat" in p for p in anomaly_parts):
+                elif any("rep" in p for p in anomaly_parts):
                     anomaly_item.setForeground(QBrush(QColor("#27AE60")))
                 else:
                     anomaly_item.setForeground(QBrush(QColor("#E67E22")))
-            self.seq_cal_points_table.setItem(i, 9, anomaly_item)
+            # Tooltip amb detall complet d'anomalies
+            if issues:
+                anomaly_item.setToolTip("\n".join(str(iss) for iss in issues[:5]))
+            self.seq_cal_points_table.setItem(i, 11, anomaly_item)
 
-            # Col 10: Status — show replica selection info
-            sel_info = entry.get('selection', {})
-            status_display = entry.get('status', '')
-            if not status_display:
-                # Fallback: build from selection info
-                sel_method = sel_info.get('method', '')
-                sel_replicas = sel_info.get('selected_replicas', [])
-                if sel_method == 'average' and len(sel_replicas) > 1:
-                    status_display = f"Promig R{'+R'.join(map(str, sel_replicas))}"
-                elif sel_method == 'single':
-                    status_display = "R1"
-                elif sel_method == 'best_quality':
-                    status_display = f"Millor R{sel_replicas[0]}" if sel_replicas else "CHECK"
-                elif sel_method.startswith('R'):
-                    status_display = sel_method
-                else:
-                    status_display = status_text  # OK/CHECK/INVALID fallback
-
-            # Color based on validity
-            if status_text == "INVALID":
-                status_fg = "#E74C3C"
-                status_bg = "#FADBD8"
-            elif status_text == "CHECK":
-                status_fg = "#E67E22"
-                status_bg = "#FCF3CF"
-            else:
-                status_fg = "#1A5276"
-                status_bg = "#EBF5FB"
-
-            badge = QLabel(f" {status_display} ")
-            badge.setAlignment(Qt.AlignCenter)
-            badge.setStyleSheet(
-                f"background: {status_bg}; color: {status_fg}; font-weight: bold; "
-                f"font-size: 10px; border-radius: 3px; padding: 1px 6px;"
+            # Col 12: Selecció (QComboBox) — Override manual de rèpliques
+            sel_combo = QComboBox()
+            sel_combo.setStyleSheet(
+                "QComboBox { font-size: 10px; padding: 1px 4px; "
+                "border: 1px solid #BDC3C7; border-radius: 2px; }"
             )
-            # Tooltip: show details
-            rsd = entry.get('rsd', 0)
-            n_rep = entry.get('n_replicas', 1)
-            std_a = entry.get('std_area', 0)
-            tooltip_parts = [f"Rèpliques: {n_rep}"]
-            if rsd > 0:
-                tooltip_parts.append(f"RSD: {rsd:.1f}%")
-            if std_a > 0:
-                tooltip_parts.append(f"SD àrea: {std_a:.1f}")
-            badge.setToolTip("\n".join(tooltip_parts))
+            # Construir opcions segons n_replicas
+            sel_info = entry.get('selection', {})
+            current_method = sel_info.get('method', 'average')
+            sel_replicas_list = sel_info.get('selected_replicas', [])
+            n_available = sel_info.get('n_replicas_available', n_rep)
 
-            badge_w = QWidget()
-            badge_l = QHBoxLayout(badge_w)
-            badge_l.addWidget(badge)
-            badge_l.setAlignment(Qt.AlignCenter)
-            badge_l.setContentsMargins(2, 1, 2, 1)
-            self.seq_cal_points_table.setCellWidget(i, 10, badge_w)
+            # Opcions: Promig (si >1 rèplica), R1, R2, ..., Millor Q
+            combo_options = []
+            if n_available > 1:
+                combo_options.append(("Promig", "average"))
+            for r_num in range(1, n_available + 1):
+                combo_options.append((f"R{r_num}", f"R{r_num}"))
+            if n_available > 1:
+                combo_options.append(("Millor Q", "best_quality"))
 
-        # Ajustar alçada: totes les files visibles + scroll si n'hi ha moltes
+            # Determinar selecció actual
+            current_idx = 0
+            for opt_idx, (label, method_key) in enumerate(combo_options):
+                sel_combo.addItem(label, method_key)
+                if method_key == current_method:
+                    current_idx = opt_idx
+                elif current_method.startswith('R') and method_key == current_method:
+                    current_idx = opt_idx
+                elif current_method == 'single' and method_key == 'R1':
+                    current_idx = opt_idx
+
+            sel_combo.setCurrentIndex(current_idx)
+            sel_combo.currentIndexChanged.connect(
+                lambda _idx, row=i: self._on_selection_combo_changed(row)
+            )
+            self._sel_combos[i] = sel_combo
+
+            combo_w = QWidget()
+            combo_l = QHBoxLayout(combo_w)
+            combo_l.addWidget(sel_combo)
+            combo_l.setContentsMargins(2, 1, 2, 1)
+            self.seq_cal_points_table.setCellWidget(i, 12, combo_w)
+
+        self.seq_cal_points_table.blockSignals(False)
+
+        # Ajustar alçada
         row_h = self.seq_cal_points_table.verticalHeader().defaultSectionSize()
         header_h = self.seq_cal_points_table.horizontalHeader().height()
         desired = header_h + row_h * len(cal_entries) + 4
@@ -1352,6 +1420,116 @@ class CalibrationLineView(QWidget):
             self._run_seq_cal_regression(self._seq_cal_entries, self._seq_cal_method)
             self._populate_apply_section()
 
+    def _on_selection_combo_changed(self, row):
+        """L'usuari canvia la selecció de rèplica per un punt de calibració."""
+        combo = self._sel_combos.get(row)
+        if not combo or row >= len(self._seq_cal_entries):
+            return
+
+        method_key = combo.currentData()
+        if not method_key:
+            return
+
+        entry = self._seq_cal_entries[row]
+        replicas = entry.get('replicas', [])
+        if not replicas:
+            return
+
+        # Recalcular àrea i mètriques segons la nova selecció
+        if method_key == 'average':
+            areas = [r.get('area', 0) for r in replicas]
+            new_area = float(np.mean(areas))
+            a254_areas = [(r.get('a254_area') or 0) for r in replicas if (r.get('a254_area') or 0) > 0]
+            new_a254 = float(np.mean(a254_areas)) if a254_areas else 0
+            selected_reps = [r.get('replica_num', i+1) for i, r in enumerate(replicas)]
+        elif method_key == 'best_quality':
+            sorted_reps = sorted(replicas, key=lambda x: x.get('quality_score', 0))
+            best = sorted_reps[0]
+            new_area = best.get('area', 0)
+            new_a254 = best.get('a254_area', 0)
+            selected_reps = [best.get('replica_num', 1)]
+        elif method_key.startswith('R'):
+            rep_num = int(method_key[1:])
+            rep = next((r for r in replicas if r.get('replica_num') == rep_num), None)
+            if not rep:
+                return
+            new_area = rep.get('area', 0)
+            new_a254 = rep.get('a254_area', 0)
+            selected_reps = [rep_num]
+        else:
+            return
+
+        # Actualitzar l'entry amb la nova selecció
+        entry['area'] = new_area
+        entry['a254_area'] = new_a254
+        conc = entry.get('conc_ppm', 0)
+        vol = entry.get('volume_uL', 0)
+        if conc > 0 and vol > 0:
+            entry['rf_mass'] = new_area * 1000 / (conc * vol)
+        if new_a254 and new_area:
+            entry['a254_doc_ratio'] = new_area / new_a254
+        entry['selection'] = {
+            'method': method_key,
+            'reason': 'manual_override',
+            'selected_replicas': selected_reps,
+            'n_replicas_available': len(replicas),
+            'is_manual': True,
+        }
+
+        logger.info(f"Selection override row {row}: method={method_key}, area={new_area:.1f}")
+
+        # Actualitzar cel·les de la taula sense reconstruir (evitar destruir combos)
+        ug_doc = conc * vol / 1000.0
+        rf_mass = entry.get('rf_mass', 0)
+        self.seq_cal_points_table.item(row, 5).setText(f"{new_area:.1f}")
+        self.seq_cal_points_table.item(row, 6).setText(f"{rf_mass:.0f}")
+        if self.seq_cal_points_table.item(row, 7):
+            self.seq_cal_points_table.item(row, 7).setText(f"{new_a254:.0f}" if new_a254 else "-")
+        ratio = entry.get('a254_doc_ratio', 0)
+        if self.seq_cal_points_table.item(row, 8):
+            self.seq_cal_points_table.item(row, 8).setText(f"{ratio:.2f}" if ratio else "-")
+
+        # Recalcular regressió SENSE reconstruir taula
+        if self._seq_cal_entries and self._seq_cal_method:
+            self._run_seq_cal_regression_no_table(self._seq_cal_entries, self._seq_cal_method)
+            self._populate_apply_section()
+
+    def _run_seq_cal_regression_no_table(self, cal_entries, method):
+        """Recalcula regressió i actualitza gràfics/comparació SENSE reconstruir la taula."""
+        enabled = []
+        for i, entry in enumerate(cal_entries):
+            if i in self._seq_cal_excluded:
+                continue
+            enabled.append(entry)
+
+        if len(enabled) < 2:
+            return
+
+        reg_result = fit_calibration_from_history(
+            enabled, mode=method, signal=self._seq_cal_signal, model="intercept"
+        )
+        reg_result['signal'] = self._seq_cal_signal
+        reg_result['uib_sensitivity'] = self._seq_cal_sensitivity
+
+        self._seq_cal_regression = reg_result
+
+        if reg_result and reg_result.get('success'):
+            rf = reg_result['rf_mass_cal']
+            intercept = reg_result['intercept']
+            r2 = reg_result['r2']
+            n_pts = reg_result['n_points']
+            rms = reg_result.get('residuals_rms', 0)
+
+            self.seq_cal_labels['rf'].setText(f"<b>{rf:.1f}</b>")
+            self.seq_cal_labels['intercept'].setText(f"{intercept:.1f}")
+            r2_color = '#27AE60' if r2 >= 0.99 else '#E67E22' if r2 >= 0.95 else '#E74C3C'
+            self.seq_cal_labels['r2'].setText(f"<b style='color: {r2_color}'>{r2:.6f}</b>")
+            self.seq_cal_labels['n_points'].setText(f"{n_pts}")
+            self.seq_cal_labels['rms'].setText(f"{rms:.2f}")
+
+            self._update_seq_cal_comparison(rf, intercept, r2, method)
+            self._update_seq_cal_graph(reg_result, method)
+
     def _on_seq_cal_signal_changed(self, index):
         """Quan l'usuari canvia el senyal (Direct/UIB) del selector."""
         if index < 0:
@@ -1426,12 +1604,16 @@ class CalibrationLineView(QWidget):
         # El cromatograma ara es mostra en popup (no cal redibuixar)
 
     def _update_seq_cal_comparison(self, new_rf, new_intercept, new_r2, method):
-        """Mostra la comparació entre calibració vigent i la nova."""
-        from gui.widgets.analyze_panel._helpers import format_calibration_comparison_html
-
+        """Mostra la comparació vigent vs nova amb diagrama de barres."""
         current_cal = get_active_global_calibration()
         if not current_cal:
-            self.seq_cal_comparison.setText("<i>No hi ha calibració vigent per comparar</i>")
+            if getattr(self, '_has_comparison_mpl', False):
+                self._comparison_figure.clear()
+                self.seq_cal_comparison_canvas.draw()
+            self.seq_cal_comparison.setText(
+                "<i>No hi ha calibració vigent per comparar</i>"
+            )
+            self.seq_cal_comparison.setVisible(True)
             return
 
         signal = self._seq_cal_signal
@@ -1455,13 +1637,92 @@ class CalibrationLineView(QWidget):
         else:
             current_r2_val = float(current_r2) if current_r2 else 0
 
-        html = format_calibration_comparison_html(
-            rf_vigent=current_rf, int_vigent=current_intercept,
-            rf_new=new_rf, int_new=new_intercept,
-            r2_new=new_r2, r2_vigent=current_r2_val,
-            show_equation=True,
-        )
-        self.seq_cal_comparison.setText(html)
+        if not getattr(self, '_has_comparison_mpl', False):
+            # Fallback text
+            self.seq_cal_comparison.setText(
+                f"Vigent: RF={current_rf:.1f}, int={current_intercept:.1f}, R²={current_r2_val:.4f} | "
+                f"Nova: RF={new_rf:.1f}, int={new_intercept:.1f}, R²={new_r2:.6f}"
+            )
+            self.seq_cal_comparison.setVisible(True)
+            return
+
+        self.seq_cal_comparison.setVisible(False)
+
+        # Dibuixar diagrama de barres comparatiu
+        self._comparison_figure.clear()
+
+        # 3 subplots: RF | Intercept | R²
+        axes = self._comparison_figure.subplots(1, 3)
+
+        bar_w = 0.35
+        colors_vigent = '#E67E22'
+        colors_nova = '#27AE60'
+
+        # --- RF ---
+        ax = axes[0]
+        ax.bar([0 - bar_w/2], [current_rf], bar_w, color=colors_vigent, label='Vigent')
+        ax.bar([0 + bar_w/2], [new_rf], bar_w, color=colors_nova, label='Nova')
+        ax.set_ylabel('RF', fontsize=9)
+        ax.set_xticks([])
+        ax.set_title('RF (slope)', fontsize=9, fontweight='bold')
+        # Valors sobre barres
+        ax.text(0 - bar_w/2, current_rf, f'{current_rf:.0f}', ha='center', va='bottom', fontsize=8)
+        ax.text(0 + bar_w/2, new_rf, f'{new_rf:.0f}', ha='center', va='bottom', fontsize=8,
+                fontweight='bold')
+        # Delta
+        if current_rf > 0:
+            delta_rf = (new_rf - current_rf) / current_rf * 100
+            delta_color = '#27AE60' if abs(delta_rf) < 5 else '#E67E22' if abs(delta_rf) < 15 else '#E74C3C'
+            ax.set_xlabel(f'\u0394 {delta_rf:+.1f}%', fontsize=9, color=delta_color, fontweight='bold')
+
+        # --- Intercept ---
+        ax = axes[1]
+        ax.bar([0 - bar_w/2], [current_intercept], bar_w, color=colors_vigent)
+        ax.bar([0 + bar_w/2], [new_intercept], bar_w, color=colors_nova)
+        ax.set_xticks([])
+        ax.set_title('Intercept', fontsize=9, fontweight='bold')
+        # Posicionar text sobre o sota la barra segons signe
+        va_vig = 'bottom' if current_intercept >= 0 else 'top'
+        va_new = 'bottom' if new_intercept >= 0 else 'top'
+        ax.text(0 - bar_w/2, current_intercept, f'{current_intercept:.1f}',
+                ha='center', va=va_vig, fontsize=8)
+        ax.text(0 + bar_w/2, new_intercept, f'{new_intercept:.1f}',
+                ha='center', va=va_new, fontsize=8, fontweight='bold')
+        delta_int = new_intercept - current_intercept
+        ax.set_xlabel(f'\u0394 {delta_int:+.1f}', fontsize=9,
+                       color='#27AE60' if abs(delta_int) < 10 else '#E67E22')
+
+        # --- R² ---
+        ax = axes[2]
+        # Escalar per veure bé la diferència (base a 0.9)
+        r2_base = 0.9
+        r2_vigent_plot = max(0, current_r2_val - r2_base) if current_r2_val else 0
+        r2_nova_plot = max(0, new_r2 - r2_base)
+        ax.bar([0 - bar_w/2], [r2_vigent_plot], bar_w, color=colors_vigent,
+               bottom=r2_base)
+        ax.bar([0 + bar_w/2], [r2_nova_plot], bar_w, color=colors_nova,
+               bottom=r2_base)
+        ax.set_xticks([])
+        ax.set_ylim(r2_base, 1.001)
+        ax.set_title('R²', fontsize=9, fontweight='bold')
+        if current_r2_val:
+            ax.text(0 - bar_w/2, current_r2_val, f'{current_r2_val:.4f}',
+                    ha='center', va='bottom', fontsize=7)
+        ax.text(0 + bar_w/2, new_r2, f'{new_r2:.6f}',
+                ha='center', va='bottom', fontsize=7, fontweight='bold')
+
+        # Llegenda compacta
+        axes[0].legend(fontsize=7, loc='upper right', framealpha=0.8)
+
+        for ax in axes:
+            ax.tick_params(labelsize=7)
+            ax.grid(True, alpha=0.2, axis='y')
+
+        try:
+            self._comparison_figure.tight_layout(pad=1.5)
+        except Exception:
+            pass
+        self.seq_cal_comparison_canvas.draw()
 
     def _update_seq_cal_graph(self, reg_result, method):
         """Actualitza el gràfic scatter de regressió SEQ_CAL."""
