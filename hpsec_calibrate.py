@@ -2759,6 +2759,20 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
     is_bp_chromato = (method == "BP") or t_max_chromato < 20
     mode = "BP" if is_bp_chromato else "COLUMN"
 
+    # Detecció saturació UIB (ABANS d'integrar)
+    doc_source = metadata.get("doc_source", "direct")
+    uib_sensitivity = metadata.get("uib_sensitivity")
+    uib_saturated = False
+    if doc_source == "uib" and uib_sensitivity is not None:
+        try:
+            uib_sensitivity = float(uib_sensitivity)
+        except (ValueError, TypeError):
+            uib_sensitivity = None
+        if uib_sensitivity and np.max(y_doc_net) >= uib_sensitivity * 0.95:
+            uib_saturated = True
+            logger.warning("analizar_khp_data: UIB SATURAT per %s (y_max=%.1f >= %.1f = 95%% de %d ppb)",
+                           name, float(np.max(y_doc_net)), uib_sensitivity * 0.95, int(uib_sensitivity))
+
     from hpsec_core import find_peak_boundaries
 
     # =========================================================================
@@ -2843,16 +2857,19 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
 
     if t_max_254 is not None:
         # --- A) Candidat estàndard: pic més proper a 254 en all_peaks ---
-        # Llindar 2.0 min per cobrir shift DAD→TOC (~1.9 min en COLUMN)
+        # UIB sincronitzat amb DAD (ambdós HPLC-side) → finestra estreta
+        # Direct té delay TOC (~1.9 min COLUMN) → finestra ampla
+        _is_uib = (doc_source == "uib")
+        _std_tol = 0.5 if _is_uib else 2.0
         std_candidate = None
         if all_peaks:
             nearest = min(all_peaks, key=lambda pk: abs(pk['t'] - t_max_254))
-            if abs(nearest['t'] - t_max_254) <= 2.0:
+            if abs(nearest['t'] - t_max_254) <= _std_tol:
                 std_candidate = nearest
 
-        # --- B) Cerca dirigida: finestra ±2.5 min amb prominència 1% ---
+        # --- B) Cerca dirigida: finestra ajustada al tipus de senyal ---
         guided_idx = None
-        window_margin = config.get("guided_search_window_min", 2.5)
+        window_margin = 0.8 if _is_uib else config.get("guided_search_window_min", 2.5)
         mask = (t_doc >= t_max_254 - window_margin) & (t_doc <= t_max_254 + window_margin)
         idx_in_window = np.where(mask)[0]
 
@@ -2868,13 +2885,12 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
 
             if guided_peaks:
                 gp = min(guided_peaks, key=lambda pk: abs(pk['t'] - t_max_254))
-                if abs(gp['t'] - t_max_254) <= 2.0:
+                if abs(gp['t'] - t_max_254) <= _std_tol:
                     guided_idx = int(idx_in_window[gp['idx']])
 
         # --- C) Triar el millor candidat (només peak_idx) ---
-        # Prioritat: guided (busca dirigida) > std (all_peaks) > detect_main_peak (fallback)
-        # A baixa conc el pic KHP pot ser invisible a all_peaks (5% prominència),
-        # per tant guided (1% prominència en finestra) el troba.
+        # Prioritat: guided > std > detect_main_peak, PERÒ guided ha de ser
+        # comparable en alçada al std per evitar triar pics espuris.
         selected_idx = None
         if guided_idx is not None and std_candidate:
             same_peak = abs(t_doc[guided_idx] - std_candidate['t']) < 0.5
@@ -2883,19 +2899,46 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
                 logger.info("analizar_khp_data: same peak (guided=%.2f, std=%.2f), 254nm ref=%.2f",
                             t_doc[guided_idx], std_candidate['t'], t_max_254)
             else:
+                # Guided i std són pics diferents — validar que guided no sigui
+                # espuri (molt més petit que std). Si guided height < 30% de std,
+                # preferir std (el pic fort detectat a 5% prominència).
+                h_guided = float(y_doc_net[guided_idx])
+                h_std = float(std_candidate.get('height', 0))
+                if h_std > 0 and h_guided < h_std * 0.30:
+                    selected_idx = std_candidate['idx']
+                    logger.info(
+                        "analizar_khp_data: guided peak (t=%.2f, h=%.1f) rejected — "
+                        "too small vs std (t=%.2f, h=%.1f). Using std.",
+                        t_doc[guided_idx], h_guided, std_candidate['t'], h_std)
+                else:
+                    selected_idx = guided_idx
+                    dad_quality_warnings.append(
+                        f"DOC_GUIDED_BY_254: pic DOC trobat per cerca dirigida "
+                        f"(t={t_doc[guided_idx]:.2f}, ref 254nm t={t_max_254:.2f})")
+                    _guided_254_details = {"t_doc": float(t_doc[guided_idx]), "t_254": t_max_254}
+                    logger.info("analizar_khp_data: different peaks — guided (t=%.2f) over std (t=%.2f)",
+                                t_doc[guided_idx], std_candidate['t'])
+        elif guided_idx is not None:
+            # Guided sense std_candidate — legítim si el pic principal (global max)
+            # no és molt més gran i proper. Comparar amb el pic més alt del cromatograma.
+            global_max_idx = int(np.argmax(y_doc_net))
+            h_guided = float(y_doc_net[guided_idx])
+            h_global = float(y_doc_net[global_max_idx])
+            dt_global_254 = abs(t_doc[global_max_idx] - t_max_254)
+            # Si el pic global és proper a 254nm (< 3 min) i guided és <30% del global,
+            # preferir el global (detect_main_peak el trobarà al fallback)
+            if dt_global_254 < 3.0 and h_global > 0 and h_guided < h_global * 0.30:
+                selected_idx = None  # fallback a detect_main_peak
+                logger.info(
+                    "analizar_khp_data: guided peak (t=%.2f, h=%.1f) rejected — "
+                    "global max (t=%.2f, h=%.1f) is closer and stronger.",
+                    t_doc[guided_idx], h_guided, t_doc[global_max_idx], h_global)
+            else:
                 selected_idx = guided_idx
                 dad_quality_warnings.append(
                     f"DOC_GUIDED_BY_254: pic DOC trobat per cerca dirigida "
                     f"(t={t_doc[guided_idx]:.2f}, ref 254nm t={t_max_254:.2f})")
                 _guided_254_details = {"t_doc": float(t_doc[guided_idx]), "t_254": t_max_254}
-                logger.info("analizar_khp_data: different peaks — guided (t=%.2f) over std (t=%.2f)",
-                            t_doc[guided_idx], std_candidate['t'])
-        elif guided_idx is not None:
-            selected_idx = guided_idx
-            dad_quality_warnings.append(
-                f"DOC_GUIDED_BY_254: pic DOC trobat per cerca dirigida "
-                f"(t={t_doc[guided_idx]:.2f}, ref 254nm t={t_max_254:.2f})")
-            _guided_254_details = {"t_doc": float(t_doc[guided_idx]), "t_254": t_max_254}
         elif std_candidate:
             selected_idx = std_candidate['idx']
         else:
@@ -2951,8 +2994,9 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
     # Shift temporal DOC vs 254
     shift_khp = (t_max_254 - t_retention) if t_max_254 is not None else 0.0
 
-    # Check t_mismatch DOC vs 254
-    if t_max_254 is not None and abs(shift_khp) > 1.0:
+    # Check t_mismatch DOC vs 254 (UIB sincronitzat amb DAD → llindar estret)
+    _mismatch_tol = 0.3 if doc_source == "uib" else 1.0
+    if t_max_254 is not None and abs(shift_khp) > _mismatch_tol:
         dad_quality_warnings.append(
             f"T_RETENTION_MISMATCH: |DOC({t_retention:.2f}) - 254({t_max_254:.2f})| = {abs(shift_khp):.2f} min")
 
@@ -3082,6 +3126,16 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
     # Qualitat — anomalies estructurades (ANOMALY_CATALOG com a font única)
     sample_label = f"{name}_R{replica}"
     calibration_anomalies = []
+
+    # UIB saturació (detectat abans de STEP 0)
+    if uib_saturated:
+        calibration_anomalies.append(create_anomaly(
+            "UIB_SATURATED",
+            details={"y_max": float(np.max(y_doc_net)),
+                     "sensitivity": uib_sensitivity,
+                     "threshold": uib_sensitivity * 0.95},
+            sample=sample_label,
+        ))
 
     # Guided DOC search (detectat a STEP 1)
     if _guided_254_details is not None:
@@ -3281,7 +3335,8 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
         'area_main_peak': area_main_peak,
         'concentration_ratio': concentration_ratio,
         'volume_uL': volume_uL,
-        'uib_sensitivity': None,
+        'uib_sensitivity': uib_sensitivity,
+        'uib_saturated': uib_saturated,
         # Noves mètriques per anàlisi de qualitat
         'fwhm_doc': fwhm_doc,
         'fwhm_254': fwhm_254,
@@ -4139,9 +4194,9 @@ def detect_seq_cal_data(calib_result, seq_path, method=None, uib_sensitivity=Non
             if conc <= 0 or vol <= 0 or area <= 0:
                 continue
 
-            # Detectar saturació UIB
-            uib_saturated = False
-            if signal_name == 'uib' and uib_sensitivity:
+            # Detectar saturació UIB (backend o fallback intensity_doc)
+            uib_saturated = cal.get('uib_saturated', False)
+            if not uib_saturated and signal_name == 'uib' and uib_sensitivity:
                 replicas = cal.get('replicas', [])
                 for rep in replicas:
                     y_max = rep.get('metrics', {}).get('intensity_doc', 0)
@@ -4382,6 +4437,10 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
                 y_net_uib = uib.get("y_net")
 
                 metadata_uib = {**base_metadata, "doc_source": "uib"}
+                # Passar uib_sensitivity perquè analizar_khp_data detecti saturació
+                _uib_sens = imported_data.get("uib_sensitivity")
+                if _uib_sens is not None:
+                    metadata_uib["uib_sensitivity"] = _uib_sens
                 khp_result_uib = analizar_khp_data(t_uib, y_net_uib, metadata_uib, df_dad, config)
 
                 if khp_result_uib:
@@ -4646,6 +4705,7 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
         group_has_timeout = any(r.get('has_timeout', False) for r in replicas)
         group_smoothness = min((r.get('smoothness', 100.0) for r in replicas), default=100.0)
         group_irregular_top_repaired = any(r.get('irregular_top_repaired', False) for r in replicas)
+        group_uib_saturated = any(r.get('uib_saturated', False) for r in replicas)
 
         # Determinar mètode de selecció
         if manual_selection:
@@ -4768,6 +4828,7 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
             ),
             'smoothness': group_smoothness,
             'irregular_top_repaired': group_irregular_top_repaired,
+            'uib_saturated': group_uib_saturated,
 
             # Estadístiques globals
             'n_replicas': len(replicas),
