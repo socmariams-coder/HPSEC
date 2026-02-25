@@ -4208,23 +4208,17 @@ def detect_seq_cal_data(calib_result, seq_path, method=None, uib_sensitivity=Non
             if conc <= 0 or vol <= 0 or area <= 0:
                 continue
 
-            # Detectar saturació UIB (backend o fallback des de dades guardades)
-            # IMPORTANT: Només aplicar fallback height per senyal UIB, NO Direct
-            # (Direct no té límit de sensibilitat — el height pot ser >> sensitivity)
-            uib_saturated = cal.get('uib_saturated', False)
-            if not uib_saturated and signal_name == 'uib' and uib_sensitivity:
-                # Fallback 1: height directe del grup (net) + baseline → raw
-                h = cal.get('height', 0) or 0
-                bl = cal.get('baseline_stats', {}).get('mean', 0) if isinstance(cal.get('baseline_stats'), dict) else 0
-                if h > 0 and (h + bl) >= uib_sensitivity * 0.95:
-                    uib_saturated = True
-                # Fallback 2: replicas amb height o intensity_doc
-                if not uib_saturated:
-                    replicas = cal.get('replicas', [])
-                    for rep in replicas:
-                        rh = rep.get('height', 0) or rep.get('metrics', {}).get('intensity_doc', 0) or 0
-                        rbl = rep.get('baseline', 0) or 0
-                        if rh > 0 and (rh + rbl) >= uib_sensitivity * 0.95:
+            # Detectar saturació UIB (NOMÉS per senyal UIB)
+            # Direct NO té límit de sensibilitat → uib_saturated sempre False
+            uib_saturated = False
+            if signal_name == 'uib':
+                uib_saturated = cal.get('uib_saturated', False)
+                if not uib_saturated and uib_sensitivity:
+                    # Fallback: height (net) + baseline → raw vs threshold
+                    for rep in cal.get('replicas', []):
+                        h = rep.get('height', 0) or 0
+                        bl = rep.get('baseline', 0) or 0
+                        if h > 0 and (h + bl) >= uib_sensitivity * 0.95:
                             uib_saturated = True
                             break
 
@@ -4235,8 +4229,7 @@ def detect_seq_cal_data(calib_result, seq_path, method=None, uib_sensitivity=Non
                 'volume_uL': vol,
                 'area': area,
                 'is_outlier': False,
-                # Saturació UIB només invalida entrades UIB, no Direct
-                'valid_for_calibration': not uib_saturated if signal_name == 'uib' else True,
+                'valid_for_calibration': not uib_saturated,
                 'condition_key': cal.get('condition_key', f"KHP{conc:g}@{vol}µL"),
                 'rf_mass': cal.get('rf_mass', 0),
                 'quality_score': cal.get('quality_score', 0),
