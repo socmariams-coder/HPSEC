@@ -3343,7 +3343,7 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
         'area_main_peak': area_main_peak,
         'concentration_ratio': concentration_ratio,
         'volume_uL': volume_uL,
-        'uib_sensitivity': uib_sensitivity,
+        'uib_sensitivity': metadata.get("uib_sensitivity"),
         'uib_saturated': uib_saturated,
         # Noves mètriques per anàlisi de qualitat
         'fwhm_doc': fwhm_doc,
@@ -5017,6 +5017,9 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
             cal_data['shift_min_uib'] = uib_match.get('shift_min', 0)
             cal_data['doc_mode'] = result.get('mode', 'DUAL')
             cal_data['bigaussian_uib'] = uib_match.get('bigaussian_doc')
+            # Saturació UIB: propagar de l'entrada UIB (no del Direct)
+            if uib_match.get('uib_saturated', False):
+                cal_data['uib_saturated'] = True
 
     # Registrar TOTES les calibracions (una per cada condició)
     if calibrations_list:
