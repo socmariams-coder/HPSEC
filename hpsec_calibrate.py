@@ -5022,7 +5022,6 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
             cal_data['shift_min_uib'] = uib_match.get('shift_min', 0)
             cal_data['doc_mode'] = result.get('mode', 'DUAL')
             cal_data['bigaussian_uib'] = uib_match.get('bigaussian_doc')
-            cal_data['uib_saturated'] = uib_match.get('uib_saturated', False)
 
     # Registrar TOTES les calibracions (una per cada condició)
     if calibrations_list:
