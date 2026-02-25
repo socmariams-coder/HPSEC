@@ -3694,6 +3694,12 @@ def register_calibration(seq_path, khp_data, khp_source, mode="COLUMN"):
         ),
 
         # =====================================================================
+        # SATURACIÓ UIB
+        # =====================================================================
+        "uib_saturated": khp_data.get('uib_saturated', False),
+        "height": khp_data.get('height', 0),
+
+        # =====================================================================
         # ALTRES (detall / compatibilitat)
         # =====================================================================
         "baseline_valid": khp_data.get('baseline_valid', True),
@@ -4203,8 +4209,10 @@ def detect_seq_cal_data(calib_result, seq_path, method=None, uib_sensitivity=Non
                 continue
 
             # Detectar saturació UIB (backend o fallback des de dades guardades)
+            # IMPORTANT: Només aplicar fallback height per senyal UIB, NO Direct
+            # (Direct no té límit de sensibilitat — el height pot ser >> sensitivity)
             uib_saturated = cal.get('uib_saturated', False)
-            if not uib_saturated and uib_sensitivity:
+            if not uib_saturated and signal_name == 'uib' and uib_sensitivity:
                 # Fallback 1: height directe del grup (net) + baseline → raw
                 h = cal.get('height', 0) or 0
                 bl = cal.get('baseline_stats', {}).get('mean', 0) if isinstance(cal.get('baseline_stats'), dict) else 0
@@ -4227,7 +4235,8 @@ def detect_seq_cal_data(calib_result, seq_path, method=None, uib_sensitivity=Non
                 'volume_uL': vol,
                 'area': area,
                 'is_outlier': False,
-                'valid_for_calibration': not uib_saturated,
+                # Saturació UIB només invalida entrades UIB, no Direct
+                'valid_for_calibration': not uib_saturated if signal_name == 'uib' else True,
                 'condition_key': cal.get('condition_key', f"KHP{conc:g}@{vol}µL"),
                 'rf_mass': cal.get('rf_mass', 0),
                 'quality_score': cal.get('quality_score', 0),

@@ -420,19 +420,16 @@ class SeqCalRegressionWidget(QWidget):
             if conc <= 0 or vol <= 0 or area <= 0:
                 continue
 
-            # Detectar saturació UIB: y_max >= 95% sensibilitat
-            uib_saturated = False
-            if signal_name == 'uib' and self._sensitivity:
+            # Detectar saturació UIB: y_raw_max >= 95% sensibilitat
+            # Prioritzar resultat del backend; fallback amb height+baseline (raw)
+            uib_saturated = cal.get('uib_saturated', False)
+            if not uib_saturated and signal_name == 'uib' and self._sensitivity:
                 for rep in cal.get('replicas', []):
-                    # 'height' = max(y_doc_net) de analizar_khp_data()
-                    y_max = rep.get('height', 0)
-                    if not y_max:
-                        # Fallback: calcular des del senyal cru
-                        y_doc = rep.get('y_doc')
-                        if y_doc is not None:
-                            import numpy as np
-                            y_max = float(np.max(y_doc))
-                    if y_max >= self._sensitivity * 0.95:
+                    # height és NET (baseline-subtracted), cal sumar baseline per obtenir raw
+                    h = rep.get('height', 0) or 0
+                    bl = rep.get('baseline_stats', {}).get('mean', 0) or 0
+                    y_raw_max = h + bl
+                    if y_raw_max >= self._sensitivity * 0.95:
                         uib_saturated = True
                         break
 
@@ -443,7 +440,7 @@ class SeqCalRegressionWidget(QWidget):
                 'volume_uL': vol,
                 'area': area,
                 'is_outlier': False,
-                'valid_for_calibration': not uib_saturated,
+                'valid_for_calibration': not uib_saturated if signal_name == 'uib' else True,
                 'condition_key': cal.get('condition_key', f"KHP{conc:g}@{vol}µL"),
                 'rf_mass': cal.get('rf_mass', 0),
                 'quality_score': cal.get('quality_score', 0),
