@@ -1002,9 +1002,9 @@ def fit_calibration_from_history(calibrations, mode="COLUMN", signal="direct",
         if conc <= 0 or vol <= 0:
             continue
 
-        # Àrea segons senyal
+        # Àrea segons senyal (amb fallback a 'area' genèric)
         if signal.lower() == 'uib':
-            area = cal.get('area_u', 0)
+            area = cal.get('area_u', 0) or cal.get('area', 0)
         elif signal.lower() == '254':
             area = cal.get('area_254', 0) or cal.get('a254_area', 0) or 0
         else:
@@ -4971,26 +4971,44 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
 
     report_progress(90, "Registrant calibracions...")
 
-    # Enriquir calibracions Direct amb dades UIB (perquè register_calibration les guardi)
+    # Enriquir calibracions Direct amb dades UIB corresponents (matching per condició)
     calibrations_list = result.get("calibrations", [])
     calibrations_uib_reg = result.get("calibrations_uib", [])
     if calibrations_uib_reg and calibrations_list:
-        uib_primary = calibrations_uib_reg[0]
+        # Construir índex UIB per condition_key per matching 1:1
+        uib_by_condition = {}
+        for uib_cal in calibrations_uib_reg:
+            ckey = uib_cal.get('condition_key', '')
+            uib_by_condition[ckey] = uib_cal
+
         for cal_data in calibrations_list:
-            cal_data['area_uib'] = uib_primary.get('area', 0)
-            cal_data['area_total_uib'] = uib_primary.get('area_total', 0)
-            cal_data['rf_uib'] = uib_primary.get('rf_doc', uib_primary.get('rf', 0))
-            cal_data['rf_mass_uib'] = uib_primary.get('rf_mass_doc', uib_primary.get('rf_mass', 0))
-            cal_data['t_retention_uib'] = uib_primary.get('t_retention', 0)
-            cal_data['t_doc_max_uib'] = uib_primary.get('t_doc_max', uib_primary.get('t_retention', 0))
-            cal_data['fwhm_uib'] = uib_primary.get('fwhm_doc', 0)
-            cal_data['snr_uib'] = uib_primary.get('snr', 0)
-            cal_data['symmetry_uib'] = uib_primary.get('symmetry', 1.0)
-            cal_data['concentration_ratio_uib'] = uib_primary.get('concentration_ratio', 1.0)
-            cal_data['shift_sec_uib'] = uib_primary.get('shift_sec', 0)
-            cal_data['shift_min_uib'] = uib_primary.get('shift_min', 0)
+            ckey = cal_data.get('condition_key', '')
+            uib_match = uib_by_condition.get(ckey)
+            if not uib_match:
+                # Fallback: matching per conc_ppm + nom (sense rèplica)
+                for uib_cal in calibrations_uib_reg:
+                    if (uib_cal.get('conc_ppm') == cal_data.get('conc_ppm') and
+                            uib_cal.get('name_full', '') == cal_data.get('name_full', '')):
+                        uib_match = uib_cal
+                        break
+            if not uib_match:
+                continue  # No hi ha dada UIB per aquesta condició
+
+            cal_data['area_uib'] = uib_match.get('area', 0)
+            cal_data['area_total_uib'] = uib_match.get('area_total', 0)
+            cal_data['rf_uib'] = uib_match.get('rf_doc', uib_match.get('rf', 0))
+            cal_data['rf_mass_uib'] = uib_match.get('rf_mass_doc', uib_match.get('rf_mass', 0))
+            cal_data['t_retention_uib'] = uib_match.get('t_retention', 0)
+            cal_data['t_doc_max_uib'] = uib_match.get('t_doc_max', uib_match.get('t_retention', 0))
+            cal_data['fwhm_uib'] = uib_match.get('fwhm_doc', 0)
+            cal_data['snr_uib'] = uib_match.get('snr', 0)
+            cal_data['symmetry_uib'] = uib_match.get('symmetry', 1.0)
+            cal_data['concentration_ratio_uib'] = uib_match.get('concentration_ratio', 1.0)
+            cal_data['shift_sec_uib'] = uib_match.get('shift_sec', 0)
+            cal_data['shift_min_uib'] = uib_match.get('shift_min', 0)
             cal_data['doc_mode'] = result.get('mode', 'DUAL')
-            cal_data['bigaussian_uib'] = uib_primary.get('bigaussian_doc')
+            cal_data['bigaussian_uib'] = uib_match.get('bigaussian_doc')
+            cal_data['uib_saturated'] = uib_match.get('uib_saturated', False)
 
     # Registrar TOTES les calibracions (una per cada condició)
     if calibrations_list:

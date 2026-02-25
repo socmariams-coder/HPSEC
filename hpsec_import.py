@@ -56,12 +56,20 @@ DATA_FOLDER_NAME = "data"  # Subcarpeta dins CHECK per JSONs
 
 
 def _safe_float(val):
-    """Converteix un valor a float de forma segura (per uib_sensitivity, etc.)."""
+    """Converteix un valor a float de forma segura (per uib_sensitivity, etc.).
+
+    Suporta formats com "1-700" (sensibilitat UIB del 0-CHECK) → 700.
+    """
     if val is None:
         return None
     try:
         return float(val)
     except (ValueError, TypeError):
+        # Format "X-NNN" (p.ex. "1-700" del 0-CHECK) → agafar últim número
+        import re
+        m = re.search(r'(\d+)\s*$', str(val))
+        if m:
+            return float(m.group(1))
         return None
 
 

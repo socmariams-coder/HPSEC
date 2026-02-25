@@ -1537,7 +1537,13 @@ class CalibrationLineView(QWidget):
             return
 
         # Actualitzar l'entry amb la nova selecció
+        # CRÍTIC: sincronitzar camps específics per senyal —
+        # fit_calibration_from_history llegeix area_u (UIB) o area_254 (254nm)
         entry['area'] = new_area
+        if self._seq_cal_signal == 'uib':
+            entry['area_u'] = new_area
+        elif self._seq_cal_signal == '254':
+            entry['area_254'] = new_area
         entry['a254_area'] = new_a254
         conc = entry.get('conc_ppm', 0)
         vol = entry.get('volume_uL', 0)
