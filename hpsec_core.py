@@ -321,6 +321,149 @@ def check_asymmetry(asymmetry):
 
 
 # =============================================================================
+# PEAK CLIPPING / SATURATION DETECTION (Gaussian fit)
+# =============================================================================
+
+def detect_peak_clipping(t, y, peak_idx=None):
+    """
+    Detect signal clipping/saturation by comparing observed peak to Gaussian fit.
+
+    Fits a Gaussian to the rising/falling flanks of the peak (below 70% of y_max),
+    then compares the predicted amplitude with the observed maximum.
+
+    A clipped/saturated peak has y_max significantly lower than the Gaussian predicts,
+    because the detector has reached its physical limit and the signal is "flat-topped".
+
+    This method is independent of any sensitivity parameter — it only depends on the
+    intrinsic shape of the signal.
+
+    Args:
+        t: Array de temps (minuts)
+        y: Array de senyal (intensitat, baseline-subtracted OK)
+        peak_idx: Índex del pic (si None, usa argmax)
+
+    Returns:
+        dict:
+            is_saturated: bool — True si el pic mostra retall/clipping
+            clipping_ratio: float — y_max / A_predicted (1.0 = normal, <0.85 = clipped)
+            y_max_observed: float — màxim observat
+            y_max_predicted: float — amplitud predita per la gaussiana
+            plateau_width_pts: int — nombre de punts consecutius prop del màxim (>98%)
+    """
+    result = {
+        "is_saturated": False,
+        "clipping_ratio": 1.0,
+        "y_max_observed": 0.0,
+        "y_max_predicted": 0.0,
+        "plateau_width_pts": 1,
+    }
+
+    if t is None or y is None:
+        return result
+
+    t = np.asarray(t, dtype=float)
+    y = np.asarray(y, dtype=float)
+
+    if len(t) < 20:
+        return result
+
+    if peak_idx is None:
+        peak_idx = int(np.argmax(y))
+
+    y_max = float(y[peak_idx])
+    result["y_max_observed"] = y_max
+
+    if y_max < 1e-6:
+        return result
+
+    # --- Plateau width: punts consecutius dins 98% de y_max ---
+    near_max = y >= y_max * 0.98
+    # Find consecutive run containing peak_idx
+    plateau_start = peak_idx
+    plateau_end = peak_idx
+    while plateau_start > 0 and near_max[plateau_start - 1]:
+        plateau_start -= 1
+    while plateau_end < len(y) - 1 and near_max[plateau_end + 1]:
+        plateau_end += 1
+    plateau_width = plateau_end - plateau_start + 1
+    result["plateau_width_pts"] = plateau_width
+
+    # --- Gaussian fit on flanks (10%–70% of y_max, both sides) ---
+    low_thresh = y_max * 0.10
+    high_thresh = y_max * 0.70
+
+    # Left flank: points before peak_idx
+    left_mask = np.zeros(len(y), dtype=bool)
+    left_mask[:peak_idx] = (y[:peak_idx] >= low_thresh) & (y[:peak_idx] <= high_thresh)
+
+    # Right flank: points after peak_idx
+    right_mask = np.zeros(len(y), dtype=bool)
+    right_mask[peak_idx + 1:] = (y[peak_idx + 1:] >= low_thresh) & (y[peak_idx + 1:] <= high_thresh)
+
+    flank_mask = left_mask | right_mask
+    n_flank = int(np.sum(flank_mask))
+
+    if n_flank < 6:
+        # Not enough flank points — use plateau width as fallback
+        # A normal peak has plateau ≤ 3 pts; clipped peaks have wider plateaus
+        dt_median = float(np.median(np.diff(t)))
+        expected_plateau = max(1, int(0.1 / dt_median))  # ~0.1 min = narrow top
+        if plateau_width > expected_plateau * 5:
+            result["is_saturated"] = True
+            result["clipping_ratio"] = 0.5  # Unknown exact ratio
+        return result
+
+    t_flank = t[flank_mask]
+    y_flank = y[flank_mask]
+
+    # Fit: log(y) = c0 + c1*t + c2*t²  (quadratic = Gaussian in log-space)
+    # Gaussian: y = A * exp(-(t-mu)²/(2σ²))
+    # log(y) = log(A) - (t-mu)²/(2σ²) = log(A) - t²/(2σ²) + t·mu/σ² - mu²/(2σ²)
+    # So: c2 = -1/(2σ²), c1 = mu/σ², c0 = log(A) - mu²/(2σ²)
+    try:
+        log_y = np.log(y_flank)
+        # Weighted polyfit (degree 2)
+        coeffs = np.polyfit(t_flank, log_y, 2)
+        c2, c1, c0 = coeffs
+
+        if c2 >= 0:
+            # Not a proper peak (c2 must be negative for Gaussian)
+            return result
+
+        sigma2 = -1.0 / (2.0 * c2)
+        mu = c1 * sigma2
+        log_A = c0 + mu**2 / (2.0 * sigma2)
+        A_predicted = float(np.exp(log_A))
+
+        result["y_max_predicted"] = A_predicted
+
+        if A_predicted > 0:
+            clipping_ratio = y_max / A_predicted
+            result["clipping_ratio"] = float(clipping_ratio)
+
+            # Clipping ratio < 0.85 = significant clipping
+            # Also check plateau width: normal Gaussian peak has very narrow plateau
+            dt_median = float(np.median(np.diff(t)))
+            sigma_pts = max(1, int(np.sqrt(sigma2) / dt_median))
+            # A Gaussian at 98% of max spans ±0.2σ ≈ very few points
+            expected_plateau = max(2, int(0.4 * np.sqrt(sigma2) / dt_median))
+
+            is_clipped_ratio = clipping_ratio < 0.85
+            is_clipped_plateau = plateau_width > expected_plateau * 3
+            result["is_saturated"] = is_clipped_ratio or is_clipped_plateau
+
+    except (np.linalg.LinAlgError, ValueError, RuntimeWarning):
+        # Fit failed — use plateau width fallback
+        dt_median = float(np.median(np.diff(t)))
+        expected_plateau = max(1, int(0.1 / dt_median))
+        if plateau_width > expected_plateau * 5:
+            result["is_saturated"] = True
+            result["clipping_ratio"] = 0.5
+
+    return result
+
+
+# =============================================================================
 # IRREGULAR TOP DETECTION (jagged/batman)
 # =============================================================================
 

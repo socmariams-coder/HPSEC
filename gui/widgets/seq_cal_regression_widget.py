@@ -420,21 +420,8 @@ class SeqCalRegressionWidget(QWidget):
             if conc <= 0 or vol <= 0 or area <= 0:
                 continue
 
-            # Detectar saturació UIB: y_max >= 95% sensibilitat
-            uib_saturated = False
-            if signal_name == 'uib' and self._sensitivity:
-                for rep in cal.get('replicas', []):
-                    # 'height' = max(y_doc_net) de analizar_khp_data()
-                    y_max = rep.get('height', 0)
-                    if not y_max:
-                        # Fallback: calcular des del senyal cru
-                        y_doc = rep.get('y_doc')
-                        if y_doc is not None:
-                            import numpy as np
-                            y_max = float(np.max(y_doc))
-                    if y_max >= self._sensitivity * 0.95:
-                        uib_saturated = True
-                        break
+            # Saturació UIB: ja calculada pel backend (detect_peak_clipping)
+            uib_saturated = cal.get('uib_saturated', False)
 
             entry = {
                 'seq_name': seq_name,

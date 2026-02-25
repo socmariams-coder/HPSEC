@@ -1790,24 +1790,27 @@ def analyze_sample(sample_data, calibration_data=None, config=None):
         else:
             result["irregular_top_uib"] = False
 
-    # Detectar saturació UIB (si DUAL o UIB-only)
-    # El detector Sievers M9e satura a la sensibilitat configurada (700 o 1000 ppb).
-    # Quan y_max_raw >= 95% de la sensibilitat, el pic està retallat.
-    uib_sensitivity = sample_data.get("uib_sensitivity")
+    # Detectar saturació UIB per forma del pic (Gaussian clipping)
+    # Un pic saturat té el cim retallat: y_max << amplitud Gaussiana predita pels flancs.
+    # No depèn de cap paràmetre de sensibilitat — detecta per la forma intrínseca.
     y_uib_for_sat = y_doc_uib if is_dual else (y_doc if sample_data.get("is_uib_only") else None)
-    if uib_sensitivity and y_uib_for_sat is not None and len(y_uib_for_sat) > 0:
-        y_max_uib = float(np.max(y_uib_for_sat))
-        sat_threshold = uib_sensitivity * 0.95
-        if y_max_uib >= sat_threshold:
+    t_uib_for_sat = t_doc_uib if is_dual else (t_doc if sample_data.get("is_uib_only") else None)
+    if y_uib_for_sat is not None and len(y_uib_for_sat) > 0:
+        from hpsec_core import detect_peak_clipping
+        clip_info = detect_peak_clipping(t_uib_for_sat, y_uib_for_sat)
+        if clip_info["is_saturated"]:
             sat_details = {
-                "y_max": y_max_uib,
-                "sensitivity": uib_sensitivity,
-                "saturation_pct": y_max_uib / uib_sensitivity * 100,
+                "y_max": clip_info["y_max_observed"],
+                "y_max_predicted": clip_info["y_max_predicted"],
+                "clipping_ratio": clip_info["clipping_ratio"],
+                "plateau_width_pts": clip_info["plateau_width_pts"],
             }
             result["anomalies"].append(create_anomaly("UIB_SATURATED", details=sat_details))
             result["uib_saturated"] = True
-            logger.warning(f"{seq_name}/{sample_name}: UIB SATURATED y_max={y_max_uib:.1f} >= "
-                          f"{sat_threshold:.0f} ppb (sensitivity={uib_sensitivity})")
+            logger.warning(f"{seq_name}/{sample_name}: UIB SATURATED "
+                          f"clipping_ratio={clip_info['clipping_ratio']:.3f}, "
+                          f"y_max={clip_info['y_max_observed']:.1f}, "
+                          f"predicted={clip_info['y_max_predicted']:.1f}")
         else:
             result["uib_saturated"] = False
     else:

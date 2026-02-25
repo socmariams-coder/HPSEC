@@ -2759,25 +2759,22 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
     is_bp_chromato = (method == "BP") or t_max_chromato < 20
     mode = "BP" if is_bp_chromato else "COLUMN"
 
-    # Detecció saturació UIB (ABANS d'integrar)
+    # Detecció saturació UIB per forma del pic (Gaussian clipping)
     doc_source = metadata.get("doc_source", "direct")
-    uib_sensitivity = metadata.get("uib_sensitivity")
     uib_saturated = False
-    if doc_source == "uib" and uib_sensitivity is not None:
-        try:
-            uib_sensitivity = float(uib_sensitivity)
-        except (ValueError, TypeError):
-            uib_sensitivity = None
-        if uib_sensitivity:
-            # y_doc_net és baseline-subtracted; el detector satura al senyal RAW
-            # Cal reconstruir y_raw = y_net + baseline per comparar amb sensibilitat
-            uib_baseline = metadata.get("uib_baseline", 0) or 0
-            y_raw_max = float(np.max(y_doc_net)) + float(uib_baseline)
-            threshold = uib_sensitivity * 0.95
-            if y_raw_max >= threshold:
-                uib_saturated = True
-                logger.warning("analizar_khp_data: UIB SATURAT per %s (y_raw_max=%.1f [net=%.1f + bl=%.1f] >= %.1f = 95%% de %d ppb)",
-                               name, y_raw_max, float(np.max(y_doc_net)), float(uib_baseline), threshold, int(uib_sensitivity))
+    clipping_info = None
+    if doc_source == "uib":
+        from hpsec_core import detect_peak_clipping
+        clipping_info = detect_peak_clipping(t_doc, y_doc_net)
+        if clipping_info["is_saturated"]:
+            uib_saturated = True
+            logger.warning(
+                "analizar_khp_data: UIB SATURAT per %s (clipping_ratio=%.3f, "
+                "y_max=%.1f, predicted=%.1f, plateau=%d pts)",
+                name, clipping_info["clipping_ratio"],
+                clipping_info["y_max_observed"], clipping_info["y_max_predicted"],
+                clipping_info["plateau_width_pts"]
+            )
 
     from hpsec_core import find_peak_boundaries
 
@@ -3133,13 +3130,18 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
     sample_label = f"{name}_R{replica}"
     calibration_anomalies = []
 
-    # UIB saturació (detectat abans de STEP 0)
+    # UIB saturació (detectat abans de STEP 0, per forma Gaussiana)
     if uib_saturated:
+        _sat_details = {"y_max": float(np.max(y_doc_net))}
+        if clipping_info:
+            _sat_details.update({
+                "clipping_ratio": clipping_info["clipping_ratio"],
+                "y_max_predicted": clipping_info["y_max_predicted"],
+                "plateau_width_pts": clipping_info["plateau_width_pts"],
+            })
         calibration_anomalies.append(create_anomaly(
             "UIB_SATURATED",
-            details={"y_max": float(np.max(y_doc_net)),
-                     "sensitivity": uib_sensitivity,
-                     "threshold": uib_sensitivity * 0.95},
+            details=_sat_details,
             sample=sample_label,
         ))
 
@@ -4200,15 +4202,8 @@ def detect_seq_cal_data(calib_result, seq_path, method=None, uib_sensitivity=Non
             if conc <= 0 or vol <= 0 or area <= 0:
                 continue
 
-            # Detectar saturació UIB (backend o fallback intensity_doc)
+            # Saturació UIB: ja calculada pel backend (detect_peak_clipping)
             uib_saturated = cal.get('uib_saturated', False)
-            if not uib_saturated and signal_name == 'uib' and uib_sensitivity:
-                replicas = cal.get('replicas', [])
-                for rep in replicas:
-                    y_max = rep.get('metrics', {}).get('intensity_doc', 0)
-                    if y_max >= uib_sensitivity * 0.95:
-                        uib_saturated = True
-                        break
 
             entry = {
                 'seq_name': seq_basename,
