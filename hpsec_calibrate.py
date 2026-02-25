@@ -2768,10 +2768,16 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
             uib_sensitivity = float(uib_sensitivity)
         except (ValueError, TypeError):
             uib_sensitivity = None
-        if uib_sensitivity and np.max(y_doc_net) >= uib_sensitivity * 0.95:
-            uib_saturated = True
-            logger.warning("analizar_khp_data: UIB SATURAT per %s (y_max=%.1f >= %.1f = 95%% de %d ppb)",
-                           name, float(np.max(y_doc_net)), uib_sensitivity * 0.95, int(uib_sensitivity))
+        if uib_sensitivity:
+            # y_doc_net és baseline-subtracted; el detector satura al senyal RAW
+            # Cal reconstruir y_raw = y_net + baseline per comparar amb sensibilitat
+            uib_baseline = metadata.get("uib_baseline", 0) or 0
+            y_raw_max = float(np.max(y_doc_net)) + float(uib_baseline)
+            threshold = uib_sensitivity * 0.95
+            if y_raw_max >= threshold:
+                uib_saturated = True
+                logger.warning("analizar_khp_data: UIB SATURAT per %s (y_raw_max=%.1f [net=%.1f + bl=%.1f] >= %.1f = 95%% de %d ppb)",
+                               name, y_raw_max, float(np.max(y_doc_net)), float(uib_baseline), threshold, int(uib_sensitivity))
 
     from hpsec_core import find_peak_boundaries
 
@@ -3370,6 +3376,7 @@ def _extract_replicas_info(khp_data):
         return [{
             "filename": khp_data.get('filename', 'N/A'),
             "area": khp_data.get('area', 0),
+            "height": khp_data.get('height', 0),
             "t_start": peak_info.get('t_start', 0),
             "t_end": peak_info.get('t_end', 0),
             "t_max": peak_info.get('t_max', khp_data.get('t_retention', 0)),
@@ -3382,6 +3389,7 @@ def _extract_replicas_info(khp_data):
         replicas_info.append({
             "filename": rep.get('filename', 'N/A'),
             "area": rep.get('area', peak_info.get('area', 0)),
+            "height": rep.get('height', 0),
             "t_start": peak_info.get('t_start', 0),
             "t_end": peak_info.get('t_end', 0),
             "t_max": peak_info.get('t_max', rep.get('t_retention', 0)),
@@ -4194,15 +4202,23 @@ def detect_seq_cal_data(calib_result, seq_path, method=None, uib_sensitivity=Non
             if conc <= 0 or vol <= 0 or area <= 0:
                 continue
 
-            # Detectar saturació UIB (backend o fallback intensity_doc)
+            # Detectar saturació UIB (backend o fallback des de dades guardades)
             uib_saturated = cal.get('uib_saturated', False)
-            if not uib_saturated and signal_name == 'uib' and uib_sensitivity:
-                replicas = cal.get('replicas', [])
-                for rep in replicas:
-                    y_max = rep.get('metrics', {}).get('intensity_doc', 0)
-                    if y_max >= uib_sensitivity * 0.95:
-                        uib_saturated = True
-                        break
+            if not uib_saturated and uib_sensitivity:
+                # Fallback 1: height directe del grup (net) + baseline → raw
+                h = cal.get('height', 0) or 0
+                bl = cal.get('baseline_stats', {}).get('mean', 0) if isinstance(cal.get('baseline_stats'), dict) else 0
+                if h > 0 and (h + bl) >= uib_sensitivity * 0.95:
+                    uib_saturated = True
+                # Fallback 2: replicas amb height o intensity_doc
+                if not uib_saturated:
+                    replicas = cal.get('replicas', [])
+                    for rep in replicas:
+                        rh = rep.get('height', 0) or rep.get('metrics', {}).get('intensity_doc', 0) or 0
+                        rbl = rep.get('baseline', 0) or 0
+                        if rh > 0 and (rh + rbl) >= uib_sensitivity * 0.95:
+                            uib_saturated = True
+                            break
 
             entry = {
                 'seq_name': seq_basename,
@@ -4437,10 +4453,13 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
                 y_net_uib = uib.get("y_net")
 
                 metadata_uib = {**base_metadata, "doc_source": "uib"}
-                # Passar uib_sensitivity perquè analizar_khp_data detecti saturació
+                # Passar uib_sensitivity + baseline perquè analizar_khp_data detecti saturació
                 _uib_sens = imported_data.get("uib_sensitivity")
                 if _uib_sens is not None:
                     metadata_uib["uib_sensitivity"] = _uib_sens
+                # Baseline UIB per reconstruir senyal raw a la detecció de saturació
+                _uib_bl = uib.get("baseline", 0)
+                metadata_uib["uib_baseline"] = float(_uib_bl) if _uib_bl is not None else 0
                 khp_result_uib = analizar_khp_data(t_uib, y_net_uib, metadata_uib, df_dad, config)
 
                 if khp_result_uib:
@@ -4772,10 +4791,15 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
         bigaussian_uib = bg_source.get('bigaussian_uib')
         bigaussian_254 = bg_source.get('bigaussian_254')
 
+        # Generar condition_key per matching UIB ↔ Direct
+        _mode_for_key = "BP" if replicas[0].get('is_bp', False) else "COLUMN"
+        _condition_key = get_condition_key(_mode_for_key, group_volume, group_conc)
+
         return {
             # Valors seleccionats
             'name': group_name,  # Nom del KHP (ex: "KHP2", "KHP2_50")
             'name_full': f"KHP{group_conc}@{group_volume}µL",  # Condicions: conc + volum
+            'condition_key': _condition_key,  # Per matching Direct ↔ UIB
             'conc_ppm': group_conc,
             'area': selected_area,
             'area_original': selected_area_original if selected_area_original != selected_area else None,
