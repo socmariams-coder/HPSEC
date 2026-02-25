@@ -2769,11 +2769,11 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
         if clipping_info["is_saturated"]:
             uib_saturated = True
             logger.warning(
-                "analizar_khp_data: UIB SATURAT per %s (clipping_ratio=%.3f, "
-                "y_max=%.1f, predicted=%.1f, plateau=%d pts)",
-                name, clipping_info["clipping_ratio"],
-                clipping_info["y_max_observed"], clipping_info["y_max_predicted"],
-                clipping_info["plateau_width_pts"]
+                "analizar_khp_data: UIB SATURAT per %s (plateau_ratio=%.3f, "
+                "plateau=%d pts, FWHM=%d pts, y_max=%.1f)",
+                name, clipping_info["plateau_ratio"],
+                clipping_info["plateau_width_pts"], clipping_info["fwhm_pts"],
+                clipping_info["y_max_observed"]
             )
 
     from hpsec_core import find_peak_boundaries
@@ -3135,9 +3135,9 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
         _sat_details = {"y_max": float(np.max(y_doc_net))}
         if clipping_info:
             _sat_details.update({
-                "clipping_ratio": clipping_info["clipping_ratio"],
-                "y_max_predicted": clipping_info["y_max_predicted"],
+                "plateau_ratio": clipping_info["plateau_ratio"],
                 "plateau_width_pts": clipping_info["plateau_width_pts"],
+                "fwhm_pts": clipping_info["fwhm_pts"],
             })
         calibration_anomalies.append(create_anomaly(
             "UIB_SATURATED",

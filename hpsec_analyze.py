@@ -1801,16 +1801,16 @@ def analyze_sample(sample_data, calibration_data=None, config=None):
         if clip_info["is_saturated"]:
             sat_details = {
                 "y_max": clip_info["y_max_observed"],
-                "y_max_predicted": clip_info["y_max_predicted"],
-                "clipping_ratio": clip_info["clipping_ratio"],
+                "plateau_ratio": clip_info["plateau_ratio"],
                 "plateau_width_pts": clip_info["plateau_width_pts"],
+                "fwhm_pts": clip_info["fwhm_pts"],
             }
             result["anomalies"].append(create_anomaly("UIB_SATURATED", details=sat_details))
             result["uib_saturated"] = True
             logger.warning(f"{seq_name}/{sample_name}: UIB SATURATED "
-                          f"clipping_ratio={clip_info['clipping_ratio']:.3f}, "
-                          f"y_max={clip_info['y_max_observed']:.1f}, "
-                          f"predicted={clip_info['y_max_predicted']:.1f}")
+                          f"plateau_ratio={clip_info['plateau_ratio']:.3f}, "
+                          f"plateau={clip_info['plateau_width_pts']} pts, "
+                          f"y_max={clip_info['y_max_observed']:.1f}")
         else:
             result["uib_saturated"] = False
     else:
