@@ -643,6 +643,16 @@ ANOMALY_CATALOG = {
         "invalidates": False,
         "action": "Informatiu — no afecta calibració DOC",
     },
+    "KHP_DOC_GUIDED_BY_254": {
+        "severity": WarningLevel.INFO,
+        "label": "DOC guiat per 254nm",
+        "icon": "G",
+        "description": "Pic DOC trobat per cerca dirigida al voltant de t_max 254nm (baixa prominència)",
+        "stage": "calibrate",
+        "repairable": False,
+        "invalidates": False,
+        "action": "Informatiu — pic DOC seleccionat per proximitat al 254nm amb llindar reduït",
+    },
 }
 
 # Sets derivats del catàleg

@@ -1,20 +1,13 @@
 """
-Widget autònom per la regressió de SEQ_CAL.
+OBSOLET — Aquest widget NO s'utilitza. La funcionalitat equivalent està
+implementada directament a global_calibration_panel.py (mètodes _on_seq_cal_*,
+_plot_seq_cal_chromatogram, _run_seq_cal_regression, etc.).
 
-Mostra:
-- Info detecció (punts, concentracions, mode, senyals)
-- Selector senyal Direct/UIB
-- Checkbox àrea reparada
-- Warning sensibilitats UIB barrejades
-- Taula de punts (12 cols) amb checkboxes per incloure/excloure
-- Preview cromatograma (clic a fila → R1+R2 overlay amb DOC+254nm)
-- Resultats regressió (RF, Intercept, R², Punts, RMS, Model)
-- Comparació amb calibració vigent (taula HTML)
-- Scatter regressió + residuals (matplotlib, banda predicció 95%)
-- Botó recalcular
+Mantingut temporalment per referència. Es pot eliminar sense impacte.
 
+---
+Widget autònom per la regressió de SEQ_CAL (versió original, mai integrat).
 Adaptat del codi eliminat al commit 973ea03 (analyze_panel ~950 línies).
-Sense dependència de main_window — totalment autònom.
 """
 
 import logging
@@ -53,6 +46,7 @@ class SeqCalRegressionWidget(QWidget):
         self._sensitivity = None
         self._regression = None
         self._seq_name = ""
+        self._last_chrom_row = -1
         self._setup_ui()
 
     # =====================================================================
@@ -179,6 +173,7 @@ class SeqCalRegressionWidget(QWidget):
             }
         """)
         self._points_table.cellClicked.connect(self._on_row_clicked)
+        self._points_table.cellDoubleClicked.connect(self._on_row_double_clicked)
         main_layout.addWidget(self._points_table)
 
         # Preview cromatograma (inicialment ocult)
@@ -698,106 +693,185 @@ class SeqCalRegressionWidget(QWidget):
     # CHROMATOGRAM PREVIEW
     # =====================================================================
 
+    def _plot_chromatogram(self, ax, entry, zoom=False):
+        """Dibuixa cromatograma amb R1+R2 superposades i àrees ombrejades.
+
+        Args:
+            ax: matplotlib Axes
+            entry: dict amb 'replicas', 'conc_ppm', etc.
+            zoom: Si True, fa zoom al voltant del pic principal.
+        Returns:
+            ax2 (eix secundari 254nm) o None
+        """
+        import numpy as np
+
+        replicas = entry.get('replicas', [])
+        use_repaired = self._repair_check.isChecked()
+
+        doc_colors = ['#2196F3', '#1565C0']
+        doc_styles = ['-', '--']
+        fill_colors = ['#2196F3', '#1565C0']
+        dad_colors = ['#9B59B6', '#8E44AD']
+        dad_styles = ['-', ':']
+        ax2 = None
+        peak_times = []
+
+        for r_idx, rep in enumerate(replicas[:2]):
+            r_label = f"R{r_idx + 1}"
+            color = doc_colors[r_idx]
+            style = doc_styles[r_idx]
+
+            t_doc = rep.get('t_doc')
+            y_doc = rep.get('y_doc')
+            y_repaired = rep.get('y_doc_repaired')
+
+            if t_doc is not None and y_doc is not None:
+                t_doc = np.asarray(t_doc)
+                y_doc = np.asarray(y_doc)
+                ax.plot(t_doc, y_doc, color=color, linewidth=1.2,
+                        linestyle=style, label=f'{r_label} DOC',
+                        alpha=0.9 if r_idx == 0 else 0.6)
+
+                if y_repaired is not None:
+                    y_repaired = np.asarray(y_repaired)
+                    ax.plot(t_doc, y_repaired, color='#E74C3C', linewidth=1,
+                            linestyle='--', label=f'{r_label} Reparat',
+                            alpha=0.7 if r_idx == 0 else 0.4)
+
+                peak_info = rep.get('peak_info', {})
+                t_start = peak_info.get('t_start')
+                t_end = peak_info.get('t_end')
+                if t_start is not None and t_end is not None:
+                    peak_times.extend([t_start, t_end])
+                    mask = (t_doc >= t_start) & (t_doc <= t_end)
+                    if np.any(mask):
+                        if use_repaired and y_repaired is not None:
+                            y_fill = y_repaired[mask]
+                        else:
+                            y_fill = y_doc[mask]
+                        ax.fill_between(t_doc[mask], 0, y_fill,
+                                        color=fill_colors[r_idx], alpha=0.12)
+                    if r_idx == 0:
+                        ax.axvline(t_start, color='gray', linewidth=0.5,
+                                   linestyle=':', alpha=0.6)
+                        ax.axvline(t_end, color='gray', linewidth=0.5,
+                                   linestyle=':', alpha=0.6)
+
+            t_dad = rep.get('t_dad')
+            y_254 = rep.get('y_dad_254')
+            if t_dad is not None and y_254 is not None:
+                t_dad = np.asarray(t_dad)
+                y_254 = np.asarray(y_254)
+                if ax2 is None:
+                    ax2 = ax.twinx()
+                    ax2.set_ylabel('254nm', color='#9B59B6', fontsize=9)
+                    ax2.tick_params(axis='y', labelcolor='#9B59B6', labelsize=8)
+                ax2.plot(t_dad, y_254, color=dad_colors[r_idx], linewidth=0.8,
+                         linestyle=dad_styles[r_idx],
+                         label=f'{r_label} 254nm',
+                         alpha=0.6 if r_idx == 0 else 0.35)
+
+        if zoom and peak_times:
+            t_center = (min(peak_times) + max(peak_times)) / 2
+            peak_width = max(peak_times) - min(peak_times)
+            margin = max(3.0 if self._method != "BP" else 2.0, peak_width)
+            ax.set_xlim(t_center - margin, t_center + margin)
+
+        conc = entry.get('conc_ppm', 0)
+        name = entry.get('name_full', entry.get('condition_key', ''))
+        n_rep = min(len(replicas), 2)
+        repair_tag = " [reparat]" if use_repaired and entry.get('irregular_top_repaired') else ""
+        zoom_tag = " — ZOOM" if zoom else ""
+        ax.set_title(f"{name} ({conc:g} ppm) — {n_rep} rèpliques{repair_tag}{zoom_tag}",
+                     fontsize=10, fontweight='bold')
+        ax.set_xlabel('Temps (min)', fontsize=9)
+        ax.set_ylabel('Senyal DOC', fontsize=9, color='#2196F3')
+        ax.tick_params(labelsize=8)
+
+        lines, labels = ax.get_legend_handles_labels()
+        if ax2:
+            lines2, labels2 = ax2.get_legend_handles_labels()
+            lines += lines2
+            labels += labels2
+        ax.legend(lines, labels, loc='upper right', fontsize=7, ncol=2)
+
+        return ax2
+
     def _on_row_clicked(self, row, col):
-        """Mostra preview cromatograma amb R1+R2 superposades i àrees ombrejades."""
+        """Clic simple: preview cromatograma complet."""
+        logger.info("_on_row_clicked: row=%d, col=%d, has_chrom=%s, n_entries=%d",
+                     row, col, getattr(self, '_has_chrom', False), len(self._entries))
         if not getattr(self, '_has_chrom', False):
+            logger.warning("_on_row_clicked: no chrom canvas")
             return
+        if row < 0 or row >= len(self._entries):
+            return
+
+        self._last_chrom_row = row
+        entry = self._entries[row]
+        replicas = entry.get('replicas', [])
+        logger.info("_on_row_clicked: entry conc=%s, n_replicas=%d",
+                     entry.get('conc_ppm'), len(replicas))
+        if not replicas:
+            self._chrom_canvas.setVisible(False)
+            return
+
+        # Verificar que les rèpliques tenen dades de senyal
+        for i, rep in enumerate(replicas[:2]):
+            has_t = rep.get('t_doc') is not None
+            has_y = rep.get('y_doc') is not None
+            has_pi = bool(rep.get('peak_info'))
+            logger.info("  R%d: t_doc=%s, y_doc=%s, peak_info=%s", i+1, has_t, has_y, has_pi)
+
+        try:
+            fig = self._chrom_figure
+            fig.clear()
+            ax = fig.add_subplot(111)
+            self._plot_chromatogram(ax, entry, zoom=False)
+            fig.tight_layout()
+            self._chrom_canvas.setVisible(True)
+            self._chrom_canvas.draw()
+            logger.info("_on_row_clicked: chromatogram drawn OK")
+        except Exception as e:
+            logger.warning(f"Error preview cromatograma: {e}", exc_info=True)
+            self._chrom_canvas.setVisible(False)
+
+    def _on_row_double_clicked(self, row, col):
+        """Doble clic: obre popup amb zoom al pic principal."""
         if row < 0 or row >= len(self._entries):
             return
 
         entry = self._entries[row]
         replicas = entry.get('replicas', [])
         if not replicas:
-            self._chrom_canvas.setVisible(False)
             return
 
         try:
-            import numpy as np
-
-            fig = self._chrom_figure
-            fig.clear()
-            ax = fig.add_subplot(111)
-
-            doc_colors = ['#2196F3', '#1565C0']
-            doc_styles = ['-', '--']
-            fill_colors = ['#2196F3', '#1565C0']
-            dad_colors = ['#9B59B6', '#8E44AD']
-            dad_styles = ['-', ':']
-            ax2 = None
-
-            for r_idx, rep in enumerate(replicas[:2]):
-                r_label = f"R{r_idx + 1}"
-                color = doc_colors[r_idx]
-                style = doc_styles[r_idx]
-
-                t_doc = rep.get('t_doc')
-                y_doc = rep.get('y_doc')
-                y_repaired = rep.get('y_doc_repaired')
-
-                if t_doc is not None and y_doc is not None:
-                    t_doc = np.asarray(t_doc)
-                    y_doc = np.asarray(y_doc)
-                    ax.plot(t_doc, y_doc, color=color, linewidth=1.2,
-                            linestyle=style, label=f'{r_label} DOC',
-                            alpha=0.9 if r_idx == 0 else 0.6)
-
-                    if y_repaired is not None:
-                        y_repaired = np.asarray(y_repaired)
-                        ax.plot(t_doc, y_repaired, color='#E74C3C', linewidth=1,
-                                linestyle='--', label=f'{r_label} Reparat',
-                                alpha=0.7 if r_idx == 0 else 0.4)
-
-                    peak_info = rep.get('peak_info', {})
-                    t_start = peak_info.get('t_start')
-                    t_end = peak_info.get('t_end')
-                    if t_start is not None and t_end is not None:
-                        mask = (t_doc >= t_start) & (t_doc <= t_end)
-                        if np.any(mask):
-                            y_fill = y_repaired[mask] if y_repaired is not None else y_doc[mask]
-                            ax.fill_between(t_doc[mask], 0, y_fill,
-                                            color=fill_colors[r_idx], alpha=0.12)
-                        if r_idx == 0:
-                            ax.axvline(t_start, color='gray', linewidth=0.5,
-                                       linestyle=':', alpha=0.6)
-                            ax.axvline(t_end, color='gray', linewidth=0.5,
-                                       linestyle=':', alpha=0.6)
-
-                t_dad = rep.get('t_dad')
-                y_254 = rep.get('y_dad_254')
-                if t_dad is not None and y_254 is not None:
-                    t_dad = np.asarray(t_dad)
-                    y_254 = np.asarray(y_254)
-                    if ax2 is None:
-                        ax2 = ax.twinx()
-                        ax2.set_ylabel('254nm', color='#9B59B6', fontsize=9)
-                        ax2.tick_params(axis='y', labelcolor='#9B59B6', labelsize=8)
-                    ax2.plot(t_dad, y_254, color=dad_colors[r_idx], linewidth=0.8,
-                             linestyle=dad_styles[r_idx],
-                             label=f'{r_label} 254nm',
-                             alpha=0.6 if r_idx == 0 else 0.35)
+            from PySide6.QtWidgets import QDialog, QVBoxLayout as QVBoxL
+            from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+            from matplotlib.figure import Figure
 
             conc = entry.get('conc_ppm', 0)
             name = entry.get('name_full', entry.get('condition_key', ''))
-            n_rep = min(len(replicas), 2)
-            ax.set_title(f"{name} ({conc:g} ppm) — {n_rep} rèpliques",
-                         fontsize=10, fontweight='bold')
-            ax.set_xlabel('Temps (min)', fontsize=9)
-            ax.set_ylabel('Senyal DOC', fontsize=9, color='#2196F3')
-            ax.tick_params(labelsize=8)
 
-            lines, labels = ax.get_legend_handles_labels()
-            if ax2:
-                lines2, labels2 = ax2.get_legend_handles_labels()
-                lines += lines2
-                labels += labels2
-            ax.legend(lines, labels, loc='upper right', fontsize=7, ncol=2)
+            dlg = QDialog(self)
+            dlg.setWindowTitle(f"Zoom pic — {name} ({conc:g} ppm)")
+            dlg.resize(700, 450)
+            layout = QVBoxL(dlg)
+            layout.setContentsMargins(4, 4, 4, 4)
 
+            fig = Figure(figsize=(9, 5), dpi=100)
+            fig.set_facecolor("#FAFAFA")
+            canvas = FigureCanvas(fig)
+            layout.addWidget(canvas)
+
+            ax = fig.add_subplot(111)
+            self._plot_chromatogram(ax, entry, zoom=True)
             fig.tight_layout()
-            self._chrom_canvas.setVisible(True)
-            self._chrom_canvas.draw()
+            canvas.draw()
+            dlg.exec()
         except Exception as e:
-            logger.warning(f"Error preview cromatograma: {e}")
-            self._chrom_canvas.setVisible(False)
+            logger.warning(f"Error popup zoom: {e}")
 
     # =====================================================================
     # COMPARISON
@@ -1040,6 +1114,7 @@ class SeqCalRegressionWidget(QWidget):
         """Toggle entre àrea reparada i àrea original."""
         use_repaired = (state != 0)
 
+        changed = 0
         seen = set()
         for entries in (self._entries_direct, self._entries_uib):
             for entry in entries:
@@ -1047,12 +1122,16 @@ class SeqCalRegressionWidget(QWidget):
                     continue
                 seen.add(id(entry))
                 area_orig = entry.get('area_original')
-                if not area_orig:
+                area_rep = entry.get('area_repaired')
+                if not area_orig or not area_rep:
                     continue
+                old_area = entry['area']
                 if use_repaired:
-                    entry['area'] = entry.get('area_repaired', entry['area'])
+                    entry['area'] = area_rep
                 else:
                     entry['area'] = area_orig
+                if entry['area'] != old_area:
+                    changed += 1
                 conc = entry.get('conc_ppm', 0)
                 vol = entry.get('volume_uL', 0)
                 if conc > 0 and vol > 0:
@@ -1060,8 +1139,15 @@ class SeqCalRegressionWidget(QWidget):
                 if 'area_u' in entry:
                     entry['area_u'] = entry['area']
 
+        logger.info("Repair toggle: use_repaired=%s, changed=%d entries", use_repaired, changed)
+
         if self._entries and self._method:
             self._run_regression()
+
+        # Redibuixar cromatograma si n'hi ha un visible
+        last_row = getattr(self, '_last_chrom_row', -1)
+        if last_row >= 0 and getattr(self, '_has_chrom', False):
+            self._on_row_clicked(last_row, 0)
 
     # =====================================================================
     # PUBLIC GETTERS

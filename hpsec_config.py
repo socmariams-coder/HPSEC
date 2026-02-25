@@ -152,6 +152,7 @@ DEFAULT_CONFIG = {
         "symmetry_min": 0.5,
         "symmetry_max": 2.0,
         "snr_min_khp": 50.0,
+        "guided_search_window_min": 2.5,  # Finestra ±min cerca dirigida 254nm→DOC
     },
 
     # --- INJECCIONS BLANC ---

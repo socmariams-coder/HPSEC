@@ -111,6 +111,7 @@ DEFAULT_CONFIG = {
     "khp_pattern": "KHP",
     "peak_min_prominence_pct": 5.0,
     "alignment_threshold_sec": 4.0,
+    "guided_search_window_min": 2.5,
 
     # Processament
     "timeout_min_height_frac": 0.30,
@@ -1021,6 +1022,7 @@ def fit_calibration_from_history(calibrations, mode="COLUMN", signal="direct",
             'volume_uL': vol,
             'ug_doc': ug_doc,
             'area': area,
+            'std_area': cal.get('std_area', 0),
             'rf_mass': area / ug_doc if ug_doc > 0 else 0,
             'is_outlier': cal.get('is_outlier', False),
         })
@@ -2133,25 +2135,19 @@ def validate_khp_for_alignment(t_doc, y_doc, t_dad, y_a254, t_uib=None, y_uib=No
         result["metrics"]["smoothness"] = smoothness_val
 
         is_irregular = irregular_top_info.get("is_irregular_top", False)
-        is_rough = smoothness_val < 70.0
-        needs_repair = is_irregular or is_rough
+        # ROUGH_TOP (smoothness < 70) NO és criteri fiable per reparar —
+        # dóna falsos positius sistemàtics. Només reparar amb IRREGULAR_TOP real.
+        needs_repair = is_irregular
 
-        if needs_repair:
-            anomaly_type = "IRREGULAR_TOP" if is_irregular else "ROUGH_TOP"
-            if is_irregular:
-                result["warnings"].append(
-                    f"IRREGULAR_TOP: Detectat cim irregular (profunditat {irregular_top_info.get('max_depth', 0)*100:.1f}%)"
-                )
-            else:
-                result["warnings"].append(
-                    f"ROUGH_TOP: Cim rugós (smoothness={smoothness_val:.1f}%)"
-                )
+        if is_irregular:
+            result["warnings"].append(
+                f"IRREGULAR_TOP: Detectat cim irregular (profunditat {irregular_top_info.get('max_depth', 0)*100:.1f}%)"
+            )
 
             if repair_irregular_top:
                 try:
-                    force_repair = is_rough and not is_irregular
                     y_repaired, repair_info, was_repaired = repair_with_parabola(
-                        t_peak_zone, y_peak_zone, force=force_repair
+                        t_peak_zone, y_peak_zone
                     )
                     if was_repaired:
                         y_doc_working[peak_zone] = y_repaired
@@ -2797,16 +2793,13 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
                 if dad_peak_info and dad_peak_info.get('valid'):
                     t_max_254 = dad_peak_info.get('t_max', 0)
                     dad_pk_idx = dad_peak_info.get('peak_idx', 0)
-                    dad_l_idx = dad_peak_info.get('left_idx', 0)
-                    dad_r_idx = dad_peak_info.get('right_idx', len(t_dad) - 1)
 
-                    # Buscar límits en all_peaks DAD
-                    dad_all_peaks = detect_all_peaks(t_dad, dad_254, config["peak_min_prominence_pct"])
-                    for pk in dad_all_peaks:
-                        if pk['idx'] == dad_pk_idx or abs(pk['t'] - t_max_254) < 0.1:
-                            dad_l_idx = pk['left_idx']
-                            dad_r_idx = pk['right_idx']
-                            break
+                    # Límits 254nm amb find_peak_boundaries (derivada tangent)
+                    # Mateix mètode que DOC — dóna límits consistents i R²≈0.999
+                    bl_dad = get_baseline_stats(t_dad, dad_254, mode=mode)
+                    bl_level_dad = bl_dad.get("mean", 0)
+                    dad_l_idx, dad_r_idx = find_peak_boundaries(
+                        t_dad, dad_254, dad_pk_idx, bl_level_dad, is_bp=is_bp_chromato)
 
                     # Àrea 254nm
                     if dad_r_idx > dad_l_idx:
@@ -2842,31 +2835,110 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
     # =========================================================================
     # STEP 1: Integrar DOC alineat a t_max_254 (o independent si no hi ha 254)
     # =========================================================================
+    from hpsec_core import find_peak_boundaries
+    _guided_254_details = None  # Set if guided search finds peak
+
     all_peaks = detect_all_peaks(t_doc, y_doc_net, config["peak_min_prominence_pct"])
 
-    if t_max_254 is not None and len(all_peaks) > 0:
-        # Buscar pic DOC més proper a t_max_254
-        best_peak = min(all_peaks, key=lambda pk: abs(pk['t'] - t_max_254))
-        # Si el pic més proper és massa lluny (>2 min), usar detect_main_peak normal
-        if abs(best_peak['t'] - t_max_254) > 2.0:
-            dad_quality_warnings.append(
-                f"T_RETENTION_MISMATCH: pic DOC a {best_peak['t']:.2f} vs 254 a {t_max_254:.2f} min")
-            peak_info = detect_main_peak(t_doc, y_doc_net, config["peak_min_prominence_pct"])
-        else:
-            # Usar el pic DOC alineat al 254
-            peak_info = detect_main_peak(t_doc, y_doc_net, config["peak_min_prominence_pct"])
-            # Si detect_main_peak no ha trobat el pic alineat, forçar-lo
-            if peak_info.get('valid') and abs(peak_info['t_max'] - best_peak['t']) > 0.5:
-                # El pic principal DOC no coincideix amb el 254 → usar el proper al 254
-                peak_info['peak_idx'] = best_peak['idx']
-                peak_info['t_max'] = best_peak['t']
-                peak_info['left_idx'] = best_peak['left_idx']
-                peak_info['right_idx'] = best_peak['right_idx']
-                peak_info['area'] = float(trapezoid(
-                    y_doc_net[best_peak['left_idx']:best_peak['right_idx']+1],
-                    t_doc[best_peak['left_idx']:best_peak['right_idx']+1]))
+    if t_max_254 is not None:
+        # --- A) Candidat estàndard: pic més proper a 254 en all_peaks ---
+        # Llindar 2.0 min per cobrir shift DAD→TOC (~1.9 min en COLUMN)
+        std_candidate = None
+        if all_peaks:
+            nearest = min(all_peaks, key=lambda pk: abs(pk['t'] - t_max_254))
+            if abs(nearest['t'] - t_max_254) <= 2.0:
+                std_candidate = nearest
+
+        # --- B) Cerca dirigida: finestra ±2.5 min amb prominència 1% ---
+        guided_idx = None
+        window_margin = config.get("guided_search_window_min", 2.5)
+        mask = (t_doc >= t_max_254 - window_margin) & (t_doc <= t_max_254 + window_margin)
+        idx_in_window = np.where(mask)[0]
+
+        if len(idx_in_window) >= 20:
+            t_win = t_doc[idx_in_window]
+            y_win = y_doc_net[idx_in_window]
+            guided_peaks = detect_all_peaks(t_win, y_win, min_prominence_pct=1.0)
+
+            if guided_peaks:
+                bl_noise = float(np.std(y_doc_net[:30])) if len(y_doc_net) > 30 else 1.0
+                min_height = max(bl_noise * 5.0, 1.0)
+                guided_peaks = [p for p in guided_peaks if p['height'] >= min_height]
+
+            if guided_peaks:
+                gp = min(guided_peaks, key=lambda pk: abs(pk['t'] - t_max_254))
+                if abs(gp['t'] - t_max_254) <= 2.0:
+                    guided_idx = int(idx_in_window[gp['idx']])
+
+        # --- C) Triar el millor candidat (només peak_idx) ---
+        # Prioritat: guided (busca dirigida) > std (all_peaks) > detect_main_peak (fallback)
+        # A baixa conc el pic KHP pot ser invisible a all_peaks (5% prominència),
+        # per tant guided (1% prominència en finestra) el troba.
+        selected_idx = None
+        if guided_idx is not None and std_candidate:
+            same_peak = abs(t_doc[guided_idx] - std_candidate['t']) < 0.5
+            if same_peak:
+                selected_idx = std_candidate['idx']
+                logger.info("analizar_khp_data: same peak (guided=%.2f, std=%.2f), 254nm ref=%.2f",
+                            t_doc[guided_idx], std_candidate['t'], t_max_254)
+            else:
+                selected_idx = guided_idx
                 dad_quality_warnings.append(
-                    f"DOC_ALIGNED_TO_254: pic DOC seleccionat per alineació amb 254nm (t={best_peak['t']:.2f})")
+                    f"DOC_GUIDED_BY_254: pic DOC trobat per cerca dirigida "
+                    f"(t={t_doc[guided_idx]:.2f}, ref 254nm t={t_max_254:.2f})")
+                _guided_254_details = {"t_doc": float(t_doc[guided_idx]), "t_254": t_max_254}
+                logger.info("analizar_khp_data: different peaks — guided (t=%.2f) over std (t=%.2f)",
+                            t_doc[guided_idx], std_candidate['t'])
+        elif guided_idx is not None:
+            selected_idx = guided_idx
+            dad_quality_warnings.append(
+                f"DOC_GUIDED_BY_254: pic DOC trobat per cerca dirigida "
+                f"(t={t_doc[guided_idx]:.2f}, ref 254nm t={t_max_254:.2f})")
+            _guided_254_details = {"t_doc": float(t_doc[guided_idx]), "t_254": t_max_254}
+        elif std_candidate:
+            selected_idx = std_candidate['idx']
+        else:
+            if all_peaks:
+                nearest = min(all_peaks, key=lambda pk: abs(pk['t'] - t_max_254))
+                dad_quality_warnings.append(
+                    f"T_RETENTION_MISMATCH: pic DOC a {nearest['t']:.2f} vs 254 a {t_max_254:.2f} min")
+
+        # --- D) Pre-repair + find_peak_boundaries sobre el pic seleccionat ---
+        # Sempre el mateix camí: detectar irregular_top → reparar → boundaries sobre reparat
+        if selected_idx is not None:
+            bl_val = float(np.median(y_doc_net[:20])) if len(y_doc_net) > 20 else 0.0
+
+            # Pre-repair: detectar cim irregular en finestra ±5 min (±3 BP)
+            half_w = 3.0 if is_bp_chromato else 5.0
+            seg_mask = (t_doc >= t_doc[selected_idx] - half_w) & (t_doc <= t_doc[selected_idx] + half_w)
+            y_for_bounds = y_doc_net
+            if np.sum(seg_mask) > 20:
+                irr_info = detect_irregular_top(t_doc[seg_mask], y_doc_net[seg_mask])
+                if irr_info.get('is_irregular_top', False):
+                    y_seg_rep, _, was_rep = repair_with_parabola(t_doc[seg_mask], y_doc_net[seg_mask])
+                    if was_rep:
+                        y_for_bounds = y_doc_net.copy()
+                        y_for_bounds[seg_mask] = y_seg_rep
+
+            left_b, right_b = find_peak_boundaries(
+                t_doc, y_for_bounds, selected_idx, bl_val, is_bp=is_bp_chromato)
+            area = float(trapezoid(y_doc_net[left_b:right_b+1], t_doc[left_b:right_b+1]))
+
+            peak_info = {
+                'valid': True,
+                'peak_idx': int(selected_idx),
+                't_max': float(t_doc[selected_idx]),
+                't_start': float(t_doc[left_b]),
+                't_end': float(t_doc[right_b]),
+                'left_idx': left_b,
+                'right_idx': right_b,
+                'area': area,
+                'height': float(y_doc_net[selected_idx]),
+                'baseline_level': bl_val,
+                'is_bp': is_bp_chromato,
+            }
+        else:
+            peak_info = detect_main_peak(t_doc, y_doc_net, config["peak_min_prominence_pct"])
     else:
         peak_info = detect_main_peak(t_doc, y_doc_net, config["peak_min_prominence_pct"])
 
@@ -2886,17 +2958,12 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
     # Baseline stats
     bl_stats = get_baseline_stats(t_doc, y_doc_net, mode=mode)
 
-    # Límits del pic DOC
+    # Límits del pic DOC — vénen de detect_main_peak (pre-repair + find_peak_boundaries)
+    # o de la cerca guiada (find_peak_boundaries directe). NO usar all_peaks (scipy
+    # left_bases/right_bases) perquè donen bounds vall-a-vall que inclouen pics contaminants.
     peak_idx = peak_info.get('peak_idx', int(np.argmax(y_doc_net)))
     left_idx = peak_info.get('left_idx', 0)
     right_idx = peak_info.get('right_idx', len(y_doc_net) - 1)
-
-    # Buscar límits en all_peaks
-    for pk in all_peaks:
-        if pk['idx'] == peak_idx or abs(pk['t'] - peak_info['t_max']) < 0.1:
-            left_idx = pk['left_idx']
-            right_idx = pk['right_idx']
-            break
 
     # Expandir límits si cal
     original_left_idx = left_idx
@@ -2910,13 +2977,13 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
         is_bp=is_bp_chromato
     )
 
-    left_idx = expansion['left_idx']
-    right_idx = expansion['right_idx']
     limits_expanded = not expansion['original_valid']
 
     if limits_expanded:
+        # Expansió ha ampliat els límits — usar els nous
+        left_idx = expansion['left_idx']
+        right_idx = expansion['right_idx']
         new_area = float(trapezoid(y_doc_net[left_idx:right_idx+1], t_doc[left_idx:right_idx+1]))
-        old_area = peak_info.get('area', 0)
         peak_info['area'] = new_area
         peak_info['left_idx'] = left_idx
         peak_info['right_idx'] = right_idx
@@ -2947,17 +3014,15 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
     has_irregular = anomaly_info.get('is_irregular', False)
     smoothness = anomaly_info.get('smoothness', 100.0)
 
-    # Reparació cim irregular: intentar reparar amb paràbola si detectat
-    # Aplica tant per IRREGULAR_TOP (pic-vall-pic) com ROUGH_TOP (smoothness baixa)
+    # Reparació cim irregular: NOMÉS si detect_irregular_top ha trobat valls reals (pic-vall-pic).
+    # ROUGH_TOP (smoothness < 70) NO és criteri fiable — dóna falsos positius sistemàtics.
     irregular_top_repaired = False
     repair_info = None
     area_original = peak_info['area']
-    if has_irregular_top or has_irregular:
+    if has_irregular_top:
         try:
-            # force=True si ROUGH_TOP sense valls profundes (has_irregular sense has_irregular_top)
-            force_repair = has_irregular and not has_irregular_top
             y_repaired_seg, repair_info, was_repaired = repair_with_parabola(
-                t_peak_seg, y_peak_seg, force=force_repair
+                t_peak_seg, y_peak_seg
             )
             if was_repaired:
                 irregular_top_repaired = True
@@ -3016,6 +3081,14 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
     # Qualitat — anomalies estructurades (ANOMALY_CATALOG com a font única)
     sample_label = f"{name}_R{replica}"
     calibration_anomalies = []
+
+    # Guided DOC search (detectat a STEP 1)
+    if _guided_254_details is not None:
+        calibration_anomalies.append(create_anomaly(
+            "KHP_DOC_GUIDED_BY_254",
+            details=_guided_254_details,
+            sample=sample_label,
+        ))
 
     # DAD 254nm warnings (detectats a STEP 0)
     if dad_quality_warnings:
@@ -4102,6 +4175,12 @@ def detect_seq_cal_data(calib_result, seq_path, method=None, uib_sensitivity=Non
                 'timeout_severity': cal.get('timeout_severity', 'OK'),
                 'uib_sensitivity': cal.get('uib_sensitivity'),
                 'uib_saturated': uib_saturated,
+                # Selecció rèpliques (per Status column)
+                'selection': cal.get('selection', {}),
+                'status': cal.get('status', ''),
+                'std_area': cal.get('std_area', 0),
+                'rsd': cal.get('rsd', 0),
+                'n_replicas': cal.get('n_replicas', 1),
                 # Replicas per chromatogram preview
                 'replicas': cal.get('replicas', []),
             }

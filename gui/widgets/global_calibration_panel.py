@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QGroupBox,
     QGridLayout, QTableWidget, QTableWidgetItem, QHeaderView,
     QComboBox, QMessageBox, QCheckBox,
-    QFrame, QProgressBar, QDateEdit, QScrollArea
+    QFrame, QProgressBar, QDateEdit, QScrollArea, QDialog
 )
 from PySide6.QtCore import Qt, Signal, QThread, QDate
 from PySide6.QtGui import QFont, QColor, QBrush
@@ -638,10 +638,10 @@ class CalibrationLineView(QWidget):
 
         # Taula de punts de calibració
         self.seq_cal_points_table = QTableWidget()
-        self.seq_cal_points_table.setColumnCount(12)
+        self.seq_cal_points_table.setColumnCount(11)
         self.seq_cal_points_table.setHorizontalHeaderLabels([
             "Sel", "Condició", "Conc (ppm)", "Vol (µL)", "µg DOC",
-            "Àrea", "RF_mass", "A254", "DOC/254", "Anomalies", "Sens.", "Status"
+            "Àrea", "RF_mass", "A254", "DOC/254", "Anomalies", "Status"
         ])
         self.seq_cal_points_table.horizontalHeaderItem(0).setToolTip("Incloure punt a la regressió")
         self.seq_cal_points_table.horizontalHeaderItem(4).setToolTip("µg DOC injectat = ppm × µL / 1000")
@@ -649,10 +649,9 @@ class CalibrationLineView(QWidget):
         self.seq_cal_points_table.horizontalHeaderItem(7).setToolTip("Àrea integrada a 254nm (DAD)")
         self.seq_cal_points_table.horizontalHeaderItem(8).setToolTip("Ratio àrea DOC / àrea 254nm")
         self.seq_cal_points_table.horizontalHeaderItem(9).setToolTip("Indicadors d'anomalies detectades")
-        self.seq_cal_points_table.horizontalHeaderItem(10).setToolTip("Sensibilitat UIB (ppb)")
+        self.seq_cal_points_table.horizontalHeaderItem(10).setToolTip("Selecció rèpliques (R1, R2, Promig)")
         self.seq_cal_points_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         self.seq_cal_points_table.setAlternatingRowColors(True)
-        self.seq_cal_points_table.setMaximumHeight(220)
         self.seq_cal_points_table.verticalHeader().setVisible(False)
         self.seq_cal_points_table.setStyleSheet("""
             QTableWidget { font-size: 11px; gridline-color: #ddd; }
@@ -668,18 +667,9 @@ class CalibrationLineView(QWidget):
         # Connectar click a la taula per preview cromatograma
         self.seq_cal_points_table.cellClicked.connect(self._on_seq_cal_row_clicked)
 
-        # Preview cromatograma (inicialment ocult)
-        try:
-            self._seq_cal_chrom_figure = Figure(figsize=(8, 3), dpi=100)
-            self._seq_cal_chrom_figure.set_facecolor("#FAFAFA")
-            self.seq_cal_chrom_canvas = FigureCanvas(self._seq_cal_chrom_figure)
-            self.seq_cal_chrom_canvas.setMinimumHeight(200)
-            self.seq_cal_chrom_canvas.setMaximumHeight(250)
-            self.seq_cal_chrom_canvas.setVisible(False)
-            seq_cal_layout.addWidget(self.seq_cal_chrom_canvas)
-            self._has_seq_cal_chrom = True
-        except Exception:
-            self._has_seq_cal_chrom = False
+
+        # Chromatogram preview via popup (no inline)
+        self._has_seq_cal_chrom = True
 
         # Resultats regressió
         reg_results_frame = QFrame()
@@ -783,62 +773,15 @@ class CalibrationLineView(QWidget):
         layout.setContentsMargins(12, 8, 12, 12)
         layout.setSpacing(8)
 
-        # --- Resum regressió ---
-        summary_grid = QGridLayout()
-        summary_grid.setSpacing(6)
-
-        summary_grid.addWidget(QLabel("<b>Resum regressió:</b>"), 0, 0, 1, 4)
-
-        self._cal_rf_label = QLabel("RF: —")
-        self._cal_intercept_label = QLabel("Intercept: —")
-        self._cal_r2_label = QLabel("R²: —")
-        self._cal_npts_label = QLabel("Punts: —")
-        self._cal_mode_label = QLabel("Mode: —")
-        self._cal_rms_label = QLabel("RMS: —")
-
-        summary_grid.addWidget(self._cal_rf_label, 1, 0)
-        summary_grid.addWidget(self._cal_intercept_label, 1, 1)
-        summary_grid.addWidget(self._cal_r2_label, 1, 2)
-        summary_grid.addWidget(self._cal_npts_label, 1, 3)
-        summary_grid.addWidget(self._cal_mode_label, 2, 0)
-        summary_grid.addWidget(self._cal_rms_label, 2, 1)
-
-        layout.addLayout(summary_grid)
-
-        # --- Comparació vigent vs nova ---
-        self._cal_comparison_label = QLabel("")
-        self._cal_comparison_label.setTextFormat(Qt.RichText)
-        self._cal_comparison_label.setWordWrap(True)
-        self._cal_comparison_label.setStyleSheet("font-size: 11px; background: transparent;")
-        layout.addWidget(self._cal_comparison_label)
-
-        # --- Equació ---
+        # --- Equació resum (compacta, sense duplicar la secció de regressió) ---
         self._cal_equation_label = QLabel("")
         self._cal_equation_label.setAlignment(Qt.AlignCenter)
         self._cal_equation_label.setStyleSheet("""
-            font-family: Consolas, monospace; font-size: 11px;
+            font-family: Consolas, monospace; font-size: 12px;
             background-color: #e8f4fd; border: 1px solid #b3d7f0;
-            border-radius: 4px; padding: 4px 8px;
+            border-radius: 4px; padding: 6px 10px;
         """)
         layout.addWidget(self._cal_equation_label)
-
-        # --- Gràfic scatter miniatura ---
-        try:
-            self._cal_mini_figure = Figure(figsize=(7, 3), dpi=100)
-            self._cal_mini_figure.set_facecolor("#f0f7ff")
-            self._cal_mini_canvas = FigureCanvas(self._cal_mini_figure)
-            self._cal_mini_canvas.setMinimumHeight(200)
-            self._cal_mini_canvas.setMaximumHeight(280)
-            layout.addWidget(self._cal_mini_canvas)
-            self._has_mini_mpl = True
-        except Exception:
-            self._has_mini_mpl = False
-
-        # --- Separator ---
-        sep = QFrame()
-        sep.setFrameShape(QFrame.HLine)
-        sep.setFrameShadow(QFrame.Sunken)
-        layout.addWidget(sep)
 
         # --- Opcions d'aplicació ---
         opts_layout = QGridLayout()
@@ -1067,6 +1010,8 @@ class CalibrationLineView(QWidget):
 
     def _populate_seq_cal_table(self, cal_entries):
         """Omple la taula de punts de la regressió SEQ_CAL (12 columnes)."""
+        # Forçar rebuild complet: clear + set row count
+        self.seq_cal_points_table.clearContents()
         self.seq_cal_points_table.setRowCount(len(cal_entries))
 
         for i, entry in enumerate(cal_entries):
@@ -1124,7 +1069,8 @@ class CalibrationLineView(QWidget):
                 ratio = area / a254
             ratio_item = QTableWidgetItem(f"{ratio:.2f}" if ratio else "-")
             ratio_item.setFlags(ratio_item.flags() & ~Qt.ItemIsEditable)
-            if ratio and (ratio < 0.5 or ratio > 10):
+            # Typical DOC/254 range: ~0.3-8 depending on concentration; flag extreme outliers only
+            if ratio and (ratio < 0.1 or ratio > 20):
                 ratio_item.setForeground(QBrush(QColor("#E67E22")))
             self.seq_cal_points_table.setItem(i, 8, ratio_item)
 
@@ -1152,49 +1098,96 @@ class CalibrationLineView(QWidget):
                     anomaly_item.setForeground(QBrush(QColor("#E67E22")))
             self.seq_cal_points_table.setItem(i, 9, anomaly_item)
 
-            # Col 10: Sensibilitat UIB
-            sens = entry.get('uib_sensitivity')
-            sens_text = f"{sens}" if sens else "-"
-            sens_item = QTableWidgetItem(sens_text)
-            sens_item.setFlags(sens_item.flags() & ~Qt.ItemIsEditable)
-            self.seq_cal_points_table.setItem(i, 10, sens_item)
+            # Col 10: Status — show replica selection info
+            sel_info = entry.get('selection', {})
+            status_display = entry.get('status', '')
+            if not status_display:
+                # Fallback: build from selection info
+                sel_method = sel_info.get('method', '')
+                sel_replicas = sel_info.get('selected_replicas', [])
+                if sel_method == 'average' and len(sel_replicas) > 1:
+                    status_display = f"Promig R{'+R'.join(map(str, sel_replicas))}"
+                elif sel_method == 'single':
+                    status_display = "R1"
+                elif sel_method == 'best_quality':
+                    status_display = f"Millor R{sel_replicas[0]}" if sel_replicas else "CHECK"
+                elif sel_method.startswith('R'):
+                    status_display = sel_method
+                else:
+                    status_display = status_text  # OK/CHECK/INVALID fallback
 
-            # Col 11: Status badge amb fons color
-            badge_colors = {
-                "OK": ("#D5F5E3", "#27AE60"),
-                "CHECK": ("#FCF3CF", "#E67E22"),
-                "INVALID": ("#FADBD8", "#E74C3C"),
-            }
-            bg, fg = badge_colors.get(status_text, ("#F0F0F0", "#666"))
-            badge = QLabel(f" {status_text} ")
+            # Color based on validity
+            if status_text == "INVALID":
+                status_fg = "#E74C3C"
+                status_bg = "#FADBD8"
+            elif status_text == "CHECK":
+                status_fg = "#E67E22"
+                status_bg = "#FCF3CF"
+            else:
+                status_fg = "#1A5276"
+                status_bg = "#EBF5FB"
+
+            badge = QLabel(f" {status_display} ")
             badge.setAlignment(Qt.AlignCenter)
             badge.setStyleSheet(
-                f"background: {bg}; color: {fg}; font-weight: bold; "
+                f"background: {status_bg}; color: {status_fg}; font-weight: bold; "
                 f"font-size: 10px; border-radius: 3px; padding: 1px 6px;"
             )
+            # Tooltip: show details
+            rsd = entry.get('rsd', 0)
+            n_rep = entry.get('n_replicas', 1)
+            std_a = entry.get('std_area', 0)
+            tooltip_parts = [f"Rèpliques: {n_rep}"]
+            if rsd > 0:
+                tooltip_parts.append(f"RSD: {rsd:.1f}%")
+            if std_a > 0:
+                tooltip_parts.append(f"SD àrea: {std_a:.1f}")
+            badge.setToolTip("\n".join(tooltip_parts))
+
             badge_w = QWidget()
             badge_l = QHBoxLayout(badge_w)
             badge_l.addWidget(badge)
             badge_l.setAlignment(Qt.AlignCenter)
             badge_l.setContentsMargins(2, 1, 2, 1)
-            self.seq_cal_points_table.setCellWidget(i, 11, badge_w)
+            self.seq_cal_points_table.setCellWidget(i, 10, badge_w)
+
+        # Ajustar alçada: totes les files visibles + scroll si n'hi ha moltes
+        row_h = self.seq_cal_points_table.verticalHeader().defaultSectionSize()
+        header_h = self.seq_cal_points_table.horizontalHeader().height()
+        desired = header_h + row_h * len(cal_entries) + 4
+        self.seq_cal_points_table.setMinimumHeight(min(desired, 500))
+        self.seq_cal_points_table.setMaximumHeight(max(desired, 200))
 
     def _on_seq_cal_row_clicked(self, row, col):
-        """Mostra preview cromatograma amb R1+R2 superposades i àrees ombrejades."""
+        """Clic: obre popup amb cromatograma complet + inset zoom al pic."""
         if not getattr(self, '_has_seq_cal_chrom', False):
             return
         if row < 0 or row >= len(self._seq_cal_entries):
             return
 
+        self._last_seq_cal_chrom_row = row
         entry = self._seq_cal_entries[row]
         replicas = entry.get('replicas', [])
         if not replicas:
-            self.seq_cal_chrom_canvas.setVisible(False)
             return
 
+        use_repaired = self.seq_cal_repair_check.isChecked()
+
         try:
-            fig = self._seq_cal_chrom_figure
-            fig.clear()
+            # Crear popup dialog
+            conc = entry.get('conc_ppm', 0)
+            name = entry.get('name_full', entry.get('condition_key', ''))
+            dialog = QDialog(self)
+            dialog.setWindowTitle(f"Cromatograma — {name} ({conc:g} ppm)")
+            dialog.resize(900, 500)
+            dlg_layout = QVBoxLayout(dialog)
+            dlg_layout.setContentsMargins(4, 4, 4, 4)
+
+            fig = Figure(figsize=(10, 5), dpi=100)
+            fig.set_facecolor("#FAFAFA")
+            canvas = FigureCanvas(fig)
+            dlg_layout.addWidget(canvas)
+
             ax = fig.add_subplot(111)
 
             doc_colors = ['#2196F3', '#1565C0']
@@ -1202,8 +1195,9 @@ class CalibrationLineView(QWidget):
             fill_colors = ['#2196F3', '#1565C0']
             dad_colors = ['#9B59B6', '#8E44AD']
             dad_styles = ['-', ':']
-
             ax2 = None
+            peak_times = []
+            plot_data = []
 
             for r_idx, rep in enumerate(replicas[:2]):
                 r_label = f"R{r_idx + 1}"
@@ -1221,9 +1215,10 @@ class CalibrationLineView(QWidget):
                             linestyle=style, label=f'{r_label} DOC',
                             alpha=0.9 if r_idx == 0 else 0.6)
 
+                    y_rep_arr = None
                     if y_repaired is not None:
-                        y_repaired = np.asarray(y_repaired)
-                        ax.plot(t_doc, y_repaired, color='#E74C3C', linewidth=1,
+                        y_rep_arr = np.asarray(y_repaired)
+                        ax.plot(t_doc, y_rep_arr, color='#E74C3C', linewidth=1,
                                 linestyle='--', label=f'{r_label} Reparat',
                                 alpha=0.7 if r_idx == 0 else 0.4)
 
@@ -1231,9 +1226,13 @@ class CalibrationLineView(QWidget):
                     t_start = peak_info.get('t_start')
                     t_end = peak_info.get('t_end')
                     if t_start is not None and t_end is not None:
+                        peak_times.extend([t_start, t_end])
                         mask = (t_doc >= t_start) & (t_doc <= t_end)
                         if np.any(mask):
-                            y_fill = y_repaired[mask] if y_repaired is not None else y_doc[mask]
+                            if use_repaired and y_rep_arr is not None:
+                                y_fill = y_rep_arr[mask]
+                            else:
+                                y_fill = y_doc[mask]
                             ax.fill_between(t_doc[mask], 0, y_fill,
                                            color=fill_colors[r_idx], alpha=0.12)
                         if r_idx == 0:
@@ -1241,6 +1240,12 @@ class CalibrationLineView(QWidget):
                                       linestyle=':', alpha=0.6)
                             ax.axvline(t_end, color='gray', linewidth=0.5,
                                       linestyle=':', alpha=0.6)
+
+                    plot_data.append({
+                        't': t_doc, 'y': y_doc, 'y_rep': y_rep_arr,
+                        'color': color, 'style': style, 'fill_color': fill_colors[r_idx],
+                        't_start': t_start, 't_end': t_end,
+                    })
 
                 t_dad = rep.get('t_dad')
                 y_254 = rep.get('y_dad_254')
@@ -1256,35 +1261,96 @@ class CalibrationLineView(QWidget):
                             label=f'{r_label} 254nm',
                             alpha=0.6 if r_idx == 0 else 0.35)
 
-            conc = entry.get('conc_ppm', 0)
-            name = entry.get('name_full', entry.get('condition_key', ''))
             n_rep = min(len(replicas), 2)
-            ax.set_title(f"{name} ({conc:g} ppm) — {n_rep} rèpliques",
-                        fontsize=10, fontweight='bold')
-            ax.set_xlabel('Temps (min)', fontsize=9)
-            ax.set_ylabel('Senyal DOC', fontsize=9, color='#2196F3')
-            ax.tick_params(labelsize=8)
+            repair_tag = " [reparat]" if use_repaired and entry.get('irregular_top_repaired') else ""
+            ax.set_title(f"{name} ({conc:g} ppm) — {n_rep} rèpliques{repair_tag}",
+                        fontsize=11, fontweight='bold')
+            ax.set_xlabel('Temps (min)', fontsize=10)
+            ax.set_ylabel('Senyal DOC', fontsize=10, color='#2196F3')
+            ax.tick_params(labelsize=9)
 
             lines, labels = ax.get_legend_handles_labels()
             if ax2:
                 lines2, labels2 = ax2.get_legend_handles_labels()
                 lines += lines2
                 labels += labels2
-            ax.legend(lines, labels, loc='upper right', fontsize=7, ncol=2)
+            ax.legend(lines, labels, loc='upper left', fontsize=8, ncol=2)
 
-            fig.tight_layout()
-            self.seq_cal_chrom_canvas.setVisible(True)
-            self.seq_cal_chrom_canvas.draw()
+            # Inset zoom al pic principal
+            if peak_times and plot_data:
+                t_min_pk = min(peak_times)
+                t_max_pk = max(peak_times)
+                t_center = (t_min_pk + t_max_pk) / 2
+                pk_width = t_max_pk - t_min_pk
+                margin = max(2.0 if self._seq_cal_method != "BP" else 1.5, pk_width * 0.5)
+                inset_left = t_center - margin
+                inset_right = t_center + margin
+
+                t_full = plot_data[0]['t']
+                t_range = float(t_full[-1] - t_full[0]) if len(t_full) > 1 else 1.0
+                peak_rel = (t_center - float(t_full[0])) / t_range if t_range > 0 else 0.5
+                if peak_rel > 0.5:
+                    inset_pos = [0.08, 0.45, 0.35, 0.45]
+                else:
+                    inset_pos = [0.55, 0.45, 0.35, 0.45]
+
+                ax_inset = ax.inset_axes(inset_pos)
+                ax_inset.set_xlim(inset_left, inset_right)
+
+                y_max_inset = 0
+                for pd in plot_data:
+                    imask = (pd['t'] >= inset_left) & (pd['t'] <= inset_right)
+                    if not np.any(imask):
+                        continue
+                    ax_inset.plot(pd['t'][imask], pd['y'][imask],
+                                 color=pd['color'], linewidth=1.0, linestyle=pd['style'])
+                    if pd['y_rep'] is not None:
+                        ax_inset.plot(pd['t'][imask], pd['y_rep'][imask],
+                                     color='#E74C3C', linewidth=0.8, linestyle='--')
+                    y_max_inset = max(y_max_inset, float(np.max(pd['y'][imask])))
+
+                    if pd['t_start'] is not None and pd['t_end'] is not None:
+                        fmask = imask & (pd['t'] >= pd['t_start']) & (pd['t'] <= pd['t_end'])
+                        if np.any(fmask):
+                            if use_repaired and pd['y_rep'] is not None:
+                                y_f = pd['y_rep'][fmask]
+                            else:
+                                y_f = pd['y'][fmask]
+                            ax_inset.fill_between(pd['t'][fmask], 0, y_f,
+                                                  color=pd['fill_color'], alpha=0.2)
+
+                if y_max_inset > 0:
+                    ax_inset.set_ylim(-y_max_inset * 0.05, y_max_inset * 1.15)
+                ax_inset.tick_params(labelsize=7)
+                ax_inset.set_title('Zoom pic', fontsize=8, pad=2)
+                ax_inset.patch.set_alpha(0.9)
+                for spine in ax_inset.spines.values():
+                    spine.set_edgecolor('#888')
+                    spine.set_linewidth(0.5)
+
+                ax.axvspan(inset_left, inset_right, alpha=0.06, color='#3498DB')
+
+            try:
+                fig.tight_layout()
+            except Exception:
+                pass
+            canvas.draw()
+
+            dialog.exec()
         except Exception as e:
-            logger.warning(f"Error preview cromatograma: {e}")
-            self.seq_cal_chrom_canvas.setVisible(False)
+            logger.warning(f"Error preview cromatograma: {e}", exc_info=True)
 
     def _on_seq_cal_point_toggled(self, idx, state):
-        """Quan l'usuari marca/desmarca un punt de la regressió."""
+        """Quan l'usuari marca/desmarca un punt de la regressió → recalcula immediatament."""
         if state == 0:
             self._seq_cal_excluded.add(idx)
         else:
             self._seq_cal_excluded.discard(idx)
+
+        # Recalcular regressió immediatament
+        if self._seq_cal_entries and self._seq_cal_method:
+            self._run_seq_cal_regression(self._seq_cal_entries, self._seq_cal_method)
+            self._populate_apply_section()
 
     def _on_seq_cal_signal_changed(self, index):
         """Quan l'usuari canvia el senyal (Direct/UIB) del selector."""
@@ -1310,6 +1376,7 @@ class CalibrationLineView(QWidget):
 
         if self._seq_cal_entries and self._seq_cal_method:
             self._run_seq_cal_regression(self._seq_cal_entries, self._seq_cal_method)
+            self._populate_apply_section()
 
     def _on_seq_cal_recalculate(self):
         """Recalcula la regressió amb els punts seleccionats."""
@@ -1322,6 +1389,7 @@ class CalibrationLineView(QWidget):
         """Toggle entre àrea reparada i àrea original per la regressió."""
         use_repaired = (state != 0)
 
+        changed = 0
         seen = set()
         for entries in (self._seq_cal_entries_direct, self._seq_cal_entries_uib):
             for entry in entries:
@@ -1329,21 +1397,33 @@ class CalibrationLineView(QWidget):
                     continue
                 seen.add(id(entry))
                 area_orig = entry.get('area_original')
-                if not area_orig:
+                area_rep = entry.get('area_repaired')
+                conc = entry.get('conc_ppm', 0)
+                if not area_orig or not area_rep:
                     continue
+                old_area = entry['area']
                 if use_repaired:
-                    entry['area'] = entry.get('area_repaired', entry['area'])
+                    entry['area'] = area_rep
                 else:
                     entry['area'] = area_orig
-                conc = entry.get('conc_ppm', 0)
+                if entry['area'] != old_area:
+                    changed += 1
+                    logger.info("Repair toggle: conc=%s area %.1f -> %.1f",
+                                conc, old_area, entry['area'])
                 vol = entry.get('volume_uL', 0)
                 if conc > 0 and vol > 0:
                     entry['rf_mass'] = entry['area'] * 1000.0 / (conc * vol)
                 if 'area_u' in entry:
                     entry['area_u'] = entry['area']
 
+        logger.info("Repair toggle: use_repaired=%s, changed=%d", use_repaired, changed)
+
         if self._seq_cal_entries and self._seq_cal_method:
             self._run_seq_cal_regression(self._seq_cal_entries, self._seq_cal_method)
+            # Actualitzar TAMBÉ la secció d'aplicar (que té la seva còpia dels valors)
+            self._populate_apply_section()
+
+        # El cromatograma ara es mostra en popup (no cal redibuixar)
 
     def _update_seq_cal_comparison(self, new_rf, new_intercept, new_r2, method):
         """Mostra la comparació entre calibració vigent i la nova."""
@@ -1417,19 +1497,34 @@ class CalibrationLineView(QWidget):
                     x_inc.append(x_val)
                     y_inc.append(y_val)
 
-            # Scatter per concentració
+            # Scatter per concentració amb error bars (SD) si hi ha rèpliques
             conc_groups = {}
-            for xi, yi, lbl in zip(x_inc, y_inc, [l for i, l in enumerate(labels) if i not in excluded]):
-                conc_groups.setdefault(lbl, ([], []))
+            # Build SD list aligned with x_inc/y_inc
+            sd_inc = []
+            for i, p in enumerate(points):
+                if i not in excluded:
+                    sd_inc.append(p.get('std_area', 0))
+            labels_inc = [l for i, l in enumerate(labels) if i not in excluded]
+
+            for xi, yi, sdi, lbl in zip(x_inc, y_inc, sd_inc, labels_inc):
+                conc_groups.setdefault(lbl, ([], [], []))
                 conc_groups[lbl][0].append(xi)
                 conc_groups[lbl][1].append(yi)
+                conc_groups[lbl][2].append(sdi)
 
             cmap_colors = ['#2980B9', '#27AE60', '#8E44AD', '#E67E22', '#E74C3C', '#1ABC9C',
                            '#34495E', '#F39C12', '#D35400', '#7F8C8D']
-            for idx_c, (lbl, (xs, ys)) in enumerate(sorted(conc_groups.items())):
+            for idx_c, (lbl, (xs, ys, sds)) in enumerate(sorted(conc_groups.items())):
                 c = cmap_colors[idx_c % len(cmap_colors)]
-                ax_main.scatter(xs, ys, c=c, s=60, zorder=5,
-                                edgecolors='white', linewidths=0.8, label=lbl)
+                has_sd = any(s > 0 for s in sds)
+                if has_sd:
+                    ax_main.errorbar(xs, ys, yerr=sds, fmt='o', color=c, markersize=7,
+                                     zorder=5, markeredgecolor='white', markeredgewidth=0.8,
+                                     ecolor=c, elinewidth=1.2, capsize=3, capthick=1,
+                                     label=lbl)
+                else:
+                    ax_main.scatter(xs, ys, c=c, s=60, zorder=5,
+                                    edgecolors='white', linewidths=0.8, label=lbl)
 
             if x_exc:
                 ax_main.scatter(x_exc, y_exc, c='#E74C3C', s=50, marker='x',
@@ -1479,7 +1574,7 @@ class CalibrationLineView(QWidget):
             ax_main.set_xlabel('µg DOC injectat', fontsize=9)
             ax_main.set_ylabel('Àrea DOC', fontsize=9)
             ax_main.set_title(f'Recta de Calibració {method}', fontsize=10, fontweight='bold')
-            ax_main.legend(fontsize=7, loc='lower right')
+            ax_main.legend(fontsize=7, loc='upper left')
             ax_main.set_xlim(left=0)
             ax_main.set_ylim(bottom=min(0, min(y_all) - 10) if y_all else 0)
             ax_main.grid(True, alpha=0.3)
@@ -1517,7 +1612,10 @@ class CalibrationLineView(QWidget):
                 ax_res.tick_params(labelsize=7)
                 ax_res.grid(True, alpha=0.2, axis='y')
 
-            self._seq_cal_figure.tight_layout()
+            try:
+                self._seq_cal_figure.tight_layout()
+            except Exception:
+                pass  # twinx axes: tight_layout pot fallar
             self.seq_cal_graph.draw()
 
         except Exception as e:
@@ -1543,23 +1641,13 @@ class CalibrationLineView(QWidget):
         intercept_new = reg.get('intercept', 0)
         r2 = reg.get('r2', 0)
         n_pts = reg.get('n_points', 0)
-        rms = reg.get('residuals_rms', 0)
 
-        self._cal_rf_label.setText(f"RF: <b>{rf_new:.1f}</b>")
-        self._cal_intercept_label.setText(f"Intercept: <b>{intercept_new:.1f}</b>")
-
+        # Equació resum (la info detallada ja és a la secció de regressió)
         r2_color = COLOR_SUCCESS if r2 >= 0.99 else (COLOR_WARNING if r2 >= 0.95 else COLOR_ERROR)
-        self._cal_r2_label.setText(f"R²: <b style='color:{r2_color}'>{r2:.6f}</b>")
-        self._cal_npts_label.setText(f"Punts: <b>{n_pts}</b>")
-        self._cal_mode_label.setText(f"Mode: <b>{self._seq_cal_method}</b>")
-        self._cal_rms_label.setText(f"RMS: <b>{rms:.2f}</b>" if rms else "RMS: —")
-
-        # Comparació
-        self._update_cal_comparison(rf_new, intercept_new, r2)
-
-        # Gràfic miniatura
-        if getattr(self, '_has_mini_mpl', False):
-            self._plot_cal_mini_scatter(reg)
+        self._cal_equation_label.setText(
+            f"Àrea = {rf_new:.1f} × µg_DOC + {intercept_new:.1f}   "
+            f"(R² = <span style='color:{r2_color}'>{r2:.6f}</span>, n={n_pts})"
+        )
 
         # Date: usar data de la SEQ si disponible
         if self._imported_data:
@@ -1586,126 +1674,6 @@ class CalibrationLineView(QWidget):
         self._populate_retro_seq_list()
 
         self.seq_cal_apply_group.setVisible(True)
-
-    def _update_cal_comparison(self, rf_new, intercept_new, r2_new):
-        """Taula HTML comparant calibració vigent vs nova."""
-        from gui.widgets.analyze_panel._helpers import format_calibration_comparison_html
-
-        cal = get_active_global_calibration()
-        if not cal:
-            self._cal_comparison_label.setText("<i>No hi ha calibració vigent per comparar.</i>")
-            return
-
-        method = self._seq_cal_method or "COLUMN"
-        mode_key = "bp" if method.upper() == "BP" else "column"
-
-        rf_dict = cal.get('rf_mass_cal', {})
-        rf_vigent = rf_dict.get('direct', {}).get(mode_key, 0) if isinstance(rf_dict, dict) else 0
-
-        int_dict = cal.get('intercept', 0)
-        if isinstance(int_dict, dict):
-            intercept_vigent = int_dict.get('direct', {}).get(mode_key, 0)
-        else:
-            intercept_vigent = float(int_dict) if int_dict else 0
-
-        r2_dict = cal.get('r2', 0)
-        if isinstance(r2_dict, dict):
-            r2_vigent = r2_dict.get(mode_key, 0) or 0
-        else:
-            r2_vigent = float(r2_dict) if r2_dict else 0
-
-        html = format_calibration_comparison_html(
-            rf_vigent=rf_vigent, int_vigent=intercept_vigent,
-            rf_new=rf_new, int_new=intercept_new,
-            r2_new=r2_new, r2_vigent=r2_vigent,
-        )
-        self._cal_comparison_label.setText(html)
-
-        eq = f"Àrea = {rf_new:.1f} × µg_DOC + {intercept_new:.1f}   (R² = {r2_new:.6f})"
-        self._cal_equation_label.setText(eq)
-
-    def _plot_cal_mini_scatter(self, reg_result):
-        """Gràfic scatter miniatura de la regressió."""
-        self._cal_mini_figure.clear()
-        ax = self._cal_mini_figure.add_subplot(111)
-
-        points = reg_result.get('points', [])
-        if not points:
-            ax.text(0.5, 0.5, "Sense dades", ha='center', va='center', transform=ax.transAxes)
-            self._cal_mini_canvas.draw()
-            return
-
-        x_inc = [p['ug_doc'] for p in points if not p.get('excluded')]
-        y_inc = [p['area'] for p in points if not p.get('excluded')]
-        x_exc = [p['ug_doc'] for p in points if p.get('excluded')]
-        y_exc = [p['area'] for p in points if p.get('excluded')]
-
-        if x_inc:
-            ax.scatter(x_inc, y_inc, c='#2980B9', s=35, zorder=5,
-                      edgecolors='white', linewidth=0.5, label='Inclòs')
-        if x_exc:
-            ax.scatter(x_exc, y_exc, c='#E74C3C', s=35, marker='x',
-                      zorder=5, linewidth=1.5, label='Exclòs')
-
-        rf = reg_result.get('rf_mass_cal', 0)
-        intercept = reg_result.get('intercept', 0)
-        all_x = x_inc + x_exc
-        if all_x and rf > 0:
-            x_line = np.linspace(0, max(all_x) * 1.1, 100)
-            y_line = rf * x_line + intercept
-            ax.plot(x_line, y_line, '-', color='#27AE60', linewidth=1.5,
-                    label=f'Nova (RF={rf:.0f})')
-
-            # Banda predicció 95%
-            if len(x_inc) >= 3:
-                try:
-                    from gui.widgets.analyze_panel._helpers import compute_prediction_band
-                    band = compute_prediction_band(x_line, rf, intercept,
-                                                   np.array(x_inc), np.array(y_inc))
-                    if band:
-                        ax.fill_between(x_line, band[0], band[1],
-                                       alpha=0.10, color='#2980B9')
-                except Exception:
-                    pass
-
-        # Recta vigent
-        try:
-            from hpsec_calibrate import get_rf_mass_cal, get_calibration_intercept
-            method = self._seq_cal_method or "COLUMN"
-            mode_key = "bp" if method.upper() == "BP" else "column"
-            cal_sig = (self._seq_cal_regression or {}).get('signal', 'direct')
-            rf_vig = get_rf_mass_cal(signal=cal_sig, mode=mode_key) or 0
-            int_vig = get_calibration_intercept(signal=cal_sig, mode=mode_key) or 0
-            if rf_vig > 0 and all_x:
-                x_line_v = np.linspace(0, max(all_x) * 1.1, 100)
-                y_line_v = rf_vig * x_line_v + int_vig
-                ax.plot(x_line_v, y_line_v, '--', color='#E67E22', linewidth=1,
-                       alpha=0.7, label=f'Vigent (RF={rf_vig:.0f})')
-        except Exception:
-            pass
-
-        r2 = reg_result.get('r2', 0)
-        n_pts = reg_result.get('n_points', len(x_inc))
-        if rf > 0:
-            if abs(intercept) > 0.5:
-                eq_text = f"A = {rf:.1f} × µg + {intercept:.1f}"
-            else:
-                eq_text = f"A = {rf:.1f} × µg"
-            eq_text += f"  (R²={r2:.4f}, n={n_pts})"
-            ax.text(0.03, 0.97, eq_text, transform=ax.transAxes,
-                    fontsize=7, fontfamily='monospace', verticalalignment='top',
-                    bbox=dict(boxstyle='round,pad=0.3', facecolor='white',
-                              edgecolor='#ccc', alpha=0.9))
-
-        ax.set_xlabel('µg DOC', fontsize=8)
-        ax.set_ylabel('Àrea', fontsize=8)
-        ax.tick_params(labelsize=7)
-        ax.spines['top'].set_visible(False)
-        ax.spines['right'].set_visible(False)
-        ax.legend(fontsize=7, loc='lower right')
-        ax.grid(True, alpha=0.2)
-        self._cal_mini_figure.tight_layout()
-        self._cal_mini_canvas.draw()
 
     def _on_retroactive_toggled(self, checked):
         """Mostra/amaga la llista de SEQs retroactives."""
