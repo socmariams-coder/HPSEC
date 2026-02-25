@@ -2759,6 +2759,8 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
     is_bp_chromato = (method == "BP") or t_max_chromato < 20
     mode = "BP" if is_bp_chromato else "COLUMN"
 
+    from hpsec_core import find_peak_boundaries
+
     # =========================================================================
     # STEP 0: Integrar DAD 254nm PRIMER (referència temporal)
     # El 254nm defineix la posició del pic KHP. El DOC s'alinea després.
@@ -2835,7 +2837,6 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
     # =========================================================================
     # STEP 1: Integrar DOC alineat a t_max_254 (o independent si no hi ha 254)
     # =========================================================================
-    from hpsec_core import find_peak_boundaries
     _guided_254_details = None  # Set if guided search finds peak
 
     all_peaks = detect_all_peaks(t_doc, y_doc_net, config["peak_min_prominence_pct"])
