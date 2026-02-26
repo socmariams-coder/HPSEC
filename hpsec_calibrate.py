@@ -4280,6 +4280,10 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
 
     # Obtenir info de la seqüència
     seq_path = imported_data.get("seq_path", "")
+
+    # Netejar calibracions locals anteriors (reprocessament complet)
+    if seq_path:
+        save_local_calibrations(seq_path, [])
     method = imported_data.get("method", "COLUMN")
     samples = imported_data.get("samples", {})
     khp_names = imported_data.get("khp_samples", [])
