@@ -6,7 +6,7 @@ Funcions principals:
 - analizar_khp_data(): Anàlisi de dades KHP en memòria
 - register_calibration(): Registre de calibracions amb suport múltiples condicions
 - get_all_active_calibrations(): Obté totes les calibracions actives (una per condition_key)
-- validate_khp_quality(): Validació de qualitat KHP
+- get_rf_mass_cal(): Obté RF vigent per senyal/mode
 
 Suport múltiples condicions:
 - Cada combinació (mode, volume, conc) genera un condition_key únic
@@ -2048,37 +2048,6 @@ def compare_khp_historical(current_area, current_concentration_ratio, seq_path, 
     return result
 
 
-# =============================================================================
-# VALIDACIÓ QUALITAT KHP (basat en calibration_anomalies — ANOMALY_CATALOG)
-# =============================================================================
-
-# validate_khp_quality() ELIMINAT — la qualificació KHP ara es basa exclusivament
-# en calibration_anomalies generat per analizar_khp_data():
-#   - UIB_SATURATED (blocker)
-#   - KHP_TIMEOUT_PEAK (blocker)
-#   - KHP_BIGAUSSIAN_LOW (warning, R² < 0.95)
-# valid_for_calibration es deriva directament de: cap blocker a calibration_anomalies
-
-
-# --- FUNCIONS AUXILIARS MANTINGUDES (usades per validate_khp_for_alignment) ---
-
-# ELIMINAT validate_khp_quality() — tot el codi de L2055-2353 (300 línies)
-# Substituït per calibration_anomalies a analizar_khp_data()
-
-_REMOVED_VALIDATE_KHP_QUALITY = True  # Marker per si algun codi antic intenta importar
-
-
-def _validate_khp_quality_REMOVED(*args, **kwargs):
-    """ELIMINAT — usar calibration_anomalies de analizar_khp_data()."""
-    raise NotImplementedError(
-        "validate_khp_quality() ha estat eliminat. "
-        "Usar calibration_anomalies de analizar_khp_data()."
-    )
-
-# Alias per si algun codi antic intenta cridar-la
-validate_khp_quality = _validate_khp_quality_REMOVED
-
-
 def validate_khp_for_alignment(t_doc, y_doc, t_dad, y_a254, t_uib=None, y_uib=None,
                                method="COLUMN", repair_irregular_top=True,
                                seq_path=None, conc_ppm=None, volume_uL=None,
@@ -3417,9 +3386,9 @@ def register_calibration(seq_path, khp_data, khp_source, mode="COLUMN"):
     1. LOCAL (CHECK/data/calibrations.json) - Historial complet de la SEQ
     2. GLOBAL (KHP_History.json) - Una entrada per SEQ per comparacions
 
-    VALIDACIÓ COMPLETA amb validate_khp_quality():
+    Validació basada en calibration_anomalies (ANOMALY_CATALOG):
     - valid_for_shift: Pic clar, sense timeout crític, cim irregular reparat
-    - valid_for_calibration: Tots els criteris de qualitat (8 criteris)
+    - valid_for_calibration: Cap blocker a calibration_anomalies
     """
     seq_name = os.path.basename(seq_path)
 

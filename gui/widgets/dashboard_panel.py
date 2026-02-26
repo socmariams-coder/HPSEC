@@ -1350,7 +1350,7 @@ class DashboardPanel(QWidget):
                                         "type": "QUAL",
                                         "content": content[:60],
                                     })
-                        # quality_issues fallback eliminat — ANOMALY_CATALOG és font única
+                        pass  # No fallback per JSONs antics
 
                 # 4. NOTES D'USUARI (confirmació warnings)
                 wc = data.get("warnings_confirmed")

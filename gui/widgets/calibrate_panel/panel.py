@@ -1766,17 +1766,11 @@ class CalibratePanel(QWidget):
             self.metrics_table.setItem(row, 14, item_pics)
 
             # Col 15-16: Anomalies + Estat (de calibration_anomalies del catàleg)
-            from hpsec_warnings import ANOMALY_CATALOG, classify_anomalies
-            _ignored_cal_codes = {
-                'KHP_MULTI_PEAK', 'KHP_ASYMMETRY', 'KHP_SNR_LOW',
-                'KHP_IRREGULAR_TOP', 'KHP_BASELINE_DRIFT', 'KHP_NO_DAD',
-                'KHP_DOC_GUIDED_BY_254', 'KHP_FWHM_HIGH', 'KHP_RSD_HIGH',
-                'KHP_CR_LOW',
-            }
+            from hpsec_warnings import ANOMALY_CATALOG, classify_anomalies, IGNORED_KHP_CODES
             raw_anomalies = khp.get('calibration_anomalies', [])
             cal_anomalies = [
                 a for a in raw_anomalies
-                if not isinstance(a, dict) or a.get('code', '') not in _ignored_cal_codes
+                if not isinstance(a, dict) or a.get('code', '') not in IGNORED_KHP_CODES
             ]
 
             if not raw_anomalies:
@@ -2280,7 +2274,7 @@ class CalibratePanel(QWidget):
                     w["message"] = f"{khp_name}: {w['message']}"
             warnings_structured.append(w)
 
-        # quality_issues eliminat — ANOMALY_CATALOG és la font única
+        # (quality_issues bloc eliminat)
 
         # Convertir errors a warnings_structured
         for e in errors:
@@ -2291,13 +2285,7 @@ class CalibratePanel(QWidget):
             })
 
         # Convertir calibration_anomalies (ANOMALY_CATALOG) a warnings_structured
-        # Ignorar codis eliminats (sorollosos)
-        _ignored_cal_codes = {
-            'KHP_MULTI_PEAK', 'KHP_ASYMMETRY', 'KHP_SNR_LOW',
-            'KHP_IRREGULAR_TOP', 'KHP_BASELINE_DRIFT', 'KHP_NO_DAD',
-            'KHP_DOC_GUIDED_BY_254', 'KHP_FWHM_HIGH', 'KHP_RSD_HIGH',
-            'KHP_CR_LOW',
-        }
+        from hpsec_warnings import IGNORED_KHP_CODES
         anomalies_added = False
         for signal_key in ["khp_data_direct", "khp_data_uib"]:
             signal_data = result.get(signal_key)
@@ -2305,7 +2293,7 @@ class CalibratePanel(QWidget):
                 for rep in self._extract_all_replicas(signal_data):
                     for anom in rep.get('calibration_anomalies', []):
                         if isinstance(anom, dict):
-                            if anom.get('code', '') in _ignored_cal_codes:
+                            if anom.get('code', '') in IGNORED_KHP_CODES:
                                 continue
                             warnings_structured.append(anom)
                             anomalies_added = True
