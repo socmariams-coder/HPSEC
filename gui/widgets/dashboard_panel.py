@@ -867,71 +867,8 @@ class DashboardPanel(QWidget):
 
                 self.table.setItem(row, col, item)
 
-            # Col NOTES: Notes (JSON + manuals, doble-clic per veure/editar)
-            # SEMPRE disponible, independentment de l'estat
-            json_notes = seq.dashboard_notes
-            manual_notes = seq.notes if seq.notes else ""
-
-            # Construir preview combinat
-            preview_parts = []
-            tooltip_parts = []
-            has_anomaly = False
-            has_warning = False
-
-            # Notes dels JSON (tot: warnings, anomalies, notes)
-            for jn in json_notes[:5]:  # Màxim 5 per preview
-                stage = jn.get("stage", "?")
-                ntype = jn.get("type", "")
-                content = jn.get("content", "")
-                icon = jn.get("icon", "")
-                severity = jn.get("severity", "")
-
-                if ntype in ("ANOM",) or severity == "blocker":
-                    has_anomaly = True
-                elif ntype in ("WARN",) or severity == "warning":
-                    has_warning = True
-
-                # Preview amb icona del catàleg (si disponible)
-                if icon:
-                    preview_parts.append(f"{icon} {content}")
-                elif severity == "blocker":
-                    preview_parts.append(f"!! {content}")
-                elif severity == "warning":
-                    preview_parts.append(f"W {content}")
-                elif ntype == "ANOM":
-                    preview_parts.append(f"! {content}")
-                elif ntype == "WARN":
-                    preview_parts.append(f"W {content}")
-                elif ntype == "QUAL":
-                    preview_parts.append(f"Q {content}")
-                elif ntype == "NOTE":
-                    preview_parts.append(f"N {content}")
-                else:
-                    preview_parts.append(content)
-                tooltip_parts.append(f"[{stage}] ({ntype}) {jn.get('content', '')}")
-
-            # Notes manuals
-            if manual_notes:
-                preview_parts.append(f"[MAN] {manual_notes[:25]}")
-                tooltip_parts.append(f"[Manual] {manual_notes}")
-
-            if preview_parts:
-                preview = " | ".join(preview_parts)
-                if len(preview) > 80:
-                    preview = preview[:77] + "..."
-                tooltip = "\n".join(tooltip_parts)
-                # Colors segons gravetat
-                if has_anomaly:
-                    color = QColor("#C62828")  # Vermell per anomalies
-                elif has_warning:
-                    color = QColor("#E65100")  # Taronja per warnings
-                else:
-                    color = QColor("#1565C0")  # Blau per notes
-            else:
-                preview = ""
-                tooltip = "Doble-clic per afegir notes"
-                color = QColor("#999")
-
+            # Col NOTES: resum compacte + doble-clic per detall/editar
+            preview, tooltip, color = self._format_notes_cell(seq)
             item_notes = QTableWidgetItem(preview)
             item_notes.setToolTip(tooltip)
             item_notes.setForeground(color)
@@ -948,6 +885,61 @@ class DashboardPanel(QWidget):
         # Aplicar mínims de capçalera
         self._apply_min_widths()
         self._update_selection_count()
+
+    def _format_notes_cell(self, seq: SequenceState):
+        """Genera text, tooltip i color per la cel·la Notes del dashboard.
+
+        Format compacte: "2 avisos · 1 nota" (+ detall al tooltip).
+        """
+        json_notes = seq.dashboard_notes
+        manual_notes = seq.notes.strip() if seq.notes else ""
+
+        # Comptar per tipus
+        n_warn = 0  # WARN + ANOM + QUAL
+        n_note = 0  # NOTE + USR
+        has_blocker = False
+        tooltip_parts = []
+
+        for jn in json_notes:
+            ntype = jn.get("type", "")
+            sev = jn.get("severity", "")
+            stage = jn.get("stage", "?")
+            content = jn.get("content", "")
+
+            if ntype in ("ANOM", "WARN", "QUAL"):
+                n_warn += 1
+                if sev == "blocker":
+                    has_blocker = True
+            elif ntype in ("NOTE", "USR"):
+                n_note += 1
+
+            tooltip_parts.append(f"[{stage}] {content}")
+
+        if manual_notes:
+            n_note += 1
+            tooltip_parts.append(f"[MAN] {manual_notes}")
+
+        # Preview compacte
+        parts = []
+        if n_warn:
+            parts.append(f"{n_warn} {'avis' if n_warn == 1 else 'avisos'}")
+        if n_note:
+            parts.append(f"{n_note} {'nota' if n_note == 1 else 'notes'}")
+        preview = " · ".join(parts)
+
+        # Color
+        if has_blocker:
+            color = QColor("#C62828")
+        elif n_warn:
+            color = QColor("#E65100")
+        elif n_note:
+            color = QColor("#1565C0")
+        else:
+            color = QColor("#999")
+
+        tooltip = "\n".join(tooltip_parts) if tooltip_parts else "Doble-clic per afegir notes"
+
+        return preview, tooltip, color
 
     def _apply_min_widths(self):
         """Aplica amplades mínimes per assegurar capçaleres visibles."""
@@ -1500,61 +1492,12 @@ class DashboardPanel(QWidget):
             self.table.setItem(row, col, item)
 
         # Actualitzar notes
-        json_notes = seq.dashboard_notes
-        manual_notes = seq.notes if seq.notes else ""
-
-        preview_parts = []
-        tooltip_parts = []
-        has_anomaly = False
-        has_warning = False
-
-        for jn in json_notes[:5]:
-            stage = jn.get("stage", "?")
-            ntype = jn.get("type", "")
-            content = jn.get("content", "")
-            icon = jn.get("icon", "")
-            severity = jn.get("severity", "")
-
-            if ntype in ("ANOM",) or severity == "blocker":
-                has_anomaly = True
-            elif ntype in ("WARN",) or severity == "warning":
-                has_warning = True
-
-            if icon:
-                preview_parts.append(f"{icon} {content}")
-            elif severity == "blocker":
-                preview_parts.append(f"!! {content}")
-            elif severity == "warning":
-                preview_parts.append(f"W {content}")
-            elif ntype == "ANOM":
-                preview_parts.append(f"! {content}")
-            elif ntype == "WARN":
-                preview_parts.append(f"W {content}")
-            elif ntype == "QUAL":
-                preview_parts.append(f"Q {content}")
-            elif ntype == "NOTE":
-                preview_parts.append(f"N {content}")
-            else:
-                preview_parts.append(content)
-            tooltip_parts.append(f"[{stage}] ({ntype}) {jn.get('content', '')}")
-
-        if manual_notes:
-            preview_parts.append(f"[MAN] {manual_notes[:25]}")
-            tooltip_parts.append(f"[Manual] {manual_notes}")
-
-        if preview_parts:
-            preview = " | ".join(preview_parts)
-            if len(preview) > 80:
-                preview = preview[:77] + "..."
-            tooltip = "\n".join(tooltip_parts)
-        else:
-            preview = ""
-            tooltip = "Doble-clic per afegir notes"
-
+        preview, tooltip, color = self._format_notes_cell(seq)
         current_notes = self.table.item(row, COL_NOTES)
         if current_notes:
             current_notes.setText(preview)
             current_notes.setToolTip(tooltip)
+            current_notes.setForeground(color)
 
     def _on_batch_finished(self, success, fail):
         self.main_window.show_progress(-1)
