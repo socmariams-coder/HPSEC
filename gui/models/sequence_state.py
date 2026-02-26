@@ -326,9 +326,18 @@ class SequenceState:
                 )
 
             # Extreure avisos de calibració (calibration_anomalies del catàleg)
+            # Ignorar codis eliminats (sorollosos, presents en JSONs antics)
+            _ignored_cal_codes = {
+                'KHP_MULTI_PEAK', 'KHP_ASYMMETRY', 'KHP_SNR_LOW',
+                'KHP_IRREGULAR_TOP', 'KHP_BASELINE_DRIFT', 'KHP_NO_DAD',
+                'KHP_DOC_GUIDED_BY_254', 'KHP_FWHM_HIGH', 'KHP_RSD_HIGH',
+                'KHP_CR_LOW',
+            }
             for cal in calibrations:
                 for a in cal.get('calibration_anomalies', []):
                     if isinstance(a, dict):
+                        if a.get('code', '') in _ignored_cal_codes:
+                            continue
                         sev = a.get('severity', 'info')
                         if sev in ('blocker', 'warning'):
                             label = a.get('label', a.get('code', ''))
