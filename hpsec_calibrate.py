@@ -26,6 +26,7 @@ __version_date__ = "2026-02-03"
 
 import os
 import re
+import copy
 import glob
 import json
 import logging
@@ -219,9 +220,120 @@ _cal_ref_cache = None
 _cal_ref_mtime = 0
 
 
+def _build_active_cal_key(signal, sensitivity=None):
+    """Construeix la clau per active_calibration_ids: 'direct', 'uib_700', 'uib_1000', o 'uib'."""
+    signal = signal.lower() if signal else 'direct'
+    if signal == 'direct':
+        return 'direct'
+    if sensitivity:
+        return f"uib_{int(sensitivity)}"
+    return 'uib'
+
+
+def _migrate_calibration_reference(ref):
+    """
+    Migra Calibration_Reference.json de v2.0 a v3.0.
+
+    Divideix cada entrada antiga (nested rf_mass_cal per signal) en entrades
+    independents per signal_scope, i genera active_calibration_ids.
+
+    Args:
+        ref: dict carregat del JSON
+
+    Returns:
+        dict migrat (modifica in-place i retorna)
+    """
+    version = str(ref.get('version', '1.0'))
+    if version >= '3.0':
+        return ref
+
+    logger.info("Migrant Calibration_Reference.json de v%s a v3.0", version)
+
+    new_calibrations = []
+    active_direct_id = None
+    active_uib_id = None
+
+    for cal in ref.get('calibrations', []):
+        rf = cal.get('rf_mass_cal', {})
+        intercept = cal.get('intercept', 0)
+
+        # Detectar format antic: rf_mass_cal té claus 'direct'/'uib' amb sub-dicts
+        has_nested = (isinstance(rf, dict)
+                      and any(k in rf for k in ('direct', 'uib'))
+                      and any(isinstance(rf.get(k), dict) for k in ('direct', 'uib')))
+
+        if has_nested:
+            for signal in ['direct', 'uib']:
+                signal_rf = rf.get(signal, {})
+                if not isinstance(signal_rf, dict) or not signal_rf:
+                    continue
+
+                new_id = f"{cal['id']}_{signal.upper()}"
+
+                # Extreure intercept per aquest signal
+                if isinstance(intercept, dict):
+                    signal_intercept = intercept.get(signal, {})
+                    if not isinstance(signal_intercept, dict):
+                        signal_intercept = {"column": 0, "bp": 0}
+                else:
+                    signal_intercept = {"column": float(intercept) if intercept else 0,
+                                        "bp": 0} if signal == 'direct' else {"column": 0, "bp": 0}
+
+                new_entry = {}
+                for k, v in cal.items():
+                    if k not in ('rf_mass_cal', 'intercept', 'id', 'regression_data'):
+                        new_entry[k] = copy.deepcopy(v) if isinstance(v, (dict, list)) else v
+                new_entry['id'] = new_id
+                new_entry['signal_scope'] = signal
+                new_entry['uib_sensitivity'] = None
+                new_entry['rf_mass_cal'] = copy.deepcopy(signal_rf)
+                new_entry['intercept'] = copy.deepcopy(signal_intercept)
+
+                # regression_data: només per al signal que correspon
+                reg = cal.get('regression_data')
+                if reg:
+                    reg_signal = reg.get('signal', 'direct')
+                    if reg_signal == signal:
+                        new_entry['regression_data'] = copy.deepcopy(reg)
+
+                new_calibrations.append(new_entry)
+
+                if cal.get('is_active'):
+                    if signal == 'direct':
+                        active_direct_id = new_id
+                    else:
+                        active_uib_id = new_id
+        else:
+            # Ja és format planer o desconegut — afegir signal_scope si no existeix
+            if 'signal_scope' not in cal:
+                cal['signal_scope'] = 'direct'
+                cal['uib_sensitivity'] = None
+            new_calibrations.append(cal)
+            if cal.get('is_active'):
+                key = _build_active_cal_key(cal.get('signal_scope', 'direct'),
+                                             cal.get('uib_sensitivity'))
+                if key == 'direct':
+                    active_direct_id = cal['id']
+                else:
+                    active_uib_id = cal['id']
+
+    ref['calibrations'] = new_calibrations
+    ref['active_calibration_ids'] = {
+        'direct': active_direct_id,
+        'uib': active_uib_id,
+    }
+    # Mantenir backward compat
+    if active_direct_id:
+        ref['active_calibration_id'] = active_direct_id
+    ref['version'] = '3.0'
+
+    return ref
+
+
 def load_calibration_reference():
     """
     Carrega la calibració de referència global (amb cache mtime).
+    Auto-migra de v2.0 a v3.0 si cal.
 
     Returns:
         dict amb les dades de calibració o None si no existeix
@@ -237,6 +349,15 @@ def load_calibration_reference():
             return _cal_ref_cache
         with open(ref_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
+
+        # Auto-migració v2.0 → v3.0
+        version = str(data.get('version', '1.0'))
+        if version < '3.0':
+            data = _migrate_calibration_reference(data)
+            save_calibration_reference(data)
+            # Re-read per actualitzar mtime
+            mtime = os.path.getmtime(ref_path)
+
         _cal_ref_cache = data
         _cal_ref_mtime = mtime
         return data
@@ -272,12 +393,14 @@ def save_calibration_reference(data):
         return False
 
 
-def get_calibration_for_date(seq_date):
+def get_calibration_for_date(seq_date, signal='direct', sensitivity=None):
     """
-    Retorna la calibració vigent per una data donada.
+    Retorna la calibració vigent per una data donada i signal/sensitivity.
 
     Args:
         seq_date: Data de la SEQ (YYYY-MM-DD string o datetime)
+        signal: 'direct' o 'uib'
+        sensitivity: Sensibilitat UIB (700, 1000) o None
 
     Returns:
         dict amb la calibració vigent o None
@@ -292,8 +415,19 @@ def get_calibration_for_date(seq_date):
     else:
         seq_date_str = str(seq_date)[:10]
 
-    # Buscar calibració vigent per aquesta data
+    signal = (signal or 'direct').lower()
+
+    # Buscar calibració vigent per data + signal_scope
     for cal in ref['calibrations']:
+        # Filtrar per signal_scope (v3.0)
+        cal_scope = cal.get('signal_scope')
+        if cal_scope and cal_scope != signal:
+            continue
+        # Filtrar per sensitivity (si especificada)
+        if sensitivity is not None and cal.get('uib_sensitivity') is not None:
+            if cal.get('uib_sensitivity') != sensitivity:
+                continue
+
         valid_from = cal.get('valid_from', '1900-01-01')
         valid_to = cal.get('valid_to')
 
@@ -304,11 +438,13 @@ def get_calibration_for_date(seq_date):
     return None
 
 
-def get_active_global_calibration():
+def get_active_global_calibration(signal='direct', sensitivity=None):
     """
-    Retorna la calibració global activa actual (Calibration_Reference.json).
+    Retorna la calibració global activa per un signal/sensitivity.
 
-    Nota: Diferent de get_active_calibration() que obté calibracions locals per SEQ.
+    Args:
+        signal: 'direct' o 'uib'
+        sensitivity: Sensibilitat UIB (700, 1000) o None
 
     Returns:
         dict amb la calibració activa o None
@@ -317,21 +453,82 @@ def get_active_global_calibration():
     if not ref:
         return None
 
+    signal = (signal or 'direct').lower()
+
+    # v3.0: active_calibration_ids dict
+    active_ids = ref.get('active_calibration_ids')
+    if active_ids:
+        key = _build_active_cal_key(signal, sensitivity)
+        active_id = active_ids.get(key)
+        # Fallback: si clau amb sensitivity no existeix, provar sense
+        if not active_id and sensitivity is not None:
+            active_id = active_ids.get('uib')
+        if active_id:
+            for cal in ref.get('calibrations', []):
+                if cal.get('id') == active_id:
+                    return cal
+
+    # Fallback v2.0: active_calibration_id únic
     active_id = ref.get('active_calibration_id')
     if active_id:
         for cal in ref.get('calibrations', []):
             if cal.get('id') == active_id:
                 return cal
 
-    # Fallback: primera calibració activa
+    # Fallback: primera calibració activa que coincideixi amb signal_scope
     for cal in ref.get('calibrations', []):
         if cal.get('is_active', False):
-            return cal
+            cal_scope = cal.get('signal_scope')
+            if cal_scope is None or cal_scope == signal:
+                return cal
 
     return None
 
 
-def get_rf_mass_cal(signal='direct', mode='column', seq_date=None):
+def _extract_rf_from_cal(cal, mode, signal=None):
+    """Extreu rf_mass_cal d'una entrada de calibració (suporta format planer i nested)."""
+    rf_mass_cal = cal.get('rf_mass_cal', {})
+    mode = (mode or 'column').lower()
+
+    if not isinstance(rf_mass_cal, dict):
+        return float(rf_mass_cal) if rf_mass_cal else None
+
+    # Format v3.0 planer: {"column": X, "bp": Y}
+    if 'column' in rf_mass_cal or 'bp' in rf_mass_cal:
+        return rf_mass_cal.get(mode)
+
+    # Format v2.0 nested: {"direct": {"column": X}, "uib": {...}}
+    if signal:
+        signal_data = rf_mass_cal.get(signal.lower(), {})
+        if isinstance(signal_data, dict):
+            return signal_data.get(mode)
+
+    return None
+
+
+def _extract_intercept_from_cal(cal, mode, signal=None):
+    """Extreu intercept d'una entrada de calibració (suporta format planer i nested)."""
+    intercept = cal.get('intercept', 0)
+    mode = (mode or 'column').lower()
+
+    if isinstance(intercept, (int, float)):
+        return float(intercept)
+
+    if isinstance(intercept, dict):
+        # Format v3.0 planer: {"column": X, "bp": Y}
+        if 'column' in intercept or 'bp' in intercept:
+            return intercept.get(mode, 0)
+
+        # Format v2.0 nested: {"direct": {"column": X}, "uib": {...}}
+        if signal:
+            signal_data = intercept.get(signal.lower(), {})
+            if isinstance(signal_data, dict):
+                return signal_data.get(mode, 0)
+
+    return 0
+
+
+def get_rf_mass_cal(signal='direct', mode='column', seq_date=None, sensitivity=None):
     """
     Obté el RF_mass de calibració global per senyal i mode.
 
@@ -339,102 +536,112 @@ def get_rf_mass_cal(signal='direct', mode='column', seq_date=None):
         signal: 'direct' o 'uib'
         mode: 'column' o 'bp'
         seq_date: Data SEQ per seleccionar calibració (None = activa)
+        sensitivity: Sensibilitat UIB (700, 1000) o None
 
     Returns:
         float: rf_mass_cal o None si no està definit
     """
     if seq_date:
-        cal = get_calibration_for_date(seq_date)
+        cal = get_calibration_for_date(seq_date, signal=signal, sensitivity=sensitivity)
     else:
-        cal = get_active_global_calibration()
+        cal = get_active_global_calibration(signal=signal, sensitivity=sensitivity)
 
     if not cal:
         return None
 
-    rf_mass_cal = cal.get('rf_mass_cal', {})
-
-    # Estructura: {"direct": {"column": X, "bp": Y}, "uib": {...}}
-    signal_data = rf_mass_cal.get(signal.lower(), {})
-    if isinstance(signal_data, dict):
-        return signal_data.get(mode.lower())
-
-    # Fallback: valor simple (compatibilitat)
-    if isinstance(rf_mass_cal, (int, float)):
-        return rf_mass_cal
-
-    return None
+    return _extract_rf_from_cal(cal, mode, signal)
 
 
-def get_calibration_intercept(signal='direct', mode='column', seq_date=None):
+def get_calibration_intercept(signal='direct', mode='column', seq_date=None, sensitivity=None):
     """
     Obté l'intercept de la calibració per signal/mode (0 si forçada a origen).
-
-    Suporta intercept escalar (retrocompatible) o dict nested per-mode:
-        {"direct": {"column": 81, "bp": 0}, "uib": {"column": 0, "bp": 0}}
 
     Args:
         signal: 'direct' o 'uib'
         mode: 'column' o 'bp'
         seq_date: Data SEQ (None = calibració activa)
+        sensitivity: Sensibilitat UIB (700, 1000) o None
 
     Returns:
         float: intercept (0 si model origin o no trobat)
     """
     if seq_date:
-        cal = get_calibration_for_date(seq_date)
+        cal = get_calibration_for_date(seq_date, signal=signal, sensitivity=sensitivity)
     else:
-        cal = get_active_global_calibration()
+        cal = get_active_global_calibration(signal=signal, sensitivity=sensitivity)
 
     if not cal:
         return 0
 
-    intercept = cal.get('intercept', 0)
-    if isinstance(intercept, dict):
-        signal_data = intercept.get(signal.lower(), {})
-        if isinstance(signal_data, dict):
-            return signal_data.get(mode.lower(), 0)
-        return 0
-    return float(intercept) if intercept else 0
+    return _extract_intercept_from_cal(cal, mode, signal)
 
 
 def compute_calibration_fingerprint(calibration=None):
     """
     SHA-256[:16] dels paràmetres de calibració que afecten la quantificació.
 
-    Permet detectar si una anàlisi ha quedat obsoleta després d'un canvi de calibració.
-    Segueix el patró de compute_config_fingerprint() de hpsec_config.py.
+    Si calibration=None, hasheja TOTS els active_calibration_ids (multi-calibració).
 
     Args:
-        calibration: Dict de calibració (None = activa)
+        calibration: Dict de calibració (None = totes les actives)
 
     Returns:
         str: Hash hex de 16 caràcters, o "" si no hi ha calibració
     """
     import hashlib
-    if calibration is None:
-        calibration = get_active_global_calibration()
-    if not calibration:
+
+    if calibration is not None:
+        data = {
+            "rf_mass_cal": calibration.get("rf_mass_cal"),
+            "intercept": calibration.get("intercept"),
+            "id": calibration.get("id"),
+        }
+        raw = json.dumps(data, sort_keys=True, ensure_ascii=False)
+        return hashlib.sha256(raw.encode('utf-8')).hexdigest()[:16]
+
+    # Hash de totes les calibracions actives
+    ref = load_calibration_reference()
+    if not ref:
         return ""
-    # Camps que afecten la quantificació: rf_mass_cal, intercept, id
-    data = {
-        "rf_mass_cal": calibration.get("rf_mass_cal"),
-        "intercept": calibration.get("intercept"),
-        "id": calibration.get("id"),
-    }
-    raw = json.dumps(data, sort_keys=True, ensure_ascii=False)
+
+    active_ids = ref.get('active_calibration_ids', {})
+    if not active_ids:
+        # Fallback v2.0
+        cal = get_active_global_calibration()
+        if not cal:
+            return ""
+        data = {
+            "rf_mass_cal": cal.get("rf_mass_cal"),
+            "intercept": cal.get("intercept"),
+            "id": cal.get("id"),
+        }
+        raw = json.dumps(data, sort_keys=True, ensure_ascii=False)
+        return hashlib.sha256(raw.encode('utf-8')).hexdigest()[:16]
+
+    # Recollir dades de totes les calibracions actives
+    all_data = {}
+    for key, cal_id in sorted(active_ids.items()):
+        if cal_id:
+            for cal in ref.get('calibrations', []):
+                if cal.get('id') == cal_id:
+                    all_data[key] = {
+                        "rf_mass_cal": cal.get("rf_mass_cal"),
+                        "intercept": cal.get("intercept"),
+                        "id": cal.get("id"),
+                    }
+                    break
+
+    if not all_data:
+        return ""
+
+    raw = json.dumps(all_data, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(raw.encode('utf-8')).hexdigest()[:16]
 
 
-def quantify_with_global_calibration(area, volume_uL, signal='direct', mode='column', seq_date=None):
+def quantify_with_global_calibration(area, volume_uL, signal='direct', mode='column',
+                                     seq_date=None, sensitivity=None):
     """
     Quantifica una mostra usant rf_mass_cal global (Calibration_Reference.json).
-
-    Nota: Aquesta funció és la recomanada per quantificació estàndard.
-    Usa rf_mass_cal global (Calibration_Reference.json) amb intercept.
-
-    Fórmules segons model:
-    - origin:    ppm = Area × 1000 / (rf_mass_cal × volume_uL)
-    - intercept: ppm = (Area - intercept) × 1000 / (rf_mass_cal × volume_uL)
 
     Args:
         area: Àrea del pic (mAU·min)
@@ -442,20 +649,15 @@ def quantify_with_global_calibration(area, volume_uL, signal='direct', mode='col
         signal: 'direct' o 'uib'
         mode: 'column' o 'bp'
         seq_date: Data SEQ per seleccionar calibració correcta
+        sensitivity: Sensibilitat UIB (700, 1000) o None
 
     Returns:
-        dict amb:
-            - concentration_ppm: concentració calculada
-            - rf_mass_cal_used: valor rf_mass_cal utilitzat
-            - calibration_id: ID de la calibració usada
-            - model: 'origin' o 'intercept'
-            - intercept: valor intercept (0 si origin)
-            - success: bool
+        dict amb concentration_ppm, rf_mass_cal_used, calibration_id, intercept, success
     """
     if seq_date:
-        cal = get_calibration_for_date(seq_date)
+        cal = get_calibration_for_date(seq_date, signal=signal, sensitivity=sensitivity)
     else:
-        cal = get_active_global_calibration()
+        cal = get_active_global_calibration(signal=signal, sensitivity=sensitivity)
 
     if not cal:
         return {
@@ -466,7 +668,7 @@ def quantify_with_global_calibration(area, volume_uL, signal='direct', mode='col
             'error': 'No hi ha calibració disponible'
         }
 
-    rf_mass_cal = get_rf_mass_cal(signal, mode, seq_date)
+    rf_mass_cal = get_rf_mass_cal(signal, mode, seq_date, sensitivity=sensitivity)
     if rf_mass_cal is None or rf_mass_cal <= 0:
         return {
             'success': False,
@@ -486,7 +688,7 @@ def quantify_with_global_calibration(area, volume_uL, signal='direct', mode='col
         }
 
     # Obtenir intercept per-mode (0 si origin)
-    intercept = get_calibration_intercept(signal, mode, seq_date)
+    intercept = get_calibration_intercept(signal, mode, seq_date, sensitivity=sensitivity)
 
     # Fórmula única: ppm = (Area - intercept) × 1000 / (rf_mass_cal × volume)
     # Si intercept = 0 (origin), queda: ppm = Area × 1000 / (rf_mass_cal × volume)
@@ -649,34 +851,27 @@ def register_qc_result(seq_name, seq_date, qc_result, khp_data):
 
 def add_calibration(rf_mass_cal_values, source, valid_from, r2=None, n_points=None,
                     conditions=None, reason="", intercept_values=None,
-                    regression_data=None):
+                    regression_data=None, signal_scope='direct', uib_sensitivity=None):
     """
-    Afegeix una nova calibració i tanca l'anterior.
+    Afegeix una nova calibració per un àmbit (signal_scope + uib_sensitivity).
+
+    IMPORTANT: Des de v3.0, cada calibració cobreix UN sol àmbit (direct, uib_700, uib_1000).
+    rf_mass_cal_values i intercept_values han de ser planers: {"column": X, "bp": Y}.
+    Per backward compat, si es passa format nested antic, es converteix.
 
     Args:
-        rf_mass_cal_values: dict amb estructura {"direct": {"column": X, "bp": Y}, "uib": {...}}
+        rf_mass_cal_values: dict {"column": X, "bp": Y} (v3.0 planer)
+            o {"direct": {"column": X}, "uib": {...}} (v2.0 nested, convertit automàticament)
         source: dict amb info de la font (type, description, seq_references)
         valid_from: Data inici vigència (YYYY-MM-DD)
         r2: Coeficient de determinació
         n_points: Nombre de punts usats
-        conditions: dict amb condicions (column_type, flow_rate, etc.)
+        conditions: dict amb condicions
         reason: Motiu del canvi
-        intercept_values: dict amb intercepts per senyal/mode
-        regression_data: dict complet de la regressió (punts, residuals, stats).
-            Estructura esperada (de fit_calibration_from_history):
-            {
-                "rf_mass_cal": float, "intercept": float, "r2": float,
-                "n_points": int, "residuals_rms": float,
-                "model": str,  # "intercept" o "origin"
-                "signal": str,  # "direct", "uib", "254"
-                "mode": str,  # "COLUMN", "BP"
-                "points": [
-                    {"seq_name": str, "date": str, "conc_ppm": float,
-                     "volume_uL": float, "ug_doc": float, "area": float,
-                     "rf_mass": float, "residual": float, "y_pred": float,
-                     "excluded": bool (opcional)}
-                ]
-            }
+        intercept_values: dict amb intercepts {"column": X, "bp": Y} (v3.0) o nested (v2.0)
+        regression_data: dict complet de la regressió
+        signal_scope: 'direct' o 'uib'
+        uib_sensitivity: Sensibilitat UIB (700, 1000) o None
 
     Returns:
         str: ID de la nova calibració o None si error
@@ -684,9 +879,10 @@ def add_calibration(rf_mass_cal_values, source, valid_from, r2=None, n_points=No
     ref = load_calibration_reference()
     if not ref:
         ref = {
-            'version': '2.0',
+            'version': '3.0',
             'created': datetime.now().strftime('%Y-%m-%d'),
             'calibrations': [],
+            'active_calibration_ids': {},
             'qc_thresholds': {
                 'rf_mass_deviation_warning_pct': 15,
                 'rf_mass_deviation_fail_pct': 25,
@@ -695,14 +891,37 @@ def add_calibration(rf_mass_cal_values, source, valid_from, r2=None, n_points=No
             }
         }
 
-    # Generar ID
-    cal_id = f"CAL_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    # Convertir format nested antic a planer si cal
+    if isinstance(rf_mass_cal_values, dict) and signal_scope in rf_mass_cal_values:
+        nested_val = rf_mass_cal_values.get(signal_scope, {})
+        if isinstance(nested_val, dict) and ('column' in nested_val or 'bp' in nested_val):
+            rf_mass_cal_values = nested_val
+            logger.debug("add_calibration: convertit rf_mass_cal nested→planer per %s", signal_scope)
 
-    # Tancar calibració anterior
+    if isinstance(intercept_values, dict) and signal_scope in intercept_values:
+        nested_val = intercept_values.get(signal_scope, {})
+        if isinstance(nested_val, dict) and ('column' in nested_val or 'bp' in nested_val):
+            intercept_values = nested_val
+            logger.debug("add_calibration: convertit intercept nested→planer per %s", signal_scope)
+
+    # Generar ID
+    signal_suffix = signal_scope.upper()
+    if uib_sensitivity:
+        signal_suffix = f"UIB{int(uib_sensitivity)}"
+    cal_id = f"CAL_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{signal_suffix}"
+
+    # Construir clau per active_calibration_ids
+    active_key = _build_active_cal_key(signal_scope, uib_sensitivity)
+
+    # Tancar NOMÉS calibracions anteriors del MATEIX àmbit
     valid_from_date = str(valid_from)[:10]
     for cal in ref['calibrations']:
-        if cal.get('is_active', False):
-            # Calcular dia anterior
+        if not cal.get('is_active', False):
+            continue
+        cal_scope = cal.get('signal_scope', 'direct')
+        cal_sens = cal.get('uib_sensitivity')
+        cal_key = _build_active_cal_key(cal_scope, cal_sens)
+        if cal_key == active_key:
             from datetime import timedelta
             try:
                 vf = datetime.strptime(valid_from_date, '%Y-%m-%d')
@@ -715,6 +934,8 @@ def add_calibration(rf_mass_cal_values, source, valid_from, r2=None, n_points=No
     # Crear nova calibració
     new_cal = {
         'id': cal_id,
+        'signal_scope': signal_scope,
+        'uib_sensitivity': uib_sensitivity,
         'rf_mass_cal': rf_mass_cal_values,
         'model': 'intercept' if intercept_values else 'origin',
         'intercept': intercept_values if intercept_values is not None else 0,
@@ -733,11 +954,18 @@ def add_calibration(rf_mass_cal_values, source, valid_from, r2=None, n_points=No
         }
     }
 
-    # Guardar dades completes de regressió (punts, residuals, stats)
+    # Guardar dades completes de regressió
     if regression_data:
         new_cal['regression_data'] = _sanitize_regression_data(regression_data)
 
     ref['calibrations'].insert(0, new_cal)
+
+    # Actualitzar active_calibration_ids
+    if 'active_calibration_ids' not in ref:
+        ref['active_calibration_ids'] = {}
+    ref['active_calibration_ids'][active_key] = cal_id
+
+    # Backward compat: active_calibration_id = últim afegit
     ref['active_calibration_id'] = cal_id
 
     if save_calibration_reference(ref):
@@ -813,6 +1041,11 @@ def _sanitize_regression_data(reg_data):
             'rf_cv_pct': float(np.std(rfs) / np.mean(rfs) * 100) if len(rfs) > 1 and np.mean(rfs) > 0 else 0,
         }
     sanitized['stats_per_concentration'] = conc_stats
+
+    # Propagar chromatogram_plots_dir si disponible
+    chrom_dir = reg_data.get('chromatogram_plots_dir')
+    if chrom_dir:
+        sanitized['chromatogram_plots_dir'] = str(chrom_dir)
 
     return sanitized
 
@@ -964,6 +1197,73 @@ def requantify_analysis_json(json_path, new_rf_direct, new_intercept_direct,
             _json.dump(data, f, indent=2, ensure_ascii=False)
         result["success"] = True
         result["samples_updated"] = n_updated
+    except Exception as e:
+        result["errors"].append(f"Error guardant JSON: {e}")
+
+    return result
+
+
+def invalidate_quantification_json(json_path):
+    """
+    Esborra les dades de quantificació d'un analysis_result.json.
+
+    Quan la calibració canvia però la SEQ no es requantifica,
+    cal esborrar els ppm/fraccions per evitar dades incorrectes.
+    Les àrees es mantenen intactes (no depenen de la calibració).
+
+    Returns:
+        dict amb {success, samples_invalidated, errors}
+    """
+    import json as _json
+    from datetime import datetime
+
+    result = {"success": False, "samples_invalidated": 0, "errors": []}
+
+    try:
+        with open(json_path, 'r', encoding='utf-8') as f:
+            data = _json.load(f)
+    except Exception as e:
+        result["errors"].append(f"Error llegint JSON: {e}")
+        return result
+
+    ppm_keys = [
+        "concentration_ppm", "concentration_ppm_direct",
+        "concentration_ppm_uib", "rf_mass_cal_used", "intercept",
+        "calibration_source",
+    ]
+
+    samples_grouped = data.get("samples_grouped", {})
+    n_invalidated = 0
+
+    for sample_name, sg in samples_grouped.items():
+        if sg.get("analysis_type") == "light":
+            continue
+        quant = sg.get("quantification")
+        if not quant:
+            continue
+
+        # Esborrar ppm i fraccions
+        for k in ppm_keys:
+            quant.pop(k, None)
+        quant.pop("fractions", None)
+        quant.pop("fractions_uib", None)
+
+        # Marcar com a invalidada
+        quant["calibration_invalidated"] = True
+        quant["invalidated_at"] = datetime.now().isoformat()
+
+        sg["quantification"] = quant
+        n_invalidated += 1
+
+    # Actualitzar fingerprint (marcar com a obsoleta)
+    data["calibration_fingerprint"] = "INVALIDATED"
+    data["quantification_invalidated_at"] = datetime.now().isoformat()
+
+    try:
+        with open(json_path, 'w', encoding='utf-8') as f:
+            _json.dump(data, f, indent=2, ensure_ascii=False)
+        result["success"] = True
+        result["samples_invalidated"] = n_invalidated
     except Exception as e:
         result["errors"].append(f"Error guardant JSON: {e}")
 
@@ -4202,8 +4502,9 @@ def detect_seq_cal_data(calib_result, seq_path, method=None, uib_sensitivity=Non
             if conc <= 0 or vol <= 0 or area <= 0:
                 continue
 
-            # Saturació UIB: ja calculada pel backend (detect_peak_clipping)
+            # Saturació UIB: només aplica quan el senyal és UIB
             uib_saturated = cal.get('uib_saturated', False)
+            sat_invalidates = uib_saturated and signal_name == 'uib'
 
             entry = {
                 'seq_name': seq_basename,
@@ -4212,7 +4513,7 @@ def detect_seq_cal_data(calib_result, seq_path, method=None, uib_sensitivity=Non
                 'volume_uL': vol,
                 'area': area,
                 'is_outlier': False,
-                'valid_for_calibration': not uib_saturated,
+                'valid_for_calibration': not sat_invalidates,
                 'condition_key': cal.get('condition_key', f"KHP{conc:g}@{vol}µL"),
                 'rf_mass': cal.get('rf_mass', 0),
                 'quality_score': cal.get('quality_score', 0),
@@ -4753,6 +5054,15 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
             sorted_replicas = sorted(replicas, key=lambda x: x.get('quality_score', 0))
             best = sorted_replicas[0]
             best_quality = best.get('quality_score', 0)
+            if best_quality >= 100:
+                # Totes les rèpliques invàlides — escollir la de MAJOR ÀREA
+                # (una àrea parcial indica límits d'integració curts, mai sobre-integració)
+                best = max(replicas, key=lambda x: x.get('area', 0))
+                selection_reason = f"all_invalid_max_area (best QS={best_quality})"
+                status = f"Rèplica major àrea R{best.get('replica_num', 1)} (RSD {rsd:.1f}%)"
+            else:
+                selection_reason = f'rsd_high ({rsd:.1f}% >= 10%)'
+                status = f"Millor qualitat R{best.get('replica_num', 1)} (RSD {rsd:.1f}%)"
             selected_area = best['area']
             selected_area_original = best.get('area_original') or best['area']
             selected_shift_min = best['shift_min']
@@ -4760,12 +5070,6 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
             selected_a254_ratio = best.get('a254_doc_ratio', 0)
             selected_a254_area = best.get('a254_area', 0)
             selected_replicas = [best.get('replica_num', 1)]
-            if best_quality >= 100:
-                # Totes les rèpliques invàlides — no seleccionar cap
-                selection_reason = f"all_replicas_invalid (best QS={best_quality})"
-                status = f"Cap rèplica vàlida (millor QS={best_quality})"
-            else:
-                status = f"Millor qualitat R{selected_replicas[0]} (RSD {rsd:.1f}%)"
 
         # Bigaussian: agafar de la primera rèplica seleccionada (o millor qualitat)
         # Sempre propagar, encara que sigui INVALID (info QC valuosa)
@@ -5104,6 +5408,20 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
     # Generar avisos estructurats (nou sistema)
     result["warnings_structured"] = _generate_calibration_warnings(result, method)
     result["warning_level"] = get_max_warning_level(result["warnings_structured"])
+
+    # Guardar cromatogrames KHP com a PNG (per incloure a l'informe PDF)
+    seq_path = imported_data.get("seq_path", "")
+    if seq_path:
+        try:
+            from hpsec_reports import save_all_khp_chromatograms
+            khp_plot_paths = save_all_khp_chromatograms(result, seq_path)
+            if khp_plot_paths:
+                result["khp_chromatogram_plots"] = khp_plot_paths
+                result["khp_chromatogram_plots_dir"] = os.path.join(
+                    seq_path, "CHECK", "data", "khp_plots"
+                )
+        except Exception as e:
+            logger.warning(f"No s'han pogut guardar cromatogrames KHP: {e}")
 
     return result
 

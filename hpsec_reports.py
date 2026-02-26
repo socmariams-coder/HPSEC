@@ -1432,15 +1432,17 @@ def generate_calibration_report(calibration=None, output_path=None):
     pdf_path = os.path.join(output_path, f"REPORT_Calibracio_{ts}.pdf")
 
     # Dades bàsiques (protegir contra None i dict — calibracions antigues pre-regression_data)
+    from hpsec_calibrate import _extract_rf_from_cal, _extract_intercept_from_cal
+
     mode = reg.get('mode', calibration.get('source', {}).get('mode', 'COLUMN'))
-    signal = reg.get('signal', 'direct')
+    signal = reg.get('signal', calibration.get('signal_scope', 'direct'))
     rf_cal = reg.get('rf_mass_cal') or 0
     intercept_raw = reg.get('intercept') or 0
-    # Si rf_cal/intercept són dict (ve del nivell calibration), extreure valor escalar
+    # Si rf_cal/intercept són dict, extreure valor escalar (suporta v2.0 nested i v3.0 planer)
     if isinstance(rf_cal, dict):
-        rf_cal = rf_cal.get(signal, {}).get(mode.lower(), 0) if isinstance(rf_cal.get(signal), dict) else 0
+        rf_cal = rf_cal.get(mode.lower(), 0) or rf_cal.get(signal, {}).get(mode.lower(), 0) if isinstance(rf_cal, dict) else 0
     if isinstance(intercept_raw, dict):
-        intercept_raw = intercept_raw.get(signal, {}).get(mode.lower(), 0) if isinstance(intercept_raw.get(signal), dict) else 0
+        intercept_raw = intercept_raw.get(mode.lower(), 0) or intercept_raw.get(signal, {}).get(mode.lower(), 0) if isinstance(intercept_raw, dict) else 0
     intercept = float(intercept_raw) if intercept_raw else 0
     rf_cal = float(rf_cal) if rf_cal else 0
     r2 = reg.get('r2', calibration.get('r2', 0)) or 0
@@ -1452,19 +1454,12 @@ def generate_calibration_report(calibration=None, output_path=None):
     model_type = reg.get('model', calibration.get('model', 'intercept')) or 'intercept'
     fingerprint = compute_calibration_fingerprint(calibration)
 
-    # Extreure RF per mode des del dict anidat
-    rf_values = calibration.get('rf_mass_cal', {})
-    intercept_values = calibration.get('intercept', {})
-
+    # Extreure RF per mode (suporta v3.0 planer i v2.0 nested)
     def _extract_rf(sig, mod):
-        sig_data = rf_values.get(sig, {})
-        return sig_data.get(mod, 0) if isinstance(sig_data, dict) else 0
+        return _extract_rf_from_cal(calibration, mod, sig) or 0
 
     def _extract_int(sig, mod):
-        if isinstance(intercept_values, (int, float)):
-            return intercept_values
-        sig_data = intercept_values.get(sig, {})
-        return sig_data.get(mod, 0) if isinstance(sig_data, dict) else 0
+        return _extract_intercept_from_cal(calibration, mod, sig) or 0
 
     # Historial KHP per gràfic temporal i QC (seq_path=None → usa REGISTRY global)
     khp_history = load_khp_history(None) or []
@@ -1905,9 +1900,255 @@ def generate_calibration_report(calibration=None, output_path=None):
         pdf.savefig(fig, dpi=150)
         plt.close(fig)
 
+        # =====================================================================
+        # PÀGINES EXTRA: Cromatogrames KHP (si disponibles)
+        # =====================================================================
+        chromatogram_pngs = _find_khp_chromatogram_pngs(calibration, reg)
+        if chromatogram_pngs:
+            plots_per_page = 6  # GridSpec(3, 2)
+            n_chrom_pages = (len(chromatogram_pngs) + plots_per_page - 1) // plots_per_page
+
+            for page_idx in range(n_chrom_pages):
+                fig = plt.figure(figsize=(11.69, 8.27))  # A4 landscape
+                fig.patch.set_facecolor('white')
+
+                start = page_idx * plots_per_page
+                end = min(start + plots_per_page, len(chromatogram_pngs))
+                page_pngs = chromatogram_pngs[start:end]
+
+                fig.text(0.5, 0.97,
+                         f"CROMATOGRAMES KHP — Pàg. {page_idx + 1}/{n_chrom_pages}",
+                         ha='center', va='top', fontsize=12, fontweight='bold',
+                         color='#2C3E50')
+
+                gs = GridSpec(3, 2, figure=fig, left=0.04, right=0.96,
+                              top=0.93, bottom=0.04, hspace=0.3, wspace=0.15)
+
+                for plot_idx, png_path in enumerate(page_pngs):
+                    row = plot_idx // 2
+                    col_idx = plot_idx % 2
+                    ax_chr = fig.add_subplot(gs[row, col_idx])
+                    try:
+                        img = plt.imread(png_path)
+                        ax_chr.imshow(img)
+                        ax_chr.axis('off')
+                        # Subtítol del fitxer
+                        fname = os.path.basename(png_path).replace('.png', '')
+                        ax_chr.set_title(fname, fontsize=7, pad=2)
+                    except Exception as e_img:
+                        ax_chr.text(0.5, 0.5, f"Error: {e_img}", ha='center',
+                                   va='center', fontsize=8, color='#E74C3C')
+                        ax_chr.axis('off')
+
+                # Amagar subplots buits
+                for plot_idx in range(len(page_pngs), plots_per_page):
+                    row = plot_idx // 2
+                    col_idx = plot_idx % 2
+                    ax_empty = fig.add_subplot(gs[row, col_idx])
+                    ax_empty.axis('off')
+
+                pdf.savefig(fig, dpi=120)
+                plt.close(fig)
+
     import logging
     logging.getLogger(__name__).info(f"Informe calibració generat: {pdf_path}")
     return pdf_path
+
+
+def _find_khp_chromatogram_pngs(calibration, reg):
+    """Busca PNGs de cromatogrames KHP associats a la calibració."""
+    import glob as _glob
+
+    # 1. Buscar a regression_data.chromatogram_plots_dir
+    plots_dir = reg.get('chromatogram_plots_dir')
+    if plots_dir and os.path.isdir(plots_dir):
+        pngs = sorted(_glob.glob(os.path.join(plots_dir, "khp_*.png")))
+        if pngs:
+            return pngs
+
+    # 2. Buscar a source.seq_references (escanejar CHECK/data/khp_plots/)
+    seq_refs = calibration.get('source', {}).get('seq_references', [])
+    if seq_refs:
+        from hpsec_config import get_config
+        try:
+            config = get_config()
+            data_folder = config.get('general', 'data_folder', default='')
+        except Exception:
+            data_folder = ''
+
+        if data_folder:
+            for seq_name in seq_refs:
+                seq_dir = os.path.join(data_folder, seq_name)
+                chrom_dir = os.path.join(seq_dir, "CHECK", "data", "khp_plots")
+                if os.path.isdir(chrom_dir):
+                    pngs = sorted(_glob.glob(os.path.join(chrom_dir, "khp_*.png")))
+                    if pngs:
+                        return pngs
+
+    return []
+
+
+# =============================================================================
+# KHP CHROMATOGRAM PLOTS — PNG per rèplica
+# =============================================================================
+
+def save_khp_chromatogram_plot(rep_data, seq_name, conc_ppm, replica_num,
+                               signal_name, mode, output_dir):
+    """
+    Guarda un cromatograma KHP com a PNG (backend Agg, sense GUI).
+
+    Args:
+        rep_data: dict amb t_doc, y_doc, baseline, peak_info, t_dad, y_dad_254
+        seq_name: Nom de la seqüència
+        conc_ppm: Concentració del KHP
+        replica_num: Número de rèplica (1, 2, ...)
+        signal_name: 'direct' o 'uib'
+        mode: 'COLUMN' o 'BP'
+        output_dir: Carpeta de sortida
+
+    Returns:
+        str: path del PNG generat, o None si error
+    """
+    import logging
+    _log = logging.getLogger(__name__)
+
+    t_doc = rep_data.get('t_doc') or rep_data.get('t')
+    y_doc = rep_data.get('y_doc') or rep_data.get('y')
+    if t_doc is None or y_doc is None:
+        return None
+
+    t_doc = np.asarray(t_doc)
+    y_doc = np.asarray(y_doc)
+    if len(t_doc) < 5:
+        return None
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    fname = f"khp_{conc_ppm:g}ppm_R{replica_num}_{signal_name}.png"
+    png_path = os.path.join(output_dir, fname)
+
+    try:
+        import matplotlib
+        matplotlib.use('Agg')
+        fig, ax = plt.subplots(figsize=(5, 3), dpi=120)
+        fig.set_facecolor('white')
+
+        # DOC signal
+        ax.plot(t_doc, y_doc, color='#2196F3', linewidth=1.0,
+                label=f'{signal_name.upper()} DOC')
+
+        # Repaired signal
+        y_repaired = rep_data.get('y_doc_repaired')
+        if y_repaired is not None:
+            y_repaired = np.asarray(y_repaired)
+            ax.plot(t_doc, y_repaired, color='#E74C3C', linewidth=0.8,
+                    linestyle='--', label='Reparat', alpha=0.7)
+
+        # Baseline
+        baseline = rep_data.get('baseline')
+        if baseline is not None:
+            if isinstance(baseline, (int, float)):
+                ax.axhline(baseline, color='gray', linewidth=0.5, linestyle=':', alpha=0.5)
+            else:
+                baseline = np.asarray(baseline)
+                if len(baseline) == len(t_doc):
+                    ax.plot(t_doc, baseline, color='gray', linewidth=0.5,
+                            linestyle=':', alpha=0.5, label='Baseline')
+
+        # Integration limits + shaded area
+        peak_info = rep_data.get('peak_info', {})
+        t_start = peak_info.get('t_start')
+        t_end = peak_info.get('t_end')
+        if t_start is not None and t_end is not None:
+            mask = (t_doc >= t_start) & (t_doc <= t_end)
+            if np.any(mask):
+                y_fill = y_repaired[mask] if y_repaired is not None else y_doc[mask]
+                ax.fill_between(t_doc[mask], 0, y_fill, color='#2196F3', alpha=0.15)
+            ax.axvline(t_start, color='gray', linewidth=0.5, linestyle=':', alpha=0.6)
+            ax.axvline(t_end, color='gray', linewidth=0.5, linestyle=':', alpha=0.6)
+
+        # Area annotation
+        area = rep_data.get('area', 0)
+        if area > 0:
+            ax.annotate(f"A={area:.1f}", xy=(0.98, 0.92), xycoords='axes fraction',
+                        ha='right', fontsize=8, color='#2C3E50',
+                        bbox=dict(boxstyle='round,pad=0.3', facecolor='#EBF5FB', alpha=0.8))
+
+        # 254nm secondary axis
+        t_dad = rep_data.get('t_dad')
+        y_254 = rep_data.get('y_dad_254')
+        if t_dad is not None and y_254 is not None:
+            t_dad = np.asarray(t_dad)
+            y_254 = np.asarray(y_254)
+            ax2 = ax.twinx()
+            ax2.plot(t_dad, y_254, color='#9B59B6', linewidth=0.6, alpha=0.5, label='254nm')
+            ax2.set_ylabel('254nm', color='#9B59B6', fontsize=7)
+            ax2.tick_params(axis='y', labelcolor='#9B59B6', labelsize=6)
+
+        ax.set_title(f"{seq_name} — {conc_ppm:g} ppm R{replica_num} ({signal_name.upper()}, {mode})",
+                     fontsize=8, fontweight='bold')
+        ax.set_xlabel('Temps (min)', fontsize=7)
+        ax.set_ylabel('Senyal DOC', fontsize=7)
+        ax.tick_params(labelsize=6)
+        ax.legend(fontsize=6, loc='upper left')
+
+        fig.tight_layout()
+        fig.savefig(png_path, dpi=120, bbox_inches='tight')
+        plt.close(fig)
+
+        return png_path
+
+    except Exception as e:
+        _log.warning(f"Error guardant cromatograma KHP: {e}")
+        plt.close('all')
+        return None
+
+
+def save_all_khp_chromatograms(calibration_result, seq_path):
+    """
+    Guarda cromatogrames PNG per totes les rèpliques KHP d'un resultat de calibració.
+
+    Args:
+        calibration_result: dict retornat per calibrate_from_import()
+        seq_path: Path de la seqüència
+
+    Returns:
+        list[str]: paths dels PNGs generats
+    """
+    import logging
+    _log = logging.getLogger(__name__)
+
+    output_dir = os.path.join(seq_path, "CHECK", "data", "khp_plots")
+    seq_name = os.path.basename(seq_path)
+    method = calibration_result.get('method', 'COLUMN')
+    saved_paths = []
+
+    # Iterar sobre entrades de calibració (directe i UIB)
+    for signal_key in ['calibrations_direct', 'calibrations_uib']:
+        signal_name = 'direct' if 'direct' in signal_key else 'uib'
+        entries = calibration_result.get(signal_key, [])
+
+        for entry in entries:
+            conc = entry.get('conc_ppm', 0)
+            replicas = entry.get('replicas', [])
+
+            for r_idx, rep in enumerate(replicas):
+                path = save_khp_chromatogram_plot(
+                    rep_data=rep,
+                    seq_name=seq_name,
+                    conc_ppm=conc,
+                    replica_num=r_idx + 1,
+                    signal_name=signal_name,
+                    mode=method,
+                    output_dir=output_dir,
+                )
+                if path:
+                    saved_paths.append(path)
+
+    if saved_paths:
+        _log.info(f"Guardats {len(saved_paths)} cromatogrames KHP a {output_dir}")
+
+    return saved_paths
 
 
 # =============================================================================

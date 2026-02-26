@@ -1232,8 +1232,8 @@ class HistoryPanel(QWidget):
 
             # Obtenir RF i intercept per aquest mode/senyal
             if active_cal:
-                rf_cur = get_rf_mass_cal(active_cal, signal='direct', mode=mode.lower())
-                int_cur = get_calibration_intercept(active_cal, signal='direct', mode=mode.lower())
+                rf_cur = get_rf_mass_cal(signal='direct', mode=mode.lower())
+                int_cur = get_calibration_intercept(signal='direct', mode=mode.lower())
             else:
                 rf_cur = None
                 int_cur = 0

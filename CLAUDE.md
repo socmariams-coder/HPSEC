@@ -24,12 +24,15 @@ pip install -r requirements.txt
 - **gui/** — PyQt6 GUI panels (consolidate, calibrate, process/analyze, dashboard)
 - **Calibration_Reference.json** — active calibration data (rf_mass_cal, intercept, thresholds)
 
-## Calibration model
+## Calibration model (v3.0)
 
-- `rf_mass_cal`: per signal/mode dict `{"direct": {"column": X, "bp": Y}, "uib": {...}}`
-- `intercept`: same nested structure, or scalar 0 for backwards compat
+- **Calibracions independents per senyal/sensibilitat**: cada entrada a `calibrations[]` cobreix UN sol àmbit (`signal_scope` = 'direct'/'uib', `uib_sensitivity` = 700/1000/null)
+- `rf_mass_cal`: dict planer `{"column": X, "bp": Y}` (el senyal ja va definit per `signal_scope`)
+- `intercept`: idem planer `{"column": X, "bp": Y}`
+- `active_calibration_ids`: dict `{"direct": "CAL_...", "uib": "CAL_...", "uib_700": "CAL_..."}` — una activa per àmbit
 - Formula: `ppm = (Area - intercept) * 1000 / (rf_mass_cal * volume_uL)`
 - When intercept=0 (origin model): simplifies to `ppm = Area * 1000 / (rf_mass_cal * volume)`
+- **Migració automàtica**: `load_calibration_reference()` auto-migra v2.0 (nested) a v3.0 (planer) al primer accés
 
 ## Feature status
 
@@ -74,6 +77,11 @@ Mark features as DONE only when code is fully functional end-to-end, not when pl
 - [x] Wizard SEQ_CAL: validació ppm_obs vs ppm_teòric al pas 3 (AnalyzePanel) — DONE
 - [x] Wizard SEQ_CAL: resum regressió al pas 4 (ReviewSummaryPanel) — DONE
 - [x] GlobalCalibrationPanel: convertit a consulta-only (sense aplicar/requantificar) — DONE
+- [x] Calibration: v3.0 independent per signal_scope/uib_sensitivity — DONE (migració automàtica v2→v3)
+- [x] Calibration: UIB intercept independent a quantify_sample — DONE
+- [x] GlobalCalibrationPanel: vista resum sense SEQ_CAL (taula params, scatter, historial) — DONE
+- [x] Export: KHP chromatogram PNGs a CHECK/data/khp_plots/ — DONE (save_all_khp_chromatograms)
+- [x] Export: PDF calibration report amb pàgines cromatogrames KHP — DONE
 - [x] Wizard: Rename step 2 "Calibrar" → "Verificar" (TAB_NAMES + tab_names) — DONE
 - [x] Wizard: Delay diagnostic tool at step 2 (shift indicator, slider, impact preview, reimport) — DONE
 - [x] Wizard: Apply calibration at step 4 (Revisar) + retroactive requantification + SEQ list — DONE
@@ -204,7 +212,60 @@ All exploratory scripts and results live in `research/` — NOT part of the prod
 
 ## Working notes
 
-> Last updated: 2026-02-24
+> Last updated: 2026-02-26
+
+### Calibracions independents per senyal/sensibilitat — v3.0 (2026-02-26)
+
+**Problema**: El sistema de calibració tractava Direct i UIB dins d'una sola entrada,
+sense distingir sensibilitat UIB (700/1000 ppb). Dades UIB a sensibilitat 700 NO es
+poden barrejar amb dades a 1000 per calibrar.
+
+**Solució implementada — Calibration_Reference.json v3.0:**
+
+1. **Estructura nova**: cada entrada a `calibrations[]` cobreix UN sol àmbit (`signal_scope`
+   + `uib_sensitivity`). `rf_mass_cal` i `intercept` planers: `{"column": X, "bp": Y}`
+   (el senyal ja va definit per `signal_scope`).
+
+2. **`active_calibration_ids`**: dict `{"direct": "CAL_...", "uib": "CAL_...", "uib_700": "..."}`
+   — una calibració activa per àmbit. Substitueix l'antic `active_calibration_id` únic.
+
+3. **Migració automàtica v2→v3**: `load_calibration_reference()` detecta v2.0, divideix cada
+   entrada antiga en DIRECT + UIB, genera `active_calibration_ids`, guarda i re-llegeix.
+   4 entrades antigues → 8 noves. Verificat: RF Direct/COLUMN=752.9, RF UIB/COLUMN=628.
+
+4. **Getters actualitzats**: `get_active_global_calibration(signal, sensitivity)`,
+   `get_calibration_for_date(date, signal, sensitivity)`, `get_rf_mass_cal(..., sensitivity)`,
+   `get_calibration_intercept(..., sensitivity)`. Helpers `_extract_rf_from_cal()` i
+   `_extract_intercept_from_cal()` suporten format planer i nested.
+
+5. **`add_calibration()`**: nous params `signal_scope`, `uib_sensitivity`. Tanca NOMÉS
+   calibracions del MATEIX àmbit. ID amb suffix: `CAL_20260226_143000_DIRECT`.
+
+6. **`compute_calibration_fingerprint()`**: si `calibration=None`, hasheja TOTS els
+   `active_calibration_ids` (no un sol).
+
+7. **`quantify_sample()` a hpsec_analyze.py**: intercept UIB independent (`intercept_uib`)
+   en lloc de reutilitzar l'intercept Direct. `uib_sensitivity` llegit de `sample_result`.
+
+8. **GlobalCalibrationPanel**: vista resum (showEvent) amb taula paràmetres actius,
+   scatter regressió amb banda predicció 95%, taula historial calibracions, botó PDF.
+   Visible quan no hi ha SEQ_CAL carregada (substitueix "Selecciona una SEQ_CAL").
+
+9. **Cromatogrames KHP PNG**: `save_khp_chromatogram_plot()` i `save_all_khp_chromatograms()`
+   a `hpsec_reports.py`. Hook a `calibrate_from_import()` guarda PNGs a
+   `SEQ/CHECK/data/khp_plots/`. DOC + baseline + límits integració + àrea ombrejada + 254nm.
+
+10. **PDF calibració amb cromatogrames**: pàgines extra (A4 landscape, GridSpec 3x2)
+    amb PNGs dels cromatogrames. `_find_khp_chromatogram_pngs()` busca a
+    `regression_data.chromatogram_plots_dir` o `source.seq_references`.
+
+**Fitxers modificats**: hpsec_calibrate.py, hpsec_analyze.py, hpsec_reports.py,
+gui/widgets/global_calibration_panel.py, gui/widgets/seq_cal_regression_widget.py,
+gui/widgets/history_panel.py
+
+**Call sites fixats** (passaven dict com a primer arg posicional):
+- `global_calibration_panel.py` L2237-2240: `get_rf_mass_cal(new_cal, signal=...)` → `get_rf_mass_cal(signal=...)`
+- `history_panel.py` L1235-1236: idem
 
 ### Unificació sistema d'avisos (2026-02-24)
 

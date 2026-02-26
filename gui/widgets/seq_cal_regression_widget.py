@@ -420,8 +420,9 @@ class SeqCalRegressionWidget(QWidget):
             if conc <= 0 or vol <= 0 or area <= 0:
                 continue
 
-            # Saturació UIB: ja calculada pel backend (detect_peak_clipping)
+            # Saturació UIB: només aplica quan el senyal és UIB
             uib_saturated = cal.get('uib_saturated', False)
+            sat_invalidates = uib_saturated and signal_name == 'uib'
 
             entry = {
                 'seq_name': seq_name,
@@ -430,7 +431,7 @@ class SeqCalRegressionWidget(QWidget):
                 'volume_uL': vol,
                 'area': area,
                 'is_outlier': False,
-                'valid_for_calibration': not uib_saturated,
+                'valid_for_calibration': not sat_invalidates,
                 'condition_key': cal.get('condition_key', f"KHP{conc:g}@{vol}µL"),
                 'rf_mass': cal.get('rf_mass', 0),
                 'quality_score': cal.get('quality_score', 0),
@@ -866,27 +867,19 @@ class SeqCalRegressionWidget(QWidget):
 
     def _update_comparison(self, new_rf, new_intercept, new_r2):
         """Mostra comparació amb calibració vigent."""
-        from hpsec_calibrate import get_active_global_calibration
+        from hpsec_calibrate import (
+            get_active_global_calibration, get_rf_mass_cal, get_calibration_intercept
+        )
         from gui.widgets.analyze_panel._helpers import format_calibration_comparison_html
 
-        current_cal = get_active_global_calibration()
+        signal = self._signal
+        current_cal = get_active_global_calibration(signal=signal)
         if not current_cal:
             self._comparison_label.setText("<i>No hi ha calibració vigent per comparar</i>")
             return
 
-        signal = self._signal
-        rf_cal = current_cal.get('rf_mass_cal', {})
-        intercept_cal = current_cal.get('intercept', 0)
-
-        if isinstance(rf_cal, dict):
-            current_rf = rf_cal.get(signal, {}).get(self._method.lower(), 0)
-        else:
-            current_rf = float(rf_cal) if rf_cal else 0
-
-        if isinstance(intercept_cal, dict):
-            current_intercept = intercept_cal.get(signal, {}).get(self._method.lower(), 0)
-        else:
-            current_intercept = float(intercept_cal) if intercept_cal else 0
+        current_rf = get_rf_mass_cal(signal=signal, mode=self._method.lower()) or 0
+        current_intercept = get_calibration_intercept(signal=signal, mode=self._method.lower()) or 0
 
         current_r2 = current_cal.get('r2', {})
         if isinstance(current_r2, dict):

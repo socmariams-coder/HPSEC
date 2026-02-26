@@ -1438,17 +1438,21 @@ def quantify_sample(sample_result, calibration_data, mode="COLUMN", seq_date=Non
     # =========================================================================
     mode_key = mode.lower()  # 'column' o 'bp'
 
-    # Intentar usar calibració global
+    # Intentar usar calibració global — calibracions independents per senyal
+    uib_sensitivity = sample_result.get('uib_sensitivity')
     rf_mass_direct = get_rf_mass_cal(signal='direct', mode=mode_key, seq_date=seq_date)
-    rf_mass_uib = get_rf_mass_cal(signal='uib', mode=mode_key, seq_date=seq_date)
+    rf_mass_uib = get_rf_mass_cal(signal='uib', mode=mode_key, seq_date=seq_date,
+                                   sensitivity=uib_sensitivity)
 
     # Obtenir intercept per signal/mode (0 si origin, ex: BP)
-    intercept = get_calibration_intercept(signal='direct', mode=mode_key, seq_date=seq_date)
+    intercept_direct = get_calibration_intercept(signal='direct', mode=mode_key, seq_date=seq_date)
+    intercept_uib = get_calibration_intercept(signal='uib', mode=mode_key, seq_date=seq_date,
+                                               sensitivity=uib_sensitivity)
 
     use_global = rf_mass_direct is not None and rf_mass_direct > 0
 
     # Fórmula única: ppm = (Area - intercept) × 1000 / (rf_mass × volume)
-    def apply_formula(area, rf_mass):
+    def apply_formula(area, rf_mass, intercept=intercept_direct):
         area_corrected = max(0, area - intercept)
         return area_corrected * 1000 / (rf_mass * volume_uL)
 
@@ -1507,8 +1511,8 @@ def quantify_sample(sample_result, calibration_data, mode="COLUMN", seq_date=Non
 
     if area_total_uib > 0:
         if rf_mass_uib and rf_mass_uib > 0:
-            # Usar fórmula global amb model (origin/intercept)
-            ppm_uib = apply_formula(area_total_uib, rf_mass_uib)
+            # Usar fórmula global amb intercept UIB independent
+            ppm_uib = apply_formula(area_total_uib, rf_mass_uib, intercept=intercept_uib)
             result["concentration_ppm_uib"] = float(ppm_uib)
 
             # Concentracions UIB per fracció (només COLUMN)
@@ -1516,7 +1520,8 @@ def quantify_sample(sample_result, calibration_data, mode="COLUMN", seq_date=Non
                 for frac in ["BioP", "HS", "BB", "SB", "LMW"]:
                     area_frac = areas_uib.get(frac, 0)
                     if area_frac > 0:
-                        result["fractions_uib"][frac] = float(apply_formula(area_frac, rf_mass_uib))
+                        result["fractions_uib"][frac] = float(apply_formula(area_frac, rf_mass_uib,
+                                                                             intercept=intercept_uib))
                     else:
                         result["fractions_uib"][frac] = 0.0
         else:

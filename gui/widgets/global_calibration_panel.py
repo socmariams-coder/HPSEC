@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QGroupBox,
     QGridLayout, QTableWidget, QTableWidgetItem, QHeaderView,
     QComboBox, QMessageBox, QCheckBox, QRadioButton, QButtonGroup,
-    QFrame, QProgressBar, QDateEdit, QScrollArea, QDialog, QSpinBox
+    QFrame, QProgressBar, QLineEdit, QScrollArea, QDialog, QSpinBox
 )
 from PySide6.QtCore import Qt, Signal, QThread, QDate
 from PySide6.QtGui import QFont, QColor, QBrush
@@ -226,6 +226,14 @@ class GlobalCalibrationPanel(QWidget):
 
         # Worker (un sol actiu)
         self._cal_worker = None
+        self._summary_shown = False
+
+    def showEvent(self, event):
+        """Mostra summary si no hi ha SEQ_CAL carregada."""
+        super().showEvent(event)
+        if self._active_seq_path is None and not self._summary_shown:
+            self.cal_view.show_summary()
+            self._summary_shown = True
 
     def load_seq_cal(self, seq_path):
         """Carrega una SEQ_CAL des del Dashboard."""
@@ -411,6 +419,9 @@ class CalibrationLineView(QWidget):
         self._message_label.setWordWrap(True)
         self._main_layout.addWidget(self._message_label)
 
+        # Secció resum (sense SEQ_CAL carregada)
+        self._build_summary_section()
+
         # Secció regressió (inicialment oculta)
         self._build_regression_section()
 
@@ -418,6 +429,272 @@ class CalibrationLineView(QWidget):
         self._build_apply_section()
 
         self._main_layout.addStretch()
+
+    # ------------------------------------------------------------------
+    # Summary section (sense SEQ_CAL carregada)
+    # ------------------------------------------------------------------
+
+    def _build_summary_section(self):
+        """Secció resum calibracions vigents (visible quan no hi ha SEQ_CAL carregada)."""
+        self._summary_group = QGroupBox()
+        self._summary_group.setStyleSheet("""
+            QGroupBox {
+                border: 1px solid #bdc3c7; border-radius: 6px;
+                margin-top: 0px; padding: 12px;
+                background-color: #FAFAFA;
+            }
+        """)
+        self._summary_group.setVisible(False)
+        layout = QVBoxLayout(self._summary_group)
+        layout.setSpacing(10)
+
+        # Header
+        header = QLabel(
+            "<div style='font-size:14px; font-weight:bold; color:#2C3E50; "
+            "background-color:#D6EAF8; padding:8px 12px; border-radius:4px;'>"
+            "Calibracions Vigents</div>"
+        )
+        header.setWordWrap(True)
+        layout.addWidget(header)
+
+        # Taula paràmetres actius
+        self._summary_params_table = QTableWidget()
+        self._summary_params_table.setColumnCount(7)
+        self._summary_params_table.setHorizontalHeaderLabels([
+            "Ambit", "Mode", "RF", "Intercept", "R2", "Font", "Equacio"
+        ])
+        self._summary_params_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self._summary_params_table.verticalHeader().setVisible(False)
+        self._summary_params_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self._summary_params_table.setAlternatingRowColors(True)
+        self._summary_params_table.setMaximumHeight(180)
+        layout.addWidget(self._summary_params_table)
+
+        # Scatter regressió (si disponible)
+        self._summary_figure = Figure(figsize=(7, 3), dpi=100)
+        self._summary_canvas = FigureCanvas(self._summary_figure)
+        self._summary_canvas.setMinimumHeight(220)
+        self._summary_canvas.setVisible(False)
+        layout.addWidget(self._summary_canvas)
+
+        # Taula historial calibracions
+        hist_label = QLabel(
+            "<div style='font-size:12px; font-weight:bold; color:#2C3E50; "
+            "margin-top:8px;'>Historial de Calibracions</div>"
+        )
+        layout.addWidget(hist_label)
+
+        self._summary_history_table = QTableWidget()
+        self._summary_history_table.setColumnCount(7)
+        self._summary_history_table.setHorizontalHeaderLabels([
+            "ID", "Ambit", "Sensibilitat", "Data inici", "RF (col)", "RF (bp)", "Activa?"
+        ])
+        self._summary_history_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self._summary_history_table.verticalHeader().setVisible(False)
+        self._summary_history_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self._summary_history_table.setAlternatingRowColors(True)
+        self._summary_history_table.setMaximumHeight(250)
+        layout.addWidget(self._summary_history_table)
+
+        # Botó PDF (centrat)
+        pdf_row = QHBoxLayout()
+        pdf_row.addStretch()
+        self._summary_pdf_btn = QPushButton("Generar Informe PDF")
+        self._summary_pdf_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #2980B9; color: white;
+                border: none; border-radius: 6px;
+                padding: 8px 20px; font-size: 11px; font-weight: bold;
+            }
+            QPushButton:hover { background-color: #3498DB; }
+        """)
+        self._summary_pdf_btn.clicked.connect(self._on_summary_pdf)
+        pdf_row.addWidget(self._summary_pdf_btn)
+        pdf_row.addStretch()
+        layout.addLayout(pdf_row)
+
+        self._main_layout.addWidget(self._summary_group)
+
+    def show_summary(self):
+        """Mostra el resum de calibracions vigents (sense SEQ_CAL carregada)."""
+        from hpsec_calibrate import (
+            load_calibration_reference, _extract_rf_from_cal, _extract_intercept_from_cal
+        )
+
+        ref = load_calibration_reference()
+        if not ref:
+            return
+
+        calibrations = ref.get('calibrations', [])
+        active_ids = ref.get('active_calibration_ids', {})
+
+        # -- Taula paràmetres actius --
+        # Recollir calibracions actives
+        active_cals = []
+        for key in ['direct', 'uib', 'uib_700', 'uib_1000']:
+            cal_id = active_ids.get(key)
+            if not cal_id:
+                continue
+            for cal in calibrations:
+                if cal.get('id') == cal_id:
+                    active_cals.append((key, cal))
+                    break
+
+        # Si no hi ha active_calibration_ids, provar active_calibration_id antic
+        if not active_cals:
+            active_id = ref.get('active_calibration_id')
+            if active_id:
+                for cal in calibrations:
+                    if cal.get('id') == active_id:
+                        scope = cal.get('signal_scope', 'direct')
+                        active_cals.append((scope, cal))
+                        break
+
+        # Filas: per cada cal activa x cada mode (column, bp)
+        rows = []
+        for key, cal in active_cals:
+            scope = cal.get('signal_scope', key)
+            sens = cal.get('uib_sensitivity')
+            ambit = scope.upper()
+            if sens:
+                ambit = f"UIB {int(sens)}"
+
+            for mode in ['column', 'bp']:
+                rf = _extract_rf_from_cal(cal, mode, scope)
+                intercept = _extract_intercept_from_cal(cal, mode, scope)
+                if rf is None or rf == 0:
+                    continue
+                r2 = cal.get('r2', 0)
+                if isinstance(r2, dict):
+                    r2 = r2.get(mode, 0) or 0
+                r2 = float(r2) if r2 else 0
+                source = cal.get('source', {}).get('description', '')[:40]
+                eq = f"Area = {rf:.1f} x ug"
+                if intercept:
+                    eq += f" + {intercept:.1f}"
+                rows.append([ambit, mode.upper(), f"{rf:.1f}", f"{intercept:.1f}",
+                             f"{r2:.4f}", source, eq])
+
+        self._summary_params_table.setRowCount(len(rows))
+        for i, row in enumerate(rows):
+            for j, val in enumerate(row):
+                item = QTableWidgetItem(val)
+                item.setTextAlignment(Qt.AlignCenter)
+                self._summary_params_table.setItem(i, j, item)
+
+        # -- Scatter de la calibració Direct activa (si té regression_data) --
+        scatter_drawn = False
+        for key, cal in active_cals:
+            reg = cal.get('regression_data', {})
+            points = reg.get('points', [])
+            if not points:
+                continue
+            self._draw_summary_scatter(points, reg)
+            scatter_drawn = True
+            break  # Només el primer amb dades
+
+        self._summary_canvas.setVisible(scatter_drawn)
+
+        # -- Taula historial --
+        self._summary_history_table.setRowCount(len(calibrations))
+        for i, cal in enumerate(calibrations):
+            scope = cal.get('signal_scope', '?')
+            sens = cal.get('uib_sensitivity')
+            cal_id = cal.get('id', '?')
+            vfrom = cal.get('valid_from', '?')
+            rf_col = _extract_rf_from_cal(cal, 'column', scope)
+            rf_bp = _extract_rf_from_cal(cal, 'bp', scope)
+            is_active = cal.get('is_active', False)
+
+            values = [
+                cal_id[-15:] if len(cal_id) > 15 else cal_id,  # abreujat
+                scope.upper(),
+                str(int(sens)) if sens else "-",
+                vfrom,
+                f"{rf_col:.1f}" if rf_col else "-",
+                f"{rf_bp:.1f}" if rf_bp else "-",
+                "SI" if is_active else "",
+            ]
+            for j, val in enumerate(values):
+                item = QTableWidgetItem(val)
+                item.setTextAlignment(Qt.AlignCenter)
+                if is_active:
+                    item.setForeground(QBrush(QColor("#27AE60")))
+                    item.setFont(QFont("Segoe UI", 9, QFont.Bold))
+                self._summary_history_table.setItem(i, j, item)
+
+        # Mostrar summary, amagar la resta
+        self._message_label.setVisible(False)
+        self._summary_group.setVisible(True)
+        self.seq_cal_group.setVisible(False)
+        self.seq_cal_apply_group.setVisible(False)
+
+    def _draw_summary_scatter(self, points, reg):
+        """Dibuixa scatter de regressió al summary."""
+        self._summary_figure.clear()
+        ax = self._summary_figure.add_subplot(111)
+
+        inc = [p for p in points if not p.get('excluded')]
+        if not inc:
+            return
+
+        x = [p['ug_doc'] for p in inc]
+        y = [p['area'] for p in inc]
+
+        ax.scatter(x, y, c='#2980B9', s=40, zorder=5, label='Punts cal.')
+
+        # Recta
+        rf = reg.get('rf_mass_cal', 0)
+        intercept = reg.get('intercept', 0)
+        if rf > 0:
+            x_line = np.linspace(0, max(x) * 1.1, 100)
+            y_line = rf * x_line + intercept
+            ax.plot(x_line, y_line, '-', color='#2980B9', linewidth=1.5,
+                    label=f'RF={rf:.1f}, int={intercept:.1f}')
+
+            # Banda predicció 95%
+            try:
+                from gui.widgets.analyze_panel._helpers import compute_prediction_band
+                y_lower, y_upper = compute_prediction_band(
+                    np.array(x), np.array(y), x_line, rf, intercept
+                )
+                ax.fill_between(x_line, y_lower, y_upper, alpha=0.12, color='#2980B9')
+            except Exception:
+                pass
+
+        ax.set_xlabel('ug DOC injectat', fontsize=9)
+        ax.set_ylabel('Area DOC', fontsize=9)
+        ax.set_title(f"Recta vigent ({reg.get('signal', 'direct').upper()} {reg.get('mode', '')})",
+                     fontsize=10, fontweight='bold')
+        ax.legend(fontsize=7, loc='lower right')
+        ax.set_xlim(left=0)
+        ax.grid(True, alpha=0.3)
+        ax.tick_params(labelsize=8)
+        self._summary_figure.tight_layout()
+        self._summary_canvas.draw()
+
+    def _on_summary_pdf(self):
+        """Genera informe PDF des del summary."""
+        try:
+            from hpsec_reports import generate_calibration_report
+            cal = get_active_global_calibration()
+            if not cal:
+                QMessageBox.warning(self, "Avis", "No hi ha calibracio activa.")
+                return
+            pdf_path = generate_calibration_report(cal)
+            if pdf_path and os.path.exists(pdf_path):
+                QMessageBox.information(self, "Informe generat",
+                                        f"Informe de calibracio generat:\n{pdf_path}")
+                try:
+                    os.startfile(pdf_path)
+                except AttributeError:
+                    import subprocess
+                    subprocess.Popen(['xdg-open', pdf_path])
+            else:
+                QMessageBox.warning(self, "Error", "No s'ha pogut generar l'informe.")
+        except Exception as e:
+            logger.error(f"Error generant informe calibracio: {e}")
+            QMessageBox.critical(self, "Error", f"Error generant informe:\n{e}")
 
     # ------------------------------------------------------------------
     # Interface pública (cridada per GlobalCalibrationPanel)
@@ -431,6 +708,7 @@ class CalibrationLineView(QWidget):
             f"⏳ Processant {seq_name}...</span></div>"
         )
         self._message_label.setVisible(True)
+        self._summary_group.setVisible(False)
         self.seq_cal_group.setVisible(False)
         self.seq_cal_apply_group.setVisible(False)
 
@@ -441,6 +719,7 @@ class CalibrationLineView(QWidget):
             f"<span style='font-size:14px; color:#E74C3C;'>❌ {msg}</span></div>"
         )
         self._message_label.setVisible(True)
+        self._summary_group.setVisible(False)
         self.seq_cal_group.setVisible(False)
         self.seq_cal_apply_group.setVisible(False)
 
@@ -454,6 +733,7 @@ class CalibrationLineView(QWidget):
         self._seq_path = seq_path
         self._imported_data = imported_data
         self._message_label.setVisible(False)
+        self._summary_group.setVisible(False)
 
         entries = seq_cal_data.get('entries', [])
         method = seq_cal_data.get('method', 'COLUMN')
@@ -468,10 +748,11 @@ class CalibrationLineView(QWidget):
         self._seq_cal_entries_uib = seq_cal_data.get('entries_uib', [])
         self._seq_cal_method = method
 
-        # Auto-excloure punts amb UIB saturada
+        # Auto-excloure punts amb UIB saturada (només si senyal = uib)
         self._seq_cal_excluded = set()
+        signal_name = seq_cal_data.get('signal', 'direct')
         for i, e in enumerate(entries):
-            if e.get('uib_saturated'):
+            if e.get('uib_saturated') and signal_name == 'uib':
                 self._seq_cal_excluded.add(i)
 
         # Configurar selector senyal Direct/UIB
@@ -709,31 +990,15 @@ class CalibrationLineView(QWidget):
 
         # --- 5. Comparació barres vigent vs nova (DESPRÉS del scatter) ---
         try:
-            self._comparison_figure = Figure(figsize=(7, 1.6), dpi=100)
+            self._comparison_figure = Figure(figsize=(6, 1.5), dpi=100)
             self._comparison_figure.set_facecolor("#FFFFFF")
             self.seq_cal_comparison_canvas = FigureCanvas(self._comparison_figure)
-            self.seq_cal_comparison_canvas.setMinimumHeight(110)
-            self.seq_cal_comparison_canvas.setMaximumHeight(150)
+            self.seq_cal_comparison_canvas.setMinimumHeight(100)
+            self.seq_cal_comparison_canvas.setMaximumHeight(140)
             seq_cal_layout.addWidget(self.seq_cal_comparison_canvas)
             self._has_comparison_mpl = True
         except Exception:
             self._has_comparison_mpl = False
-
-        # --- 6. Botó recalcular ---
-        seq_cal_buttons = QHBoxLayout()
-        seq_cal_buttons.addStretch()
-
-        self.seq_cal_recalc_btn = QPushButton("Recalcular")
-        self.seq_cal_recalc_btn.setToolTip("Recalcular regressió amb els punts seleccionats")
-        self.seq_cal_recalc_btn.clicked.connect(self._on_seq_cal_recalculate)
-        self.seq_cal_recalc_btn.setStyleSheet(
-            "QPushButton { background: #3498DB; color: white; border: none; "
-            "border-radius: 4px; padding: 8px 16px; font-weight: bold; }"
-            "QPushButton:hover { background: #2980B9; }"
-        )
-        seq_cal_buttons.addWidget(self.seq_cal_recalc_btn)
-
-        seq_cal_layout.addLayout(seq_cal_buttons)
 
         self._main_layout.addWidget(self.seq_cal_group)
 
@@ -779,11 +1044,14 @@ class CalibrationLineView(QWidget):
         # --- Vigent des de (data) ---
         date_row = QHBoxLayout()
         date_row.addWidget(QLabel("Vigent des de:"))
-        self._cal_valid_from = QDateEdit()
-        self._cal_valid_from.setCalendarPopup(True)
-        self._cal_valid_from.setDate(QDate.currentDate())
-        self._cal_valid_from.setDisplayFormat("yyyy-MM-dd")
-        self._cal_valid_from.setMinimumWidth(140)
+        self._cal_valid_from = QLineEdit()
+        self._cal_valid_from.setPlaceholderText("AAAA-MM-DD")
+        self._cal_valid_from.setText(QDate.currentDate().toString("yyyy-MM-dd"))
+        self._cal_valid_from.setMaximumWidth(120)
+        self._cal_valid_from.setStyleSheet(
+            "border: 1px solid #ccc; border-radius: 3px; padding: 4px 6px;"
+        )
+        self._cal_valid_from.editingFinished.connect(self._refresh_retro_list)
         date_row.addWidget(self._cal_valid_from)
         date_row.addStretch()
         layout.addLayout(date_row)
@@ -1128,7 +1396,7 @@ class CalibrationLineView(QWidget):
             # Col 11: Anomalies (icones compactes)
             issues = entry.get('quality_issues', [])
             anomaly_parts = []
-            if entry.get('uib_saturated'):
+            if entry.get('uib_saturated') and self._seq_cal_signal == 'uib':
                 anomaly_parts.append("\u26d4 SAT")
             if entry.get('irregular_top_repaired'):
                 anomaly_parts.append("\u2705 rep")
@@ -1616,7 +1884,7 @@ class CalibrationLineView(QWidget):
 
         self._seq_cal_excluded = set()
         for i, e in enumerate(self._seq_cal_entries):
-            if e.get('uib_saturated'):
+            if e.get('uib_saturated') and signal == 'uib':
                 self._seq_cal_excluded.add(i)
 
         self._check_uib_sensitivity_mixing()
@@ -1647,7 +1915,10 @@ class CalibrationLineView(QWidget):
         new_n = reg_result.get('n_points', 0)
         new_rms = reg_result.get('residuals_rms', 0)
 
-        current_cal = get_active_global_calibration()
+        from hpsec_calibrate import get_rf_mass_cal, get_calibration_intercept
+
+        signal = self._seq_cal_signal
+        current_cal = get_active_global_calibration(signal=signal)
 
         # Extreure dades vigent
         current_rf = 0
@@ -1659,19 +1930,8 @@ class CalibrationLineView(QWidget):
 
         if current_cal:
             has_vigent = True
-            signal = self._seq_cal_signal
-            rf_cal = current_cal.get('rf_mass_cal', {})
-            intercept_cal = current_cal.get('intercept', 0)
-
-            if isinstance(rf_cal, dict):
-                current_rf = rf_cal.get(signal, {}).get(method.lower(), 0)
-            else:
-                current_rf = float(rf_cal) if rf_cal else 0
-
-            if isinstance(intercept_cal, dict):
-                current_intercept = intercept_cal.get(signal, {}).get(method.lower(), 0)
-            else:
-                current_intercept = float(intercept_cal) if intercept_cal else 0
+            current_rf = get_rf_mass_cal(signal=signal, mode=method.lower()) or 0
+            current_intercept = get_calibration_intercept(signal=signal, mode=method.lower()) or 0
 
             current_r2_raw = current_cal.get('r2', {})
             if isinstance(current_r2_raw, dict):
@@ -1690,12 +1950,17 @@ class CalibrationLineView(QWidget):
             self.seq_cal_comparison_canvas.draw()
             return
 
-        # --- 5 barres uniformes: RF | Intercept | R² | n punts | RMS ---
+        # --- Comparació horitzontal: taula visual amb barres inline ---
         self._comparison_figure.clear()
 
-        # Figura centrada (no tot l'ample): 5 subplots amb marges laterals
-        axes = self._comparison_figure.subplots(1, 5)
-        bar_w = 0.25
+        # Obtenir ID font de la calibració vigent
+        vigent_src = ""
+        if current_cal:
+            src = current_cal.get('source', {})
+            refs = src.get('seq_references', [])
+            if refs:
+                vigent_src = ", ".join(refs)
+
         c_vig = '#9E9E9E'
         c_new = '#4A90D9'
 
@@ -1706,97 +1971,64 @@ class CalibrationLineView(QWidget):
                 return '#E67E22'
             return '#E74C3C'
 
-        def _style_ax(ax):
-            ax.spines['top'].set_visible(False)
-            ax.spines['right'].set_visible(False)
-            ax.spines['left'].set_linewidth(0.5)
-            ax.spines['left'].set_color('#ccc')
-            ax.spines['bottom'].set_linewidth(0.5)
-            ax.spines['bottom'].set_color('#ccc')
-            ax.set_xticks([])
-            ax.tick_params(labelsize=7, colors='#666')
-
-        def _bar_label(ax, x, y, text, bold=False):
-            va = 'bottom' if y >= 0 else 'top'
-            fw = 'bold' if bold else 'normal'
-            ax.text(x, y, text, ha='center', va=va, fontsize=8, fontweight=fw)
-
-        # 1. RF — delta %
-        ax = axes[0]
-        ax.bar([-bar_w/2], [current_rf], bar_w, color=c_vig, label='Vigent')
-        ax.bar([bar_w/2], [new_rf], bar_w, color=c_new, label='Nova')
-        _bar_label(ax, -bar_w/2, current_rf, f'{current_rf:.0f}')
-        _bar_label(ax, bar_w/2, new_rf, f'{new_rf:.0f}', bold=True)
-        ax.set_title('RF', fontsize=9, fontweight='bold')
-        if current_rf > 0:
-            d_rf = (new_rf - current_rf) / current_rf * 100
-            ax.set_xlabel(f'\u0394 {d_rf:+.1f}%', fontsize=8,
-                          color=_delta_color(d_rf, 5, 15), fontweight='bold')
-        _style_ax(ax)
-
-        # 2. Intercept — delta absolut
-        ax = axes[1]
-        ax.bar([-bar_w/2], [current_intercept], bar_w, color=c_vig)
-        ax.bar([bar_w/2], [new_intercept], bar_w, color=c_new)
-        _bar_label(ax, -bar_w/2, current_intercept, f'{current_intercept:.1f}')
-        _bar_label(ax, bar_w/2, new_intercept, f'{new_intercept:.1f}', bold=True)
-        ax.set_title('Intercept', fontsize=9, fontweight='bold')
+        # Preparar dades: (label, val_vig, val_new, fmt, delta_fmt, thres_ok, thres_warn, is_pct)
+        rows = []
+        # RF
+        d_rf = ((new_rf - current_rf) / current_rf * 100) if current_rf > 0 else 0
+        rows.append(('RF', current_rf, new_rf, '.0f', f'{d_rf:+.1f}%',
+                      _delta_color(d_rf, 5, 15)))
+        # Intercept
         d_int = new_intercept - current_intercept
-        ax.set_xlabel(f'\u0394 {d_int:+.1f}', fontsize=8,
-                      color=_delta_color(d_int, 10, 30), fontweight='bold')
-        _style_ax(ax)
-
-        # 3. R² — delta absolut (x10000 per visualitzar millor)
-        ax = axes[2]
-        r2_base = 0.9
-        r2_v = max(0, current_r2_val - r2_base) if current_r2_val else 0
-        r2_n = max(0, new_r2 - r2_base)
-        ax.bar([-bar_w/2], [r2_v], bar_w, color=c_vig, bottom=r2_base)
-        ax.bar([bar_w/2], [r2_n], bar_w, color=c_new, bottom=r2_base)
-        ax.set_ylim(r2_base, 1.002)
-        if current_r2_val:
-            _bar_label(ax, -bar_w/2, current_r2_val, f'{current_r2_val:.4f}')
-        _bar_label(ax, bar_w/2, new_r2, f'{new_r2:.4f}', bold=True)
-        ax.set_title('R\u00b2', fontsize=9, fontweight='bold')
-        d_r2 = new_r2 - current_r2_val if current_r2_val else 0
-        if current_r2_val:
-            ax.set_xlabel(f'\u0394 {d_r2:+.4f}', fontsize=8,
-                          color=_delta_color(-abs(d_r2), -0.01, -0.001), fontweight='bold')
-        _style_ax(ax)
-
-        # 4. n punts — delta absolut
-        ax = axes[3]
-        ax.bar([-bar_w/2], [current_n], bar_w, color=c_vig)
-        ax.bar([bar_w/2], [new_n], bar_w, color=c_new)
-        _bar_label(ax, -bar_w/2, current_n, f'{current_n}')
-        _bar_label(ax, bar_w/2, new_n, f'{new_n}', bold=True)
-        ax.set_title('n punts', fontsize=9, fontweight='bold')
-        ax.set_ylim(bottom=0)
+        rows.append(('Intercept', current_intercept, new_intercept, '.1f', f'{d_int:+.1f}',
+                      _delta_color(d_int, 10, 30)))
+        # R²
+        d_r2 = (new_r2 - current_r2_val) if current_r2_val else 0
+        rows.append(('R\u00b2', current_r2_val, new_r2, '.4f', f'{d_r2:+.4f}',
+                      _delta_color(-abs(d_r2), -0.01, -0.001) if current_r2_val else '#666'))
+        # n punts
         d_n = new_n - current_n
-        if current_n:
-            ax.set_xlabel(f'\u0394 {d_n:+d}', fontsize=8,
-                          color='#666', fontweight='bold')
-        _style_ax(ax)
+        rows.append(('n punts', current_n, new_n, '.0f', f'{d_n:+.0f}', '#666'))
+        # RMS
+        d_rms = (new_rms - current_rms) if current_rms > 0 else 0
+        rows.append(('RMS', current_rms, new_rms, '.1f',
+                      f'{d_rms:+.1f}' if current_rms > 0 else '\u2014',
+                      _delta_color(d_rms, 5, 15) if current_rms > 0 else '#666'))
 
-        # 5. RMS — delta absolut
-        ax = axes[4]
-        ax.bar([-bar_w/2], [current_rms], bar_w, color=c_vig)
-        ax.bar([bar_w/2], [new_rms], bar_w, color=c_new)
-        _bar_label(ax, -bar_w/2, current_rms, f'{current_rms:.1f}' if current_rms else '\u2014')
-        _bar_label(ax, bar_w/2, new_rms, f'{new_rms:.1f}', bold=True)
-        ax.set_title('RMS', fontsize=9, fontweight='bold')
-        ax.set_ylim(bottom=0)
-        if current_rms > 0:
-            d_rms = new_rms - current_rms
-            ax.set_xlabel(f'\u0394 {d_rms:+.1f}', fontsize=8,
-                          color=_delta_color(d_rms, 5, 15), fontweight='bold')
-        _style_ax(ax)
+        n = len(rows)
+        ax = self._comparison_figure.add_subplot(111)
+        ax.set_xlim(-0.5, 3.5)
+        ax.set_ylim(-0.5, n - 0.5)
+        ax.invert_yaxis()
+        ax.axis('off')
 
-        # Llegenda una sola vegada
-        axes[0].legend(fontsize=7, loc='upper right', framealpha=0.8)
+        # Capçalera
+        vigent_label = f"Vigent ({vigent_src})" if vigent_src else "Vigent"
+        ax.text(1.0, -0.35, vigent_label, ha='center', va='center',
+                fontsize=6.5, color='#666', fontstyle='italic')
+        ax.text(2.0, -0.35, 'Nova', ha='center', va='center',
+                fontsize=6.5, color=c_new, fontweight='bold')
+        ax.text(3.0, -0.35, '\u0394', ha='center', va='center',
+                fontsize=6.5, color='#666', fontweight='bold')
+
+        for i, (label, v_vig, v_new, fmt, delta_text, delta_clr) in enumerate(rows):
+            y = i
+            # Nom mètrica
+            ax.text(-0.3, y, label, ha='left', va='center', fontsize=7, fontweight='bold')
+            # Valor vigent
+            v_text = f'{v_vig:{fmt}}' if v_vig else '\u2014'
+            ax.text(1.0, y, v_text, ha='center', va='center', fontsize=7, color='#666')
+            # Valor nova
+            ax.text(2.0, y, f'{v_new:{fmt}}', ha='center', va='center',
+                    fontsize=7, fontweight='bold', color='#333')
+            # Delta
+            ax.text(3.0, y, delta_text, ha='center', va='center',
+                    fontsize=7, fontweight='bold', color=delta_clr)
+            # Línia separadora
+            if i < n - 1:
+                ax.axhline(y=y + 0.5, color='#eee', linewidth=0.5, xmin=0.0, xmax=1.0)
 
         try:
-            self._comparison_figure.tight_layout(pad=1.5, rect=[0.05, 0.0, 0.95, 1.0])
+            self._comparison_figure.tight_layout(pad=0.5)
         except Exception:
             pass
         self.seq_cal_comparison_canvas.draw()
@@ -1806,8 +2038,9 @@ class CalibrationLineView(QWidget):
         if not getattr(self, '_has_seq_cal_mpl', False):
             return
         try:
-            points = reg_result.get('points', [])
-            if not points:
+            # Usar cal_entries (totes) per tenir índexs correctes amb _seq_cal_excluded
+            all_entries = self._seq_cal_entries or []
+            if not all_entries:
                 self._seq_cal_figure.clear()
                 self.seq_cal_graph.draw()
                 return
@@ -1818,31 +2051,29 @@ class CalibrationLineView(QWidget):
             ax_res = self._seq_cal_figure.add_subplot(gs[1])
 
             excluded = self._seq_cal_excluded
-            x_all, y_all, x_inc, y_inc, x_exc, y_exc = [], [], [], [], [], []
-            labels = []
-            for i, p in enumerate(points):
-                conc = p.get('conc_ppm', 0)
-                vol = p.get('volume_uL', 0)
+            x_all, y_all = [], []
+            x_inc, y_inc, sd_inc, labels_inc = [], [], [], []
+            x_exc, y_exc = [], []
+            for i, entry in enumerate(all_entries):
+                conc = entry.get('conc_ppm', 0)
+                vol = entry.get('volume_uL', 0)
                 x_val = conc * vol / 1000.0
-                y_val = p.get('area', 0)
+                y_val = entry.get('area', 0)
+                if x_val <= 0 or y_val <= 0:
+                    continue
                 x_all.append(x_val)
                 y_all.append(y_val)
-                labels.append(f"{conc:g} ppm")
                 if i in excluded:
                     x_exc.append(x_val)
                     y_exc.append(y_val)
                 else:
                     x_inc.append(x_val)
                     y_inc.append(y_val)
+                    sd_inc.append(entry.get('std_area', 0))
+                    labels_inc.append(f"{conc:g} ppm")
 
             # Scatter per concentració amb error bars (SD) si hi ha rèpliques
             conc_groups = {}
-            # Build SD list aligned with x_inc/y_inc
-            sd_inc = []
-            for i, p in enumerate(points):
-                if i not in excluded:
-                    sd_inc.append(p.get('std_area', 0))
-            labels_inc = [l for i, l in enumerate(labels) if i not in excluded]
 
             for xi, yi, sdi, lbl in zip(x_inc, y_inc, sd_inc, labels_inc):
                 conc_groups.setdefault(lbl, ([], [], []))
@@ -1902,8 +2133,9 @@ class CalibrationLineView(QWidget):
 
             # Recta vigent (referència)
             from hpsec_calibrate import get_rf_mass_cal, get_calibration_intercept
-            current_rf = get_rf_mass_cal(signal='direct', mode=method.lower()) or 0
-            current_intercept = get_calibration_intercept(signal='direct', mode=method.lower()) or 0
+            cal_signal = getattr(self, '_seq_cal_signal', 'direct') or 'direct'
+            current_rf = get_rf_mass_cal(signal=cal_signal, mode=method.lower()) or 0
+            current_intercept = get_calibration_intercept(signal=cal_signal, mode=method.lower()) or 0
             if current_rf > 0:
                 y_current = current_rf * x_line + current_intercept
                 ax_main.plot(x_line, y_current, '--', color='#E67E22', linewidth=1.5, alpha=0.7,
@@ -1918,15 +2150,21 @@ class CalibrationLineView(QWidget):
             ax_main.grid(True, alpha=0.3)
             ax_main.tick_params(labelsize=8)
 
-            # Residuals
+            # Residuals — usar cal_entries amb excluded (índexs correctes)
             residuals = []
-            for i, p in enumerate(points):
+            res_labels = []
+            for i, entry in enumerate(all_entries):
                 if i in excluded:
                     continue
-                x_val = p.get('conc_ppm', 0) * p.get('volume_uL', 0) / 1000.0
-                y_val = p.get('area', 0)
+                conc = entry.get('conc_ppm', 0)
+                vol = entry.get('volume_uL', 0)
+                x_val = conc * vol / 1000.0
+                y_val = entry.get('area', 0)
+                if x_val <= 0 or y_val <= 0:
+                    continue
                 y_pred = new_rf * x_val + new_intercept
                 residuals.append(y_val - y_pred)
+                res_labels.append(f"{conc:g}")
 
             if residuals:
                 rms = reg_result.get('residuals_rms', 0)
@@ -1938,11 +2176,9 @@ class CalibrationLineView(QWidget):
                     ax_res.axhline(y=rms, color='#E67E22', linewidth=0.5, linestyle='--', alpha=0.5)
                     ax_res.axhline(y=-rms, color='#E67E22', linewidth=0.5, linestyle='--', alpha=0.5)
 
-                inc_pts = [p for j, p in enumerate(points) if j not in excluded]
-                if inc_pts:
-                    ax_res.set_xticks(range(len(inc_pts)))
-                    ax_res.set_xticklabels([f"{p.get('conc_ppm', 0):g}" for p in inc_pts],
-                                           fontsize=6, rotation=45)
+                if res_labels:
+                    ax_res.set_xticks(range(len(res_labels)))
+                    ax_res.set_xticklabels(res_labels, fontsize=6, rotation=45)
                     ax_res.set_xlabel('ppm', fontsize=7)
 
                 ax_res.set_title('Residuals', fontsize=9, fontweight='bold')
@@ -1994,7 +2230,7 @@ class CalibrationLineView(QWidget):
                 try:
                     from datetime import datetime as dt
                     d = dt.strptime(str(seq_date)[:10], '%Y-%m-%d')
-                    self._cal_valid_from.setDate(QDate(d.year, d.month, d.day))
+                    self._cal_valid_from.setText(f"{d.year:04d}-{d.month:02d}-{d.day:02d}")
                 except (ValueError, TypeError):
                     pass
 
@@ -2053,6 +2289,10 @@ class CalibrationLineView(QWidget):
         method = (self._seq_cal_method or "COLUMN").upper()
         seq_from = self._retro_seq_from.value() if by_seq else 0
         current_name = self._seq_name
+        is_bp_cal = 'BP' in method
+
+        # Data de referència per mode "per data"
+        valid_from_str = self._cal_valid_from.text().strip() if hasattr(self._cal_valid_from, 'text') else ""
 
         seq_list = []
         for item in sorted(Path(data_folder).iterdir()):
@@ -2066,6 +2306,11 @@ class CalibrationLineView(QWidget):
             if not json_path.exists():
                 continue
 
+            # Filtrar per mode SEMPRE (BP vs COLUMN)
+            is_bp_seq = '_BP' in item.name.upper()
+            if is_bp_cal != is_bp_seq:
+                continue
+
             # Extreure número de seqüència del nom (dígits inicials)
             seq_num_match = re.match(r'^(\d+)', item.name)
             seq_num = int(seq_num_match.group(1)) if seq_num_match else 0
@@ -2074,11 +2319,17 @@ class CalibrationLineView(QWidget):
                 # Filtrar per número ≥ seq_from
                 if seq_num < seq_from:
                     continue
-                # Filtrar per mode (només COLUMN o BP segons la calibració)
-                is_bp_seq = '_BP' in item.name.upper()
-                is_bp_cal = 'BP' in method
-                if is_bp_cal != is_bp_seq:
-                    continue
+            else:
+                # Filtrar per data d'anàlisi ≥ valid_from
+                if valid_from_str:
+                    try:
+                        with open(json_path, 'r', encoding='utf-8') as f:
+                            meta = json.load(f)
+                        analysis_date = (meta.get('timestamp') or meta.get('date') or '')[:10]
+                        if analysis_date and analysis_date < valid_from_str:
+                            continue
+                    except (json.JSONDecodeError, OSError):
+                        continue
 
             seq_list.append((item.name, str(json_path), seq_num))
 
@@ -2150,12 +2401,14 @@ class CalibrationLineView(QWidget):
             if resp != QMessageBox.Yes:
                 return
 
-        valid_from = self._cal_valid_from.date().toString("yyyy-MM-dd")
+        valid_from = self._cal_valid_from.text().strip() or QDate.currentDate().toString("yyyy-MM-dd")
         retroactive = self._cal_retroactive_chk.isChecked()
+        cal_signal = (self._seq_cal_regression or {}).get('signal', 'direct')
 
         retro_count = sum(1 for cb in self._retro_seq_checkboxes if cb.isChecked()) if retroactive else 0
         msg = (
             f"S'aplicarà la nova calibració:\n\n"
+            f"  Senyal: {cal_signal.upper()}\n"
             f"  Mode: {method}\n"
             f"  RF: {rf_new:.1f}\n"
             f"  Intercept: {intercept_new:.1f}\n"
@@ -2182,39 +2435,42 @@ class CalibrationLineView(QWidget):
                 add_calibration,
                 get_rf_mass_cal, get_calibration_intercept,
                 requantify_analysis_json,
+                invalidate_quantification_json,
             )
 
-            # Construir rf_mass_cal_values preservant l'altra branca
-            current_cal = get_active_global_calibration()
+            cal_signal = (self._seq_cal_regression or {}).get('signal', 'direct')
+            mode_key = "bp" if is_bp else "column"
+
+            # v3.0: rf_mass_cal i intercept planers per àmbit (signal_scope)
+            # Obtenir valors existents de l'altre mode per preservar-los
+            current_cal = get_active_global_calibration(signal=cal_signal)
             if current_cal:
                 rf_values = copy.deepcopy(current_cal.get('rf_mass_cal', {}))
                 intercept_values = current_cal.get('intercept', {})
                 if isinstance(intercept_values, dict):
                     intercept_values = copy.deepcopy(intercept_values)
                 else:
-                    intercept_values = {"direct": {"column": 0, "bp": 0}}
+                    intercept_values = {"column": 0, "bp": 0}
+                # Assegurar format planer (no nested)
+                if cal_signal in rf_values and isinstance(rf_values.get(cal_signal), dict):
+                    rf_values = rf_values[cal_signal]
+                if cal_signal in intercept_values and isinstance(intercept_values.get(cal_signal), dict):
+                    intercept_values = intercept_values[cal_signal]
             else:
-                rf_values = {"direct": {"column": 0, "bp": 0}, "uib": {"column": 0, "bp": 0}}
-                intercept_values = {"direct": {"column": 0, "bp": 0}, "uib": {"column": 0, "bp": 0}}
+                rf_values = {"column": 0, "bp": 0}
+                intercept_values = {"column": 0, "bp": 0}
 
-            cal_signal = (self._seq_cal_regression or {}).get('signal', 'direct')
-            mode_key = "bp" if is_bp else "column"
+            rf_values[mode_key] = rf_new
+            intercept_values[mode_key] = intercept_new
 
-            if isinstance(rf_values, dict) and cal_signal in rf_values:
-                if isinstance(rf_values[cal_signal], dict):
-                    rf_values[cal_signal][mode_key] = rf_new
-                else:
-                    rf_values[cal_signal] = {mode_key: rf_new}
-            else:
-                rf_values[cal_signal] = {mode_key: rf_new}
-
-            if isinstance(intercept_values, dict) and cal_signal in intercept_values:
-                if isinstance(intercept_values[cal_signal], dict):
-                    intercept_values[cal_signal][mode_key] = intercept_new
-                else:
-                    intercept_values[cal_signal] = {mode_key: intercept_new}
-            else:
-                intercept_values[cal_signal] = {mode_key: intercept_new}
+            # Determinar uib_sensitivity per UIB
+            uib_sensitivity = None
+            if cal_signal == 'uib' and hasattr(self, '_seq_cal_entries'):
+                for e in self._seq_cal_entries:
+                    sens = e.get('uib_sensitivity')
+                    if sens:
+                        uib_sensitivity = sens
+                        break
 
             # Source info
             source = {
@@ -2229,6 +2485,12 @@ class CalibrationLineView(QWidget):
             reg_data['signal'] = cal_signal
             reg_data['model'] = reg_data.get('model', 'intercept')
 
+            # Propagar chromatogram_plots_dir si disponible
+            if self._seq_path:
+                chrom_dir = os.path.join(self._seq_path, "CHECK", "data", "khp_plots")
+                if os.path.isdir(chrom_dir):
+                    reg_data['chromatogram_plots_dir'] = chrom_dir
+
             cal_id = add_calibration(
                 rf_mass_cal_values=rf_values,
                 source=source,
@@ -2238,6 +2500,8 @@ class CalibrationLineView(QWidget):
                 reason=f"SEQ_CAL tab5: {self._seq_name}",
                 intercept_values=intercept_values,
                 regression_data=reg_data,
+                signal_scope=cal_signal,
+                uib_sensitivity=uib_sensitivity,
             )
 
             if not cal_id:
@@ -2252,11 +2516,10 @@ class CalibrationLineView(QWidget):
             if retroactive and retro_count > 0:
                 self._cal_apply_status.setText(f"Requantificant {retro_count} SEQs...")
 
-                new_cal = get_active_global_calibration()
-                rf_col = get_rf_mass_cal(new_cal, signal=cal_signal, mode="column")
-                int_col = get_calibration_intercept(new_cal, signal=cal_signal, mode="column")
-                rf_bp = get_rf_mass_cal(new_cal, signal=cal_signal, mode="bp")
-                int_bp = get_calibration_intercept(new_cal, signal=cal_signal, mode="bp")
+                rf_col = get_rf_mass_cal(signal=cal_signal, mode="column")
+                int_col = get_calibration_intercept(signal=cal_signal, mode="column")
+                rf_bp = get_rf_mass_cal(signal=cal_signal, mode="bp")
+                int_bp = get_calibration_intercept(signal=cal_signal, mode="bp")
 
                 for cb in self._retro_seq_checkboxes:
                     if not cb.isChecked():
@@ -2284,6 +2547,44 @@ class CalibrationLineView(QWidget):
                             'error': str(e),
                         })
 
+            # --- Invalidar SEQs no requantificades ---
+            requantified_paths = set()
+            for r in retro_results:
+                if r.get('success'):
+                    # Recuperar path des del checkbox
+                    for cb in self._retro_seq_checkboxes:
+                        if cb.text() == r.get('seq') and cb.isChecked():
+                            requantified_paths.add(cb.property("json_path"))
+
+            n_invalidated = 0
+            from hpsec_config import get_config
+            cfg = get_config()
+            data_folder = cfg.get("paths", "data_folder", default="")
+            if data_folder and Path(data_folder).is_dir():
+                is_bp_cal = "BP" in method
+                for item in Path(data_folder).iterdir():
+                    if not item.is_dir() or '_SEQ' not in item.name.upper():
+                        continue
+                    if '_CAL' in item.name.upper():
+                        continue
+                    if item.name == self._seq_name:
+                        continue
+                    # Filtrar per mode
+                    is_bp_seq = '_BP' in item.name.upper()
+                    if is_bp_cal != is_bp_seq:
+                        continue
+                    jp = item / "CHECK" / "data" / "analysis_result.json"
+                    if not jp.exists():
+                        continue
+                    if str(jp) in requantified_paths:
+                        continue
+                    try:
+                        inv = invalidate_quantification_json(str(jp))
+                        if inv.get('success') and inv.get('samples_invalidated', 0) > 0:
+                            n_invalidated += 1
+                    except Exception:
+                        pass
+
             # --- Actualitzar UI ---
             n_ok = sum(1 for r in retro_results if r.get('success'))
             n_fail = len(retro_results) - n_ok
@@ -2293,6 +2594,8 @@ class CalibrationLineView(QWidget):
                 status_parts.append(f"<br>Requantificades: {n_ok} OK")
                 if n_fail:
                     status_parts.append(f", <span style='color:{COLOR_ERROR}'>{n_fail} errors</span>")
+            if n_invalidated > 0:
+                status_parts.append(f"<br>Invalidades: {n_invalidated} SEQs (cal reprocessar)")
 
             self._cal_apply_status.setText("".join(status_parts))
             self._cal_apply_btn.setEnabled(False)
