@@ -818,26 +818,22 @@ class DashboardPanel(QWidget):
                     item.setToolTip(tooltip)
                     if cal_bg:
                         item.setBackground(cal_bg)
-                elif state == 'incomplete':
-                    item.setText("½")
-                    item.setForeground(QColor(COLOR_ERROR))
-                    n_imp = seq.n_inj_imported
-                    n_mst = seq.n_inj_master
-                    tooltip = (f"{phase_name}: INCOMPLETA\n"
-                               f"{n_imp}/{n_mst} injeccions importades\n"
-                               f"Falten {n_mst - n_imp} injeccions")
-                    item.setToolTip(tooltip)
-                    if cal_bg:
-                        item.setBackground(cal_bg)
                 elif state == 'warning':
                     item.setText("⚠")
                     item.setForeground(QColor(COLOR_WARNING))
+                    tooltip_parts = []
+                    # Import incomplet: indicar quantes injeccions
+                    if phase_name == "Importar" and seq.import_incomplete:
+                        n_imp = seq.n_inj_imported
+                        n_mst = seq.n_inj_master
+                        tooltip_parts.append(f"{n_imp}/{n_mst} injeccions importades")
+                    # Warnings concrets
                     if phase_warnings:
-                        tooltip = f"{phase_name}: Avisos\n" + "\n".join(phase_warnings[:3])
-                        if len(phase_warnings) > 3:
-                            tooltip += f"\n... i {len(phase_warnings)-3} més"
+                        tooltip_parts.extend(phase_warnings[:5])
                     elif phase_name == "Verificar":
-                        tooltip = f"{phase_name}: KHP sibling ({seq.khp_source})"
+                        tooltip_parts.append(f"KHP sibling ({seq.khp_source})")
+                    if tooltip_parts:
+                        tooltip = f"{phase_name}:\n" + "\n".join(tooltip_parts)
                     else:
                         tooltip = f"{phase_name}: Avisos"
                     item.setToolTip(tooltip)

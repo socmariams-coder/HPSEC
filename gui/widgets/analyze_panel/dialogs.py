@@ -480,13 +480,27 @@ class SampleDetailDialog(QDialog):
                 dur_label.setStyleSheet("color: #666; font-size: 11px;")
                 layout.addWidget(dur_label)
 
-        # UIB propagation note
-        note = QLabel(
-            "<i style='color:#888;'>Nota: Timeouts DOC Direct també afecten UIB "
-            "(mateix detector, senyal simultani).</i>"
-        )
-        note.setWordWrap(True)
-        layout.addWidget(note)
+        # UIB timeout info (si disponible)
+        uib_timeout = rep_data.get("timeout_info_uib") or {}
+        uib_n = uib_timeout.get("n_timeouts", 0)
+        if uib_n > 0:
+            uib_zones = uib_timeout.get("zones", [])
+            timeout_in_uib = rep_data.get("timeout_in_peak_uib", False)
+            uib_color = "#E74C3C" if timeout_in_uib else "#F39C12"
+            uib_label = QLabel(
+                f"<span style='color:{uib_color}'><b>UIB afectat: {uib_n} timeout(s)</b></span>"
+                f"{' — dins del pic UIB!' if timeout_in_uib else ''}<br>"
+                f"Zones UIB: {', '.join(uib_zones) if uib_zones else 'N/A'}"
+            )
+            uib_label.setWordWrap(True)
+            layout.addWidget(uib_label)
+        else:
+            note = QLabel(
+                "<i style='color:#888;'>Nota: Timeouts DOC Direct també afecten UIB "
+                "(mateix detector, senyal simultani).</i>"
+            )
+            note.setWordWrap(True)
+            layout.addWidget(note)
 
         return group
 

@@ -1823,7 +1823,7 @@ def analyze_sample(sample_data, calibration_data=None, config=None):
 
     result["peak_info"] = peak_info
 
-    # Check TIMEOUT_IN_PEAK: timeout que afecta el pic principal DOC
+    # Check TIMEOUT_IN_PEAK: timeout que afecta el pic principal DOC Direct
     if timeout_positions and peak_info.get("valid"):
         t_start_peak = peak_info.get("t_start", t_doc[peak_info.get("left_idx", 0)])
         t_end_peak = peak_info.get("t_end", t_doc[peak_info.get("right_idx", len(t_doc) - 1)])
@@ -1838,6 +1838,34 @@ def analyze_sample(sample_data, calibration_data=None, config=None):
         if timeout_in_peak:
             result["anomalies"].append(create_anomaly("TIMEOUT_IN_PEAK", details={"timeout_info": timeout_info}))
             result["timeout_in_peak"] = True
+
+    # Check TIMEOUT_IN_PEAK per UIB: timeout estimat que afecta el pic UIB
+    uib_timeout = result.get("timeout_info_uib")
+    if uib_timeout and uib_timeout.get("n_timeouts", 0) > 0:
+        # Usar peak_uib si ja s'ha calculat, sinó detectar-lo
+        uib_peak_for_timeout = None
+        if is_dual and y_doc_uib_net is not None and len(y_doc_uib_net) > 0:
+            y_uib_sm = apply_smoothing(y_doc_uib_net)
+            uib_peak_for_timeout = detect_main_peak(
+                t_doc, y_uib_sm, config.get("peak_min_prominence_pct", 5.0), is_bp=is_bp)
+
+        if uib_peak_for_timeout and uib_peak_for_timeout.get("valid"):
+            t_start_uib = uib_peak_for_timeout.get("t_start", t_doc[uib_peak_for_timeout.get("left_idx", 0)])
+            t_end_uib = uib_peak_for_timeout.get("t_end", t_doc[uib_peak_for_timeout.get("right_idx", len(t_doc) - 1)])
+            # UIB timeout usa affected_start/affected_end (no gaps sinó zones pertorbades)
+            uib_to_details = uib_timeout.get("timeouts", [])
+            timeout_in_uib_peak = any(
+                (t_start_uib <= to.get("affected_start", to.get("t_start_min", 0)) <= t_end_uib) or
+                (t_start_uib <= to.get("affected_end", to.get("t_end_min", 0)) <= t_end_uib) or
+                (to.get("affected_start", to.get("t_start_min", 0)) <= t_start_uib and
+                 to.get("affected_end", to.get("t_end_min", 0)) >= t_end_uib)
+                for to in uib_to_details
+            )
+            if timeout_in_uib_peak:
+                result["anomalies"].append(create_anomaly("TIMEOUT_IN_PEAK", details={
+                    "timeout_info": uib_timeout, "signal": "uib"
+                }))
+                result["timeout_in_peak_uib"] = True
 
     # Calcular FWHM i simetria del pic principal
     if peak_info.get("valid"):

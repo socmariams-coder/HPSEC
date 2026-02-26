@@ -1109,8 +1109,17 @@ class AnalyzePanel(QWidget):
         if n_timeouts > 0:
             zones = timeout_info.get("zones", [])
             tooltip_parts.append(
-                f"Timeouts: {n_timeouts} ({timeout_severity}) — zones: {', '.join(zones) if zones else '?'}"
+                f"Timeouts Direct: {n_timeouts} ({timeout_severity}) — zones: {', '.join(zones) if zones else '?'}"
             )
+            # UIB timeout propagat
+            uib_ti = doc_rep_data.get("timeout_info_uib") or {}
+            if uib_ti.get("n_timeouts", 0) > 0:
+                uib_zones = uib_ti.get("zones", [])
+                uib_in_peak = doc_rep_data.get("timeout_in_peak_uib", False)
+                uib_tip = f"Timeouts UIB: {uib_ti['n_timeouts']} — zones: {', '.join(uib_zones) if uib_zones else '?'}"
+                if uib_in_peak:
+                    uib_tip += " — DINS DEL PIC UIB!"
+                tooltip_parts.append(uib_tip)
         if replica_warnings:
             for rw in replica_warnings:
                 if isinstance(rw, dict):

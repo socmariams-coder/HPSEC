@@ -3427,10 +3427,11 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
         volume_uL = 100  # Fallback últim recurs per no crashejar
 
     # Qualitat — anomalies estructurades (ANOMALY_CATALOG com a font única)
+    # Només 2 criteris: R² bigaussiana del pic principal i timeout al pic.
     sample_label = f"{name}_R{replica}"
     calibration_anomalies = []
 
-    # UIB saturació (detectat abans de STEP 0, per forma Gaussiana)
+    # UIB saturació (mantenir — invalidant, no és soroll)
     if uib_saturated:
         _sat_details = {"y_max": float(np.max(y_doc_net))}
         if clipping_info:
@@ -3445,61 +3446,6 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
             sample=sample_label,
         ))
 
-    # Guided DOC search (detectat a STEP 1)
-    if _guided_254_details is not None:
-        calibration_anomalies.append(create_anomaly(
-            "KHP_DOC_GUIDED_BY_254",
-            details=_guided_254_details,
-            sample=sample_label,
-        ))
-
-    # DAD 254nm warnings (detectats a STEP 0)
-    if dad_quality_warnings:
-        calibration_anomalies.append(create_anomaly(
-            "KHP_NO_DAD",
-            details={"dad_warnings": dad_quality_warnings},
-            sample=sample_label,
-        ))
-
-    # Check MULTI_PEAK: 3 evidències possibles → UNA sola anomalia
-    multi_peak_evidence = []
-    if concentration_ratio < 0.90 and area_total > 0:
-        multi_peak_evidence.append(f"CR={concentration_ratio:.2f}")
-    if not is_bp_chromato and has_irregular:
-        multi_peak_evidence.append(f"irregular (smooth={smoothness:.1f})")
-    if len(all_peaks) > 3:
-        multi_peak_evidence.append(f"{len(all_peaks)} pics")
-
-    if multi_peak_evidence:
-        calibration_anomalies.append(create_anomaly(
-            "KHP_MULTI_PEAK",
-            details={"evidence": multi_peak_evidence,
-                     "concentration_ratio": concentration_ratio,
-                     "n_peaks": len(all_peaks),
-                     "smoothness": smoothness},
-            sample=sample_label,
-        ))
-
-    # C11: Simetria (irrellevant per BP)
-    if not is_bp_chromato and symmetry < 0.8:
-        calibration_anomalies.append(create_anomaly(
-            "KHP_ASYMMETRY",
-            details={"symmetry": symmetry},
-            sample=sample_label,
-        ))
-
-    if snr < 10:
-        calibration_anomalies.append(create_anomaly(
-            "KHP_SNR_LOW",
-            details={"snr": snr},
-            sample=sample_label,
-        ))
-    if has_irregular_top:
-        calibration_anomalies.append(create_anomaly(
-            "KHP_IRREGULAR_TOP",
-            details={"smoothness": smoothness},
-            sample=sample_label,
-        ))
     # Timeout: només penalitza si afecta l'interval d'integració del pic
     if has_timeout:
         peak_timeout = timeout_affects_peak(timeout_info, t_doc, left_idx, right_idx)
@@ -3510,20 +3456,8 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
                 details={"overlap_pct": overlap},
                 sample=sample_label,
             ))
-    if bl_drift_pct > 8:
-        calibration_anomalies.append(create_anomaly(
-            "KHP_BASELINE_DRIFT",
-            details={"drift_pct": bl_drift_pct},
-            sample=sample_label,
-        ))
 
-    # Derivar quality_score i quality_issues per backwards compat
-    quality_score = sum(
-        100 if a.get("severity") == "blocker" else
-        20 if a.get("severity") == "warning" else 5
-        for a in calibration_anomalies
-    )
-    quality_issues = [a.get("label", a.get("code", "")) for a in calibration_anomalies]
+    # NOTE: R² bigaussiana s'afegeix DESPRÉS del fit (veure bloc post-bigaussian)
 
     # =========================================================================
     # NOVES MÈTRIQUES: FWHM, RF, RF_MASS, CR per tots els senyals
@@ -3578,6 +3512,24 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
                 }
     except Exception as e:
         bigaussian_254 = {"r2": 0, "status": "ERROR", "error": str(e)}
+
+    # Anomalia R² bigaussiana (qualitat de la forma del pic)
+    if bigaussian_doc and bigaussian_doc.get("status") not in ("ERROR", None):
+        r2_bg = bigaussian_doc.get("r2", 0)
+        if r2_bg < 0.95:
+            calibration_anomalies.append(create_anomaly(
+                "KHP_BIGAUSSIAN_LOW",
+                details={"r2": r2_bg, "threshold": 0.95},
+                sample=sample_label,
+            ))
+
+    # Derivar quality_score i quality_issues per backwards compat
+    quality_score = sum(
+        100 if a.get("severity") == "blocker" else
+        20 if a.get("severity") == "warning" else 5
+        for a in calibration_anomalies
+    )
+    quality_issues = [a.get("label", a.get("code", "")) for a in calibration_anomalies]
 
     # RF = Area / Concentració (ppm)
     rf_doc = peak_info['area'] / conc if conc > 0 else 0.0

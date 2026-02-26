@@ -253,6 +253,23 @@ class SequenceState:
                 if not any(t in w.lower() for t in _trivial_import)
                 and not w.upper().startswith('ERROR:')
             ]
+            # Enriquir avisos orfes antics (sense noms) amb noms del manifest
+            orphan_files = data.get('orphan_files', {})
+            orphan_uib = orphan_files.get('uib', [])
+            orphan_dad = orphan_files.get('dad', [])
+            if orphan_uib or orphan_dad:
+                enriched = []
+                for w in self.import_warnings:
+                    if 'orfes' in w.lower() and '→' not in w:
+                        # Format antic sense noms — substituir
+                        if 'uib' in w.lower() and orphan_uib:
+                            names = [os.path.basename(f) for f in orphan_uib]
+                            w = f"UIB orfes: {', '.join(names)} → Assignar a Importar"
+                        elif 'dad' in w.lower() and orphan_dad:
+                            names = [os.path.basename(f) for f in orphan_dad]
+                            w = f"DAD orfes: {', '.join(names)} → Assignar a Importar"
+                    enriched.append(w)
+                self.import_warnings = enriched
             # Comptadors del summary
             summary = data.get('summary', {})
             self.n_samples = summary.get('total_samples', 0)
@@ -413,15 +430,14 @@ class SequenceState:
     def import_state(self) -> str:
         """
         Estat de la fase Import per determinar color.
-        Returns: 'ok', 'warning', 'error', 'incomplete', 'pending'
+        Returns: 'ok', 'warning', 'error', 'pending'
         """
         if not self.import_status.completed:
             return 'pending'
         if self.import_status.errors:
             return 'error'
-        if self.import_incomplete:
-            return 'incomplete'
-        if self.import_warnings:
+        # Importació incompleta o warnings → warning (no error)
+        if self.import_incomplete or self.import_warnings:
             return 'warning'
         return 'ok'
 

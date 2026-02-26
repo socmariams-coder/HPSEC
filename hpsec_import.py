@@ -2115,6 +2115,9 @@ def _save_toc_calc_to_masterfile(master_path, toc_calc_df):
     Guarda el 4-TOC_CALC calculat al MasterFile.
 
     Si el full ja existeix, el sobreescriu. Si no, el crea al final.
+
+    Returns:
+        True si s'ha guardat correctament, False si ha fallat.
     """
     import openpyxl
 
@@ -2146,9 +2149,11 @@ def _save_toc_calc_to_masterfile(master_path, toc_calc_df):
         wb.save(str(master_path))
         wb.close()
         logger.info(f"4-TOC_CALC guardat al MasterFile ({len(toc_calc_df)} files)")
+        return True
 
     except Exception as e:
         logger.warning(f"No s'ha pogut guardar 4-TOC_CALC al MasterFile: {e}")
+        return False
 
 
 def compute_toc_calc(master_data, toc_df):
@@ -2918,10 +2923,12 @@ def _generate_import_warnings(result: dict) -> list:
     n_orphan = len(orphan_uib) + len(orphan_dad)
 
     if n_orphan > 0:
+        all_names = [os.path.basename(f) for f in orphan_uib + orphan_dad]
         warnings.append(create_warning(
             code="IMP_ORPHAN_FILES",
             stage="import",
-            details={"n": n_orphan, "uib": orphan_uib, "dad": orphan_dad},
+            details={"n": n_orphan, "files": ", ".join(all_names),
+                      "uib": orphan_uib, "dad": orphan_dad},
         ))
 
     # 3. CSV buits
@@ -3134,7 +3141,7 @@ def import_sequence(seq_path, config=None, progress_callback=None):
         except Exception as e:
             logger.warning(f"Error llegint fulls addicionals del MasterFile: {e}")
 
-        # Si 4-TOC_CALC no existeix, calcular i guardar al MasterFile
+        # Si 4-TOC_CALC no existeix o és buit, calcular i guardar al MasterFile
         if toc_calc_df is None or (hasattr(toc_calc_df, 'empty') and toc_calc_df.empty):
             if toc_df is not None:
                 result["warnings"].append(
@@ -3142,8 +3149,15 @@ def import_sequence(seq_path, config=None, progress_callback=None):
                 )
                 toc_calc_df = compute_toc_calc(result["master_data"], toc_df)
                 if toc_calc_df is not None and not toc_calc_df.empty:
+                    # Actualitzar master_data amb el toc_calc calculat
+                    result["master_data"]["toc_calc"] = toc_calc_df
                     # Guardar 4-TOC_CALC al MasterFile per a futures importacions
-                    _save_toc_calc_to_masterfile(master_path, toc_calc_df)
+                    saved = _save_toc_calc_to_masterfile(master_path, toc_calc_df)
+                    if not saved:
+                        result["warnings"].append(
+                            "⚠️ 4-TOC_CALC calculat però no s'ha pogut escriure al MasterFile "
+                            "(fitxer obert a Excel?). Es recalcularà a la propera importació."
+                        )
                 else:
                     result["warnings"].append(
                         "⚠️ No s'ha pogut calcular 4-TOC_CALC. DOC Direct no disponible."
@@ -3319,12 +3333,14 @@ def import_sequence(seq_path, config=None, progress_callback=None):
             )
 
         if orphan_uib:
+            names = [os.path.basename(f) for f in orphan_uib]
             result["warnings"].append(
-                f"Fitxers UIB orfes (no assignats): {len(orphan_uib)}"
+                f"UIB orfes: {', '.join(names)} → Assignar a Importar"
             )
         if orphan_dad:
+            names = [os.path.basename(f) for f in orphan_dad]
             result["warnings"].append(
-                f"Fitxers DAD orfes (no assignats): {len(orphan_dad)}"
+                f"DAD orfes: {', '.join(names)} → Assignar a Importar"
             )
 
         report_progress(95, "Finalitzant...")
@@ -4194,6 +4210,7 @@ def import_from_manifest(seq_path, manifest=None, config=None, progress_callback
 
     if load_data:
         report_progress(10, "Llegint MasterFile...")
+        toc_calc_df = None
         try:
             with pd.ExcelFile(master_path, engine="openpyxl") as xl:
                 if "2-TOC" in xl.sheet_names:
@@ -4202,6 +4219,9 @@ def import_from_manifest(seq_path, manifest=None, config=None, progress_callback
                 if "3-DAD_KHP" in xl.sheet_names:
                     master_khp_data = pd.read_excel(xl, sheet_name="3-DAD_KHP", engine="openpyxl")
                     logger.debug("3-DAD_KHP sheet loaded (%d rows)", len(master_khp_data))
+                # Comprovar si 4-TOC_CALC existeix i té dades
+                if "4-TOC_CALC" in xl.sheet_names:
+                    toc_calc_df = pd.read_excel(xl, sheet_name="4-TOC_CALC", engine="openpyxl")
         except PermissionError:
             result["errors"].append(
                 f"No es pot llegir el MasterFile: el fitxer està obert a Excel o sense permisos. "
@@ -4211,6 +4231,19 @@ def import_from_manifest(seq_path, manifest=None, config=None, progress_callback
         except Exception as e:
             result["errors"].append(f"Error llegint MasterFile: {e}")
             return result
+
+        # Si 4-TOC_CALC és buit, calcular i guardar al MasterFile
+        if (toc_calc_df is None or toc_calc_df.empty) and toc_df is not None:
+            master_data = llegir_masterfile_nou(master_path)
+            computed = compute_toc_calc(master_data, toc_df)
+            if computed is not None and not computed.empty:
+                saved = _save_toc_calc_to_masterfile(master_path, computed)
+                if saved:
+                    logger.info("4-TOC_CALC generat i guardat al MasterFile des de manifest import")
+                else:
+                    result["warnings"].append(
+                        "⚠️ 4-TOC_CALC calculat però no s'ha pogut escriure al MasterFile."
+                    )
     else:
         report_progress(10, "Carregant manifest...")
 
@@ -4685,15 +4718,29 @@ def ensure_data_loaded(imported_data, config=None, progress_callback=None):
 
     toc_df = None
     master_khp_data = None
+    toc_calc_df = None
     try:
         with pd.ExcelFile(master_path, engine="openpyxl") as xl:
             if "2-TOC" in xl.sheet_names:
                 toc_df = pd.read_excel(xl, sheet_name="2-TOC", header=6, engine="openpyxl")
             if "3-DAD_KHP" in xl.sheet_names:
                 master_khp_data = pd.read_excel(xl, sheet_name="3-DAD_KHP", engine="openpyxl")
+            if "4-TOC_CALC" in xl.sheet_names:
+                toc_calc_df = pd.read_excel(xl, sheet_name="4-TOC_CALC", engine="openpyxl")
     except Exception as e:
         logger.error("ensure_data_loaded: Error llegint MasterFile: %s", e)
         return imported_data
+
+    # Si 4-TOC_CALC és buit, calcular i guardar al MasterFile
+    if (toc_calc_df is None or toc_calc_df.empty) and toc_df is not None:
+        master_data_temp = llegir_masterfile_nou(master_path)
+        computed = compute_toc_calc(master_data_temp, toc_df)
+        if computed is not None and not computed.empty:
+            saved = _save_toc_calc_to_masterfile(master_path, computed)
+            if saved:
+                logger.info("ensure_data_loaded: 4-TOC_CALC generat i guardat al MasterFile")
+            else:
+                logger.warning("ensure_data_loaded: 4-TOC_CALC calculat però no escrit")
 
     report_progress(20, "Completant dades de mostres...")
 
