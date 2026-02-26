@@ -869,10 +869,7 @@ class DashboardPanel(QWidget):
 
             # Col NOTES: Notes (JSON + manuals, doble-clic per veure/editar)
             # SEMPRE disponible, independentment de l'estat
-            try:
-                json_notes = self._load_json_notes(seq.seq_path) if seq.seq_path else []
-            except Exception:
-                json_notes = []
+            json_notes = seq.dashboard_notes
             manual_notes = seq.notes if seq.notes else ""
 
             # Construir preview combinat
@@ -1117,11 +1114,7 @@ class DashboardPanel(QWidget):
         layout = QVBoxLayout(dialog)
 
         # === SECCIÓ 1: Notes dels JSON (warnings, anomalies, etc.) ===
-        # SEMPRE intentar carregar, mai fallar
-        try:
-            json_notes = self._load_json_notes(seq.seq_path) if seq.seq_path else []
-        except Exception:
-            json_notes = []
+        json_notes = seq.dashboard_notes
 
         if json_notes:
             obs_group = QGroupBox("Observacions de processament")
@@ -1193,195 +1186,6 @@ class DashboardPanel(QWidget):
                     "No s'han pogut guardar les notes.\n"
                     "Cal importar la seqüència primer."
                 )
-
-    def _load_json_notes(self, seq_path: str) -> list:
-        """Carrega TOT dels JSON: warnings, anomalies, notes.
-
-        IMPORTANT: Sempre retorna llista (buida si no hi ha res).
-        Mai falla - Notes ha d'estar sempre disponible.
-        """
-        import json
-        from pathlib import Path
-
-        notes = []
-
-        # Validar path
-        if not seq_path:
-            return notes
-
-        try:
-            data_path = Path(seq_path) / "CHECK" / "data"
-            if not data_path.exists():
-                return notes
-        except Exception:
-            return notes
-
-        json_files = {
-            "import_manifest.json": "IMP",
-            "calibration_result.json": "CAL",
-            "analysis_result.json": "ANA",
-            "consolidation.json": "CON",
-        }
-
-        for filename, stage_name in json_files.items():
-            json_file = data_path / filename
-            if not json_file.exists():
-                continue
-
-            try:
-                # analysis_result.json pot ser >10MB — no carregar sencer
-                if filename == "analysis_result.json":
-                    data = SequenceState._read_json_metadata(str(json_file))
-                    # Afegir notes basant-se en warning_level (metadata)
-                    wl = data.get("warning_level", "none")
-                    if wl in ("warning", "blocker"):
-                        notes.append({
-                            "stage": stage_name,
-                            "type": "WARN" if wl == "warning" else "ANOM",
-                            "severity": wl,
-                            "content": f"Avisos d'anàlisi ({wl})",
-                            "icon": "⚠" if wl == "warning" else "!!",
-                        })
-                    continue
-
-                with open(json_file, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-
-                # 1. WARNINGS pendents (filtrar trivials)
-                _skip_warnings = {
-                    "Importat des de manifest existent",
-                    "4-TOC_CALC no trobat al MasterFile, calculant automàticament...",
-                }
-                warnings = data.get("warnings", [])
-                if isinstance(warnings, list):
-                    for w in warnings[:3]:  # Màxim 3 per etapa
-                        if isinstance(w, str) and w.strip():
-                            if w.strip() in _skip_warnings:
-                                continue
-                            notes.append({
-                                "stage": stage_name,
-                                "type": "WARN",
-                                "content": w[:80],
-                            })
-                        elif isinstance(w, dict):
-                            msg = w.get("message", w.get("code", ""))
-                            if msg and msg.strip() not in _skip_warnings:
-                                notes.append({
-                                    "stage": stage_name,
-                                    "type": "WARN",
-                                    "content": msg[:80],
-                                })
-
-                # 2. ANOMALIES (batman, timeout, etc.) - analysis_result
-                if filename == "analysis_result.json":
-                    from hpsec_warnings import normalize_anomalies, classify_anomalies, ANOMALY_CATALOG
-
-                    # Agregar anomalies de totes les rèpliques
-                    samples_grouped = data.get("samples_grouped", {})
-                    all_sample_anomalies = []
-                    for sg in samples_grouped.values():
-                        for rep in sg.get("replicas", {}).values():
-                            raw = rep.get("anomalies", [])
-                            all_sample_anomalies.extend(normalize_anomalies(raw))
-
-                    classified = classify_anomalies(all_sample_anomalies)
-
-                    # Agrupar per codi i severitat
-                    for severity_key, note_type in [("blocker", "ANOM"), ("warning", "WARN")]:
-                        code_counts = {}
-                        for a in classified[severity_key]:
-                            code = a.get("code", "?") if isinstance(a, dict) else str(a)
-                            code_counts[code] = code_counts.get(code, 0) + 1
-                        for code, count in sorted(code_counts.items()):
-                            entry = ANOMALY_CATALOG.get(code, {})
-                            notes.append({
-                                "stage": stage_name,
-                                "type": note_type,
-                                "severity": severity_key,
-                                "content": f"{entry.get('label', code)} ({count})",
-                                "icon": entry.get("icon", ""),
-                            })
-
-                    if classified["repaired"]:
-                        codes_rep = {}
-                        for a in classified["repaired"]:
-                            c = a.get("code", "?") if isinstance(a, dict) else str(a)
-                            codes_rep[c] = codes_rep.get(c, 0) + 1
-                        for code, count in codes_rep.items():
-                            entry = ANOMALY_CATALOG.get(code, {})
-                            notes.append({
-                                "stage": stage_name,
-                                "type": "INFO",
-                                "severity": "info",
-                                "content": f"{entry.get('label', code)} reparat ({count})",
-                                "icon": (entry.get("icon", "") + "*").strip(),
-                            })
-
-                # 3. CALIBRACIÓ - problemes KHP
-                if filename == "calibration_result.json":
-                    cals = data.get("calibrations", [])
-                    for cal in cals:
-                        # Calibration anomalies (ANOMALY_CATALOG)
-                        from hpsec_warnings import IGNORED_KHP_CODES
-                        for anom in cal.get("calibration_anomalies", [])[:3]:
-                            if isinstance(anom, dict):
-                                if anom.get("code", "") in IGNORED_KHP_CODES:
-                                    continue
-                                sev = anom.get("severity", "info")
-                                if sev in ("blocker", "warning"):
-                                    label = anom.get("label", anom.get("code", ""))
-                                    sample = anom.get("sample", "")
-                                    content = f"{label} ({sample})" if sample else label
-                                    notes.append({
-                                        "stage": stage_name,
-                                        "type": "QUAL",
-                                        "content": content[:60],
-                                    })
-
-                # 4. NOTES D'USUARI (confirmació warnings)
-                wc = data.get("warnings_confirmed")
-                if isinstance(wc, dict):
-                    user_note = wc.get("user_note", "")
-                    if user_note:
-                        notes.append({
-                            "stage": stage_name,
-                            "type": "NOTE",
-                            "content": user_note[:80],
-                            "reviewer": wc.get("reviewer", ""),
-                        })
-
-                # 5. USER_NOTES (notes afegides manualment)
-                user_notes = data.get("user_notes", [])
-                for un in user_notes[-3:]:  # Últimes 3
-                    if isinstance(un, dict):
-                        notes.append({
-                            "stage": stage_name,
-                            "type": "USR",
-                            "content": un.get("note", "")[:60],
-                            "reviewer": un.get("reviewer", ""),
-                        })
-
-            except Exception as e:
-                pass
-
-        # 6. Fitxer user_notes.json (notes sense etapa executada)
-        try:
-            notes_file = data_path / "user_notes.json"
-            if notes_file.exists():
-                with open(notes_file, 'r', encoding='utf-8') as f:
-                    notes_data = json.load(f)
-                for un in notes_data.get("notes", [])[-3:]:
-                    stage = un.get("stage", "?")[:3].upper()
-                    notes.append({
-                        "stage": stage,
-                        "type": "USR",
-                        "content": un.get("note", "")[:60],
-                        "reviewer": un.get("reviewer", ""),
-                    })
-        except Exception:
-            pass
-
-        return notes
 
     def _open_in_wizard(self, seq: SequenceState):
         """Obre la seqüència al wizard per processar/revisar."""
@@ -1696,10 +1500,7 @@ class DashboardPanel(QWidget):
             self.table.setItem(row, col, item)
 
         # Actualitzar notes
-        try:
-            json_notes = self._load_json_notes(seq.seq_path) if seq.seq_path else []
-        except Exception:
-            json_notes = []
+        json_notes = seq.dashboard_notes
         manual_notes = seq.notes if seq.notes else ""
 
         preview_parts = []

@@ -91,6 +91,9 @@ class SequenceState:
     # Notes de l'usuari
     notes: str = ""
 
+    # Notes unificades per al dashboard (font única de warnings/anomalies/notes)
+    dashboard_notes: List[Dict[str, Any]] = field(default_factory=list)
+
     # Config fingerprint (per detectar obsolescència)
     config_fingerprint: str = ""
 
@@ -358,6 +361,127 @@ class SequenceState:
             # que es mostren dins l'anàlisi. El triangle del dashboard ha de
             # reservar-se per avisos reals de nivell superior (ex: "Missing DOC data").
             self.config_fingerprint = data.get('config_fingerprint', '')
+
+        # Construir notes unificades per al dashboard
+        self._build_dashboard_notes()
+
+    def _build_dashboard_notes(self):
+        """
+        Construeix la llista unificada de notes/warnings/anomalies per al dashboard.
+
+        Font ÚNICA: usa les dades ja carregades per _check_phase() (PhaseStatus.data).
+        El dashboard NO ha de rellegir JSONs — usa aquest camp directament.
+        """
+        notes = []
+
+        _skip_warnings = {
+            "Importat des de manifest existent",
+            "4-TOC_CALC no trobat al MasterFile, calculant automàticament...",
+        }
+
+        # --- IMPORT ---
+        if self.import_status.data:
+            self._collect_warnings(self.import_status.data, "IMP", notes, _skip_warnings)
+            self._collect_user_notes(self.import_status.data, "IMP", notes)
+
+        # --- CALIBRACIÓ ---
+        if self.calibrate_status.data:
+            data = self.calibrate_status.data
+            self._collect_warnings(data, "CAL", notes)
+            # Calibration anomalies (ANOMALY_CATALOG)
+            from hpsec_warnings import IGNORED_KHP_CODES
+            for cal in data.get("calibrations", []):
+                for anom in cal.get("calibration_anomalies", [])[:3]:
+                    if isinstance(anom, dict):
+                        if anom.get("code", "") in IGNORED_KHP_CODES:
+                            continue
+                        sev = anom.get("severity", "info")
+                        if sev in ("blocker", "warning"):
+                            label = anom.get("label", anom.get("code", ""))
+                            sample = anom.get("sample", "")
+                            content = f"{label} ({sample})" if sample else label
+                            notes.append({
+                                "stage": "CAL", "type": "QUAL",
+                                "content": content[:60],
+                            })
+            self._collect_user_notes(data, "CAL", notes)
+
+        # --- ANÀLISI (metadata-only, sense carregar JSON sencer) ---
+        if self.analyze_status.data:
+            wl = self.analyze_status.data.get("warning_level", "none")
+            if wl in ("warning", "blocker"):
+                notes.append({
+                    "stage": "ANA",
+                    "type": "WARN" if wl == "warning" else "ANOM",
+                    "severity": wl,
+                    "content": f"Avisos d'anàlisi ({wl})",
+                    "icon": "⚠" if wl == "warning" else "!!",
+                })
+
+        # --- CONSOLIDACIÓ (si existeix, fitxer petit) ---
+        con_path = os.path.join(self._check_data_path, "consolidation.json")
+        if os.path.exists(con_path):
+            try:
+                with open(con_path, 'r', encoding='utf-8') as f:
+                    con_data = json.load(f)
+                self._collect_warnings(con_data, "CON", notes)
+                self._collect_user_notes(con_data, "CON", notes)
+            except Exception:
+                pass
+
+        # --- user_notes.json (notes sense etapa executada) ---
+        notes_file = os.path.join(self._check_data_path, "user_notes.json")
+        if os.path.exists(notes_file):
+            try:
+                with open(notes_file, 'r', encoding='utf-8') as f:
+                    notes_data = json.load(f)
+                for un in notes_data.get("notes", [])[-3:]:
+                    stage = un.get("stage", "?")[:3].upper()
+                    notes.append({
+                        "stage": stage, "type": "USR",
+                        "content": un.get("note", "")[:60],
+                        "reviewer": un.get("reviewer", ""),
+                    })
+            except Exception:
+                pass
+
+        self.dashboard_notes = notes
+
+    @staticmethod
+    def _collect_warnings(data, stage, notes, skip_set=None):
+        """Extreu warnings genèrics d'un JSON i els afegeix a notes."""
+        warnings = data.get("warnings", [])
+        if not isinstance(warnings, list):
+            return
+        for w in warnings[:3]:
+            if isinstance(w, str) and w.strip():
+                if skip_set and w.strip() in skip_set:
+                    continue
+                notes.append({"stage": stage, "type": "WARN", "content": w[:80]})
+            elif isinstance(w, dict):
+                msg = w.get("message", w.get("code", ""))
+                if msg and (not skip_set or msg.strip() not in skip_set):
+                    notes.append({"stage": stage, "type": "WARN", "content": msg[:80]})
+
+    @staticmethod
+    def _collect_user_notes(data, stage, notes):
+        """Extreu warnings_confirmed i user_notes d'un JSON."""
+        wc = data.get("warnings_confirmed")
+        if isinstance(wc, dict):
+            user_note = wc.get("user_note", "")
+            if user_note:
+                notes.append({
+                    "stage": stage, "type": "NOTE",
+                    "content": user_note[:80],
+                    "reviewer": wc.get("reviewer", ""),
+                })
+        for un in data.get("user_notes", [])[-3:]:
+            if isinstance(un, dict):
+                notes.append({
+                    "stage": stage, "type": "USR",
+                    "content": un.get("note", "")[:60],
+                    "reviewer": un.get("reviewer", ""),
+                })
 
     @property
     def info_text(self) -> str:
