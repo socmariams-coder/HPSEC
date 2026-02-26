@@ -756,7 +756,7 @@ class CalibratePanel(QWidget):
         self.replica_comparison_table = QTableWidget()
         self.replica_comparison_table.setColumnCount(9)
         self.replica_comparison_table.setHorizontalHeaderLabels([
-            "Rèplica", "Àrea", "t_max", "SNR", "Sym", "DOC/254", "Shift", "Q", "Status"
+            "Rèplica", "Àrea", "t_max", "SNR", "Sym", "DOC/254", "Shift", "R²bg", "Status"
         ])
         self.replica_comparison_table.horizontalHeaderItem(1).setToolTip("Àrea DOC integrada")
         self.replica_comparison_table.horizontalHeaderItem(2).setToolTip("Temps del pic màxim (min)")
@@ -764,7 +764,7 @@ class CalibratePanel(QWidget):
         self.replica_comparison_table.horizontalHeaderItem(4).setToolTip("Simetria del pic")
         self.replica_comparison_table.horizontalHeaderItem(5).setToolTip("Ratio DOC/254nm")
         self.replica_comparison_table.horizontalHeaderItem(6).setToolTip("Shift vs 254nm (segons)")
-        self.replica_comparison_table.horizontalHeaderItem(7).setToolTip("Quality Score")
+        self.replica_comparison_table.horizontalHeaderItem(7).setToolTip("R² bigaussiana (qualitat forma pic)")
         self.replica_comparison_table.horizontalHeaderItem(8).setToolTip("Usada en calibració actual")
         self.replica_comparison_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         # Columna Status (8) amb amplada mínima per no quedar tallada
@@ -1284,9 +1284,7 @@ class CalibratePanel(QWidget):
         if khp_data_main:
             replicas = khp_data_main.get('replicas') or []
             n_replicas = len(replicas) if replicas else khp_data_main.get("n_replicas", 0)
-            n_valid = sum(1 for r in replicas if r.get('quality_score', 0) < 100)
-            if n_valid == 0:
-                n_valid = n_replicas  # Si no hi ha quality_score, totes vàlides
+            n_valid = sum(1 for r in replicas if not r.get('is_outlier', False))
         if n_replicas > 0:
             self.result_labels["n_replicas"].setText(f"{n_replicas} ({n_valid} vàlides)")
         else:
@@ -1573,70 +1571,6 @@ class CalibratePanel(QWidget):
 
         return False
 
-    def _calculate_quality_score(self, khp, signal='Direct'):
-        """
-        Calcula quality score amb nova lògica empírica.
-
-        Args:
-            khp: Dict amb dades de la rèplica
-            signal: 'Direct' o 'UIB'
-
-        Returns:
-            (score, issues): Tuple amb puntuació i llista de problemes
-        """
-        score = 0
-        issues = []
-        is_bp = khp.get('is_bp', False)
-
-        # === CRITERIS INVALIDANTS (+100) ===
-
-        # Pic_J (Batman)
-        if khp.get('has_batman', False):
-            score += 100
-            issues.append("Pic_J: pic amb vall")
-
-        # Múltiples pics en zona ±4 min
-        n_pics = self._count_peaks_in_zone(khp, zone_min=4.0)
-        if n_pics > 1:
-            score += 100
-            issues.append(f"Múltiples pics: {n_pics} en zona ±4min")
-
-        # Timeout afecta pic
-        if self._timeout_affects_peak(khp):
-            score += 100
-            issues.append("Timeout afecta pic principal")
-
-        # === WARNINGS (+20) ===
-
-        fwhm = khp.get('fwhm_doc', 0)
-        if fwhm > 1.5:
-            score += 20
-            issues.append(f"FWHM elevat: {fwhm:.2f} min")
-
-        snr = khp.get('snr', 0)
-        if 0 < snr < 10:
-            score += 20
-            issues.append(f"SNR baix: {snr:.1f}")
-
-        # === INFO (+10) ===
-        # NOTA: Shift NO penalitza (només informatiu)
-
-        sym = khp.get('symmetry', 1.0)
-        if sym > 0 and (sym < 0.5 or sym > 2.5):
-            score += 10
-            issues.append(f"Asimetria: {sym:.2f}")
-
-        cr = khp.get('concentration_ratio', khp.get('cr_doc', 0))
-        if cr > 0:
-            if is_bp and cr < 0.95:
-                score += 10
-                issues.append(f"CR baix BP: {cr:.2f}")
-            elif not is_bp and cr < 0.40:
-                score += 10
-                issues.append(f"CR baix: {cr:.2f}")
-
-        return score, issues
-
     def _update_metrics_table(self, result):
         """Actualiza la tabla de métricas por réplica."""
         self.metrics_table.setRowCount(0)
@@ -1811,7 +1745,7 @@ class CalibratePanel(QWidget):
                 tooltip = f"TO@{t_start:.1f}min"
                 if affects_peak:
                     item_to.setBackground(QColor(255, 100, 100))
-                    tooltip += " - AFECTA PIC! (+100)"
+                    tooltip += " — AFECTA PIC!"
                 else:
                     # Timeout fora pic: color neutre, no penalitza
                     item_to.setBackground(QColor(220, 220, 220))
@@ -1845,36 +1779,14 @@ class CalibratePanel(QWidget):
                 if not isinstance(a, dict) or a.get('code', '') not in _ignored_cal_codes
             ]
 
-            # Fallback: NOMÉS si el JSON original no tenia calibration_anomalies
-            # (JSONs antics pre-ANOMALY_CATALOG). Si en tenia però tots han estat
-            # filtrats, mostrar OK (no regenerar avisos obsolets).
             if not raw_anomalies:
-                quality, issues = self._calculate_quality_score(khp, signal)
-                # Col 15: Quality Score (backwards compat)
-                item_q = QTableWidgetItem(str(int(quality)))
-                if quality >= 100:
-                    item_q.setBackground(QColor(255, 150, 150))
-                elif quality > 50:
-                    item_q.setBackground(QColor(255, 200, 100))
-                elif quality > 20:
-                    item_q.setBackground(QColor(255, 255, 150))
-                else:
-                    item_q.setBackground(QColor(150, 255, 150))
+                # JSON antic sense calibration_anomalies → indicar reprocessament
+                item_q = QTableWidgetItem("-")
+                item_q.setBackground(QColor(220, 220, 220))
                 self.metrics_table.setItem(row, 15, item_q)
-                # Col 16: Estat antic
-                valid_for_cal = khp.get('valid_for_calibration', True)
-                if not valid_for_cal or quality >= 100:
-                    status_text, color = "\u2718 INVALID", QColor(255, 150, 150)
-                elif quality > 50:
-                    status_text, color = "\u26a0 CHECK", QColor(255, 200, 100)
-                elif quality > 20 or issues:
-                    status_text, color = f"\u2139 INFO", QColor(255, 255, 150)
-                else:
-                    status_text, color = "\u2714 OK", QColor(150, 255, 150)
-                item_status = QTableWidgetItem(status_text)
-                item_status.setBackground(color)
-                if issues:
-                    item_status.setToolTip("\n".join(issues))
+                item_status = QTableWidgetItem("⟳")
+                item_status.setBackground(QColor(220, 220, 220))
+                item_status.setToolTip("JSON antic — cal reprocessar (Verificar)")
                 self.metrics_table.setItem(row, 16, item_status)
             else:
                 # Classificar anomalies per severitat
@@ -2024,7 +1936,7 @@ class CalibratePanel(QWidget):
                     'symmetry': rep.get('symmetry', 0),
                     'a254_doc_ratio': rep.get('a254_doc_ratio', 0),
                     'shift_sec': rep.get('shift_sec', 0),
-                    'quality_score': rep.get('quality_score', 0),
+                    'bigaussian_r2': rep.get('bigaussian_r2', rep.get('r2_bigaussian', 0)),
                 })
 
         for i, rep in enumerate(replica_details):
@@ -2083,13 +1995,14 @@ class CalibratePanel(QWidget):
                 item.setBackground(QColor('#D5F5E3'))
             self.replica_comparison_table.setItem(row, 6, item)
 
-            # Col 7: Quality Score
-            q = rep.get('quality_score', 0)
-            item = QTableWidgetItem(f"{q:.0f}")
-            if q >= 100:
-                item.setBackground(QColor('#FADBD8'))
-            elif q > 50:
-                item.setBackground(QColor('#FCF3CF'))
+            # Col 7: R² bigaussiana (únic criteri de qualitat)
+            r2_bg = rep.get('bigaussian_r2', rep.get('r2_bigaussian', 0))
+            if r2_bg > 0:
+                item = QTableWidgetItem(f"{r2_bg:.3f}")
+                if r2_bg < 0.95:
+                    item.setBackground(QColor('#FCF3CF'))
+            else:
+                item = QTableWidgetItem("-")
             if is_selected:
                 item.setBackground(QColor('#D5F5E3'))
             self.replica_comparison_table.setItem(row, 7, item)
@@ -2367,58 +2280,7 @@ class CalibratePanel(QWidget):
                     w["message"] = f"{khp_name}: {w['message']}"
             warnings_structured.append(w)
 
-        # Recopilar quality_issues PER SENYAL I RÈPLICA
-        issues_by_signal = {"Direct": {}, "UIB": {}}
-        direct_timeouts = []
-
-        # Processar Direct
-        khp_data_direct = result.get("khp_data_direct")
-        if khp_data_direct:
-            replicas = self._extract_all_replicas(khp_data_direct)
-            for d in replicas:
-                rep_name = d.get('filename', 'R?')
-                match = re.search(r'R(\d+)', rep_name)
-                rep_num = f"R{match.group(1)}" if match else rep_name
-
-                issues = d.get('quality_issues', [])
-                if issues:
-                    if rep_num not in issues_by_signal["Direct"]:
-                        issues_by_signal["Direct"][rep_num] = []
-                    issues_by_signal["Direct"][rep_num].extend(issues)
-
-                if d.get('has_timeout'):
-                    timeout_info = d.get('timeout_info', {})
-                    timeouts = timeout_info.get('timeouts', [])
-                    for to in timeouts:
-                        direct_timeouts.append({
-                            't_start': to.get('t_start_min', 0),
-                            't_end': to.get('t_end_min', 0),
-                            'replica': rep_num
-                        })
-
-        # Processar UIB
-        khp_data_uib = result.get("khp_data_uib")
-        if khp_data_uib:
-            replicas = self._extract_all_replicas(khp_data_uib)
-            for d in replicas:
-                rep_name = d.get('filename', 'R?')
-                match = re.search(r'R(\d+)', rep_name)
-                rep_num = f"R{match.group(1)}" if match else rep_name
-
-                issues = d.get('quality_issues', [])
-                if issues:
-                    if rep_num not in issues_by_signal["UIB"]:
-                        issues_by_signal["UIB"][rep_num] = []
-                    issues_by_signal["UIB"][rep_num].extend(issues)
-
-                uib_has_timeout = d.get('has_timeout', False)
-                for dt in direct_timeouts:
-                    if dt['replica'] == rep_num and not uib_has_timeout:
-                        if rep_num not in issues_by_signal["UIB"]:
-                            issues_by_signal["UIB"][rep_num] = []
-                        issues_by_signal["UIB"][rep_num].append(
-                            f"TimeOut ({dt['t_start']:.1f} min)"
-                        )
+        # quality_issues eliminat — ANOMALY_CATALOG és la font única
 
         # Convertir errors a warnings_structured
         for e in errors:
@@ -2579,18 +2441,9 @@ class CalibratePanel(QWidget):
             valid_indices = set()
             for idx, cal in enumerate(filtered_history):
                 cal_seq_raw = cal.get('seq_name', 'N/A').replace('_SEQ', '').replace('_BP', '')
-                quality_score = cal.get('quality_score_v2', cal.get('quality_score', 0))
-                status_v2 = cal.get('status_v2', '')
                 stored_valid = cal.get('valid_for_calibration', True)
                 stored_outlier = cal.get('is_outlier', False)
-
-                if status_v2:
-                    is_valid = status_v2 not in ['INVALID', 'CHECK']
-                elif quality_score >= 100:
-                    is_valid = False
-                else:
-                    is_valid = stored_valid and not stored_outlier
-
+                is_valid = stored_valid and not stored_outlier
                 is_current = (cal_seq_raw == current_seq)
                 if is_valid and not is_current:
                     valid_indices.add(idx)
@@ -3317,8 +3170,7 @@ i determina el time shift necessari per a la quantificació.</p>
             self, "Calibració Aplicada",
             f"Aplicada calibració de {seq_name}\n\n"
             f"Àrea: {area:.0f}\n"
-            f"RF (Àrea/ppm): {rf:.0f}\n"
-            f"Quality Score: {quality_score}"
+            f"RF (Àrea/ppm): {rf:.0f}"
         )
 
     def _toggle_outlier(self):
