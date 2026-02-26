@@ -388,22 +388,26 @@ class SequenceState:
         if self.calibrate_status.data:
             data = self.calibrate_status.data
             self._collect_warnings(data, "CAL", notes)
-            # Calibration anomalies (ANOMALY_CATALOG)
+            # Calibration anomalies (ANOMALY_CATALOG) — deduplicar per codi
             from hpsec_warnings import IGNORED_KHP_CODES
+            anom_counts = {}  # (code, label) → count
             for cal in data.get("calibrations", []):
-                for anom in cal.get("calibration_anomalies", [])[:3]:
+                for anom in cal.get("calibration_anomalies", []):
                     if isinstance(anom, dict):
-                        if anom.get("code", "") in IGNORED_KHP_CODES:
+                        code = anom.get("code", "")
+                        if code in IGNORED_KHP_CODES:
                             continue
                         sev = anom.get("severity", "info")
                         if sev in ("blocker", "warning"):
-                            label = anom.get("label", anom.get("code", ""))
-                            sample = anom.get("sample", "")
-                            content = f"{label} ({sample})" if sample else label
-                            notes.append({
-                                "stage": "CAL", "type": "QUAL",
-                                "content": content[:60],
-                            })
+                            label = anom.get("label", code)
+                            key = (code, label)
+                            anom_counts[key] = anom_counts.get(key, 0) + 1
+            for (code, label), count in anom_counts.items():
+                content = f"{label} ({count})" if count > 1 else label
+                notes.append({
+                    "stage": "CAL", "type": "QUAL",
+                    "content": content[:60],
+                })
             self._collect_user_notes(data, "CAL", notes)
 
         # --- ANÀLISI (metadata-only, sense carregar JSON sencer) ---
