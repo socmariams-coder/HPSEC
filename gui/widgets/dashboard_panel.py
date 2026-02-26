@@ -1321,25 +1321,12 @@ class DashboardPanel(QWidget):
                 if filename == "calibration_result.json":
                     cals = data.get("calibrations", [])
                     for cal in cals:
-                        if cal.get("has_batman"):
-                            notes.append({
-                                "stage": stage_name,
-                                "type": "ANOM",
-                                "content": "KHP amb batman",
-                            })
-                        if cal.get("has_timeout"):
-                            # Only show as anomaly if timeout severity is WARNING/CRITICAL
-                            # INFO timeouts (e.g. SB zone) are not relevant
-                            to_sev = cal.get("timeout_severity", "OK")
-                            if to_sev in ("WARNING", "CRITICAL"):
-                                notes.append({
-                                    "stage": stage_name,
-                                    "type": "ANOM",
-                                    "content": "KHP amb timeout",
-                                })
                         # Calibration anomalies (ANOMALY_CATALOG)
+                        from hpsec_warnings import IGNORED_KHP_CODES
                         for anom in cal.get("calibration_anomalies", [])[:3]:
                             if isinstance(anom, dict):
+                                if anom.get("code", "") in IGNORED_KHP_CODES:
+                                    continue
                                 sev = anom.get("severity", "info")
                                 if sev in ("blocker", "warning"):
                                     label = anom.get("label", anom.get("code", ""))
@@ -1350,7 +1337,6 @@ class DashboardPanel(QWidget):
                                         "type": "QUAL",
                                         "content": content[:60],
                                     })
-                        pass  # No fallback per JSONs antics
 
                 # 4. NOTES D'USUARI (confirmació warnings)
                 wc = data.get("warnings_confirmed")
