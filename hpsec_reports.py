@@ -1434,8 +1434,10 @@ def generate_calibration_report(calibration=None, output_path=None):
     # Dades bàsiques (protegir contra None i dict — calibracions antigues pre-regression_data)
     from hpsec_calibrate import _extract_rf_from_cal, _extract_intercept_from_cal
 
-    mode = reg.get('mode', calibration.get('source', {}).get('mode', 'COLUMN'))
-    signal = reg.get('signal', calibration.get('signal_scope', 'direct'))
+    mode = (reg.get('mode') or
+            calibration.get('source', {}).get('mode') or
+            'COLUMN')
+    signal = reg.get('signal') or calibration.get('signal_scope') or 'direct'
     rf_cal = reg.get('rf_mass_cal') or 0
     intercept_raw = reg.get('intercept') or 0
     # Si rf_cal/intercept són dict, extreure valor escalar (suporta v2.0 nested i v3.0 planer)
@@ -1460,6 +1462,13 @@ def generate_calibration_report(calibration=None, output_path=None):
 
     def _extract_int(sig, mod):
         return _extract_intercept_from_cal(calibration, mod, sig) or 0
+
+    # Àmbit (signal_scope) de la calibració — usat a tots els títols
+    cal_signal = calibration.get('signal_scope', signal).lower()
+    cal_signal_label = cal_signal.upper()
+    sens = calibration.get('uib_sensitivity')
+    if sens:
+        cal_signal_label = f"UIB {int(sens)}"
 
     # Historial KHP per gràfic temporal i QC (seq_path=None → usa REGISTRY global)
     khp_history = load_khp_history(None) or []
@@ -1512,14 +1521,16 @@ def generate_calibration_report(calibration=None, output_path=None):
 
         params_data = [
             ["SENYAL / MODE", "RF (slope)", "Intercept", "R²", "N punts", "RMS"],
-            ["Direct / COLUMN", f"{_extract_rf('direct', 'column'):.1f}",
-             f"{_extract_int('direct', 'column'):.1f}", "", "", ""],
-            ["Direct / BP", f"{_extract_rf('direct', 'bp'):.1f}",
-             f"{_extract_int('direct', 'bp'):.1f}", "", "", ""],
+            [f"{cal_signal_label} / COLUMN",
+             f"{_extract_rf(cal_signal, 'column'):.1f}",
+             f"{_extract_int(cal_signal, 'column'):.1f}", "", "", ""],
+            [f"{cal_signal_label} / BP",
+             f"{_extract_rf(cal_signal, 'bp'):.1f}",
+             f"{_extract_int(cal_signal, 'bp'):.1f}", "", "", ""],
         ]
 
         # Afegir R² i RMS a la fila corresponent al mode de la regressió
-        mode_key = mode.upper()
+        mode_key = mode.upper() if mode else ""
         for i, row in enumerate(params_data[1:], 1):
             row_mode = "COLUMN" if "COLUMN" in row[0] else "BP"
             if row_mode == mode_key:
@@ -1645,7 +1656,7 @@ def generate_calibration_report(calibration=None, output_path=None):
 
             ax1.set_xlabel('µg DOC injectat', fontsize=10)
             ax1.set_ylabel('Àrea', fontsize=10)
-            ax1.set_title(f'Regressió {mode} — {signal}', fontsize=11, fontweight='bold')
+            ax1.set_title(f'Regressió {mode} — {cal_signal_label}', fontsize=11, fontweight='bold')
             ax1.legend(fontsize=8, loc='upper left')
             ax1.grid(True, alpha=0.3)
             ax1.spines['top'].set_visible(False)
@@ -1744,7 +1755,7 @@ def generate_calibration_report(calibration=None, output_path=None):
 
             ax.set_xlabel('Entrada (ordre cronològic)', fontsize=9)
             ax.set_ylabel('RF mass (Àrea / µg DOC)', fontsize=9)
-            ax.set_title(f'Evolució RF — {mode} {signal}', fontsize=11, fontweight='bold')
+            ax.set_title(f'Evolució RF — {mode} {cal_signal_label}', fontsize=11, fontweight='bold')
             ax.legend(fontsize=8, loc='upper right')
             ax.grid(True, alpha=0.3)
             ax.spines['top'].set_visible(False)
@@ -1826,7 +1837,7 @@ def generate_calibration_report(calibration=None, output_path=None):
 
                 ax.set_xlabel('Entrada KHP producció', fontsize=9)
                 ax.set_ylabel('Desviació vs recta vigent (%)', fontsize=9)
-                ax.set_title(f'Levey-Jennings — {mode}', fontsize=11, fontweight='bold')
+                ax.set_title(f'Levey-Jennings — {mode} {cal_signal_label}', fontsize=11, fontweight='bold')
                 ax.grid(True, alpha=0.3, axis='y')
                 ax.spines['top'].set_visible(False)
                 ax.spines['right'].set_visible(False)
@@ -1855,45 +1866,56 @@ def generate_calibration_report(calibration=None, output_path=None):
         ax_hist.axis('off')
 
         # Taula amb totes les calibracions
-        hist_header = ["ID", "Des de", "Fins", "RF COLUMN", "RF BP", "R²", "Punts", "Font"]
+        hist_header = ["ID", "Àmbit", "Des de", "Fins", "RF COL", "RF BP", "R²", "Punts", "Font"]
         hist_rows = []
-        for cal in all_calibrations[:20]:  # Màxim 20 entrades
-            rf_col_val = 0
-            rf_bp_val = 0
-            rf_dict = cal.get('rf_mass_cal', {})
-            if isinstance(rf_dict, dict):
-                direct = rf_dict.get('direct', {})
-                if isinstance(direct, dict):
-                    rf_col_val = direct.get('column', 0)
-                    rf_bp_val = direct.get('bp', 0)
+        for cal_entry in all_calibrations[:20]:  # Màxim 20 entrades
+            scope_h = cal_entry.get('signal_scope', '?')
+            rf_col_val = _extract_rf_from_cal(cal_entry, 'column', scope_h) or 0
+            rf_bp_val = _extract_rf_from_cal(cal_entry, 'bp', scope_h) or 0
 
-            src = cal.get('source', {}).get('type', '')
+            sens_h = cal_entry.get('uib_sensitivity')
+            scope_label = scope_h.upper()
+            if sens_h:
+                scope_label = f"UIB {int(sens_h)}"
+
+            r2_h = cal_entry.get('r2', 0) or 0
+            if isinstance(r2_h, dict):
+                # Mostrar la R² del mode que tingui valor
+                r2_h = r2_h.get('column', 0) or r2_h.get('bp', 0) or 0
+            r2_h = float(r2_h) if r2_h else 0
+
+            n_pts_h = cal_entry.get('n_points', '—')
+            if isinstance(n_pts_h, dict):
+                n_pts_h = n_pts_h.get('column', 0) or n_pts_h.get('bp', 0) or '—'
+
+            src = cal_entry.get('source', {}).get('type', '')
             hist_rows.append([
-                cal.get('id', '—')[:18],
-                str(cal.get('valid_from', '—'))[:10],
-                str(cal.get('valid_to', 'Vigent'))[:10] if cal.get('valid_to') else 'Vigent',
+                cal_entry.get('id', '—')[-18:],
+                scope_label,
+                str(cal_entry.get('valid_from', '—'))[:10],
+                str(cal_entry.get('valid_to', 'Vigent'))[:10] if cal_entry.get('valid_to') else 'Vigent',
                 f"{rf_col_val:.0f}" if rf_col_val else "—",
                 f"{rf_bp_val:.0f}" if rf_bp_val else "—",
-                f"{(cal['r2'].get(mode.lower(), 0) if isinstance(cal.get('r2'), dict) else cal.get('r2', 0)):.4f}" if cal.get('r2') else "—",
-                str(cal.get('n_points', '—')),
+                f"{r2_h:.4f}" if r2_h else "—",
+                str(n_pts_h),
                 src[:12],
             ])
 
         if hist_rows:
             hist_data = [hist_header] + hist_rows
             tbl4 = ax_hist.table(cellText=hist_data, loc='upper center', cellLoc='center',
-                                 colWidths=[0.18, 0.10, 0.10, 0.10, 0.10, 0.12, 0.08, 0.12])
+                                 colWidths=[0.16, 0.08, 0.10, 0.10, 0.09, 0.09, 0.10, 0.08, 0.10])
             tbl4.auto_set_font_size(False)
             tbl4.set_fontsize(7)
             tbl4.scale(1.0, 1.5)
-            for j in range(8):
+            for j in range(9):
                 tbl4[(0, j)].set_facecolor(COLORS["primary"])
                 tbl4[(0, j)].set_text_props(color='white', fontweight='bold')
 
             # Marcar activa
-            for i, cal in enumerate(all_calibrations[:20], 1):
-                if cal.get('is_active'):
-                    for j in range(8):
+            for i, cal_entry in enumerate(all_calibrations[:20], 1):
+                if cal_entry.get('is_active'):
+                    for j in range(9):
                         tbl4[(i, j)].set_facecolor('#d4edda')
 
         draw_footer(fig, "Serveis Tècnics de Recerca")

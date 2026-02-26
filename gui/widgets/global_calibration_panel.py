@@ -459,16 +459,32 @@ class CalibrationLineView(QWidget):
 
         # Taula paràmetres actius
         self._summary_params_table = QTableWidget()
-        self._summary_params_table.setColumnCount(7)
+        self._summary_params_table.setColumnCount(9)
         self._summary_params_table.setHorizontalHeaderLabels([
-            "Ambit", "Mode", "RF", "Intercept", "R2", "Font", "Equacio"
+            "Àmbit", "Sens.", "Mode", "RF", "Intercept", "R²",
+            "Rang (µg)", "Font", "Equació"
         ])
-        self._summary_params_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        hdr = self._summary_params_table.horizontalHeader()
+        for col in range(9):
+            if col in (7, 8):  # Font, Equació — stretch
+                hdr.setSectionResizeMode(col, QHeaderView.Stretch)
+            else:
+                hdr.setSectionResizeMode(col, QHeaderView.ResizeToContents)
         self._summary_params_table.verticalHeader().setVisible(False)
         self._summary_params_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self._summary_params_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self._summary_params_table.setSelectionMode(QTableWidget.SingleSelection)
         self._summary_params_table.setAlternatingRowColors(True)
         self._summary_params_table.setMaximumHeight(180)
+        self._summary_params_table.setStyleSheet("""
+            QTableWidget::item:selected {
+                background-color: #D6EAF8; color: #2C3E50;
+            }
+        """)
+        self._summary_params_table.cellClicked.connect(self._on_summary_row_clicked)
         layout.addWidget(self._summary_params_table)
+        # Dades associades a cada fila (key, cal) per al scatter
+        self._summary_row_data = []
 
         # Scatter regressió (si disponible)
         self._summary_figure = Figure(figsize=(7, 3), dpi=100)
@@ -485,16 +501,35 @@ class CalibrationLineView(QWidget):
         layout.addWidget(hist_label)
 
         self._summary_history_table = QTableWidget()
-        self._summary_history_table.setColumnCount(7)
+        self._summary_history_table.setColumnCount(8)
         self._summary_history_table.setHorizontalHeaderLabels([
-            "ID", "Ambit", "Sensibilitat", "Data inici", "RF (col)", "RF (bp)", "Activa?"
+            "ID", "Àmbit", "Sens.", "Vigent des de", "Fins a", "RF (col)", "RF (bp)", "Activa?"
         ])
-        self._summary_history_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        hhdr = self._summary_history_table.horizontalHeader()
+        for col in range(8):
+            if col in (3, 4):  # Vigent des de, Fins a — stretch
+                hhdr.setSectionResizeMode(col, QHeaderView.Stretch)
+            else:
+                hhdr.setSectionResizeMode(col, QHeaderView.ResizeToContents)
         self._summary_history_table.verticalHeader().setVisible(False)
         self._summary_history_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self._summary_history_table.setAlternatingRowColors(True)
         self._summary_history_table.setMaximumHeight(250)
         layout.addWidget(self._summary_history_table)
+
+        # Guia per afegir nova calibració
+        guide_label = QLabel(
+            "<div style='background-color:#FDF2E9; border:1px solid #F0C27B; "
+            "border-radius:4px; padding:8px 12px; margin-top:4px;'>"
+            "<span style='font-size:11px; color:#7D6608;'>"
+            "💡 <b>Per afegir una nova calibració</b>: "
+            "processa una seqüència <b>_CAL</b> des del Dashboard "
+            "(clic al botó Importar d'una SEQ amb &ge;3 KHP i &ge;2 concentracions). "
+            "Al pas 4 (Revisar) podràs aplicar-la com a nova calibració vigent."
+            "</span></div>"
+        )
+        guide_label.setWordWrap(True)
+        layout.addWidget(guide_label)
 
         # Botó PDF (centrat)
         pdf_row = QHBoxLayout()
@@ -552,12 +587,12 @@ class CalibrationLineView(QWidget):
 
         # Filas: per cada cal activa x cada mode (column, bp)
         rows = []
+        self._summary_row_data = []
         for key, cal in active_cals:
             scope = cal.get('signal_scope', key)
             sens = cal.get('uib_sensitivity')
             ambit = scope.upper()
-            if sens:
-                ambit = f"UIB {int(sens)}"
+            sens_str = f"{int(sens)} ppb" if sens else "—"
 
             for mode in ['column', 'bp']:
                 rf = _extract_rf_from_cal(cal, mode, scope)
@@ -568,56 +603,125 @@ class CalibrationLineView(QWidget):
                 if isinstance(r2, dict):
                     r2 = r2.get(mode, 0) or 0
                 r2 = float(r2) if r2 else 0
-                source = cal.get('source', {}).get('description', '')[:40]
-                eq = f"Area = {rf:.1f} x ug"
+                source_desc = cal.get('source', {}).get('description', '')
+                source_short = source_desc[:35] + "..." if len(source_desc) > 35 else source_desc
+                eq = f"Area = {rf:.1f} × µg"
                 if intercept:
                     eq += f" + {intercept:.1f}"
-                rows.append([ambit, mode.upper(), f"{rf:.1f}", f"{intercept:.1f}",
-                             f"{r2:.4f}", source, eq])
+
+                # Rang µg injectat des de regression_data
+                reg = cal.get('regression_data', {})
+                reg_points = reg.get('points', [])
+                inc_pts = [p for p in reg_points if not p.get('excluded')]
+                if inc_pts:
+                    ug_vals = [p.get('ug_doc', 0) for p in inc_pts]
+                    ug_min, ug_max = min(ug_vals), max(ug_vals)
+                    rang_str = f"{ug_min:.2f} – {ug_max:.1f}"
+                    n_pts = cal.get('n_points', len(inc_pts))
+                    if isinstance(n_pts, dict):
+                        n_pts = n_pts.get(mode, len(inc_pts))
+                    rang_tip = f"{n_pts} punts: {ug_min:.3f} – {ug_max:.3f} µg"
+                else:
+                    n_pts = cal.get('n_points', '?')
+                    if isinstance(n_pts, dict):
+                        n_pts = n_pts.get(mode, '?')
+                    rang_str = f"n={n_pts}"
+                    rang_tip = None
+
+                rows.append({
+                    'values': [ambit, sens_str, mode.upper(), f"{rf:.1f}",
+                               f"{intercept:.1f}", f"{r2:.4f}", rang_str,
+                               source_short, eq],
+                    'tooltips': [None, None, None, None, None, None, rang_tip,
+                                 source_desc if source_desc != source_short else None,
+                                 None],
+                    'key': key, 'cal': cal, 'mode': mode,
+                })
 
         self._summary_params_table.setRowCount(len(rows))
         for i, row in enumerate(rows):
-            for j, val in enumerate(row):
+            self._summary_row_data.append((row['key'], row['cal'], row['mode']))
+            for j, val in enumerate(row['values']):
                 item = QTableWidgetItem(val)
                 item.setTextAlignment(Qt.AlignCenter)
+                tip = row['tooltips'][j]
+                if tip:
+                    item.setToolTip(tip)
                 self._summary_params_table.setItem(i, j, item)
 
-        # -- Scatter de la calibració Direct activa (si té regression_data) --
+        # -- Scatter de la primera calibració amb regression_data --
         scatter_drawn = False
         for key, cal in active_cals:
             reg = cal.get('regression_data', {})
             points = reg.get('points', [])
             if not points:
                 continue
-            self._draw_summary_scatter(points, reg)
+            scope = cal.get('signal_scope', key)
+            sens = cal.get('uib_sensitivity')
+            self._draw_summary_scatter(points, reg, scope, sens)
             scatter_drawn = True
-            break  # Només el primer amb dades
+            break  # Primer amb dades; l'usuari pot clicar files per veure altres
 
         self._summary_canvas.setVisible(scatter_drawn)
+        # Seleccionar primera fila
+        if rows:
+            self._summary_params_table.selectRow(0)
 
         # -- Taula historial --
-        self._summary_history_table.setRowCount(len(calibrations))
-        for i, cal in enumerate(calibrations):
+        # Ordenar per valid_from descendent (més recent primer)
+        sorted_cals = sorted(calibrations,
+                             key=lambda c: c.get('valid_from', ''), reverse=True)
+        self._summary_history_table.setRowCount(len(sorted_cals))
+        for i, cal in enumerate(sorted_cals):
             scope = cal.get('signal_scope', '?')
             sens = cal.get('uib_sensitivity')
             cal_id = cal.get('id', '?')
-            vfrom = cal.get('valid_from', '?')
             rf_col = _extract_rf_from_cal(cal, 'column', scope)
             rf_bp = _extract_rf_from_cal(cal, 'bp', scope)
             is_active = cal.get('is_active', False)
 
+            # "Vigent des de": valid_from + SEQ referència
+            vfrom = cal.get('valid_from', '?')
+            seq_refs = cal.get('source', {}).get('seq_references', [])
+            if seq_refs:
+                # Mostrar primera SEQ de referència
+                first_seq = seq_refs[0] if isinstance(seq_refs[0], str) else str(seq_refs[0])
+                vfrom_display = f"{vfrom} ({first_seq})"
+            else:
+                src_desc = cal.get('source', {}).get('description', '')
+                if src_desc:
+                    vfrom_display = f"{vfrom} ({src_desc[:25]})"
+                else:
+                    vfrom_display = vfrom
+
+            # "Fins a": valid_to o "Vigent" si activa
+            vto = cal.get('valid_to')
+            if is_active and not vto:
+                vto_display = "Vigent"
+            elif vto:
+                vto_display = vto
+            else:
+                vto_display = "—"
+
             values = [
-                cal_id[-15:] if len(cal_id) > 15 else cal_id,  # abreujat
+                cal_id[-20:] if len(cal_id) > 20 else cal_id,
                 scope.upper(),
-                str(int(sens)) if sens else "-",
-                vfrom,
-                f"{rf_col:.1f}" if rf_col else "-",
-                f"{rf_bp:.1f}" if rf_bp else "-",
-                "SI" if is_active else "",
+                str(int(sens)) if sens else "—",
+                vfrom_display,
+                vto_display,
+                f"{rf_col:.1f}" if rf_col else "—",
+                f"{rf_bp:.1f}" if rf_bp else "—",
+                "✔" if is_active else "",
             ]
+            # Tooltip complet per ID i Font
+            tooltips = [cal_id, None, None, None, None, None, None,
+                        "; ".join(seq_refs) if seq_refs else None]
+
             for j, val in enumerate(values):
                 item = QTableWidgetItem(val)
                 item.setTextAlignment(Qt.AlignCenter)
+                if tooltips[j]:
+                    item.setToolTip(tooltips[j])
                 if is_active:
                     item.setForeground(QBrush(QColor("#27AE60")))
                     item.setFont(QFont("Segoe UI", 9, QFont.Bold))
@@ -629,7 +733,36 @@ class CalibrationLineView(QWidget):
         self.seq_cal_group.setVisible(False)
         self.seq_cal_apply_group.setVisible(False)
 
-    def _draw_summary_scatter(self, points, reg):
+    def _on_summary_row_clicked(self, row, col):
+        """Quan l'usuari clica una fila de la taula de paràmetres, mostra el scatter corresponent."""
+        if row >= len(self._summary_row_data):
+            return
+        key, cal, mode = self._summary_row_data[row]
+        reg = cal.get('regression_data', {})
+        points = reg.get('points', [])
+        scope = cal.get('signal_scope', key)
+        sens = cal.get('uib_sensitivity')
+        if points:
+            self._draw_summary_scatter(points, reg, scope, sens, mode)
+            self._summary_canvas.setVisible(True)
+        else:
+            # Calibració sense regression_data
+            self._summary_figure.clear()
+            ax = self._summary_figure.add_subplot(111)
+            label = scope.upper()
+            if sens:
+                label = f"UIB {int(sens)}"
+            ax.text(0.5, 0.5,
+                    f"No hi ha dades de regressió per {label} {mode.upper()}",
+                    ha='center', va='center', fontsize=11, color='#7F8C8D',
+                    transform=ax.transAxes)
+            ax.set_axis_off()
+            self._summary_figure.tight_layout()
+            self._summary_canvas.draw()
+            self._summary_canvas.setVisible(True)
+
+    def _draw_summary_scatter(self, points, reg, scope='direct', sensitivity=None,
+                               mode_filter=None):
         """Dibuixa scatter de regressió al summary."""
         self._summary_figure.clear()
         ax = self._summary_figure.add_subplot(111)
@@ -642,6 +775,14 @@ class CalibrationLineView(QWidget):
         y = [p['area'] for p in inc]
 
         ax.scatter(x, y, c='#2980B9', s=40, zorder=5, label='Punts cal.')
+
+        # Punts exclosos (si n'hi ha)
+        exc = [p for p in points if p.get('excluded')]
+        if exc:
+            x_exc = [p['ug_doc'] for p in exc]
+            y_exc = [p['area'] for p in exc]
+            ax.scatter(x_exc, y_exc, c='#E74C3C', s=25, marker='x', zorder=4,
+                       alpha=0.5, label='Exclosos')
 
         # Recta
         rf = reg.get('rf_mass_cal', 0)
@@ -662,10 +803,16 @@ class CalibrationLineView(QWidget):
             except Exception:
                 pass
 
-        ax.set_xlabel('ug DOC injectat', fontsize=9)
-        ax.set_ylabel('Area DOC', fontsize=9)
-        ax.set_title(f"Recta vigent ({reg.get('signal', 'direct').upper()} {reg.get('mode', '')})",
-                     fontsize=10, fontweight='bold')
+        # Títol amb àmbit i sensibilitat
+        label = scope.upper()
+        if sensitivity:
+            label = f"UIB {int(sensitivity)}"
+        mode_str = reg.get('mode', mode_filter or '')
+        title = f"Recta vigent — {label} {mode_str.upper()}"
+
+        ax.set_xlabel('µg DOC injectat', fontsize=9)
+        ax.set_ylabel('Àrea DOC', fontsize=9)
+        ax.set_title(title, fontsize=10, fontweight='bold')
         ax.legend(fontsize=7, loc='lower right')
         ax.set_xlim(left=0)
         ax.grid(True, alpha=0.3)
