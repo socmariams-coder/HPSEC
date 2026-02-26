@@ -626,36 +626,36 @@ class HistoryPanel(QWidget):
                 sel_item.setBackground(QColor('#AED6F1'))
             self.history_table.setItem(row, 18, sel_item)
 
-            # Col 19: Quality Score (v2 si disponible)
-            q = cal.get('quality_score_v2', cal.get('quality_score', 0))
-            q_item = QTableWidgetItem(f"{q:.0f}")
-            if q >= 100:
-                q_item.setBackground(QColor('#F5B7B1'))
-            elif q >= 50:
-                q_item.setBackground(QColor('#FCF3CF'))
-            elif q > 20:
-                q_item.setBackground(QColor('#FEF9E7'))
+            # Col 19: R² bigaussiana
+            bg_doc = cal.get('bigaussian_doc') or {}
+            r2_bg = bg_doc.get('r2', 0)
+            if r2_bg > 0:
+                q_item = QTableWidgetItem(f"{r2_bg:.3f}")
+                if r2_bg < 0.95:
+                    q_item.setBackground(QColor('#F5B7B1'))
+                elif r2_bg < 0.98:
+                    q_item.setBackground(QColor('#FCF3CF'))
+                else:
+                    q_item.setBackground(QColor('#D5F5E3'))
             else:
-                q_item.setBackground(QColor('#D5F5E3'))
+                q_item = QTableWidgetItem("-")
             self.history_table.setItem(row, 19, q_item)
 
-            # Col 20: Estat (v2 si disponible)
-            status_v2 = cal.get('status_v2', '')
+            # Col 20: Estat (basat en calibration_anomalies)
             is_valid = cal.get('valid_for_calibration', True)
             is_outlier = cal.get('is_outlier', False) or cal.get('manual_outlier', False)
+            cal_anoms = cal.get('calibration_anomalies', [])
+            has_blocker = any(a.get('severity') == 'blocker' for a in cal_anoms if isinstance(a, dict))
 
-            if status_v2 == 'INVALID' or q >= 100:
+            if has_blocker or not is_valid:
                 status = "INVALID"
                 status_color = QColor('#F5B7B1')
             elif is_outlier:
                 status = "EXCLÒS"
                 status_color = QColor('#EBEDEF')
-            elif not is_valid:
-                status = "INVALID"
-                status_color = QColor('#F5B7B1')
-            elif status_v2:
-                status = status_v2
-                status_color = QColor('#D5F5E3') if status_v2 == 'OK' else QColor('#FCF3CF')
+            elif cal_anoms:
+                status = "WARNING"
+                status_color = QColor('#FCF3CF')
             else:
                 status = "OK"
                 status_color = QColor('#D5F5E3')
@@ -664,11 +664,11 @@ class HistoryPanel(QWidget):
             status_item.setBackground(status_color)
             self.history_table.setItem(row, 20, status_item)
 
-            # Col 21: Motiu
-            quality_issues = cal.get('quality_issues_v2', cal.get('quality_issues', []))
+            # Col 21: Motiu (de calibration_anomalies)
             motiu = ""
-            if quality_issues:
-                motiu = ", ".join(quality_issues) if isinstance(quality_issues, list) else str(quality_issues)
+            if cal_anoms:
+                labels = [a.get('label', a.get('code', '')) for a in cal_anoms if isinstance(a, dict)]
+                motiu = ", ".join(labels)
             elif is_outlier:
                 motiu = "Outlier manual"
             elif not is_valid:
@@ -1464,15 +1464,17 @@ class HistoryPanel(QWidget):
         quality_group = QGroupBox("Qualitat")
         quality_layout = QVBoxLayout(quality_group)
 
-        q_score = cal.get('quality_score', 0)
+        cal_anoms = cal.get('calibration_anomalies', [])
         status = cal.get('status', 'OK')
-        issues = cal.get('quality_issues', [])
+        bg_doc = cal.get('bigaussian_doc') or {}
+        r2_bg = bg_doc.get('r2', 0)
 
-        quality_layout.addWidget(QLabel(f"<b>Score:</b> {q_score}"))
+        if r2_bg > 0:
+            quality_layout.addWidget(QLabel(f"<b>R² bigaussiana:</b> {r2_bg:.3f}"))
         quality_layout.addWidget(QLabel(f"<b>Estat:</b> {status}"))
-        if issues:
-            issues_text = ", ".join(issues) if isinstance(issues, list) else str(issues)
-            quality_layout.addWidget(QLabel(f"<b>Issues:</b> {issues_text}"))
+        if cal_anoms:
+            labels = [a.get('label', a.get('code', '')) for a in cal_anoms if isinstance(a, dict)]
+            quality_layout.addWidget(QLabel(f"<b>Anomalies:</b> {', '.join(labels)}"))
 
         # Selecció de rèpliques
         selection = cal.get('selection', {})

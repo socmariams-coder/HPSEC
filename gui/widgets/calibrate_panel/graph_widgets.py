@@ -261,9 +261,10 @@ class KHPReplicaGraphWidget(QWidget):
 
         if rep.get('has_irregular_top', rep.get('has_batman')):
             metrics.append("Pic_J" + (" (rep)" if rep.get('irregular_top_repaired', rep.get('batman_repaired')) else " !!"))
-        qs = rep.get('quality_score', 0)
-        if qs > 0:
-            metrics.append(f"QS={qs}")
+        r2_bg = (rep.get('bigaussian_doc') or {}).get('r2', 0)
+        if r2_bg > 0:
+            tag = "!" if r2_bg < 0.95 else ""
+            metrics.append(f"R²bg={r2_bg:.3f}{tag}")
 
         if metrics:
             text = "\n".join(metrics)

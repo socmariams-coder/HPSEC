@@ -1350,14 +1350,7 @@ class DashboardPanel(QWidget):
                                         "type": "QUAL",
                                         "content": content[:60],
                                     })
-                        # Fallback: quality_issues strings (JSONs antics)
-                        if not cal.get("calibration_anomalies"):
-                            for issue in cal.get("quality_issues", [])[:2]:
-                                notes.append({
-                                    "stage": stage_name,
-                                    "type": "QUAL",
-                                    "content": issue[:60],
-                                })
+                        # quality_issues fallback eliminat — ANOMALY_CATALOG és font única
 
                 # 4. NOTES D'USUARI (confirmació warnings)
                 wc = data.get("warnings_confirmed")

@@ -1541,7 +1541,7 @@ class CalibrationLineView(QWidget):
             self.seq_cal_points_table.setItem(i, 10, rsd_item)
 
             # Col 11: Anomalies (icones compactes)
-            issues = entry.get('quality_issues', [])
+            cal_anoms = entry.get('calibration_anomalies', [])
             anomaly_parts = []
             if entry.get('uib_saturated') and self._seq_cal_signal == 'uib':
                 anomaly_parts.append("\u26d4 SAT")
@@ -1551,8 +1551,14 @@ class CalibrationLineView(QWidget):
                 anomaly_parts.append("\u26a0 irr")
             if entry.get('has_timeout') and entry.get('timeout_severity', 'OK') != 'OK':
                 anomaly_parts.append("TO")
-            if any('MULTI_PEAK' in str(iss) for iss in issues):
-                anomaly_parts.append("MP")
+            # Afegir anomalies del catàleg (blockers)
+            for anom in cal_anoms:
+                if isinstance(anom, dict) and anom.get('severity') == 'blocker':
+                    code = anom.get('code', '')
+                    if 'TIMEOUT' in code and 'TO' not in anomaly_parts:
+                        anomaly_parts.append("TO")
+                    elif 'BIGAUSSIAN' in code:
+                        anomaly_parts.append("R²")
             anomaly_text = " ".join(anomaly_parts) if anomaly_parts else "-"
             anomaly_item = QTableWidgetItem(anomaly_text)
             anomaly_item.setFlags(anomaly_item.flags() & ~Qt.ItemIsEditable)
@@ -1564,8 +1570,9 @@ class CalibrationLineView(QWidget):
                 else:
                     anomaly_item.setForeground(QBrush(QColor("#E67E22")))
             # Tooltip amb detall complet d'anomalies
-            if issues:
-                anomaly_item.setToolTip("\n".join(str(iss) for iss in issues[:5]))
+            if cal_anoms:
+                tooltip_lines = [a.get('label', a.get('code', '')) for a in cal_anoms if isinstance(a, dict)]
+                anomaly_item.setToolTip("\n".join(tooltip_lines[:5]))
             self.seq_cal_points_table.setItem(i, 11, anomaly_item)
 
             # Col 12: Selecció (QComboBox) — rèplica + outlier + original
@@ -1935,7 +1942,10 @@ class CalibrationLineView(QWidget):
             new_a254 = float(np.mean(a254_areas)) if a254_areas else 0
             selected_reps = [r.get('replica_num', i+1) for i, r in enumerate(replicas)]
         elif method_key == 'best_quality':
-            sorted_reps = sorted(replicas, key=lambda x: x.get('quality_score', 0))
+            sorted_reps = sorted(replicas, key=lambda x: sum(
+                10 if a.get('severity') == 'blocker' else 1
+                for a in x.get('calibration_anomalies', []) if isinstance(a, dict)
+            ))
             best = sorted_reps[0]
             new_area = best.get('area', 0)
             new_a254 = best.get('a254_area', 0)

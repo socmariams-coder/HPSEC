@@ -434,7 +434,7 @@ class SeqCalRegressionWidget(QWidget):
                 'valid_for_calibration': not sat_invalidates,
                 'condition_key': cal.get('condition_key', f"KHP{conc:g}@{vol}µL"),
                 'rf_mass': cal.get('rf_mass', 0),
-                'quality_score': cal.get('quality_score', 0),
+                'calibration_anomalies': cal.get('calibration_anomalies', []),
                 'name_full': cal.get('name_full', ''),
                 'a254_area': cal.get('a254_area', 0),
                 'a254_doc_ratio': cal.get('a254_doc_ratio', 0),
@@ -448,7 +448,6 @@ class SeqCalRegressionWidget(QWidget):
                 'timeout_severity': cal.get('timeout_severity', 'OK'),
                 'uib_sensitivity': cal.get('uib_sensitivity'),
                 'uib_saturated': uib_saturated,
-                'quality_issues': cal.get('quality_issues', []),
                 'replicas': cal.get('replicas', []),
             }
             if signal_name == 'uib':
@@ -575,11 +574,11 @@ class SeqCalRegressionWidget(QWidget):
             ug_doc = conc * vol / 1000.0
             rf_mass = entry.get('rf_mass', area / ug_doc if ug_doc > 0 else 0)
 
-            issues = entry.get('quality_issues', [])
-            has_severe = any('MULTI_PEAK' in str(iss) and 'MILD' not in str(iss) for iss in issues)
+            cal_anoms = entry.get('calibration_anomalies', [])
+            has_blocker = any(a.get('severity') == 'blocker' for a in cal_anoms if isinstance(a, dict))
             if area <= 0 or conc <= 0 or vol <= 0:
                 status_text = "INVALID"
-            elif has_severe:
+            elif has_blocker:
                 status_text = "CHECK"
             elif rf_mass > 0 and (rf_mass < 100 or rf_mass > 3000):
                 status_text = "CHECK"

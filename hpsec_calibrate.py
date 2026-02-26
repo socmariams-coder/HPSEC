@@ -2049,308 +2049,34 @@ def compare_khp_historical(current_area, current_concentration_ratio, seq_path, 
 
 
 # =============================================================================
-# VALIDACIÓ QUALITAT KHP
+# VALIDACIÓ QUALITAT KHP (basat en calibration_anomalies — ANOMALY_CATALOG)
 # =============================================================================
 
-def validate_khp_quality(khp_data, all_peaks, timeout_info, anomaly_info=None, seq_path=None):
-    """
-    Validació específica per KHP (no aplicable a mostres normals).
+# validate_khp_quality() ELIMINAT — la qualificació KHP ara es basa exclusivament
+# en calibration_anomalies generat per analizar_khp_data():
+#   - UIB_SATURATED (blocker)
+#   - KHP_TIMEOUT_PEAK (blocker)
+#   - KHP_BIGAUSSIAN_LOW (warning, R² < 0.95)
+# valid_for_calibration es deriva directament de: cap blocker a calibration_anomalies
 
-    Criteris:
-    1. No múltiples pics significatius (>2 pics amb prominència >10%)
-    2. No timeout en zona del pic
-    3. No cim irregular
-    4. Simetria acceptable (0.5-2.0)
-    5. SNR > 50 (KHP ha de ser senyal fort)
-    6. Límits no expandits excessivament
-    7. Concentration ratio >= 0.90 (pic principal / total)
-    8. Comparació històrica (desviació àrea < 20%)
 
-    Args:
-        khp_data: Dict amb dades del KHP analitzat
-        all_peaks: Llista de pics detectats
-        timeout_info: Dict retornat per detect_timeout()
-        anomaly_info: Dict retornat per detect_peak_anomaly() (opcional)
-        seq_path: Path de la SEQ per comparació històrica (opcional)
+# --- FUNCIONS AUXILIARS MANTINGUDES (usades per validate_khp_for_alignment) ---
 
-    Returns:
-        Dict amb:
-            - is_valid: bool (True si KHP és vàlid per calibració)
-            - issues: llista d'issues detectats
-            - warnings: llista de warnings (no invalidants)
-            - quality_score: puntuació (0 = perfecte, >100 = invàlid)
-            - historical_comparison: dict amb comparació històrica (si disponible)
-    """
-    issues = []
-    warnings = []
-    quality_score = 0
+# ELIMINAT validate_khp_quality() — tot el codi de L2055-2353 (300 línies)
+# Substituït per calibration_anomalies a analizar_khp_data()
 
-    # 0. Guard: conc i area han de ser > 0 (entrades blanques/invàlides)
-    conc = khp_data.get('conc_ppm', khp_data.get('conc', 0))
-    area = khp_data.get('area', khp_data.get('area_total', 0))
-    if not conc or conc <= 0:
-        issues.append("ZERO_CONC: concentració KHP és 0 o absent")
-        quality_score += 200
-    if not area or area <= 0:
-        issues.append("ZERO_AREA: àrea KHP és 0 o absent")
-        quality_score += 200
+_REMOVED_VALIDATE_KHP_QUALITY = True  # Marker per si algun codi antic intenta importar
 
-    # 1. Multi-pic
-    if all_peaks and len(all_peaks) > 2:
-        significant_peaks = [p for p in all_peaks if p.get('prominence', 0) > khp_data.get('height', 1) * 0.1]
-        if len(significant_peaks) > 2:
-            issues.append(f"MULTI_PEAK: {len(significant_peaks)} pics significatius detectats")
-            quality_score += 30 * (len(significant_peaks) - 2)
 
-    # 2. Timeout — severity WARNING o CRITICAL invalida directament (+100)
-    # INFO: timeout en zona segura, no penalitza
-    if timeout_info:
-        severity = timeout_info.get('severity', 'OK')
-        if severity == 'CRITICAL':
-            issues.append(f"TIMEOUT_CRITICAL: timeout en zona HS")
-            quality_score += 100
-        elif severity == 'WARNING':
-            zones = timeout_info.get('zone_summary', {})
-            affected = [z for z in zones.keys() if zones[z] > 0]
-            issues.append(f"TIMEOUT_WARNING: timeout en {', '.join(affected)}")
-            quality_score += 100
-        # INFO: No penalitzar - timeout en zona segura
+def _validate_khp_quality_REMOVED(*args, **kwargs):
+    """ELIMINAT — usar calibration_anomalies de analizar_khp_data()."""
+    raise NotImplementedError(
+        "validate_khp_quality() ha estat eliminat. "
+        "Usar calibration_anomalies de analizar_khp_data()."
+    )
 
-    # 3. Anomalia de forma (cim irregular / jagged)
-    if anomaly_info:
-        if anomaly_info.get('is_irregular_top', False):
-            issues.append("IRREGULAR_TOP: detectat cim irregular al pic (jagged/batman)")
-            quality_score += 50
-        if anomaly_info.get('is_irregular', False) and not anomaly_info.get('is_irregular_top', False):
-            smoothness = anomaly_info.get('smoothness', 100)
-            warnings.append(f"ROUGH_TOP: smoothness baixa ({smoothness:.0f}%)")
-            quality_score += 30
-
-    # 4. Simetria (C11: irrellevant per BP)
-    # NOTA: Per KHP, el rang acceptable és més ampli (0.5-2.0 és normal)
-    # Només alerta severa si és molt asimètric (<0.4 o >2.5)
-    symmetry = khp_data.get('symmetry', 1.0)
-    is_bp_mode = khp_data.get('is_bp', False)
-    if not is_bp_mode:  # Simetria no es valida per BP
-        if symmetry < 0.4 or symmetry > 2.5:
-            issues.append(f"ASYMMETRY: simetria fora de rang ({symmetry:.2f})")
-            quality_score += 20
-        elif symmetry < 0.5 or symmetry > 2.0:
-            # Warning lleu - no crític per KHP
-            warnings.append(f"ASYMMETRY_WARN: simetria límit ({symmetry:.2f})")
-            quality_score += 3
-
-    # 5. SNR - Thresholds depenen del mode
-    # BP: SNR ~1.5 és normal (senyal baix), no ha de ser issue
-    # Column: SNR > 50 esperat
-    snr = khp_data.get('snr', 0)
-    is_bp_mode = khp_data.get('is_bp', False)
-
-    # Només validar SNR si realment s'ha calculat (>0)
-    # Calibracions antigues poden tenir SNR=0 (no calculat)
-    if snr > 0:
-        if is_bp_mode:
-            # BP mode: SNR baix és esperat, només warning si molt baix
-            if snr < 1.0:
-                issues.append(f"LOW_SNR_BP: SNR extremadament baix ({snr:.2f})")
-                quality_score += 40
-            elif snr < 1.2:
-                warnings.append(f"SNR_BP_WARN: SNR molt baix ({snr:.2f})")
-                quality_score += 10
-            # SNR > 1.2 és normal per BP
-        else:
-            # Column mode: SNR ha de ser alt
-            if snr < 20:
-                issues.append(f"LOW_SNR: SNR massa baix ({snr:.1f})")
-                quality_score += 40
-            elif snr < 50:
-                warnings.append(f"SNR_WARN: SNR moderat ({snr:.1f})")
-                quality_score += 10
-    # Si SNR=0 (no calculat), no penalitzar
-
-    # 6. Límits expandits excessivament
-    if khp_data.get('limits_expanded', False):
-        expansion_info = khp_data.get('expansion_info', {})
-        area_inc = expansion_info.get('area_increase_pct', 0)
-        if area_inc > 30:
-            issues.append(f"EXPANSION: límits expandits excessivament (+{area_inc:.0f}%)")
-            quality_score += 25
-        elif area_inc > 15:
-            warnings.append(f"EXPANSION_WARN: límits expandits (+{area_inc:.0f}%)")
-            quality_score += 10
-
-    # 7. Concentration ratio (pic principal vs total)
-    # Thresholds depenen del mode i volum d'injecció
-    concentration_ratio = khp_data.get('concentration_ratio', 1.0)
-    is_bp = khp_data.get('is_bp', False)
-    volume_uL = khp_data.get('volume_uL', 400)
-
-    if is_bp:
-        # BP Mode: CR no és fiable (SNR massa baix)
-        cr_config = CR_THRESHOLDS['BP']
-        if cr_config.get('skip_validation', False) and snr < cr_config.get('min_snr_for_cr', 5.0):
-            # No validar CR per BP amb SNR baix
-            pass
-        else:
-            # Si SNR és acceptable, validar amb thresholds estàndard
-            if concentration_ratio < 0.70:
-                warnings.append(f"CR_BP: {concentration_ratio:.1%} al pic principal")
-                quality_score += 10
-    else:
-        # Column Mode: thresholds segons volum
-        if volume_uL >= 400:
-            cr_config = CR_THRESHOLDS['COLUMN_400']
-            protocol_desc = "400µL"
-        else:
-            cr_config = CR_THRESHOLDS['COLUMN_100']
-            protocol_desc = "100µL"
-
-        fail_threshold = cr_config['fail']
-        warn_threshold = cr_config['warning']
-
-        if concentration_ratio < fail_threshold:
-            issues.append(
-                f"CR_FAIL: {concentration_ratio:.1%} < {fail_threshold:.0%} "
-                f"(protocol {protocol_desc})"
-            )
-            quality_score += 50
-        elif concentration_ratio < warn_threshold:
-            warnings.append(
-                f"CR_WARNING: {concentration_ratio:.1%} < {warn_threshold:.0%} "
-                f"(protocol {protocol_desc})"
-            )
-            quality_score += 15
-
-    # 7b. Bigaussian shape quality (R² > 0.98 requerit)
-    bigaussian_doc = khp_data.get('bigaussian_doc')
-    bigaussian_254 = khp_data.get('bigaussian_254')
-
-    if bigaussian_doc and bigaussian_doc.get('status') not in ('ERROR', None):
-        r2_doc = bigaussian_doc.get('r2', 0)
-        if r2_doc < 0.95:
-            issues.append(f"PEAK_SHAPE_POOR: bigaussian DOC R²={r2_doc:.3f} < 0.95")
-            quality_score += 40
-        elif r2_doc < 0.98:
-            warnings.append(f"PEAK_SHAPE_WARN: bigaussian DOC R²={r2_doc:.3f} < 0.98")
-            quality_score += 15
-
-    if bigaussian_254 and bigaussian_254.get('status') not in ('ERROR', None):
-        r2_254 = bigaussian_254.get('r2', 0)
-        if r2_254 < 0.95:
-            issues.append(f"PEAK_SHAPE_POOR_254: bigaussian 254nm R²={r2_254:.3f} < 0.95")
-            quality_score += 30
-        elif r2_254 < 0.98:
-            warnings.append(f"PEAK_SHAPE_WARN_254: bigaussian 254nm R²={r2_254:.3f} < 0.98")
-            quality_score += 10
-
-    # 7c. t_retention anomal (checks basats en t_max_254 o t_max_DOC)
-    t_retention = khp_data.get('t_retention', 0)
-    t_dad_max = khp_data.get('t_dad_max', 0)
-    t_ref = t_dad_max if t_dad_max and t_dad_max > 0 else t_retention
-
-    if t_ref > 0:
-        if is_bp_mode:
-            if t_ref > 3.5:
-                issues.append(f"T_RETENTION_ANOMAL: t={t_ref:.2f} min (BP esperat <3.5)")
-                quality_score += 50
-        else:
-            if t_ref < 18 or t_ref > 25:
-                issues.append(f"T_RETENTION_ANOMAL: t={t_ref:.2f} min (COLUMN esperat 18-25)")
-                quality_score += 50
-
-    # 7d. t_retention mismatch DOC vs 254
-    if t_retention > 0 and t_dad_max and t_dad_max > 0:
-        dt = abs(t_retention - t_dad_max)
-        if dt > 2.0:
-            issues.append(f"T_MISMATCH: |DOC({t_retention:.2f})-254({t_dad_max:.2f})|={dt:.2f} min >2")
-            quality_score += 60
-        elif dt > 1.0:
-            warnings.append(f"T_MISMATCH_WARN: |DOC({t_retention:.2f})-254({t_dad_max:.2f})|={dt:.2f} min >1")
-            quality_score += 20
-
-    # 7e. NO_DAD_254_REFERENCE
-    has_dad = khp_data.get('a254_area', 0) > 0 or (t_dad_max and t_dad_max > 0)
-    if not has_dad:
-        warnings.append("NO_DAD_254: sense senyal 254nm per verificar alineació")
-        quality_score += 15
-
-    # 8. Comparació històrica (si tenim seq_path)
-    # Filtrar per concentració i volum per comparar "pomes amb pomes"
-    historical_comparison = None
-    reference_comparison = None
-    current_area = khp_data.get('area', 0)
-
-    if seq_path:
-        mode = "BP" if khp_data.get('is_bp', False) else "COLUMN"
-        conc_ppm = khp_data.get('conc_ppm', None)
-        volume_uL = khp_data.get('volume_uL', None)
-        doc_mode = khp_data.get('doc_mode', None)
-        uib_sensitivity = khp_data.get('uib_sensitivity', None)
-
-        # C12/C17: Outliers exclosos per defecte (exclude_outliers=True)
-        historical_comparison = compare_khp_historical(
-            current_area=current_area,
-            current_concentration_ratio=concentration_ratio,
-            seq_path=seq_path,
-            mode=mode,
-            conc_ppm=conc_ppm,
-            volume_uL=volume_uL,
-            doc_mode=doc_mode,
-            uib_sensitivity=uib_sensitivity
-        )
-
-        if historical_comparison['status'] == 'INVALID':
-            for issue in historical_comparison['issues']:
-                issues.append(f"HISTORICAL: {issue}")
-            quality_score += 100
-        elif historical_comparison['status'] == 'WARNING':
-            for warn in historical_comparison['warnings']:
-                warnings.append(f"HISTORICAL: {warn}")
-            quality_score += 20
-        elif historical_comparison['status'] == 'INSUFFICIENT_DATA':
-            # FALLBACK: Usar valors de referència de config
-            ref = _get_reference_area(mode, conc_ppm, volume_uL, doc_mode, uib_sensitivity)
-            if ref and ref['area_mean'] > 0:
-                ref_mean = ref['area_mean']
-                ref_std = ref['area_std']
-                area_deviation_pct = abs(current_area - ref_mean) / ref_mean * 100
-
-                # Thresholds segons mode
-                threshold = 100.0 if mode == "BP" else 20.0
-
-                reference_comparison = {
-                    'source': ref['source'],
-                    'ref_mean': ref_mean,
-                    'ref_std': ref_std,
-                    'area_deviation_pct': area_deviation_pct,
-                    'threshold': threshold
-                }
-
-                if area_deviation_pct > threshold:
-                    issues.append(
-                        f"REFERENCE: Desviació àrea {area_deviation_pct:.0f}% > {threshold:.0f}% "
-                        f"(vs {ref['source']}: {ref_mean}±{ref_std})"
-                    )
-                    quality_score += 100
-                elif area_deviation_pct > threshold * 0.5:
-                    warnings.append(
-                        f"REFERENCE: Desviació àrea {area_deviation_pct:.0f}% "
-                        f"(vs {ref['source']}: {ref_mean}±{ref_std})"
-                    )
-                    quality_score += 20
-
-    # Determinar validesa
-    is_valid = quality_score < 100 and len(issues) == 0
-
-    return {
-        'is_valid': is_valid,
-        'issues': issues,
-        'warnings': warnings,
-        'quality_score': quality_score,
-        'concentration_ratio': concentration_ratio,
-        'historical_comparison': historical_comparison,
-        'reference_comparison': reference_comparison
-    }
+# Alias per si algun codi antic intenta cridar-la
+validate_khp_quality = _validate_khp_quality_REMOVED
 
 
 def validate_khp_for_alignment(t_doc, y_doc, t_dad, y_a254, t_uib=None, y_uib=None,
@@ -3523,14 +3249,6 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
                 sample=sample_label,
             ))
 
-    # Derivar quality_score i quality_issues per backwards compat
-    quality_score = sum(
-        100 if a.get("severity") == "blocker" else
-        20 if a.get("severity") == "warning" else 5
-        for a in calibration_anomalies
-    )
-    quality_issues = [a.get("label", a.get("code", "")) for a in calibration_anomalies]
-
     # RF = Area / Concentració (ppm)
     rf_doc = peak_info['area'] / conc if conc > 0 else 0.0
 
@@ -3565,8 +3283,6 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
         'baseline_stats': bl_stats,
         'all_peaks_count': len(all_peaks),
         'all_peaks': all_peaks,
-        'quality_score': quality_score,
-        'quality_issues': quality_issues,
         'calibration_anomalies': calibration_anomalies,
         'has_irregular_top': has_irregular_top,
         'irregular_top_repaired': irregular_top_repaired,
@@ -3788,27 +3504,15 @@ def register_calibration(seq_path, khp_data, khp_source, mode="COLUMN"):
     t_retention = khp_data.get('t_retention', khp_data.get('t_doc_max', 0))
 
     # =========================================================================
-    # VALIDACIÓ COMPLETA amb validate_khp_quality()
-    # Criteris: multi-pic, timeout, cim irregular, simetria, SNR, límits, CR, històric
+    # VALIDACIÓ basada en calibration_anomalies (ANOMALY_CATALOG)
+    # Criteris: UIB_SATURATED, KHP_TIMEOUT_PEAK, KHP_BIGAUSSIAN_LOW
     # =========================================================================
-    all_peaks = khp_data.get('all_peaks', [])
-    timeout_info = khp_data.get('timeout_info', {})
-    anomaly_info = khp_data.get('anomaly_info', {})
-
-    validation_result = validate_khp_quality(
-        khp_data=khp_data,
-        all_peaks=all_peaks,
-        timeout_info=timeout_info,
-        anomaly_info=anomaly_info,
-        seq_path=seq_path
+    cal_anomalies = khp_data.get('calibration_anomalies', [])
+    has_blocker = any(
+        a.get('severity') == 'blocker' for a in cal_anomalies
+        if isinstance(a, dict)
     )
-
-    # Extreure resultats de validació
-    valid_for_calibration = validation_result.get('is_valid', True)
-    calibration_issues = validation_result.get('issues', [])
-    calibration_warnings = validation_result.get('warnings', [])
-    quality_score = validation_result.get('quality_score', 0)
-    quality_issues = calibration_issues + calibration_warnings
+    valid_for_calibration = not has_blocker
 
     # =========================================================================
     # VALIDACIÓ PER SHIFT (alineació temporal)
@@ -3821,6 +3525,7 @@ def register_calibration(seq_path, khp_data, khp_source, mode="COLUMN"):
         valid_for_shift = False
         shift_issues.append("No s'ha detectat pic")
 
+    timeout_info = khp_data.get('timeout_info', {})
     if timeout_info.get('severity') == 'CRITICAL':
         valid_for_shift = False
         shift_issues.append("Timeout crític a zona pic")
@@ -3830,9 +3535,6 @@ def register_calibration(seq_path, khp_data, khp_source, mode="COLUMN"):
 
     # Alias per compatibilitat
     is_outlier = not valid_for_calibration
-
-    # Obtenir info històrica per registre (no per validació, ja feta a validate_khp_quality)
-    historical_comparison = validation_result.get('historical_comparison', {})
 
     # rf_mass = Area / µg DOC (normalitzat per massa injectada)
     rf_mass = khp_data.get('rf_mass', 0)
@@ -3917,8 +3619,6 @@ def register_calibration(seq_path, khp_data, khp_source, mode="COLUMN"):
             'is_manual': False,
         }),
         "replica_comparison": khp_data.get('replica_comparison', {}),
-        "quality_score": quality_score,
-        "quality_issues": quality_issues,
         "calibration_anomalies": khp_data.get('calibration_anomalies', []),
         "has_irregular_top": khp_data.get('has_irregular_top', False),
         "has_timeout": khp_data.get('has_timeout', False),
@@ -3929,8 +3629,6 @@ def register_calibration(seq_path, khp_data, khp_source, mode="COLUMN"):
         "valid_for_shift": valid_for_shift,
         "shift_issues": shift_issues,
         "valid_for_calibration": valid_for_calibration,
-        "calibration_issues": calibration_issues,
-        "calibration_warnings": calibration_warnings,
 
         # Override manual
         "manual_override": None,
@@ -3957,12 +3655,6 @@ def register_calibration(seq_path, khp_data, khp_source, mode="COLUMN"):
         "baseline": khp_data.get('baseline_stats', {}).get('mean', 0),
         "baseline_std": khp_data.get('baseline_stats', {}).get('std', 0),
         "replicas_info": _extract_replicas_info(khp_data),
-        "validation_details": {
-            "quality_score": quality_score,
-            "issues": calibration_issues,
-            "warnings": calibration_warnings,
-            "historical_comparison": historical_comparison,
-        },
 
         # Compatibilitat amb codi antic (DEPRECAT - usar els nous noms)
         "rf_doc": rf_d,
@@ -4200,8 +3892,11 @@ def set_replica_selection(seq_path, cal_id, selection_method, user="manual"):
         status_text = f"Manual R{rep_num}"
 
     elif selection_method == 'best_quality':
-        # Millor per quality_score
-        sorted_reps = sorted(replicas, key=lambda x: x.get('quality_score', 0))
+        # Millor qualitat: menys anomalies blockers, després menys warnings
+        sorted_reps = sorted(replicas, key=lambda x: sum(
+            10 if a.get('severity') == 'blocker' else 1
+            for a in x.get('calibration_anomalies', []) if isinstance(a, dict)
+        ))
         best = sorted_reps[0]
         best_num = best.get('replica_num', 1)
 
@@ -4468,7 +4163,7 @@ def detect_seq_cal_data(calib_result, seq_path, method=None, uib_sensitivity=Non
                 'valid_for_calibration': not sat_invalidates,
                 'condition_key': cal.get('condition_key', f"KHP{conc:g}@{vol}µL"),
                 'rf_mass': cal.get('rf_mass', 0),
-                'quality_score': cal.get('quality_score', 0),
+                'calibration_anomalies': cal.get('calibration_anomalies', []),
                 'name_full': cal.get('name_full', ''),
                 'a254_area': cal.get('a254_area', 0),
                 'a254_doc_ratio': cal.get('a254_doc_ratio', 0),
@@ -4778,7 +4473,9 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
         symmetries = [r.get('symmetry', 0) for r in replicas]
         a254_ratios = [r.get('a254_doc_ratio', 0) for r in replicas]
         shift_secs = [r.get('shift_sec', 0) for r in replicas]
-        quality_scores = [r.get('quality_score', 0) for r in replicas]
+        bigaussian_r2s = [
+            (r.get('bigaussian_doc') or {}).get('r2', 0) for r in replicas
+        ]
 
         # Calcular estadístiques
         mean_area = float(np.mean(areas)) if areas else 0
@@ -4828,7 +4525,7 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
                     'symmetry': symmetries[i] if i < len(symmetries) else 0,
                     'a254_doc_ratio': a254_ratios[i] if i < len(a254_ratios) else 0,
                     'shift_sec': shift_secs[i] if i < len(shift_secs) else 0,
-                    'quality_score': quality_scores[i] if i < len(quality_scores) else 0,
+                    'bigaussian_r2': bigaussian_r2s[i] if i < len(bigaussian_r2s) else 0,
                 }
                 for i in range(len(replicas))
             ]
@@ -4946,15 +4643,9 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
         t_dad_maxs = [(r.get('t_dad_max') or 0) for r in replicas if (r.get('t_dad_max') or 0) > 0]
         mean_t_dad_max = float(np.mean(t_dad_maxs)) if t_dad_maxs else 0.0
 
-        # Anomalies i qualitat (propagar de rèpliques: pitjor cas)
-        quality_scores = [r.get('quality_score', 0) for r in replicas]
-        max_quality_score = max(quality_scores) if quality_scores else 0
-        all_quality_issues = []
+        # Anomalies (propagar de rèpliques: unió)
         all_calibration_anomalies = []
         for r in replicas:
-            for issue in r.get('quality_issues', []):
-                if issue not in all_quality_issues:
-                    all_quality_issues.append(issue)
             for anom in r.get('calibration_anomalies', []):
                 all_calibration_anomalies.append(anom)
         group_has_irregular_top = any(r.get('has_irregular_top', False) for r in replicas)
@@ -5002,15 +4693,22 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
             selected_replicas = [rep_num]
             status = f"Manual R{rep_num}"
 
-        else:  # best_quality
-            sorted_replicas = sorted(replicas, key=lambda x: x.get('quality_score', 0))
+        else:  # best_quality — menys anomalies = millor
+            def _anomaly_weight(rep):
+                return sum(
+                    10 if a.get('severity') == 'blocker' else 1
+                    for a in rep.get('calibration_anomalies', []) if isinstance(a, dict)
+                )
+            sorted_replicas = sorted(replicas, key=_anomaly_weight)
             best = sorted_replicas[0]
-            best_quality = best.get('quality_score', 0)
-            if best_quality >= 100:
+            all_have_blockers = all(
+                any(a.get('severity') == 'blocker' for a in r.get('calibration_anomalies', []) if isinstance(a, dict))
+                for r in replicas
+            )
+            if all_have_blockers:
                 # Totes les rèpliques invàlides — escollir la de MAJOR ÀREA
-                # (una àrea parcial indica límits d'integració curts, mai sobre-integració)
                 best = max(replicas, key=lambda x: x.get('area', 0))
-                selection_reason = f"all_invalid_max_area (best QS={best_quality})"
+                selection_reason = f"all_invalid_max_area"
                 status = f"Rèplica major àrea R{best.get('replica_num', 1)} (RSD {rsd:.1f}%)"
             else:
                 selection_reason = f'rsd_high ({rsd:.1f}% >= 10%)'
@@ -5079,9 +4777,7 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
             # Comparació entre rèpliques
             'replica_comparison': comparison,
 
-            # Anomalies i qualitat (pitjor cas de totes les rèpliques)
-            'quality_score': max_quality_score,
-            'quality_issues': all_quality_issues,
+            # Anomalies (unió de totes les rèpliques)
             'calibration_anomalies': all_calibration_anomalies,
             'has_irregular_top': group_has_irregular_top,
             'has_irregular': group_has_irregular,
