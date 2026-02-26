@@ -1833,10 +1833,22 @@ class CalibratePanel(QWidget):
 
             # Col 15-16: Anomalies + Estat (de calibration_anomalies del catàleg)
             from hpsec_warnings import ANOMALY_CATALOG, classify_anomalies
-            cal_anomalies = khp.get('calibration_anomalies', [])
+            _ignored_cal_codes = {
+                'KHP_MULTI_PEAK', 'KHP_ASYMMETRY', 'KHP_SNR_LOW',
+                'KHP_IRREGULAR_TOP', 'KHP_BASELINE_DRIFT', 'KHP_NO_DAD',
+                'KHP_DOC_GUIDED_BY_254', 'KHP_FWHM_HIGH', 'KHP_RSD_HIGH',
+                'KHP_CR_LOW',
+            }
+            raw_anomalies = khp.get('calibration_anomalies', [])
+            cal_anomalies = [
+                a for a in raw_anomalies
+                if not isinstance(a, dict) or a.get('code', '') not in _ignored_cal_codes
+            ]
 
-            # Fallback: si no hi ha calibration_anomalies, usar quality_score antic
-            if not cal_anomalies:
+            # Fallback: NOMÉS si el JSON original no tenia calibration_anomalies
+            # (JSONs antics pre-ANOMALY_CATALOG). Si en tenia però tots han estat
+            # filtrats, mostrar OK (no regenerar avisos obsolets).
+            if not raw_anomalies:
                 quality, issues = self._calculate_quality_score(khp, signal)
                 # Col 15: Quality Score (backwards compat)
                 item_q = QTableWidgetItem(str(int(quality)))
@@ -2417,6 +2429,13 @@ class CalibratePanel(QWidget):
             })
 
         # Convertir calibration_anomalies (ANOMALY_CATALOG) a warnings_structured
+        # Ignorar codis eliminats (sorollosos)
+        _ignored_cal_codes = {
+            'KHP_MULTI_PEAK', 'KHP_ASYMMETRY', 'KHP_SNR_LOW',
+            'KHP_IRREGULAR_TOP', 'KHP_BASELINE_DRIFT', 'KHP_NO_DAD',
+            'KHP_DOC_GUIDED_BY_254', 'KHP_FWHM_HIGH', 'KHP_RSD_HIGH',
+            'KHP_CR_LOW',
+        }
         anomalies_added = False
         for signal_key in ["khp_data_direct", "khp_data_uib"]:
             signal_data = result.get(signal_key)
@@ -2424,21 +2443,10 @@ class CalibratePanel(QWidget):
                 for rep in self._extract_all_replicas(signal_data):
                     for anom in rep.get('calibration_anomalies', []):
                         if isinstance(anom, dict):
+                            if anom.get('code', '') in _ignored_cal_codes:
+                                continue
                             warnings_structured.append(anom)
                             anomalies_added = True
-
-        # Fallback: quality_issues strings per JSONs antics
-        if not anomalies_added:
-            for signal_name in ["Direct", "UIB"]:
-                signal_issues = issues_by_signal[signal_name]
-                for rep_num, issues in signal_issues.items():
-                    for issue in issues:
-                        warnings_structured.append({
-                            "code": "QUALITY_ISSUE",
-                            "level": "warning",
-                            "message": f"{signal_name} {rep_num}: {issue}",
-                            "sample": f"{signal_name}_{rep_num}",
-                        })
 
         # Determinar warning_level
         max_level = "none"
@@ -3269,25 +3277,9 @@ i determina el time shift necessari per a la quantificació.</p>
         # Amagar UIB si no tenim dades separades
         self.uib_group.setVisible(False)
 
-        # === ACTUALITZAR SECCIÓ DE VALIDACIÓ AMB QUALITY ISSUES ===
-        quality_issues = cal.get('quality_issues', []) or cal.get('calibration_issues', [])
-        quality_score = cal.get('quality_score', 0)
-
-        # Guardar avisos estructurats per l'alternativa (avisos al wizard header)
+        # === ACTUALITZAR SECCIÓ DE VALIDACIÓ ===
+        # quality_issues i quality_score obsolets — ignorar
         alt_warnings = []
-        if quality_issues:
-            for issue in quality_issues:
-                alt_warnings.append({
-                    "code": "ALT_CAL_ISSUE",
-                    "level": "warning",
-                    "message": f"Cal alternativa ({seq_name}): {issue}",
-                })
-        if quality_score > 50:
-            alt_warnings.append({
-                "code": "ALT_CAL_QUALITY",
-                "level": "warning",
-                "message": f"Cal alternativa ({seq_name}): Q={quality_score}",
-            })
         self.validation_group.setVisible(False)
 
         # Actualitzar dades internes (CRÍTIC: RF i shift han de propagar correctament)
