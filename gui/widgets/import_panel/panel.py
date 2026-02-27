@@ -15,11 +15,11 @@ from pathlib import Path
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QLineEdit, QFrame, QTableWidget, QTableWidgetItem,
-    QHeaderView, QMessageBox, QRadioButton, QButtonGroup, QComboBox
+    QFrame, QTableWidget, QTableWidgetItem,
+    QHeaderView, QMessageBox, QComboBox, QApplication
 )
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QFont, QColor, QBrush
+from PySide6.QtGui import QFont, QColor, QBrush, QCursor
 
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
@@ -170,25 +170,10 @@ class ImportPanel(QWidget):
         self._warnings_confirmed_by = None
 
         # Reset UI elements
-        self.path_input.clear()
         self.info_frame.setVisible(False)
         self.table_help.setVisible(False)
         self.samples_table.setRowCount(0)
         self.samples_table.setVisible(False)
-
-        # Reset warnings frame (orfes)
-        if hasattr(self, 'warnings_frame'):
-            self.warnings_frame.setVisible(False)
-        if hasattr(self, 'warnings_label'):
-            self.warnings_label.setText("")
-        if hasattr(self, 'orphans_btn'):
-            self.orphans_btn.setVisible(False)
-        if hasattr(self, 'confirm_btn'):
-            self.confirm_btn.setVisible(False)
-        if hasattr(self, 'refresh_btn'):
-            self.refresh_btn.setVisible(False)
-        if hasattr(self, 'dismiss_btn'):
-            self.dismiss_btn.setVisible(False)
 
         # Mostrar placeholder
         if hasattr(self, 'placeholder'):
@@ -198,30 +183,6 @@ class ImportPanel(QWidget):
         """Configura la interfície del panel."""
         layout = QVBoxLayout(self)
         apply_panel_layout(layout)
-
-        # Camp ocult per compatibilitat (usat internament)
-        self.path_input = QLineEdit()
-        self.path_input.setVisible(False)
-        layout.addWidget(self.path_input)
-
-        # Botons ocults per compatibilitat (accions ara al header del wizard)
-        self.import_btn = QPushButton()
-        self.import_btn.setVisible(False)
-        self.save_btn = QPushButton()
-        self.save_btn.setVisible(False)
-        self.next_btn = QPushButton()
-        self.next_btn.setVisible(False)
-
-        # === MANIFEST INFO (eliminat - redundant amb header del wizard) ===
-        # El nom SEQ ja apareix al header i el botó "Importar" gestiona reimportació
-        self.manifest_frame = QFrame()
-        self.manifest_frame.setVisible(False)  # Mai visible - mantingut per compatibilitat
-        self.manifest_info = QLabel()
-        self.use_manifest_radio = QRadioButton()
-        self.full_import_radio = QRadioButton()
-        self.import_mode_group = QButtonGroup(self)
-
-        # Nota: Avisos es gestionen des del wizard header
 
         # === INFO BARRA (resum injeccions) ===
         self.info_frame = QFrame()
@@ -284,22 +245,6 @@ class ImportPanel(QWidget):
 
         layout.addWidget(self.samples_table, 1)
 
-        # Referència dummy per compatibilitat amb wizard (el wizard l'amaga)
-        self.next_btn = QPushButton()
-        self.next_btn.setVisible(False)
-
-        # Botons legacy (mantinguts com a dummies per compatibilitat)
-        self.warnings_frame = QFrame()
-        self.warnings_frame.setVisible(False)
-        self.confirm_btn = QPushButton()
-        self.confirm_btn.setVisible(False)
-        self.orphans_btn = QPushButton()
-        self.orphans_btn.setVisible(False)
-        self.refresh_btn = QPushButton()
-        self.refresh_btn.setVisible(False)
-        self.dismiss_btn = QPushButton()
-        self.dismiss_btn.setVisible(False)
-
         # === PLACEHOLDER ===
         self.placeholder = QLabel("Preparant importació...")
         self.placeholder.setAlignment(Qt.AlignCenter)
@@ -339,8 +284,7 @@ class ImportPanel(QWidget):
 
     def set_sequence_path(self, path):
         self.seq_path = path
-        self.main_window.seq_path = path  # Actualitzar també el main_window
-        self.path_input.setText(path)
+        self.main_window.seq_path = path
         self._check_manifest()
 
     def load_from_dashboard(self, seq_path):
@@ -368,8 +312,6 @@ class ImportPanel(QWidget):
         self._warnings_confirmed_by = result.get("warnings_confirmed_by", None)
 
         self._show_results(result)
-        self._update_next_button_state()
-        self.save_btn.setEnabled(True)
         self.main_window.enable_tab(1)
         self.main_window.set_status("Importació carregada", 3000)
 
@@ -387,25 +329,13 @@ class ImportPanel(QWidget):
 
     def _check_manifest(self):
         self.existing_manifest = load_manifest(self.seq_path)
-
-        if self.existing_manifest:
-            self._show_manifest_info()
-        else:
-            self.manifest_frame.setVisible(False)
-
-        self.import_btn.setEnabled(True)
         self.samples_table.setVisible(False)
         self.table_help.setVisible(False)
         self.info_frame.setVisible(False)
-        self.warnings_frame.setVisible(False)
         self.placeholder.setVisible(True)
-        self.next_btn.setEnabled(False)
-        self.save_btn.setEnabled(False)
 
     def _show_manifest_info(self):
-        """Registra info del manifest (frame eliminat - info ja al header wizard)."""
-        # Mantingut per compatibilitat però ja no mostra res
-        # La info del SEQ es mostra al header del ProcessWizardPanel
+        """Info del manifest — la info del SEQ es mostra al header del ProcessWizardPanel."""
         pass
 
     def _auto_load_from_manifest(self):
@@ -458,7 +388,6 @@ class ImportPanel(QWidget):
 
     def _on_import_finished(self, result):
         self.main_window.show_progress(-1)
-        self.import_btn.setEnabled(True)
         self.placeholder.setVisible(False)
 
         if not result.get("success"):
@@ -528,8 +457,6 @@ class ImportPanel(QWidget):
         except Exception as e:
             logger.warning(f"No s'ha pogut generar report d'importació: {e}")
 
-        self._update_next_button_state()
-        self.save_btn.setEnabled(True)
         self.main_window.enable_tab(1)
         self.main_window.set_status("Importació completada", 5000)
 
@@ -551,27 +478,40 @@ class ImportPanel(QWidget):
         if data_mode not in ["DUAL", "UIB"]:
             return
 
-        # Verificar si la sensibilitat UIB està definida
+        # Verificar si la sensibilitat UIB ja ve del backend (MasterFile 0-INFO B5)
         uib_sens = result.get("uib_sensitivity")
-        if uib_sens is not None and uib_sens not in ["None", "", None]:
+        if uib_sens is not None and str(uib_sens).strip() not in ("", "None"):
+            logger.debug(f"Sensibilitat UIB del MasterFile: {uib_sens}")
             return
 
-        # Preguntar a l'usuari (camp lliure)
+        # Si el manifest existent ja té la sensibilitat (preguntada anteriorment)
+        if self.existing_manifest:
+            manifest_sens = (self.existing_manifest.get("sequence") or {}).get("uib_sensitivity")
+            if manifest_sens is not None and str(manifest_sens).strip() not in ("", "None"):
+                result["uib_sensitivity"] = float(manifest_sens)
+                logger.debug(f"Sensibilitat UIB del manifest: {manifest_sens}")
+                return
+
+        # No s'ha trobat — preguntar a l'usuari
         from PySide6.QtWidgets import QInputDialog
         text, ok = QInputDialog.getText(
             self,
             "Sensibilitat UIB",
-            "Indica la sensibilitat UIB (ex: 700, 1000, o deixa buit si no aplica):",
+            "No s'ha trobat la sensibilitat UIB al MasterFile (0-INFO B5).\n"
+            "Indica-la (ex: 700, 1000) o deixa buit si no aplica:",
             text=""
         )
 
         if ok and text.strip():
-            sens_value = text.strip()
+            try:
+                sens_value = float(text.strip())
+            except ValueError:
+                logger.warning(f"Valor UIB sensitivity no numèric: {text}")
+                return
 
-            # Actualitzar el resultat
             result["uib_sensitivity"] = sens_value
 
-            # Actualitzar el MasterFile si existeix
+            # Escriure al MasterFile per no tornar a preguntar
             master_file = result.get("master_file")
             if master_file and os.path.exists(master_file):
                 try:
@@ -581,13 +521,12 @@ class ImportPanel(QWidget):
                         ws = wb["0-INFO"]
                         ws["B5"] = sens_value
                         wb.save(master_file)
-                        logger.debug(f"Actualitzat UIB sensitivity a MasterFile: {sens_value}")
+                        logger.info(f"Sensibilitat UIB escrita al MasterFile: {sens_value}")
                 except Exception as e:
                     logger.warning(f"No s'ha pogut actualitzar MasterFile: {e}")
 
     def _on_import_error(self, error_msg):
         self.main_window.show_progress(-1)
-        self.import_btn.setEnabled(True)
         QMessageBox.critical(self, "Error", f"Error durant la importació:\n{error_msg}")
 
     # =========================================================================
@@ -1209,6 +1148,32 @@ class ImportPanel(QWidget):
 
         self.samples_table.setHorizontalHeaderLabels(headers)
 
+        # Tooltips capçaleres
+        header_tooltips = {
+            self.COL_INJ: "Número d'injecció al MasterFile",
+            self.COL_MOSTRA: "Nom de la mostra (normalitzat)",
+            self.COL_TIPUS: "Tipus: MOSTRA, KHP, BLANC, NETEJA, PR. Doble-clic per editar",
+            self.COL_REP: "Número de rèplica",
+            self.COL_INJ_VOL: "Volum d'injecció (µL). Font: capçalera MasterFile o heurístic col-13",
+            self.COL_DIRECT_PTS: "Punts del cromatograma DOC Direct",
+            self.COL_DIRECT_FILE: "Rang de files TOC assignades (row_start – row_end)",
+        }
+        if self._data_mode != "DIRECT":
+            header_tooltips[self.COL_UIB_PTS_ACTUAL] = "Punts UIB (després de downsample a cadència DOC)"
+            header_tooltips[self.COL_UIB_FILE_ACTUAL] = "Fitxer UIB assignat. Doble-clic per canviar"
+        header_tooltips[self.COL_DAD_PTS_ACTUAL] = "Punts DAD (Export3D o CSV)"
+        header_tooltips[self.COL_DAD_FILE_ACTUAL] = "Fitxer DAD assignat. Doble-clic per canviar"
+        header_tooltips[self.COL_SEM_DOC] = "Estat DOC: ✔ dades OK, ✖ sense dades"
+        if self.COL_SEM_UIB is not None:
+            header_tooltips[self.COL_SEM_UIB] = "Estat UIB: ✔ dades OK, ▲ revisar, ✖ falta fitxer"
+        header_tooltips[self.COL_SEM_DAD] = "Estat DAD: ✔ dades OK, ▲ revisar, ✖ falta fitxer"
+
+        h = self.samples_table.horizontalHeader()
+        for col_idx, tip in header_tooltips.items():
+            if col_idx is not None:
+                # QHeaderView tooltips via model
+                self.samples_table.horizontalHeaderItem(col_idx).setToolTip(tip)
+
         # Configurar delegates
         type_delegate = ComboBoxDelegate(list(self.sample_types_config.keys()), self)
         self.samples_table.setItemDelegateForColumn(self.COL_TIPUS, type_delegate)
@@ -1375,7 +1340,7 @@ class ImportPanel(QWidget):
                 self._update_next_button_state()
 
     def _count_file_points(self, filename, file_type):
-        """Compta el nombre de punts d'un fitxer orfe."""
+        """Compta el nombre de punts d'un fitxer (comptatge ràpid per línies)."""
         if not filename or filename in ["-", "(cap)"]:
             return 0
 
@@ -1391,41 +1356,21 @@ class ImportPanel(QWidget):
             return 0
 
         try:
-            import pandas as pd
-            # DAD files sovint són UTF-16, provar primer
-            encodings = ['utf-16', 'utf-8', 'latin-1', 'cp1252']
-            best_count = 0
+            # Comptatge ràpid: llegir en binari i comptar línies (encoding-agnostic)
+            with open(full_path, 'rb') as f:
+                # Detectar UTF-16 BOM per ajustar comptatge
+                header = f.read(2)
+                is_utf16 = header in (b'\xff\xfe', b'\xfe\xff')
+                f.seek(0)
+                n_lines = sum(1 for _ in f)
 
-            for encoding in encodings:
-                try:
-                    count = 0
-                    if file_type == "uib":
-                        df = pd.read_csv(full_path, sep=None, engine='python',
-                                        encoding=encoding)
-                        count = len(df)
-                    elif file_type == "dad":
-                        if full_path.lower().endswith('.csv'):
-                            df = pd.read_csv(full_path, sep=None, engine='python',
-                                            encoding=encoding)
-                            count = len(df)
-                        else:
-                            with open(full_path, 'r', encoding=encoding) as f:
-                                lines = f.readlines()
-                            data_lines = [l for l in lines if l.strip() and not l.startswith('#')]
-                            count = max(0, len(data_lines) - 1)
-
-                    # Guardar el millor resultat (més files = encoding correcte)
-                    if count > best_count:
-                        best_count = count
-                        # Si tenim un bon nombre de punts, retornar
-                        if count > 100:
-                            return count
-                except (UnicodeDecodeError, UnicodeError):
-                    continue
-                except Exception:
-                    continue
-
-            return best_count
+            if is_utf16:
+                # UTF-16 duplica cada caràcter, però line endings es detecten bé
+                # Restar header (1 línia) → punts de dades
+                return max(0, n_lines - 1)
+            else:
+                # CSV normal: restar header
+                return max(0, n_lines - 1)
 
         except Exception as e:
             logger.warning(f"No s'ha pogut comptar punts de {filename}: {e}")
@@ -1445,6 +1390,14 @@ class ImportPanel(QWidget):
         if not filename or filename in ["-", "(cap)"]:
             return
 
+        QApplication.setOverrideCursor(QCursor(Qt.WaitCursor))
+        try:
+            self._load_and_store_file_data_impl(filename, file_type, sample_name, replica)
+        finally:
+            QApplication.restoreOverrideCursor()
+
+    def _load_and_store_file_data_impl(self, filename, file_type, sample_name, replica):
+        """Implementació interna de _load_and_store_file_data (sense cursor)."""
         logger.debug(f"_load_and_store: Intentant carregar {filename} per {sample_name} R{replica}")
 
         # Obtenir referència a les dades de la rèplica primer
@@ -1780,11 +1733,6 @@ class ImportPanel(QWidget):
         if unassigned_dad > 0:
             warnings_list.append(f"{unassigned_dad} fitxers DAD sense assignar")
 
-        # Nota: Avisos es gestionen des del wizard header
-
-        # Amagar elements legacy
-        self.warnings_frame.setVisible(False)
-
     def _get_assigned_files_from_table(self, include_path_variants=False):
         """Obté els fitxers assignats des de la taula.
 
@@ -1833,6 +1781,16 @@ class ImportPanel(QWidget):
         """Confirma tots els suggeriments automàtics i carrega les dades."""
         confirmed = 0
         self.samples_table.blockSignals(True)
+        QApplication.setOverrideCursor(QCursor(Qt.WaitCursor))
+
+        try:
+            self._confirm_all_suggestions_impl()
+        finally:
+            QApplication.restoreOverrideCursor()
+
+    def _confirm_all_suggestions_impl(self):
+        """Implementació interna de _confirm_all_suggestions."""
+        confirmed = 0
 
         for row in range(self.samples_table.rowCount()):
             # Obtenir nom i rèplica de la fila
@@ -1854,10 +1812,10 @@ class ImportPanel(QWidget):
                         item.setBackground(QBrush(MATCH_COLORS["EXACT"]))
                         self._match_types[(row, self.COL_UIB_FILE_ACTUAL)] = "CONFIRMED"
                         confirmed += 1
-                        # Carregar dades del fitxer
+                        # Carregar dades del fitxer (sense cursor extra — ja el tenim)
                         filename = item.data(Qt.UserRole)
                         if filename:
-                            self._load_and_store_file_data(filename, "uib", sample_name, replica)
+                            self._load_and_store_file_data_impl(filename, "uib", sample_name, replica)
                             # Guardar a _manual_assignments per persistència
                             key = (sample_name, replica)
                             self._manual_assignments.setdefault(key, {})[self.COL_UIB_FILE_ACTUAL] = filename
@@ -1869,13 +1827,17 @@ class ImportPanel(QWidget):
                     item.setBackground(QBrush(MATCH_COLORS["EXACT"]))
                     self._match_types[(row, self.COL_DAD_FILE_ACTUAL)] = "CONFIRMED"
                     confirmed += 1
-                    # Carregar dades del fitxer
+                    # Carregar dades del fitxer (sense cursor extra — ja el tenim)
                     filename = item.data(Qt.UserRole)
                     if filename:
-                        self._load_and_store_file_data(filename, "dad", sample_name, replica)
+                        self._load_and_store_file_data_impl(filename, "dad", sample_name, replica)
                         # Guardar a _manual_assignments per persistència
                         key = (sample_name, replica)
                         self._manual_assignments.setdefault(key, {})[self.COL_DAD_FILE_ACTUAL] = filename
+
+            # Processar events cada 5 files per mantenir UI responsiva
+            if row % 5 == 0:
+                QApplication.processEvents()
 
         self.samples_table.blockSignals(False)
 
@@ -1901,7 +1863,6 @@ class ImportPanel(QWidget):
                 manifest_path = save_import_manifest(self.imported_data)
                 logger.debug(f"confirm: Manifest guardat a: {manifest_path}")
                 self.main_window.mark_manifest_saved()
-                self.warnings_frame.setVisible(False)
                 QMessageBox.information(self, "Confirmat", f"S'han confirmat {confirmed} suggeriments i s'han guardat.")
             except Exception as e:
                 import traceback
@@ -1921,16 +1882,8 @@ class ImportPanel(QWidget):
         self.samples_table.blockSignals(False)
 
     def _update_next_button_state(self):
-        """Actualitza l'estat del botó Següent."""
-        # Verificar si hi ha FUZZY sense verificar
-        if self._unverified_fuzzy:
-            self.next_btn.setEnabled(False)
-            self.next_btn.setToolTip(
-                f"Cal verificar {len(self._unverified_fuzzy)} assignacions (taronja)"
-            )
-        else:
-            self.next_btn.setEnabled(True)
-            self.next_btn.setToolTip("Tot correcte. Clic per avançar.")
+        """Actualitza l'estat intern de verificació FUZZY."""
+        pass  # El wizard controla la navegació
 
     def _refresh_orphan_count(self):
         """Actualitza el comptador d'orfes i la llista després d'assignacions manuals."""
@@ -1949,7 +1902,6 @@ class ImportPanel(QWidget):
     def _dismiss_orphan_warning(self):
         """Marca l'avís d'orfes com a revisat i amaga la barra d'avisos."""
         self._orphan_warning_dismissed = True
-        self.warnings_frame.setVisible(False)
         # Guardar al manifest que l'avís ha estat revisat
         if self.imported_data:
             self.imported_data["orphan_warning_dismissed"] = True
@@ -1967,14 +1919,18 @@ class ImportPanel(QWidget):
         # Preparar dades amb punts per cada fitxer orfe
         orphans_with_info = {"uib": [], "dad": []}
 
-        for file_type in ["uib", "dad"]:
-            files = self._orphan_files.get(file_type, [])
-            for f in sorted(files):  # Ordenar alfabèticament
-                n_points = self._count_file_points(f, file_type)
-                orphans_with_info[file_type].append({
-                    "file": f,
-                    "n_points": n_points
-                })
+        QApplication.setOverrideCursor(QCursor(Qt.WaitCursor))
+        try:
+            for file_type in ["uib", "dad"]:
+                files = self._orphan_files.get(file_type, [])
+                for f in sorted(files):
+                    n_points = self._count_file_points(f, file_type)
+                    orphans_with_info[file_type].append({
+                        "file": f,
+                        "n_points": n_points
+                    })
+        finally:
+            QApplication.restoreOverrideCursor()
 
         dialog = OrphanFilesDialog(self, orphans_with_info)
         dialog.exec()

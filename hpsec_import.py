@@ -325,15 +325,6 @@ def classify_reference_standard(sample_name, config=None):
     return None
 
 
-def is_reference_standard(sample_name, config=None):
-    """
-    Verifica si una mostra és un Patró de Referència (qualsevol subtipus).
-
-    Returns:
-        True si és un patró de referència (PR_C, PR_I o PR_N)
-    """
-    return classify_reference_standard(sample_name, config) is not None
-
 
 def obtenir_seq(folder):
     """Extreu ID de seqüència del nom de carpeta."""
@@ -779,27 +770,6 @@ def extract_doc_from_masterfile(toc_df, row_start, row_end, t_start=None, detect
     return df_doc
 
 
-def extract_doc_from_master(df_toc, row_ini, row_fi, start_dt, detect_timeouts=True,
-                            max_duration_min=None):
-    """
-    Extreu segment DOC del format antic de master.
-
-    Args:
-        df_toc: DataFrame de 2-TOC
-        row_ini: Fila inicial
-        row_fi: Fila final
-        start_dt: Datetime d'inici
-        detect_timeouts: Si True, detecta timeouts
-        max_duration_min: Durada màxima en minuts (per truncar última mostra)
-
-    Returns:
-        Si detect_timeouts=False: DataFrame amb columns "time (min)" i "DOC"
-        Si detect_timeouts=True: tuple (DataFrame, timeout_info dict)
-    """
-    # Reutilitzar la funció del nou format
-    return extract_doc_from_masterfile(df_toc, row_ini, row_fi, start_dt, detect_timeouts,
-                                       max_duration_min)
-
 
 # =============================================================================
 # LECTURA FITXERS UIB (DOC)
@@ -870,9 +840,22 @@ def llegir_dad_export3d(path, wavelengths_to_keep=None):
     Returns:
         (DataFrame, status): DataFrame amb temps i wavelengths, status string
     """
+    # Construir filtre usecols per evitar parsejar columnes innecessàries
+    wl_set = set(int(w) for w in wavelengths_to_keep) if wavelengths_to_keep else None
+
+    def _col_filter(col_name):
+        """Retorna True per columnes a conservar (temps + wavelengths seleccionades)."""
+        try:
+            v = float(str(col_name).strip())
+            return int(v) in wl_set
+        except (ValueError, TypeError):
+            return True  # Conservar columnes no numèriques (temps)
+
     for enc in ["utf-16", "utf-8"]:
         try:
-            df = pd.read_csv(path, sep=",", encoding=enc, engine="python")
+            usecols = _col_filter if wl_set else None
+            df = pd.read_csv(path, sep=",", encoding=enc, engine="python",
+                             usecols=usecols)
             if df.shape[1] == 0:
                 return pd.DataFrame(), "Buit"
             cols = list(df.columns)
@@ -886,11 +869,6 @@ def llegir_dad_export3d(path, wavelengths_to_keep=None):
                 except Exception:
                     out_cols.append(sc)
             df.columns = out_cols
-            # Filtrar a wavelengths seleccionades (estalvi memòria ~95%)
-            if wavelengths_to_keep:
-                keep = ["time (min)"] + [str(w) for w in wavelengths_to_keep if str(w) in out_cols]
-                if len(keep) > 1:  # Almenys 1 wavelength trobada
-                    df = df[keep]
             return df, f"OK{' (UTF-8)' if enc == 'utf-8' else ''}"
         except Exception:
             continue
@@ -4230,6 +4208,109 @@ def load_manifest(seq_path):
     return None
 
 
+# =============================================================================
+# HELPERS COMPARTITS: càrrega DOC Direct / UIB
+# =============================================================================
+
+def _load_doc_direct(toc_df, row_start, row_end, mode, config):
+    """Carrega DOC Direct des del MasterFile amb baseline i y_net.
+
+    Args:
+        toc_df: DataFrame 2-TOC
+        row_start, row_end: rang de files
+        mode: "COLUMN" o "BP"
+        config: dict configuració
+
+    Returns:
+        dict amb {t, y, y_net, baseline, timeout_info, ...} o None si falla
+    """
+    if toc_df is None or row_start is None or row_end is None:
+        return None
+    try:
+        max_dur = config.get("max_duration_min", 80.0)
+        df_doc, timeout_info = extract_doc_from_masterfile(
+            toc_df, row_start, row_end,
+            t_start=None, detect_timeouts=True,
+            max_duration_min=max_dur
+        )
+        if df_doc is None or df_doc.empty:
+            return None
+        t_direct = df_doc["time (min)"].values
+        y_direct = df_doc["DOC"].values
+        baseline = get_baseline_value(t_direct, y_direct, mode=mode)
+        y_net = np.array(y_direct) - baseline
+        return {
+            "path": "MasterFile:2-TOC",
+            "t": t_direct,
+            "y": y_direct,
+            "row_start": row_start,
+            "row_end": row_end,
+            "n_points": len(t_direct),
+            "timeout_info": timeout_info,
+            "y_net": y_net,
+            "baseline": baseline,
+        }
+    except Exception as e:
+        logger.warning("_load_doc_direct: %s", e)
+        return None
+
+
+def _load_uib_csv(uib_file, seq_path, mode):
+    """Carrega UIB CSV amb downsample i baseline.
+
+    Args:
+        uib_file: nom del fitxer UIB
+        seq_path: path de la seqüència
+        mode: "COLUMN" o "BP"
+
+    Returns:
+        dict amb {t, y, y_net, baseline, df, ...} o None si falla
+    """
+    if not uib_file:
+        return None
+
+    # Buscar fitxer a CSV/ o arrel
+    uib_path = os.path.join(seq_path, "CSV", uib_file)
+    if not os.path.exists(uib_path):
+        for subdir in ["", "csv"]:
+            test_path = os.path.join(seq_path, subdir, uib_file) if subdir else os.path.join(seq_path, uib_file)
+            if os.path.exists(test_path):
+                uib_path = test_path
+                break
+
+    if not os.path.exists(uib_path):
+        return None
+
+    try:
+        df_uib, status = llegir_doc_uib(uib_path)
+        if df_uib.empty or "OK" not in status:
+            return None
+
+        t_uib = df_uib["time (min)"].values
+        y_uib = df_uib["DOC"].values
+
+        # Downsample a cadència DOC Direct
+        if len(t_uib) > 10:
+            t_uib, y_uib = downsample_to_cadence(t_uib, y_uib)
+
+        baseline = get_baseline_value(t_uib, y_uib, mode=mode)
+        y_net = np.array(y_uib) - baseline
+
+        return {
+            "path": uib_path,
+            "df": df_uib,
+            "t": t_uib,
+            "y": y_uib,
+            "file": uib_file,
+            "n_points": len(t_uib),
+            "y_net": y_net,
+            "baseline": baseline,
+        }
+    except Exception as e:
+        logger.warning("_load_uib_csv: %s — %s", uib_file, e)
+        return None
+
+
 def import_from_manifest(seq_path, manifest=None, config=None, progress_callback=None,
                          load_data=True):
     """
@@ -4452,37 +4533,11 @@ def import_from_manifest(seq_path, manifest=None, config=None, progress_callback
                         result["warnings"].append(f"⚠️ {sample_name} R{rep_num}: Fila DOC no definida al manifest")
 
                 # Intentar llegir les dades reals si tenim MasterFile
-                if toc_df is not None and row_start is not None and row_end is not None:
-                    try:
-                        max_dur = config.get("max_duration_min", 80.0)
-                        df_doc, timeout_info = extract_doc_from_masterfile(
-                            toc_df, row_start, row_end,
-                            t_start=None, detect_timeouts=True,
-                            max_duration_min=max_dur
-                        )
-                        if df_doc is not None and not df_doc.empty:
-                            t_direct = df_doc["time (min)"].values
-                            y_direct = df_doc["DOC"].values
-
-                            # Calcular baseline
-                            mode = "BP" if result["method"] == "BP" else "COLUMN"
-                            baseline = get_baseline_value(t_direct, y_direct, mode=mode)
-                            y_net = np.array(y_direct) - baseline
-
-                            rep_data["direct"] = {
-                                "path": f"MasterFile:2-TOC",
-                                "t": t_direct,
-                                "y": y_direct,
-                                "row_start": row_start,
-                                "row_end": row_end,
-                                "n_points": len(t_direct),
-                                "timeout_info": timeout_info,
-                                "y_net": y_net,
-                                "baseline": baseline,
-                            }
-                            rep_data["has_data"] = True
-                    except Exception as e:
-                        result["warnings"].append(f"{sample_name} rep {rep_num} Direct: {e}")
+                mode = "BP" if result["method"] == "BP" else "COLUMN"
+                doc_result = _load_doc_direct(toc_df, row_start, row_end, mode, config)
+                if doc_result:
+                    rep_data["direct"] = doc_result
+                    rep_data["has_data"] = True
 
             # === DOC UIB ===
             uib_info = rep_info.get("uib")
@@ -4504,45 +4559,12 @@ def import_from_manifest(seq_path, manifest=None, config=None, progress_callback
                 }
 
                 if uib_file and load_data:
-                    # Buscar fitxer UIB (només si load_data=True)
-                    uib_path = os.path.join(seq_path, "CSV", uib_file)
-                    if not os.path.exists(uib_path):
-                        # Provar altres ubicacions
-                        for subdir in ["", "CSV", "csv"]:
-                            test_path = os.path.join(seq_path, subdir, uib_file) if subdir else os.path.join(seq_path, uib_file)
-                            if os.path.exists(test_path):
-                                uib_path = test_path
-                                break
-
-                    if os.path.exists(uib_path):
-                        try:
-                            df_uib, status = llegir_doc_uib(uib_path)
-                            if not df_uib.empty and "OK" in status:
-                                t_uib = df_uib["time (min)"].values
-                                y_uib = df_uib["DOC"].values
-
-                                # Downsample UIB a cadència DOC Direct
-                                if len(t_uib) > 10:
-                                    t_uib, y_uib = downsample_to_cadence(t_uib, y_uib)
-
-                                # Baseline
-                                mode = "BP" if result["method"] == "BP" else "COLUMN"
-                                baseline = get_baseline_value(t_uib, y_uib, mode=mode)
-                                y_net = np.array(y_uib) - baseline
-
-                                rep_data["uib"] = {
-                                    "path": uib_path,
-                                    "df": df_uib,
-                                    "t": t_uib,
-                                    "y": y_uib,
-                                    "file": uib_file,
-                                    "n_points": len(t_uib),
-                                    "y_net": y_net,
-                                    "baseline": baseline,
-                                }
-                                rep_data["has_data"] = True
-                        except Exception as e:
-                            result["warnings"].append(f"{sample_name} rep {rep_num} UIB: {e}")
+                    mode = "BP" if result["method"] == "BP" else "COLUMN"
+                    uib_result = _load_uib_csv(uib_file, seq_path, mode)
+                    if uib_result:
+                        uib_result["manual_assignment"] = uib_info.get("manual_assignment", False)
+                        rep_data["uib"] = uib_result
+                        rep_data["has_data"] = True
 
             # === DAD ===
             dad_info = rep_info.get("dad")
@@ -4900,74 +4922,23 @@ def ensure_data_loaded(imported_data, config=None, progress_callback=None):
             # === DOC Direct ===
             direct = rep_data.get("direct")
             if direct and direct.get("t") is None and direct.get("row_start") is not None:
-                row_start = direct["row_start"]
-                row_end = direct["row_end"]
-                if toc_df is not None and row_start is not None and row_end is not None:
-                    try:
-                        max_dur = config.get("max_duration_min", 80.0)
-                        df_doc, timeout_info = extract_doc_from_masterfile(
-                            toc_df, row_start, row_end,
-                            t_start=None, detect_timeouts=True,
-                            max_duration_min=max_dur
-                        )
-                        if df_doc is not None and not df_doc.empty:
-                            t_direct = df_doc["time (min)"].values
-                            y_direct = df_doc["DOC"].values
-                            baseline = get_baseline_value(t_direct, y_direct, mode=mode)
-                            y_net = np.array(y_direct) - baseline
-
-                            rep_data["direct"] = {
-                                "path": f"MasterFile:2-TOC",
-                                "t": t_direct,
-                                "y": y_direct,
-                                "row_start": row_start,
-                                "row_end": row_end,
-                                "n_points": len(t_direct),
-                                "timeout_info": timeout_info,
-                                "y_net": y_net,
-                                "baseline": baseline,
-                            }
-                            rep_data["has_data"] = True
-                    except Exception as e:
-                        logger.warning("ensure_data_loaded: %s R%s Direct: %s", sample_name, rep_num, e)
+                doc_result = _load_doc_direct(
+                    toc_df, direct["row_start"], direct["row_end"], mode, config
+                )
+                if doc_result:
+                    rep_data["direct"] = doc_result
+                    rep_data["has_data"] = True
 
             # === DOC UIB ===
             uib = rep_data.get("uib")
             if uib and uib.get("t") is None:
                 uib_file = uib.get("file", "")
                 if uib_file:
-                    uib_path = os.path.join(seq_path, "CSV", uib_file)
-                    if not os.path.exists(uib_path):
-                        for subdir in ["", "CSV", "csv"]:
-                            test_path = os.path.join(seq_path, subdir, uib_file) if subdir else os.path.join(seq_path, uib_file)
-                            if os.path.exists(test_path):
-                                uib_path = test_path
-                                break
-                    if os.path.exists(uib_path):
-                        try:
-                            df_uib, status = llegir_doc_uib(uib_path)
-                            if not df_uib.empty and "OK" in status:
-                                t_uib = df_uib["time (min)"].values
-                                y_uib = df_uib["DOC"].values
-                                # Downsample UIB a cadència DOC Direct
-                                if len(t_uib) > 10:
-                                    t_uib, y_uib = downsample_to_cadence(t_uib, y_uib)
-                                baseline = get_baseline_value(t_uib, y_uib, mode=mode)
-                                y_net = np.array(y_uib) - baseline
-                                rep_data["uib"] = {
-                                    "path": uib_path,
-                                    "df": df_uib,
-                                    "t": t_uib,
-                                    "y": y_uib,
-                                    "file": uib_file,
-                                    "n_points": len(t_uib),
-                                    "y_net": y_net,
-                                    "baseline": baseline,
-                                    "manual_assignment": uib.get("manual_assignment", False),
-                                }
-                                rep_data["has_data"] = True
-                        except Exception as e:
-                            logger.warning("ensure_data_loaded: %s R%s UIB: %s", sample_name, rep_num, e)
+                    uib_result = _load_uib_csv(uib_file, seq_path, mode)
+                    if uib_result:
+                        uib_result["manual_assignment"] = uib.get("manual_assignment", False)
+                        rep_data["uib"] = uib_result
+                        rep_data["has_data"] = True
 
             # === DAD ===
             dad = rep_data.get("dad")
