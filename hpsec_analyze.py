@@ -96,9 +96,7 @@ from hpsec_calibrate import (
 
 # Import sistema d'avisos estructurats
 from hpsec_warnings import (
-    create_warning, get_max_warning_level, WarningLevel,
-    migrate_warnings_list,
-    # Anomaly catalog system
+    get_max_warning_level, WarningLevel,
     create_anomaly, get_anomaly_codes, has_anomaly, classify_anomalies,
     normalize_anomalies, mark_repaired, get_max_anomaly_severity,
     ANOMALY_CATALOG, CRITICAL_ANOMALIES,
@@ -1469,7 +1467,7 @@ def quantify_sample(sample_result, calibration_data, mode="COLUMN", seq_date=Non
             result["concentration_ppm"] = float(ppm_direct)
             result["calibration_source"] = "GLOBAL"
             result["rf_mass_cal_used"] = rf_mass_direct
-            result["intercept"] = intercept
+            result["intercept"] = intercept_direct
         else:
             # Fallback: usar RF local (àrea/ppm) si disponible — SENSE INTERCEPT
             logger.warning("quantify_sample: calibració global no disponible per %s, "
@@ -1752,7 +1750,11 @@ def analyze_sample(sample_data, calibration_data=None, config=None):
     timeout_info = detect_timeout(t_doc, is_bp=is_bp)
     timeout_positions = timeout_info.get("t_positions", [])
 
-    if timeout_info.get("n_timeouts", 0) > 0:
+    # Propagar flag reparació timestamps TOC (de la importació)
+    if sample_data.get("toc_minute_precision"):
+        timeout_info["toc_minute_precision"] = True
+
+    if timeout_info.get("n_timeouts", 0) > 0 or timeout_info.get("toc_minute_precision"):
         result["timeout_info"] = timeout_info
 
     # Estimar timeout per UIB (si DUAL)
@@ -2190,7 +2192,7 @@ def _flatten_samples_for_processing(imported_data, data_mode="DUAL"):
     samples = []
     khp_samples = []
     control_samples = []  # Kept empty for backward compat (result dict still has the key)
-    light_samples = []    # BLANK + CONTROL → lightweight analysis
+    light_samples = []    # CONTROL → lightweight analysis (BLANK ara va a samples regulars)
 
     # Sensibilitat UIB (700 o 1000 ppb) — per detectar saturació
     uib_sensitivity = imported_data.get("uib_sensitivity")
@@ -2213,6 +2215,13 @@ def _flatten_samples_for_processing(imported_data, data_mode="DUAL"):
                 "injection_index": inj_info.get("line_num"),  # Ordre d'injecció al MasterFile
                 "uib_sensitivity": uib_sensitivity,  # ppb (700/1000) per detecció saturació
             }
+
+            # Propagar flag reparació timestamps TOC
+            direct = rep_data.get("direct", {})
+            if isinstance(direct, dict):
+                ti = direct.get("timeout_info", {})
+                if isinstance(ti, dict) and ti.get("toc_minute_precision"):
+                    flat_sample["toc_minute_precision"] = True
 
             # Extreure dades segons data_mode (DUAL, DIRECT, UIB)
             uib = rep_data.get("uib", {})
@@ -2298,12 +2307,54 @@ def _flatten_samples_for_processing(imported_data, data_mode="DUAL"):
             # Classificar segons tipus
             if sample_type == "KHP":
                 khp_samples.append(flat_sample)
-            elif sample_type in ("BLANK", "CONTROL"):
+            elif sample_type == "CONTROL":
                 light_samples.append(flat_sample)
             else:
                 samples.append(flat_sample)
 
     return samples, khp_samples, control_samples, light_samples
+
+
+# =============================================================================
+# EXCLUSIÓ DE QUANTIFICACIÓ PER TIPOLOGIA DE MOSTRA
+# =============================================================================
+
+# Mapping sample_type → config key per consultar el camp "quantify"
+_PR_TYPE_TO_CONFIG = {
+    "PR_C": "PATRÓ_REF_C",
+    "PR_I": "PATRÓ_REF_I",
+    "PR_N": "PATRÓ_REF_N",
+}
+
+
+def _should_skip_quantification(sample_name, config=None, sample_type=None):
+    """
+    Comprova si una mostra s'ha d'excloure de la quantificació ppm.
+
+    Per defecte TOT es quantifica. S'exclou si el sample_type té
+    ``quantify: false`` al config (p.ex. PATRÓ_REF_I per inorgànics).
+
+    Args:
+        sample_name: Nom de la mostra (per logging)
+        config: Configuració (si None, es llegeix de get_config())
+        sample_type: Tipologia assignada a import ("PR_C", "PR_I", "PR_N", "SAMPLE", ...)
+
+    Returns:
+        True si s'ha de saltar la quantificació
+    """
+    if sample_type is None:
+        return False
+
+    config_key = _PR_TYPE_TO_CONFIG.get(sample_type)
+    if not config_key:
+        return False  # SAMPLE, BLANK, KHP, etc. → sempre quantificar
+
+    if config is None:
+        config = get_config()
+
+    pr_config = config.get("sample_types", config_key, default={})
+    # Per defecte quantificar; només skip si explícitament quantify=false
+    return pr_config.get("quantify", True) is False
 
 
 # =============================================================================
@@ -2314,32 +2365,27 @@ def _generate_analysis_warnings(result: dict) -> list:
     """
     Genera avisos estructurats a partir del resultat d'anàlisi.
 
-    Ara les anomalies ja són dicts estructurats des de l'origen (create_anomaly).
-    Aquesta funció agrega totes les anomalies de totes les rèpliques + comparacions,
-    i afegeix errors de nivell de seqüència.
+    Tots els avisos usen create_anomaly() (font única: ANOMALY_CATALOG).
 
     Args:
         result: Dict del resultat de analyze_sequence()
 
     Returns:
-        Llista d'avisos estructurats (mix de anomaly dicts + warning dicts)
+        Llista d'avisos estructurats (dicts ANOMALY_CATALOG)
     """
     warnings = []
 
-    # 1. Errors crítics de seqüència (BLOCKER) — no són anomalies per-rèplica
+    # 1. Errors crítics de seqüència (BLOCKER)
     for error in result.get("errors", []):
         if "calibr" in error.lower():
-            warnings.append(create_warning(
-                code="ANA_NO_CALIBRATION",
-                stage="analyze",
-            ))
+            warnings.append(create_anomaly("ANA_NO_CALIBRATION"))
         else:
-            warnings.append(create_warning(
-                code="ANA_ERROR",
-                level=WarningLevel.BLOCKER,
-                message=error,
-                stage="analyze",
-            ))
+            anomaly = create_anomaly(
+                "ANA_NO_CALIBRATION",
+                details={"message": error},
+            )
+            anomaly["message"] = error
+            warnings.append(anomaly)
 
     # 2. Mostres buides
     n_empty = 0
@@ -2349,22 +2395,44 @@ def _generate_analysis_warnings(result: dict) -> list:
             n_empty += 1
 
     if n_empty > 0:
-        warnings.append(create_warning(
-            code="ANA_EMPTY_SAMPLES",
-            stage="analyze",
+        warnings.append(create_anomaly(
+            "ANA_EMPTY_SAMPLES",
             details={"n": n_empty},
         ))
 
-    # 3. Agregar anomalies de totes les rèpliques i comparacions
-    all_anomalies = []
+    # 3. Resum compacte d'anomalies per mostra (1 línia, no 22 duplicats)
+    # Les anomalies individuals es mostren a la taula d'anàlisi.
+    n_with_issues = 0
     for sg in result.get("samples_grouped", {}).values():
+        has_issue = False
         for rep in sg.get("replicas", {}).values():
-            all_anomalies.extend(rep.get("anomalies", []))
-        comp = sg.get("comparison") or {}
-        for domain in ("doc", "dad"):
-            all_anomalies.extend(comp.get(domain, {}).get("warnings", []))
+            for a in rep.get("anomalies", []):
+                sev = a.get("severity", "info") if isinstance(a, dict) else "info"
+                if sev in ("blocker", "warning"):
+                    has_issue = True
+                    break
+            if has_issue:
+                break
+        if not has_issue:
+            comp = sg.get("comparison") or {}
+            for domain in ("doc", "dad"):
+                for w in comp.get(domain, {}).get("warnings", []):
+                    sev = w.get("severity", "info") if isinstance(w, dict) else "info"
+                    if sev in ("blocker", "warning"):
+                        has_issue = True
+                        break
+                if has_issue:
+                    break
+        if has_issue:
+            n_with_issues += 1
 
-    warnings.extend(all_anomalies)
+    if n_with_issues > 0:
+        anomaly = create_anomaly("ANA_SAMPLES_WITH_ISSUES",
+                                  details={"n": n_with_issues})
+        anomaly["label"] = f"{n_with_issues} mostres amb anomalies"
+        anomaly["message"] = f"{n_with_issues} mostres amb anomalies (veure taula)"
+        warnings.append(anomaly)
+
     return warnings
 
 
@@ -2373,9 +2441,10 @@ def _generate_analysis_warnings(result: dict) -> list:
 # =============================================================================
 def _analyze_light_sample(sample):
     """
-    Anàlisi lightweight per BLANK (MQ) i CONTROL (NaOH).
+    Anàlisi lightweight per CONTROL (NaOH, WASH).
 
     Calcula àrea total DOC, SNR i àrea A254 — sense fraccions ni quantificació.
+    NOTA: BLANK (MQ) ara va a anàlisi completa + quantificació.
 
     Args:
         sample: Dict amb dades de la mostra (flat_sample de _flatten_samples_for_processing)
@@ -2732,7 +2801,7 @@ def analyze_sequence(imported_data, calibration_data=None, config=None, progress
         except Exception as e:
             result["errors"].append(f"Control {ctrl.get('name')}: {str(e)}")
 
-    # Processar light samples (BLANK + CONTROL) — anàlisi lleugera
+    # Processar light samples (CONTROL) — anàlisi lleugera
     for i, light in enumerate(light_samples):
         if progress_callback:
             progress_callback(
@@ -2768,8 +2837,17 @@ def analyze_sequence(imported_data, calibration_data=None, config=None, progress
     result["samples_grouped"] = {}
 
     for sample_name, replicas in samples_by_name.items():
+        # Determinar sample_type des de les rèpliques
+        first_rep = next(iter(replicas.values()), {})
+        sample_type = first_rep.get("sample_type", "SAMPLE")
+
+        # Saltar quantificació si el sample_type té quantify=false al config
+        skip_quant = _should_skip_quantification(sample_name, config, sample_type=sample_type)
+
         sample_group = {
             "replicas": replicas,
+            "sample_type": sample_type,
+            "skip_quantification": skip_quant,
             "comparison": None,
             "recommendation": None,
             "selected": {"doc": "1", "dad": "1"},
@@ -2805,7 +2883,7 @@ def analyze_sequence(imported_data, calibration_data=None, config=None, progress
                 sample_group["repairable_replicas"] = doc_rec.get("repairable_replicas", [])
                 sample_group["repaired"] = False  # Es posarà True si l'usuari repara
 
-                # Quantificació (saltar si mostra no vàlida)
+                # Quantificació (saltar si mostra no vàlida o exclosa)
                 if sample_group["sample_valid"] is False:
                     sample_group["quantification"] = {
                         "concentration_ppm": None,
@@ -2814,6 +2892,14 @@ def analyze_sequence(imported_data, calibration_data=None, config=None, progress
                         "area_total": None,
                         "valid": False,
                         "reason": doc_rec.get("reason", "Mostra no vàlida")
+                    }
+                elif skip_quant:
+                    sample_group["quantification"] = {
+                        "concentration_ppm": None,
+                        "concentration_ppm_direct": None,
+                        "concentration_ppm_uib": None,
+                        "valid": False,
+                        "reason": "Patró de referència (sense quantificació)"
                     }
                 else:
                     selected_replica = sample_group["selected"]["doc"]
@@ -2837,22 +2923,31 @@ def analyze_sequence(imported_data, calibration_data=None, config=None, progress
             sample_group["repairable_replicas"] = []
             sample_group["repaired"] = False
 
-            # Quantificació
+            # Quantificació (saltar si exclosa)
             if r1:
-                # Usar calibració específica segons volum d'injecció
-                sample_cal = get_sample_calibration(r1)
-                quantification = quantify_sample(r1, sample_cal, mode=mode)
-                # HCI
-                hci = r1.get("hci")
-                if hci is not None:
-                    quantification["hci"] = hci
-                    quantification["hci_character"] = r1.get("hci_character", "")
-                sample_group["quantification"] = quantification
+                if skip_quant:
+                    sample_group["quantification"] = {
+                        "concentration_ppm": None,
+                        "concentration_ppm_direct": None,
+                        "concentration_ppm_uib": None,
+                        "valid": False,
+                        "reason": "Patró de referència (sense quantificació)"
+                    }
+                else:
+                    # Usar calibració específica segons volum d'injecció
+                    sample_cal = get_sample_calibration(r1)
+                    quantification = quantify_sample(r1, sample_cal, mode=mode)
+                    # HCI
+                    hci = r1.get("hci")
+                    if hci is not None:
+                        quantification["hci"] = hci
+                        quantification["hci_character"] = r1.get("hci_character", "")
+                    sample_group["quantification"] = quantification
 
         result["samples_grouped"][sample_name] = sample_group
 
     # =========================================================================
-    # AGRUPAR LIGHT SAMPLES (BLANK + CONTROL) — després de regulars
+    # AGRUPAR LIGHT SAMPLES (CONTROL) — després de regulars
     # =========================================================================
     light_by_name = {}
     for ls in result["light_samples"]:
@@ -3148,6 +3243,8 @@ def save_analysis_result(analysis_data, output_path=None):
                     "selected": sample_data.get("selected"),
                     "quantification": sample_data.get("quantification"),
                     "sample_valid": sample_data.get("sample_valid", True),
+                    "skip_quantification": sample_data.get("skip_quantification", False),
+                    "sample_type": sample_data.get("sample_type", "SAMPLE"),
                     "repairable": sample_data.get("repairable", False),
                     "repaired": sample_data.get("repaired", False),
                     "repair_history": sample_data.get("repair_history", []),

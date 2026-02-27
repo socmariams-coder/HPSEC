@@ -66,8 +66,8 @@ from hpsec_utils import t_at_max
 
 # Import sistema d'avisos estructurats
 from hpsec_warnings import (
-    create_warning, get_max_warning_level, WarningLevel,
-    migrate_warnings_list, create_anomaly, ANOMALY_CATALOG
+    get_max_warning_level, WarningLevel,
+    create_anomaly, ANOMALY_CATALOG
 )
 
 # =============================================================================
@@ -3305,9 +3305,21 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
 # REGISTRE DE CALIBRACIONS
 # =============================================================================
 
+def _to_list(arr):
+    """Converteix numpy array a llista Python per JSON serialization."""
+    if arr is None:
+        return None
+    if hasattr(arr, 'tolist'):
+        return arr.tolist()
+    if isinstance(arr, (list, tuple)):
+        return list(arr)
+    return arr
+
+
 def _extract_replicas_info(khp_data):
     """
-    Extreu informació resumida de cada replicat per guardar a CHECK/data.
+    Extreu informació de cada replicat per guardar a CHECK/data.
+    Inclou cromatograma (t_doc, y_doc) per poder graficar sense reprocessar.
     """
     replicas = khp_data.get('replicas', khp_data.get('all_khp_data', []))
     if not replicas:
@@ -3319,13 +3331,18 @@ def _extract_replicas_info(khp_data):
             "t_end": peak_info.get('t_end', 0),
             "t_max": peak_info.get('t_max', khp_data.get('t_retention', 0)),
             "baseline": khp_data.get('baseline_stats', {}).get('mean', 0),
+            "t_doc": _to_list(khp_data.get('t_doc')),
+            "y_doc": _to_list(khp_data.get('y_doc')),
+            "peak_left_idx": khp_data.get('peak_left_idx', 0),
+            "peak_right_idx": khp_data.get('peak_right_idx', 0),
         }]
 
     replicas_info = []
     for rep in replicas:
         peak_info = rep.get('peak_info', {})
-        replicas_info.append({
+        info = {
             "filename": rep.get('filename', 'N/A'),
+            "replica_num": rep.get('replica_num', 0),
             "area": rep.get('area', peak_info.get('area', 0)),
             "t_start": peak_info.get('t_start', 0),
             "t_end": peak_info.get('t_end', 0),
@@ -3333,7 +3350,32 @@ def _extract_replicas_info(khp_data):
             "baseline": rep.get('baseline_stats', {}).get('mean', 0),
             "symmetry": rep.get('symmetry', 1.0),
             "snr": rep.get('snr', 0),
-        })
+            "fwhm_doc": rep.get('fwhm_doc', 0),
+            "shift_sec": rep.get('shift_sec', 0),
+            "rf_mass_doc": rep.get('rf_mass_doc', 0),
+            # Cromatograma per graficar
+            "t_doc": _to_list(rep.get('t_doc')),
+            "y_doc": _to_list(rep.get('y_doc')),
+            "peak_left_idx": rep.get('peak_left_idx', 0),
+            "peak_right_idx": rep.get('peak_right_idx', 0),
+            # Bigaussian fit
+            "bigaussian_doc": rep.get('bigaussian_doc'),
+            # Anomalies
+            "calibration_anomalies": rep.get('calibration_anomalies', []),
+            # Irregular top
+            "has_irregular_top": rep.get('has_irregular_top', False),
+            "irregular_top_repaired": rep.get('irregular_top_repaired', False),
+            "y_doc_repaired": _to_list(rep.get('y_doc_repaired')),
+            # Timeout
+            "has_timeout": rep.get('has_timeout', False),
+            "timeout_info": rep.get('timeout_info'),
+            # 254nm
+            "t_dad": _to_list(rep.get('t_dad')),
+            "y_dad_254": _to_list(rep.get('y_dad_254')),
+            "a254_area": rep.get('a254_area', 0),
+            "dad_peak_info": rep.get('dad_peak_info'),
+        }
+        replicas_info.append(info)
 
     return replicas_info
 
@@ -3624,6 +3666,7 @@ def register_calibration(seq_path, khp_data, khp_source, mode="COLUMN"):
         "baseline": khp_data.get('baseline_stats', {}).get('mean', 0),
         "baseline_std": khp_data.get('baseline_stats', {}).get('std', 0),
         "replicas_info": _extract_replicas_info(khp_data),
+        "replicas_info_uib": _extract_replicas_info(khp_data['_uib_match_for_replicas']) if khp_data.get('_uib_match_for_replicas') else [],
 
         # Compatibilitat amb codi antic (DEPRECAT - usar els nous noms)
         "rf_doc": rf_d,
@@ -3976,15 +4019,14 @@ def _generate_calibration_warnings(result: dict, method: str = "COLUMN") -> list
     """
     Genera avisos estructurats a partir del resultat de calibració.
 
-    Combina calibration_anomalies (ANOMALY_CATALOG) de cada calibració
-    amb avisos de nivell seqüència (errors, SENSE_KHP, outliers).
+    Tots els avisos usen create_anomaly() (font única: ANOMALY_CATALOG).
 
     Args:
         result: Dict del resultat de calibrate_from_import()
         method: "COLUMN" o "BP"
 
     Returns:
-        Llista d'avisos estructurats (mix de ANOMALY_CATALOG dicts i create_warning dicts)
+        Llista d'avisos estructurats (dicts ANOMALY_CATALOG)
     """
     warnings = []
 
@@ -3992,44 +4034,49 @@ def _generate_calibration_warnings(result: dict, method: str = "COLUMN") -> list
     if not result.get("success"):
         for error in result.get("errors", []):
             if "no s'han trobat" in error.lower() or "no khp" in error.lower():
-                warnings.append(create_warning(
-                    code="CAL_NO_KHP",
-                    stage="calibrate",
-                ))
+                warnings.append(create_anomaly("CAL_NO_KHP"))
             elif "invàlid" in error.lower() or "invalid" in error.lower():
-                warnings.append(create_warning(
-                    code="CAL_ALL_REPLICAS_INVALID",
-                    stage="calibrate",
-                ))
+                warnings.append(create_anomaly("CAL_ALL_REPLICAS_INVALID"))
             else:
-                warnings.append(create_warning(
-                    code="CAL_ERROR",
-                    level=WarningLevel.BLOCKER,
-                    message=error,
-                    stage="calibrate",
-                ))
+                anomaly = create_anomaly(
+                    "CAL_NO_KHP",
+                    details={"message": error},
+                )
+                anomaly["message"] = error
+                warnings.append(anomaly)
 
-    # 2. Recollir calibration_anomalies de cada calibració (font: ANOMALY_CATALOG)
-    for cal in result.get("calibrations", []) + result.get("calibrations_direct", []) + result.get("calibrations_uib", []):
+    # 2. Recollir calibration_anomalies — NOMÉS per-signal lists (evitar duplicats)
+    #    calibrations_direct + calibrations_uib cobreixen tot;
+    #    calibrations[] és l'agregat (union) que duplicaria anomalies.
+    per_signal_cals = result.get("calibrations_direct", []) + result.get("calibrations_uib", [])
+    if not per_signal_cals:
+        # Fallback: seqs antigues sense separació per senyal
+        per_signal_cals = result.get("calibrations", [])
+
+    seen_anomalies = set()
+    for cal in per_signal_cals:
         for anom in cal.get("calibration_anomalies", []):
-            warnings.append(anom)
+            if isinstance(anom, dict):
+                key = (anom.get("code", ""), anom.get("sample", ""))
+                if key not in seen_anomalies:
+                    seen_anomalies.add(key)
+                    warnings.append(anom)
 
         # RSD alt (nivell grup, no per-rèplica)
         rsd = cal.get("rsd", 0)
         if rsd > 10:
-            warnings.append(create_anomaly(
-                "KHP_RSD_HIGH",
-                details={"rsd": rsd, "threshold": 10},
-                sample=cal.get("khp_name", "KHP"),
-            ))
+            rsd_key = ("KHP_RSD_HIGH", cal.get("khp_name", "KHP"))
+            if rsd_key not in seen_anomalies:
+                seen_anomalies.add(rsd_key)
+                warnings.append(create_anomaly(
+                    "KHP_RSD_HIGH",
+                    details={"rsd": rsd, "threshold": 10},
+                    sample=cal.get("khp_name", "KHP"),
+                ))
 
     # 3. Sense KHP local — shift no verificable
     if result.get("khp_source") == "SENSE_KHP":
-        warnings.append(create_warning(
-            code="CAL_GLOBAL_ONLY",
-            stage="calibrate",
-            details={"msg": "Sense KHP local — shift no verificable"},
-        ))
+        warnings.append(create_anomaly("CAL_GLOBAL_ONLY"))
 
     # 4. Replicas amb outliers
     for cal in result.get("calibrations", []):
@@ -4040,9 +4087,8 @@ def _generate_calibration_warnings(result: dict, method: str = "COLUMN") -> list
             if len(selected) < n_available:
                 for i in range(1, n_available + 1):
                     if i not in selected:
-                        warnings.append(create_warning(
-                            code="CAL_REPLICA_OUTLIER",
-                            stage="calibrate",
+                        warnings.append(create_anomaly(
+                            "CAL_REPLICA_OUTLIER",
                             details={"n": i},
                         ))
 
@@ -4945,6 +4991,8 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
             # Saturació UIB: propagar de l'entrada UIB (no del Direct)
             if uib_match.get('uib_saturated', False):
                 cal_data['uib_saturated'] = True
+            # Rèpliques UIB per graficar (es guardaran al JSON via replicas_info_uib)
+            cal_data['_uib_match_for_replicas'] = uib_match
 
     # Registrar TOTES les calibracions (una per cada condició)
     if calibrations_list:

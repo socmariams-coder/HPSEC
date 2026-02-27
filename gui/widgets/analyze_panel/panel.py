@@ -517,26 +517,7 @@ class AnalyzePanel(QWidget):
         self._populate_table()
         self.results_frame.setVisible(True)
 
-        # Mostrar warnings inline si n'hi ha
-        warnings = result.get("warnings_structured") or result.get("warnings", [])
-        if warnings:
-            if isinstance(warnings, dict):
-                parts = []
-                for cat, items in warnings.items():
-                    if items:
-                        parts.append(f"<b>{cat}:</b> {len(items)} avís(os)")
-                warn_text = "<br>".join(parts)
-            elif isinstance(warnings, list) and warnings:
-                warn_text = f"{len(warnings)} avís(os) detectats"
-            else:
-                warn_text = ""
-            if warn_text:
-                self._show_inline_message(warn_text, level="warning")
-            else:
-                self.status_frame.setVisible(False)
-        else:
-            self.status_frame.setVisible(False)
-
+        self.status_frame.setVisible(False)
         self.analyze_completed.emit(result)
 
     def _on_error(self, error_msg):
@@ -592,18 +573,40 @@ class AnalyzePanel(QWidget):
         self._sample_row_map = {}
         n_ok, n_warning, n_error, n_light, n_khp = 0, 0, 0, 0, 0
 
-        # Separar mostres regulars, KHP i light
-        regular_names = []
-        khp_names = []
-        light_names = []
-        for name in sorted(self.samples_grouped.keys()):
+        # Separar mostres per tipologia
+        sample_names = []   # SAMPLE + BLANK (anàlisi completa)
+        pr_names = []       # Patrons (PR_*)
+        khp_names = []      # KHP (calibració)
+        light_names = []    # CONTROL / Neteja (anàlisi lleugera)
+        blank_names = []    # BLANK / MQ
+
+        for name in self.samples_grouped.keys():
             sd = self.samples_grouped[name]
             if sd.get("analysis_type") == "khp":
                 khp_names.append(name)
             elif sd.get("analysis_type") == "light":
                 light_names.append(name)
             else:
-                regular_names.append(name)
+                st = sd.get("sample_type", "SAMPLE")
+                if st.startswith("PR"):
+                    pr_names.append(name)
+                elif st == "BLANK":
+                    blank_names.append(name)
+                else:
+                    sample_names.append(name)
+
+        # Ordenar per índex d'injecció (ordre cronològic al MasterFile)
+        def _min_inj_index(name):
+            reps = self.samples_grouped[name].get("replicas", {})
+            indices = [r.get("injection_index", 999) for r in reps.values()
+                       if r.get("injection_index") is not None]
+            return min(indices) if indices else 999
+
+        for lst in (sample_names, pr_names, blank_names, khp_names, light_names):
+            lst.sort(key=_min_inj_index)
+
+        # Regular = mostres + patrons + blancs (en aquest ordre)
+        regular_names = sample_names + pr_names + blank_names
 
         # --- Regular samples ---
         for sample_name in regular_names:
@@ -907,12 +910,12 @@ class AnalyzePanel(QWidget):
 
                 n_khp += 1
 
-        # --- Separator + Light samples (BLANC / CONTROL) ---
+        # --- Separator + Light samples (CONTROL) ---
         if light_names:
             n_cols = self.results_table.columnCount()
             sep_row = self.results_table.rowCount()
             self.results_table.insertRow(sep_row)
-            sep_item = QTableWidgetItem("--- BLANCS / CONTROLS ---")
+            sep_item = QTableWidgetItem("--- NETEJA ---")
             sep_item.setFlags(Qt.ItemIsEnabled)  # Non-selectable
             sep_font = QFont()
             sep_font.setBold(True)
@@ -981,8 +984,8 @@ class AnalyzePanel(QWidget):
                 # Col 12: HCI (not applicable for light samples)
                 self.results_table.setItem(row, 12, QTableWidgetItem("-"))
 
-                # Col 13: sample_type text
-                type_item = QTableWidgetItem(sample_type)
+                # Col 13: Neteja
+                type_item = QTableWidgetItem("Neteja")
                 type_item.setForeground(QBrush(QColor("#888888")))
                 self.results_table.setItem(row, 13, type_item)
 
@@ -1006,7 +1009,7 @@ class AnalyzePanel(QWidget):
         if n_khp > 0:
             stats_text += f" &nbsp;&nbsp;|&nbsp;&nbsp; <span style='color:#1565C0'>●</span> KHP: {n_khp}"
         if n_light > 0:
-            stats_text += f" &nbsp;&nbsp;|&nbsp;&nbsp; <span style='color:#888888'>●</span> Blancs/Controls: {n_light}"
+            stats_text += f" &nbsp;&nbsp;|&nbsp;&nbsp; <span style='color:#888888'>●</span> Neteja: {n_light}"
         self.stats_label.setText(stats_text)
 
     # ------------------------------------------------------------------
@@ -1055,37 +1058,32 @@ class AnalyzePanel(QWidget):
         n_timeouts = timeout_info.get("n_timeouts", 0)
         replica_warnings = comparison.get("doc", {}).get("warnings", []) if comparison else []
 
-        # Build status icons from catalog
-        status_parts = []
-        seen_icons = set()
-        for a in all_anomalies:
-            if isinstance(a, dict):
-                code = a.get("code", "")
-                repaired = a.get("repaired", False)
-            else:
-                repaired = "_REPAIRED" in str(a)
-                code = str(a).replace("_REPAIRED", "")
-            entry = ANOMALY_CATALOG.get(code, {})
-            icon = entry.get("icon", "")
-            if icon and icon not in seen_icons:
-                seen_icons.add(icon)
-                status_parts.append(f"{icon}*" if repaired else icon)
-        if n_timeouts > 0 and "T!" not in seen_icons:
-            status_parts.append(f"T({n_timeouts})")
-
-        # Determine color
+        # Determine severity
         has_blocker = bool(classified["blocker"])
         has_warn = bool(classified["warning"] or classified["repaired"]
                         or (timeout_severity in ("WARNING", "CRITICAL"))
                         or replica_warnings)
+
+        # Build concise status text
+        n_blocker = len(classified["blocker"])
+        n_warn = len(classified["warning"])
+        n_repaired = len(classified["repaired"])
         if has_blocker:
             status_color = COLOR_ERROR
-        elif has_warn:
+            status_text = f"{n_blocker} crític" if n_blocker == 1 else f"{n_blocker} crítics"
+        elif has_warn or n_repaired:
             status_color = COLOR_WARNING
+            parts = []
+            if n_warn:
+                parts.append(f"{n_warn} avís" if n_warn == 1 else f"{n_warn} avisos")
+            if n_repaired:
+                parts.append(f"{n_repaired} reparat" if n_repaired == 1 else f"{n_repaired} reparats")
+            if n_timeouts > 0:
+                parts.append(f"{n_timeouts} timeout")
+            status_text = " · ".join(parts)
         else:
             status_color = COLOR_SUCCESS
-
-        status_text = " ".join(status_parts) if status_parts else "\u2713"
+            status_text = "OK"
 
         # Build tooltip with catalog labels + action hints
         tooltip_parts = []
@@ -1182,7 +1180,7 @@ class AnalyzePanel(QWidget):
             self._update_estat_column(row, sample_name)
 
     def _update_doc_columns(self, row, sample_name):
-        """Actualitza columnes DOC (3-7) quan canvia la rèplica DOC."""
+        """Actualitza columnes DOC (3-7) quan canvia la r\u00e8plica DOC."""
         sample_data = self.samples_grouped[sample_name]
         selected = sample_data.get("selected", {})
         doc_sel = selected.get("doc", "1")
@@ -1315,6 +1313,20 @@ class AnalyzePanel(QWidget):
             from hpsec_calibrate import get_all_active_calibrations
 
             sample_data = self.samples_grouped[sample_name]
+
+            # Respectar exclusió de quantificació
+            if sample_data.get("skip_quantification"):
+                sample_data["quantification"] = {
+                    "concentration_ppm": None,
+                    "concentration_ppm_direct": None,
+                    "concentration_ppm_uib": None,
+                    "valid": False,
+                    "reason": sample_data["quantification"].get("reason",
+                              "Exclosa de quantificació") if sample_data.get("quantification") else
+                              "Exclosa de quantificació"
+                }
+                return
+
             selected_doc = sample_data["selected"]["doc"]
             selected_replica = sample_data["replicas"].get(selected_doc)
 

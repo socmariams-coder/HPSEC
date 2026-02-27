@@ -32,105 +32,135 @@ from gui.widgets.styles import (
 logger = logging.getLogger(__name__)
 
 
-class WarningReviewDialog(QDialog):
-    """Diàleg per revisar avisos: mostra llista, afegir nota i/o marcar com a OK."""
+class WarningBarWidget(QFrame):
+    """Barra d'avisos persistent al wizard.
 
-    # Colors per nivell d'avís
-    LEVEL_COLORS = {
-        "blocker": "#D32F2F",  # Vermell
-        "warning": "#F57C00",  # Taronja
-        "info": "#1976D2",     # Blau
+    Mostra avisos NOMÉS de la fase activa (no acumulats entre fases).
+    Desplegada per defecte si ≤3 avisos, plegada si >3.
+    """
+
+    SEVERITY_COLORS = {
+        "blocker": ("#D32F2F", "#FFEBEE", "#FFCDD2"),
+        "warning": ("#F57C00", "#FFF8E1", "#FFE082"),
+        "info": ("#1976D2", "#E3F2FD", "#BBDEFB"),
     }
-    LEVEL_ICONS = {
-        "blocker": "🚫",
-        "warning": "⚠️",
-        "info": "ℹ️",
+    SEVERITY_ICONS = {
+        "blocker": "\u26d4",
+        "warning": "\u26a0",
+        "info": "\u2139",
     }
 
-    def __init__(self, parent, warnings_list: list = None, last_reviewer=""):
+    def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Revisar Avisos")
-        self.setMinimumWidth(500)
-        self.warnings_list = warnings_list or []
+        self._warnings = []
+        self._expanded = True
+        self._setup_ui()
+        self.setVisible(False)
 
-        layout = QVBoxLayout(self)
-        layout.setSpacing(12)
+    def _setup_ui(self):
+        self._main_layout = QVBoxLayout(self)
+        self._main_layout.setContentsMargins(12, 6, 12, 6)
+        self._main_layout.setSpacing(4)
 
-        # Mostrar llista d'avisos si n'hi ha
-        if self.warnings_list:
-            warnings_frame = QFrame()
-            warnings_frame.setStyleSheet(
-                "background-color: #FFF8E1; border-radius: 4px; padding: 8px;"
-            )
-            warnings_layout = QVBoxLayout(warnings_frame)
-            warnings_layout.setSpacing(4)
+        header_row = QHBoxLayout()
+        header_row.setSpacing(8)
 
-            warnings_title = QLabel(f"<b>Avisos pendents ({len(self.warnings_list)}):</b>")
-            warnings_layout.addWidget(warnings_title)
+        self._summary_label = QLabel()
+        self._summary_label.setStyleSheet("font-weight: bold; font-size: 11px;")
+        header_row.addWidget(self._summary_label, 1)
 
-            for warn in self.warnings_list[:10]:  # Màxim 10
-                level = warn.get("level", "info")
-                icon = self.LEVEL_ICONS.get(level, "•")
-                color = self.LEVEL_COLORS.get(level, "#666")
-                message = warn.get("message", warn.get("code", "Avís"))
-                sample = warn.get("sample", "")
-                sample_text = f" [{sample}]" if sample else ""
-
-                warn_label = QLabel(f'{icon} <span style="color:{color}">{message}</span>{sample_text}')
-                warn_label.setWordWrap(True)
-                warnings_layout.addWidget(warn_label)
-
-            if len(self.warnings_list) > 10:
-                more_label = QLabel(f"... i {len(self.warnings_list) - 10} més")
-                more_label.setStyleSheet("color: #666; font-style: italic;")
-                warnings_layout.addWidget(more_label)
-
-            layout.addWidget(warnings_frame)
-
-        # Qui revisa
-        layout.addWidget(QLabel("Nom o inicials de qui revisa:"))
-        self.reviewer_input = QLineEdit(last_reviewer)
-        self.reviewer_input.setPlaceholderText("Ex: MGA, Joan, etc.")
-        layout.addWidget(self.reviewer_input)
-
-        # Nota opcional
-        layout.addWidget(QLabel("Nota (opcional):"))
-        self.note_input = QTextEdit()
-        self.note_input.setPlaceholderText("Afegeix comentaris sobre la revisió...")
-        self.note_input.setMaximumHeight(80)
-        layout.addWidget(self.note_input)
-
-        # Checkbox: marcar com a OK
-        self.mark_ok_checkbox = QCheckBox("Marcar com a revisat (passar a OK)")
-        self.mark_ok_checkbox.setChecked(True)
-        self.mark_ok_checkbox.setToolTip(
-            "Si desmarca, s'afegeix la nota però l'avís queda pendent"
+        self._toggle_btn = QPushButton("\u25b2")
+        self._toggle_btn.setFixedSize(24, 24)
+        self._toggle_btn.setStyleSheet(
+            "QPushButton { background: transparent; border: none; font-size: 11px; "
+            "color: #666; font-weight: bold; } QPushButton:hover { color: #333; }"
         )
-        layout.addWidget(self.mark_ok_checkbox)
+        self._toggle_btn.setCursor(Qt.PointingHandCursor)
+        self._toggle_btn.clicked.connect(self._toggle_expand)
+        header_row.addWidget(self._toggle_btn)
 
-        # Botons
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.Ok | QDialogButtonBox.Cancel
-        )
-        buttons.accepted.connect(self._validate_and_accept)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
+        self._main_layout.addLayout(header_row)
 
-    def _validate_and_accept(self):
-        """Valida que hi hagi nom de revisor."""
-        if not self.reviewer_input.text().strip():
-            QMessageBox.warning(self, "Falta informació", "Cal indicar qui revisa.")
-            self.reviewer_input.setFocus()
+        self._detail_widget = QWidget()
+        self._detail_layout = QVBoxLayout(self._detail_widget)
+        self._detail_layout.setContentsMargins(0, 2, 0, 0)
+        self._detail_layout.setSpacing(2)
+        self._main_layout.addWidget(self._detail_widget)
+
+    def _toggle_expand(self):
+        self._expanded = not self._expanded
+        self._detail_widget.setVisible(self._expanded)
+        self._toggle_btn.setText("\u25b2" if self._expanded else "\u25bc")
+
+    def update_warnings(self, warnings: list):
+        """Actualitza la barra amb avisos de la fase activa."""
+        self._warnings = warnings
+
+        while self._detail_layout.count():
+            item = self._detail_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        if not warnings:
+            self.setVisible(False)
             return
-        self.accept()
 
-    def get_result(self) -> dict:
-        """Retorna el resultat del diàleg."""
-        return {
-            "reviewer": self.reviewer_input.text().strip(),
-            "note": self.note_input.toPlainText().strip(),
-            "mark_as_ok": self.mark_ok_checkbox.isChecked(),
-        }
+        max_sev = "info"
+        for w in warnings:
+            sev = w.get("severity", w.get("level", "info"))
+            if sev == "blocker":
+                max_sev = "blocker"
+                break
+            elif sev == "warning":
+                max_sev = "warning"
+
+        text_color, bg_color, border_color = self.SEVERITY_COLORS.get(
+            max_sev, self.SEVERITY_COLORS["info"]
+        )
+        self.setStyleSheet(
+            f"QFrame {{ background-color: {bg_color}; "
+            f"border: 1px solid {border_color}; border-radius: 4px; }}"
+        )
+
+        icon = self.SEVERITY_ICONS.get(max_sev, "\u2022")
+        n = len(warnings)
+        self._summary_label.setText(
+            f'{icon} {n} av{"is" if n == 1 else "isos"}'
+        )
+        self._summary_label.setStyleSheet(
+            f"font-weight: bold; font-size: 11px; color: {text_color}; border: none;"
+        )
+        self._toggle_btn.setStyleSheet(
+            f"QPushButton {{ background: transparent; border: none; "
+            f"font-size: 11px; color: {text_color}; font-weight: bold; }}"
+        )
+
+        for w in warnings[:10]:
+            sev = w.get("severity", w.get("level", "info"))
+            w_icon = self.SEVERITY_ICONS.get(sev, "\u2022")
+            w_color = self.SEVERITY_COLORS.get(sev, self.SEVERITY_COLORS["info"])[0]
+            message = w.get("message", w.get("label", w.get("code", "Avis")))
+            action = w.get("action", "")
+
+            text = f'{w_icon} <span style="color:{w_color}">{message}</span>'
+            if action:
+                text += f'<br><span style="color:#666; font-size:10px; margin-left:18px;">   \u2192 {action}</span>'
+
+            label = QLabel(text)
+            label.setWordWrap(True)
+            label.setStyleSheet("border: none; padding: 1px 0;")
+            self._detail_layout.addWidget(label)
+
+        if n > 10:
+            more = QLabel(f"... i {n - 10} mes")
+            more.setStyleSheet("color: #666; font-style: italic; border: none;")
+            self._detail_layout.addWidget(more)
+
+        self._expanded = n <= 3
+        self._detail_widget.setVisible(self._expanded)
+        self._toggle_btn.setText("\u25b2" if self._expanded else "\u25bc")
+
+        self.setVisible(True)
 
 
 class WarningSkipDialog(QDialog):
@@ -280,6 +310,10 @@ class ProcessWizardPanel(QWidget):
         # === HEADER MÍNIM ===
         header = self._create_minimal_header()
         layout.addWidget(header)
+
+        # === BARRA D'AVISOS (entre header i pestanyes) ===
+        self._warning_bar = WarningBarWidget()
+        layout.addWidget(self._warning_bar)
 
         # === PESTANYES ===
         self.tab_widget = QTabWidget()
@@ -571,8 +605,8 @@ class ProcessWizardPanel(QWidget):
             self.calibrate_panel.calibration_data = None
             self.main_window.calibration_data = None
             # Reset UI del panel calibrar
-            if hasattr(self.calibrate_panel, 'summary_group'):
-                self.calibrate_panel.summary_group.setVisible(False)
+            if hasattr(self.calibrate_panel, 'compact_header'):
+                self.calibrate_panel.compact_header.setVisible(False)
             if hasattr(self.calibrate_panel, 'next_btn'):
                 self.calibrate_panel.next_btn.setEnabled(False)
 
@@ -788,49 +822,13 @@ class ProcessWizardPanel(QWidget):
             logger.warning(f"No s'ha pogut guardar: {e}")
 
     def _on_confirm_warnings(self):
-        """Obre diàleg per revisar avisos: afegir nota i/o marcar com a OK."""
+        """Marca avisos com a revisats (ja visibles a la barra)."""
         current_idx = self.tab_widget.currentIndex()
-
         if self.tab_states[current_idx] != "warning":
             return
-
-        # Obtenir llista d'avisos estructurats
-        warnings_list = self._get_warnings_list(current_idx)
-
-        # Mostrar diàleg de revisió
-        dialog = WarningReviewDialog(
-            self,
-            warnings_list=warnings_list,
-            last_reviewer=getattr(self, '_last_reviewer', "")
-        )
-
-        if dialog.exec():
-            result = dialog.get_result()
-            reviewer = result["reviewer"]
-            note = result["note"]
-            mark_as_ok = result["mark_as_ok"]
-
-            self._last_reviewer = reviewer
-
-            # Guardar al JSON
-            self._save_warnings_confirmation(current_idx, reviewer, note, mark_as_ok)
-
-            if mark_as_ok:
-                self._set_tab_state(current_idx, "ok")
-                self.main_window.set_status(f"Avisos confirmats per {reviewer}", 2000)
-
-                # Avançar a següent etapa pendent
-                next_pending = next(
-                    (i for i in range(current_idx + 1, 4)
-                     if self.tab_states[i] in ("pending", "warning", "current")),
-                    None
-                )
-                if next_pending is not None:
-                    self.tab_widget.setCurrentIndex(next_pending)
-            else:
-                self.main_window.set_status(f"Nota afegida per {reviewer} (warning pendent)", 2000)
-                # Actualitzar header per mostrar que hi ha notes
-                self._update_header_for_tab(current_idx)
+        self._set_tab_state(current_idx, "ok")
+        self.main_window.set_status("Avisos marcats com a revisats", 2000)
+        self._update_warning_bar()
 
     def _on_revert_warnings(self):
         """Reverteix la confirmació d'avisos (torna a warning)."""
@@ -1331,7 +1329,11 @@ class ProcessWizardPanel(QWidget):
         self.next_step_btn.setToolTip(tooltip)
 
     def _on_status_indicator_clicked(self):
-        """Handler pel status_indicator unificat."""
+        """Handler pel status_indicator unificat.
+
+        Ja no obre diàleg d'avisos (la barra els mostra directament).
+        Només gestiona revert confirmacions i errors.
+        """
         current_idx = self.tab_widget.currentIndex()
         state = self.tab_states[current_idx]
         has_confirmed = self._has_confirmed_warnings(current_idx)
@@ -1339,7 +1341,11 @@ class ProcessWizardPanel(QWidget):
         if state == "ok" and has_confirmed:
             self._on_revert_warnings()
         elif state == "warning":
-            self._on_confirm_warnings()
+            # La barra ja mostra els avisos; si l'usuari clica, mark as OK
+            self._set_tab_state(current_idx, "ok")
+            self.main_window.set_status("Avisos marcats com a revisats", 2000)
+            self._update_warning_bar()
+
         elif state == "error":
             self._show_error_details(current_idx)
 
@@ -1373,56 +1379,17 @@ class ProcessWizardPanel(QWidget):
     def _get_warning_level(self, stage_idx: int) -> str:
         """Determina el nivell màxim d'avisos per l'etapa.
 
-        Llegeix els avisos estructurats dels resultats de cada etapa.
+        Sempre calcula des de warnings_structured (font única).
 
         Retorna: 'blocker', 'warning', 'info', o 'none'
         """
         try:
-            # Obtenir dades segons l'etapa
-            if stage_idx == 0:
-                # Importar
-                data = self.main_window.imported_data
-            elif stage_idx == 1:
-                # Calibrar
-                data = self.main_window.calibration_data
-            elif stage_idx == 2:
-                # Analitzar
-                data = self.main_window.processed_data
-            elif stage_idx == 3:
-                # Revisar - no té warning_level propi, sempre OK si dades existeixen
-                data = None
-            else:
-                data = None
-
-            if not data:
-                return "none"
-
-            # Llegir nivell d'avisos dels resultats
-            # Nou format: warning_level calculat pel backend
-            warning_level = data.get("warning_level", "none")
-            if warning_level in ("blocker", "warning", "info", "none"):
-                return warning_level
-
-            # Fallback: Llegir avisos estructurats
-            warnings_structured = data.get("warnings_structured", [])
-            if warnings_structured:
-                from hpsec_warnings import get_max_warning_level
-                return get_max_warning_level(warnings_structured)
-
-            # Fallback antic: Si hi ha errors, és blocker
-            errors = data.get("errors", [])
-            if errors:
-                return "blocker"
-
-            # Fallback antic: Si hi ha warnings (strings), és warning
-            warnings = data.get("warnings", [])
+            warnings = self._get_warnings_list(stage_idx)
             if warnings:
-                return "warning"
-
+                from hpsec_warnings import get_max_warning_level
+                return get_max_warning_level(warnings)
             return "none"
-
         except Exception:
-            # Fallback: usar l'estat actual de la pestanya
             if self.tab_states[stage_idx] == "warning":
                 return "warning"
             elif self.tab_states[stage_idx] == "error":
@@ -1433,38 +1400,31 @@ class ProcessWizardPanel(QWidget):
         """Obté la llista d'avisos estructurats per l'etapa.
 
         Returns:
-            Llista d'avisos amb format {"code", "level", "message", ...}
+            Llista d'avisos amb format {"code", "severity", "message", ...}
         """
         try:
-            # Obtenir dades segons l'etapa
             if stage_idx == 0:
                 data = self.main_window.imported_data
             elif stage_idx == 1:
                 data = self.main_window.calibration_data
             elif stage_idx == 2:
                 data = self.main_window.processed_data
-            elif stage_idx == 3:
-                # Revisar - no té avisos propis
-                data = None
             else:
                 data = None
 
             if not data:
                 return []
 
-            # Nou format: avisos estructurats
-            warnings_structured = data.get("warnings_structured", [])
-            if warnings_structured:
-                return warnings_structured
-
-            # Fallback: convertir warnings antics (strings) al nou format
-            from hpsec_warnings import migrate_warnings_list
-            stage_names = {0: "import", 1: "calibrate", 2: "analyze", 3: "export"}
-            stage_name = stage_names.get(stage_idx, "unknown")
-            return migrate_warnings_list(data.get("warnings", []), stage_name)
+            return data.get("warnings_structured", [])
 
         except Exception:
             return []
+
+    def _update_warning_bar(self):
+        """Actualitza la barra d'avisos amb la fase activa."""
+        current_idx = self.tab_widget.currentIndex()
+        warnings = self._get_warnings_list(current_idx)
+        self._warning_bar.update_warnings(warnings)
 
     def _show_error_details(self, stage_idx: int):
         """Mostra els detalls d'un error en un diàleg."""
@@ -1531,7 +1491,6 @@ class ProcessWizardPanel(QWidget):
         if 0 <= index < 4:
             self.tab_states[index] = state
             self._update_tab_titles()
-            # Actualitzar header si és la pestanya actual
             if self.tab_widget.currentIndex() == index:
                 self._update_header_for_tab(index)
 
@@ -1634,12 +1593,13 @@ class ProcessWizardPanel(QWidget):
 
     def _reset_all_panels(self):
         """Reseteja tots els panels quan es carrega una nova SEQ."""
-        # Reset main_window data
         self.main_window.imported_data = None
         self.main_window.calibration_data = None
         self.main_window.processed_data = None
         self.main_window.review_data = None
         self.main_window.review_completed = False
+
+
 
         # Usar els mètodes reset() de cada panel
         if hasattr(self.import_panel, 'reset'):
@@ -1923,14 +1883,12 @@ class ProcessWizardPanel(QWidget):
 
     def _on_tab_changed(self, index: int):
         """Quan canvia la pestanya activa."""
-        # Marcar com a current si estava pending
         if self.tab_states[index] == "pending":
             self.tab_states[index] = "current"
             self._update_tab_titles()
-        # Actualitzar header amb botons i indicador
         self._update_header_for_tab(index)
+        self._update_warning_bar()
 
-        # Si l'etapa ja està feta, carregar dades existents al panel
         state = self.tab_states[index]
         if state in ("ok", "warning"):
             self._load_existing_data_for_tab(index)
@@ -1949,27 +1907,27 @@ class ProcessWizardPanel(QWidget):
 
     def _on_import_completed(self, data):
         """Callback quan import completa."""
-        # Re-habilitar botons
         self.action_btn.setEnabled(True)
 
         if data and data.get('success'):
-            # Usar warning_level del backend per determinar estat
-            warning_level = data.get('warning_level', 'none')
+            warnings = data.get('warnings_structured', [])
+            from hpsec_warnings import get_max_warning_level
+            warning_level = get_max_warning_level(warnings)
             if warning_level == 'blocker':
                 self._set_tab_state(0, "error")
-            elif warning_level == 'warning':
+            elif warnings:
                 self._set_tab_state(0, "warning")
             else:
                 self._set_tab_state(0, "ok")
 
-            # Només marcar calibrar com pendent si no estava ja completada
             if self.tab_states[1] not in ("ok", "warning"):
                 self._set_tab_state(1, "pending")
-            # NO auto-navegar: l'usuari ha de revisar i clicar "Següent"
             self._update_header_for_tab(self.tab_widget.currentIndex())
         else:
             self._set_tab_state(0, "error")
             self._update_header_for_tab(self.tab_widget.currentIndex())
+
+        self._update_warning_bar()
 
     def _on_import_warnings_dismissed(self):
         """Callback quan els warnings d'importació es descarten des del panel."""
@@ -1979,15 +1937,13 @@ class ProcessWizardPanel(QWidget):
 
     def _on_calibrate_completed(self, data):
         """Callback quan calibració completa."""
-        # Re-habilitar botons
         self.action_btn.setEnabled(True)
 
         if data:
             if data.get('success'):
-                # Si la calibració ha tingut èxit, l'estat és OK o warning (MAI error).
-                # warning_level ve de la validació KHP (anomalies individuals),
-                # no indica fallada de la calibració.
-                warning_level = data.get('warning_level', 'none')
+                warnings = data.get('warnings_structured', [])
+                from hpsec_warnings import get_max_warning_level
+                warning_level = get_max_warning_level(warnings)
                 if warning_level in ('blocker', 'warning'):
                     self._set_tab_state(1, "warning")
                 else:
@@ -1995,7 +1951,6 @@ class ProcessWizardPanel(QWidget):
             else:
                 self._set_tab_state(1, "error")
 
-            # Només marcar analitzar com pendent si no estava ja completada
             if self.tab_states[2] not in ("ok", "warning"):
                 self._set_tab_state(2, "pending")
             self._update_header_for_tab(self.tab_widget.currentIndex())
@@ -2003,28 +1958,29 @@ class ProcessWizardPanel(QWidget):
             self._set_tab_state(1, "error")
             self._update_header_for_tab(self.tab_widget.currentIndex())
 
+        self._update_warning_bar()
+
     def _on_analyze_completed(self, data):
         """Callback quan anàlisi completa."""
-        # Re-habilitar botons
         self.action_btn.setEnabled(True)
 
         if data and data.get('success'):
-            # Si l'anàlisi ha tingut èxit, l'estat és OK o warning (MAI error).
-            # warning_level ve de les anomalies per-mostra (IRREGULAR_TOP, etc.),
-            # no indica fallada de l'anàlisi sinó avisos de qualitat individual.
-            warning_level = data.get('warning_level', 'none')
+            warnings = data.get('warnings_structured', [])
+            from hpsec_warnings import get_max_warning_level
+            warning_level = get_max_warning_level(warnings)
             if warning_level in ('blocker', 'warning'):
                 self._set_tab_state(2, "warning")
             else:
                 self._set_tab_state(2, "ok")
 
-            # Només marcar revisar com pendent si no estava ja completada
             if self.tab_states[3] not in ("ok", "warning"):
                 self._set_tab_state(3, "pending")
             self._update_header_for_tab(self.tab_widget.currentIndex())
         else:
             self._set_tab_state(2, "error")
             self._update_header_for_tab(self.tab_widget.currentIndex())
+
+        self._update_warning_bar()
 
     def _on_export_completed(self, data):
         """Callback quan l'exportació completa."""

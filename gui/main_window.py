@@ -356,39 +356,15 @@ class HPSECSuiteWindow(QMainWindow):
 
     def closeEvent(self, event):
         """Gestiona el tancament de la finestra."""
-        # Si no hi ha dades importades, tancar directament
         if self.imported_data is None:
             event.accept()
             return
 
-        # Si la revisió s'ha completat, tancar directament
-        if self.review_completed:
-            event.accept()
-            return
-
-        # Si el manifest està guardat i no hi ha canvis pendents
-        if self.manifest_saved and not self.has_unsaved_changes:
-            event.accept()
-            return
-
-        # Mostrar avís
-        if self.has_unsaved_changes:
-            msg = (
-                "Hi ha canvis sense guardar.\n\n"
-                "Vols tancar sense guardar?"
-            )
-        else:
-            msg = (
-                "El procés no s'ha completat.\n\n"
-                "Si tanques ara, hauràs de repetir el procés.\n"
-                "El manifest d'importació es manté guardat.\n\n"
-                "Segur que vols tancar?"
-            )
-
-        reply = QMessageBox.warning(
+        reply = QMessageBox.question(
             self,
-            "Tancar sense completar",
-            msg,
+            "Tancar",
+            "Les etapes completades es desen automàticament.\n\n"
+            "Segur que vols tancar?",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No
         )

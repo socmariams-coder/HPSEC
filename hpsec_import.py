@@ -45,7 +45,7 @@ from hpsec_migrate_master import migrate_single
 
 # Import sistema d'avisos estructurats
 from hpsec_warnings import (
-    create_warning, get_max_warning_level, WarningLevel,
+    create_anomaly, get_max_warning_level, WarningLevel,
 )
 
 # =============================================================================
@@ -279,39 +279,60 @@ def is_blank_injection(sample_name, config=None):
     return False
 
 
-def is_reference_standard(sample_name, config=None):
+def classify_reference_standard(sample_name, config=None):
     """
-    Verifica si una mostra és un Patró de Referència (PR).
+    Classifica una mostra com a patró de referència i retorna el subtipus.
 
-    Patrons: Br, NO3, CaCO3, SUWANNEE, SRNOM, o que acaben en HA/FA.
+    Subtipus (definits a hpsec_config.json → sample_types):
+    - PR_C: Patró de referència de carboni (SUWANNEE, SRNOM, HA/FA) → quantificar
+    - PR_I: Patró de referència inorgànic (Br, NO3, CaCO3) → NO quantificar
+    - PR_N: Patró de referència de nitrogen → quantificar
+    - PR:   Patró genèric (fallback si no encaixa en cap subtipus)
 
     Args:
         sample_name: Nom de la mostra
         config: Configuració (si None, es llegeix de get_config())
 
     Returns:
-        True si és un patró de referència
+        Subtipus string ("PR_C", "PR_I", "PR_N") o None si no és PR.
     """
     if config is None:
         config = get_config()
 
-    pr_config = config.get("sample_types", "PATRÓ_REF", default={})
-    patterns = pr_config.get("patterns", [])
-    suffixes = pr_config.get("suffixes", [])
-
     sample_upper = sample_name.upper().strip()
+    sample_types = config.get("sample_types", default={})
 
-    # Comprovar patrons (conté el patró)
-    for pattern in patterns:
-        if pattern.upper() in sample_upper:
-            return True
+    # Ordre de prioritat: subtipus específics primer
+    pr_type_keys = [
+        ("PATRÓ_REF_C", "PR_C"),
+        ("PATRÓ_REF_I", "PR_I"),
+        ("PATRÓ_REF_N", "PR_N"),
+    ]
 
-    # Comprovar sufixos (acaba amb el sufix)
-    for suffix in suffixes:
-        if sample_upper.endswith(suffix.upper()):
-            return True
+    for config_key, type_code in pr_type_keys:
+        pr_config = sample_types.get(config_key, {})
+        patterns = pr_config.get("patterns", [])
+        suffixes = pr_config.get("suffixes", [])
 
-    return False
+        for pattern in patterns:
+            if pattern.upper() in sample_upper:
+                return type_code
+
+        for suffix in suffixes:
+            if sample_upper.endswith(suffix.upper()):
+                return type_code
+
+    return None
+
+
+def is_reference_standard(sample_name, config=None):
+    """
+    Verifica si una mostra és un Patró de Referència (qualsevol subtipus).
+
+    Returns:
+        True si és un patró de referència (PR_C, PR_I o PR_N)
+    """
+    return classify_reference_standard(sample_name, config) is not None
 
 
 def obtenir_seq(folder):
@@ -709,6 +730,33 @@ def extract_doc_from_masterfile(toc_df, row_start, row_end, t_start=None, detect
     else:
         t_min = pd.Series(range(len(seg))) * 0.1  # Fallback
 
+    # --- Detectar i corregir timestamps arrodonits al minut ---
+    # Alguns exports Sievers perden la resolució de segons al 2-TOC.
+    # Es detecta per la proporció de timestamps duplicats (cadència real = 4s, ~15 pts/min).
+    _toc_minute_precision = False
+    if len(t_min) > 30:
+        n_unique = t_min.nunique()
+        ratio_unique = n_unique / len(t_min)
+        # Normal: ~100% únics. Arrodonit al minut: ~6-7% únics (1/15)
+        if ratio_unique < 0.15:
+            # Reconstruir cadència uniforme dins de cada minut
+            t_min_corrected = np.empty(len(t_min), dtype=np.float64)
+            pos = 0
+            for t_val in sorted(t_min.unique()):
+                mask = t_min.values == t_val
+                n_pts = mask.sum()
+                offsets = np.arange(n_pts) * (1.0 / n_pts)
+                t_min_corrected[pos:pos + n_pts] = t_val + offsets
+                pos += n_pts
+            t_min = pd.Series(t_min_corrected, index=t_min.index)
+            _toc_minute_precision = True
+            import logging
+            logging.getLogger(__name__).info(
+                "TOC timestamps arrodonits al minut detectats: %d punts, "
+                "%d unics -> cadencia reconstruida (%.0f pts/min)",
+                len(t_min), n_unique, len(t_min) / n_unique
+            )
+
     df_doc = pd.DataFrame({
         "time (min)": t_min.values,
         "DOC": pd.to_numeric(seg[sig_col], errors="coerce").values
@@ -724,6 +772,8 @@ def extract_doc_from_masterfile(toc_df, row_start, row_end, t_start=None, detect
     # Detectar timeouts si s'ha sol·licitat
     if detect_timeouts:
         timeout_info = detect_timeout(df_doc["time (min)"].values)
+        if _toc_minute_precision:
+            timeout_info["toc_minute_precision"] = True
         return df_doc, timeout_info
 
     return df_doc
@@ -1109,8 +1159,11 @@ def extract_sample_from_filename(filename):
     """
     stem = os.path.splitext(os.path.basename(filename))[0]
 
-    # Eliminar sufixos comuns (UIB1B, etc.)
+    # Eliminar sufixos comuns (UIB1B, DAD1A, etc.)
     stem_clean = re.sub(r"_?UIB1B\d*", "", stem, flags=re.IGNORECASE)
+    stem_clean = re.sub(r"_?DAD1A\d*", "", stem_clean, flags=re.IGNORECASE)
+    # Netejar underscores/guions trailing (ex: MQ1__ → MQ1)
+    stem_clean = stem_clean.rstrip("_-")
 
     # Buscar patró _R# o _#
     match_r = re.search(r"[_\-]R(\d+)$", stem_clean, flags=re.IGNORECASE)
@@ -1800,6 +1853,9 @@ def parse_injections_from_masterfile(master_data, config=None):
         for _, row in df_seq.iterrows()
         if str(row.get(sample_col, "")).strip() not in ["", "nan"]
     ]
+    # Set de noms únics per detectar col·lisions amb generate_agilent_control_name
+    # Ex: MQ (3a aparició) → "MQ1", però "MQ1" ja existeix com a mostra diferent
+    all_sample_names_set = set(all_sample_names)
 
     # Identificar columnes crítiques per validació
     rt_col = None
@@ -1921,8 +1977,8 @@ def parse_injections_from_masterfile(master_data, config=None):
                 # Determinar tipus
                 if is_khp(sample_name):
                     sample_type = "KHP"
-                elif is_reference_standard(sample_name, config):
-                    sample_type = "PR"
+                elif (pr_type := classify_reference_standard(sample_name, config)):
+                    sample_type = pr_type
                 elif is_blank_injection(sample_name, config):
                     sample_type = "BLANK"
                 elif is_control_injection(sample_name, config):
@@ -1937,8 +1993,8 @@ def parse_injections_from_masterfile(master_data, config=None):
                 effective_inj_num = inj_num
                 if is_khp(sample_name):
                     sample_type = "KHP"
-                elif is_reference_standard(sample_name, config):
-                    sample_type = "PR"
+                elif (pr_type := classify_reference_standard(sample_name, config)):
+                    sample_type = pr_type
                 elif is_blank_injection(sample_name, config):
                     sample_type = "BLANK"
                 elif is_control_injection(sample_name, config):
@@ -1976,6 +2032,12 @@ def parse_injections_from_masterfile(master_data, config=None):
                 original_name_count = all_sample_names.count(sample_name)
                 if original_name_count > 1:
                     unique_name = generate_agilent_control_name(base_name, current_set)
+                    # Evitar col·lisió amb noms de mostra reals al MasterFile
+                    # Ex: MQ (3a aparició) → "MQ1", però "MQ1" ja existeix com a mostra diferent
+                    while unique_name in all_sample_names_set and unique_name != base_name:
+                        current_set += 1
+                        control_sets[base_name] = current_set
+                        unique_name = generate_agilent_control_name(base_name, current_set)
                 else:
                     unique_name = sample_name
                 # Diferenciar BLANK de CONTROL
@@ -1989,8 +2051,8 @@ def parse_injections_from_masterfile(master_data, config=None):
                 effective_inj_num = inj_num
                 if is_khp(sample_name):
                     sample_type = "KHP"
-                elif is_reference_standard(sample_name, config):
-                    sample_type = "PR"
+                elif (pr_type := classify_reference_standard(sample_name, config)):
+                    sample_type = pr_type
                 elif is_blank_injection(sample_name, config):
                     sample_type = "BLANK"
                 elif is_control_injection(sample_name, config):
@@ -2108,6 +2170,20 @@ def parse_injections_from_masterfile(master_data, config=None):
 
     # Retornar també el total de línies del MasterFile per validació posterior
     return injections, warnings, total_rows_with_line
+
+
+def _toc_calc_has_minute_precision(toc_calc_df):
+    """Detecta si el 4-TOC_CALC té timestamps arrodonits al minut (necessita regeneració)."""
+    if toc_calc_df is None or toc_calc_df.empty:
+        return False
+    col = "Temps_Relatiu (min)"
+    if col not in toc_calc_df.columns:
+        return False
+    assigned = toc_calc_df[toc_calc_df["Inj_Index"] > 0]
+    if len(assigned) <= 30:
+        return False
+    t = assigned[col].dropna()
+    return len(t) > 0 and t.nunique() / len(t) < 0.15
 
 
 def _save_toc_calc_to_masterfile(master_path, toc_calc_df):
@@ -2323,6 +2399,44 @@ def compute_toc_calc(master_data, toc_df):
         return None
 
     toc_calc_df = pd.DataFrame(rows)
+
+    # --- Corregir timestamps arrodonits al minut ---
+    # Si el 2-TOC té timestamps sense segons, els Temps_Relatiu queden escalonats.
+    # Reconstruir cadència uniforme dins de cada injecció.
+    assigned = toc_calc_df[toc_calc_df["Inj_Index"] > 0]
+    if len(assigned) > 30:
+        t_rel = assigned["Temps_Relatiu (min)"]
+        n_unique = t_rel.nunique()
+        ratio = n_unique / len(t_rel)
+        if ratio < 0.15:
+            # Reconstruir per cada injecció
+            for inj_idx in toc_calc_df["Inj_Index"].unique():
+                if inj_idx <= 0:
+                    continue
+                mask = toc_calc_df["Inj_Index"] == inj_idx
+                group = toc_calc_df.loc[mask, "Temps_Relatiu (min)"]
+                if group.isna().all():
+                    continue
+                t_vals = sorted(group.dropna().unique())
+                if len(t_vals) < 2:
+                    continue
+                corrected = np.empty(mask.sum(), dtype=np.float64)
+                pos = 0
+                for t_val in t_vals:
+                    sub_mask = group.values == t_val
+                    n_pts = sub_mask.sum()
+                    offsets = np.arange(n_pts) * (1.0 / n_pts)
+                    corrected[pos:pos + n_pts] = t_val + offsets
+                    pos += n_pts
+                # Handle NaN entries at the end
+                if pos < len(corrected):
+                    corrected[pos:] = np.nan
+                toc_calc_df.loc[mask, "Temps_Relatiu (min)"] = np.round(corrected, 3)
+            logger.info(
+                "compute_toc_calc: timestamps arrodonits al minut detectats, "
+                "cadencia reconstruida"
+            )
+
     logger.debug(f"compute_toc_calc: Calculat 4-TOC_CALC amb {len(toc_calc_df)} files")
     return toc_calc_df
 
@@ -2884,6 +2998,8 @@ def _generate_import_warnings(result: dict) -> list:
     """
     Genera avisos estructurats a partir del resultat d'importació.
 
+    Tots els avisos usen create_anomaly() (font única: ANOMALY_CATALOG).
+
     Args:
         result: Dict del resultat de import_sequence()
 
@@ -2895,27 +3011,18 @@ def _generate_import_warnings(result: dict) -> list:
     # 1. Errors crítics (BLOCKER)
     for error in result.get("errors", []):
         if "no data" in error.lower() or "buida" in error.lower() or "empty" in error.lower():
-            warnings.append(create_warning(
-                code="IMP_NO_DATA",
-                stage="import",
-            ))
+            warnings.append(create_anomaly("IMP_NO_DATA"))
         elif "uib" in error.lower() and ("missing" in error.lower() or "falt" in error.lower()):
-            warnings.append(create_warning(
-                code="IMP_MISSING_UIB",
-                stage="import",
-            ))
+            warnings.append(create_anomaly("IMP_MISSING_UIB"))
         elif "dad" in error.lower() and ("missing" in error.lower() or "falt" in error.lower()):
-            warnings.append(create_warning(
-                code="IMP_MISSING_DAD",
-                stage="import",
-            ))
+            warnings.append(create_anomaly("IMP_MISSING_DAD"))
         else:
-            warnings.append(create_warning(
-                code="IMP_ERROR",
-                level=WarningLevel.BLOCKER,
-                message=error,
-                stage="import",
-            ))
+            anomaly = create_anomaly(
+                "IMP_NO_DATA",
+                details={"message": error},
+            )
+            anomaly["message"] = error
+            warnings.append(anomaly)
 
     # 2. Fitxers orfes
     orphan_uib = result.get("orphan_files", {}).get("uib", [])
@@ -2924,34 +3031,43 @@ def _generate_import_warnings(result: dict) -> list:
 
     if n_orphan > 0:
         all_names = [os.path.basename(f) for f in orphan_uib + orphan_dad]
-        warnings.append(create_warning(
-            code="IMP_ORPHAN_FILES",
-            stage="import",
+        anomaly = create_anomaly(
+            "IMP_ORPHAN_FILES",
             details={"n": n_orphan, "files": ", ".join(all_names),
                       "uib": orphan_uib, "dad": orphan_dad},
-        ))
+        )
+        # Incloure noms al message perquè la barra d'avisos els mostri
+        anomaly["message"] = f"Fitxers sense assignar: {', '.join(all_names)}"
+        warnings.append(anomaly)
 
-    # 3. CSV buits
-    n_empty_csv = 0
-    for sample_name, sample_data in result.get("samples", {}).items():
-        for rep_key, rep_data in sample_data.get("replicas", {}).items():
-            uib_data = rep_data.get("uib") or {}
-            if uib_data.get("t") is None and uib_data.get("y_raw") is None:
-                n_empty_csv += 1
+    # 3. Warnings del manifest (strings) — extreure info accionable
+    for w_str in result.get("warnings", []):
+        w_lower = w_str.lower() if isinstance(w_str, str) else ""
+        if "incompleta" in w_lower or "duplicat" in w_lower or "duplicada" in w_lower:
+            anomaly = create_anomaly("IMP_INCOMPLETE")
+            # Usar el text original que ja és descriptiu
+            anomaly["message"] = w_str.lstrip("\u26a0\ufe0f ").strip()
+            warnings.append(anomaly)
 
-    if n_empty_csv > 0:
-        warnings.append(create_warning(
-            code="IMP_EMPTY_CSV",
-            stage="import",
-            details={"n": n_empty_csv},
-        ))
-
-    # 4. Fallback DAD (INFO)
-    if result.get("dad_source") == "masterfile":
-        warnings.append(create_warning(
-            code="IMP_FALLBACK_DAD",
-            stage="import",
-        ))
+    # 4. TOC amb timestamps arrodonits al minut (cadència reconstruïda)
+    samples = result.get("samples", {})
+    if isinstance(samples, dict):
+        for sample_data in samples.values():
+            if not isinstance(sample_data, dict):
+                continue
+            replicas = sample_data.get("replicas", {})
+            if not isinstance(replicas, dict):
+                continue
+            for rep in replicas.values():
+                if not isinstance(rep, dict):
+                    continue
+                direct = rep.get("direct", {})
+                if isinstance(direct, dict):
+                    ti = direct.get("timeout_info", {})
+                    if isinstance(ti, dict) and ti.get("toc_minute_precision"):
+                        warnings.append(create_anomaly("IMP_TOC_MINUTE_PRECISION"))
+                        # Només un avís per seqüència (afecta totes les mostres)
+                        return warnings
 
     return warnings
 
@@ -3141,8 +3257,13 @@ def import_sequence(seq_path, config=None, progress_callback=None):
         except Exception as e:
             logger.warning(f"Error llegint fulls addicionals del MasterFile: {e}")
 
-        # Si 4-TOC_CALC no existeix o és buit, calcular i guardar al MasterFile
-        if toc_calc_df is None or (hasattr(toc_calc_df, 'empty') and toc_calc_df.empty):
+        # Detectar 4-TOC_CALC existent amb timestamps arrodonits al minut
+        _needs_regen = _toc_calc_has_minute_precision(toc_calc_df)
+        if _needs_regen:
+            logger.info("4-TOC_CALC existent amb timestamps arrodonits, regenerant...")
+
+        # Si 4-TOC_CALC no existeix, és buit, o té timestamps degradats → calcular
+        if _needs_regen or toc_calc_df is None or (hasattr(toc_calc_df, 'empty') and toc_calc_df.empty):
             if toc_df is not None:
                 result["warnings"].append(
                     "4-TOC_CALC no trobat al MasterFile, calculant automàticament..."
@@ -3162,7 +3283,7 @@ def import_sequence(seq_path, config=None, progress_callback=None):
                     result["warnings"].append(
                         "⚠️ No s'ha pogut calcular 4-TOC_CALC. DOC Direct no disponible."
                     )
-            elif result["method"] == "COLUMN":
+            else:
                 result["warnings"].append(
                     "⚠️ 4-TOC_CALC i 2-TOC no disponibles. DOC Direct no disponible."
                 )
@@ -3868,6 +3989,7 @@ def generate_import_manifest(imported_data, include_injection_details=True):
 
         # Avisos i errors
         "warnings": imported_data.get("warnings", []),
+        "warnings_structured": imported_data.get("warnings_structured", []),
         "errors": imported_data.get("errors", []),
 
         # Fitxers orfes
@@ -3904,6 +4026,7 @@ def generate_import_manifest(imported_data, include_injection_details=True):
             direct = rep_data.get("direct") or {}
             if direct.get("t") is not None:
                 t_arr = direct["t"]
+                _ti = direct.get("timeout_info", {})
                 replica_entry["direct"] = {
                     "source": "MasterFile:2-TOC",
                     "row_start": direct.get("row_start"),
@@ -3912,11 +4035,13 @@ def generate_import_manifest(imported_data, include_injection_details=True):
                     "t_min": float(min(t_arr)),
                     "t_max": float(max(t_arr)),
                     "baseline": direct.get("baseline"),
-                    "has_timeout": direct.get("timeout_info", {}).get("n_timeouts", 0) > 0,
-                    "timeout_severity": direct.get("timeout_info", {}).get("severity", "OK"),
+                    "has_timeout": _ti.get("n_timeouts", 0) > 0,
+                    "timeout_severity": _ti.get("severity", "OK"),
                 }
-                if direct.get("timeout_info", {}).get("n_timeouts", 0) > 0:
-                    replica_entry["direct"]["timeout_ranges"] = direct["timeout_info"].get("timeouts", [])
+                if _ti.get("n_timeouts", 0) > 0:
+                    replica_entry["direct"]["timeout_ranges"] = _ti.get("timeouts", [])
+                if _ti.get("toc_minute_precision"):
+                    replica_entry["direct"]["toc_minute_precision"] = True
             elif direct.get("row_start") is not None or direct.get("n_points"):
                 # Preservar metadades encara que no hi hagi dades reals
                 replica_entry["direct"] = {
@@ -4026,7 +4151,7 @@ def generate_import_manifest(imported_data, include_injection_details=True):
     manifest["summary"] = {
         "total_samples": len([s for s in samples_detail if s["type"] == "SAMPLE"]),
         "total_khp": len([s for s in samples_detail if s["type"] == "KHP"]),
-        "total_pr": len([s for s in samples_detail if s["type"] == "PR"]),
+        "total_pr": len([s for s in samples_detail if s["type"].startswith("PR")]),
         "total_replicas": sum(len(s["replicas"]) for s in samples_detail),
         "replicas_with_direct": sum(
             1 for s in samples_detail
@@ -4232,8 +4357,11 @@ def import_from_manifest(seq_path, manifest=None, config=None, progress_callback
             result["errors"].append(f"Error llegint MasterFile: {e}")
             return result
 
-        # Si 4-TOC_CALC és buit, calcular i guardar al MasterFile
-        if (toc_calc_df is None or toc_calc_df.empty) and toc_df is not None:
+        # Detectar 4-TOC_CALC amb timestamps arrodonits
+        _needs_regen = _toc_calc_has_minute_precision(toc_calc_df)
+
+        # Si 4-TOC_CALC és buit o degradat, calcular i guardar al MasterFile
+        if (_needs_regen or toc_calc_df is None or toc_calc_df.empty) and toc_df is not None:
             master_data = llegir_masterfile_nou(master_path)
             computed = compute_toc_calc(master_data, toc_df)
             if computed is not None and not computed.empty:
@@ -4244,6 +4372,14 @@ def import_from_manifest(seq_path, manifest=None, config=None, progress_callback
                     result["warnings"].append(
                         "⚠️ 4-TOC_CALC calculat però no s'ha pogut escriure al MasterFile."
                     )
+            else:
+                result["warnings"].append(
+                    "⚠️ No s'ha pogut calcular 4-TOC_CALC. DOC Direct no disponible."
+                )
+        elif (toc_calc_df is None or toc_calc_df.empty) and toc_df is None:
+            result["warnings"].append(
+                "⚠️ 4-TOC_CALC i 2-TOC no disponibles. DOC Direct no disponible."
+            )
     else:
         report_progress(10, "Carregant manifest...")
 
@@ -4731,8 +4867,11 @@ def ensure_data_loaded(imported_data, config=None, progress_callback=None):
         logger.error("ensure_data_loaded: Error llegint MasterFile: %s", e)
         return imported_data
 
-    # Si 4-TOC_CALC és buit, calcular i guardar al MasterFile
-    if (toc_calc_df is None or toc_calc_df.empty) and toc_df is not None:
+    # Detectar 4-TOC_CALC amb timestamps arrodonits
+    _needs_regen = _toc_calc_has_minute_precision(toc_calc_df)
+
+    # Si 4-TOC_CALC és buit o degradat, calcular i guardar al MasterFile
+    if (_needs_regen or toc_calc_df is None or toc_calc_df.empty) and toc_df is not None:
         master_data_temp = llegir_masterfile_nou(master_path)
         computed = compute_toc_calc(master_data_temp, toc_df)
         if computed is not None and not computed.empty:
@@ -4741,6 +4880,10 @@ def ensure_data_loaded(imported_data, config=None, progress_callback=None):
                 logger.info("ensure_data_loaded: 4-TOC_CALC generat i guardat al MasterFile")
             else:
                 logger.warning("ensure_data_loaded: 4-TOC_CALC calculat però no escrit")
+        else:
+            logger.warning("ensure_data_loaded: No s'ha pogut calcular 4-TOC_CALC")
+    elif (toc_calc_df is None or toc_calc_df.empty) and toc_df is None:
+        logger.warning("ensure_data_loaded: 4-TOC_CALC i 2-TOC no disponibles")
 
     report_progress(20, "Completant dades de mostres...")
 

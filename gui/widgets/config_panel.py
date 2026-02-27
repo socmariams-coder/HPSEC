@@ -464,6 +464,27 @@ class ConfigPanel(QWidget):
         g.addWidget(self.ignore_orphan_cb, 1, 0, 1, 2)
         layout.addWidget(sec_ctrl)
 
+        # --- Secció: Patrons de Referència ---
+        sec_pr = ConfigSection("Patrons de Referència", "Futur", STYLE_BADGE_FUTURE)
+        g = sec_pr.content_layout
+
+        g.addWidget(QLabel("PR Carboni (quantifica):"), 0, 0)
+        self.pr_c_patterns = PatternListEditor("PATR_C, SUWANNEE, SRNOM...")
+        self._widgets["sample_types.PATRÓ_REF_C.patterns"] = self.pr_c_patterns
+        g.addWidget(self.pr_c_patterns, 0, 1)
+
+        g.addWidget(QLabel("PR Inorgànic (NO quantifica):"), 1, 0)
+        self.pr_i_patterns = PatternListEditor("PATR_I, Br, NO3, CaCO3...")
+        self._widgets["sample_types.PATRÓ_REF_I.patterns"] = self.pr_i_patterns
+        g.addWidget(self.pr_i_patterns, 1, 1)
+
+        g.addWidget(QLabel("PR Nitrogen (quantifica):"), 2, 0)
+        self.pr_n_patterns = PatternListEditor("PATR_N...")
+        self._widgets["sample_types.PATRÓ_REF_N.patterns"] = self.pr_n_patterns
+        g.addWidget(self.pr_n_patterns, 2, 1)
+
+        layout.addWidget(sec_pr)
+
         # --- Secció: Planificació Seqüència ---
         sec_seq = ConfigSection("Planificació Seqüència", "Futur", STYLE_BADGE_FUTURE)
         g = sec_seq.content_layout
@@ -669,6 +690,13 @@ class ConfigPanel(QWidget):
         control_patterns = cfg.get("control_injections", "patterns", default=[])
         self.control_patterns.load(control_patterns)
 
+        pr_c = cfg.get("sample_types", "PATRÓ_REF_C", default={}).get("patterns", [])
+        self.pr_c_patterns.load(pr_c)
+        pr_i = cfg.get("sample_types", "PATRÓ_REF_I", default={}).get("patterns", [])
+        self.pr_i_patterns.load(pr_i)
+        pr_n = cfg.get("sample_types", "PATRÓ_REF_N", default={}).get("patterns", [])
+        self.pr_n_patterns.load(pr_n)
+
         wavelengths = cfg.get("wavelengths", default={})
         self.wl_selector.load(wavelengths)
 
@@ -818,6 +846,16 @@ class ConfigPanel(QWidget):
         cfg.set_section("wavelengths", self.wl_selector.save())
         cfg.set("blank_injections", "patterns", self.blank_patterns.save())
         cfg.set("control_injections", "patterns", self.control_patterns.save())
+
+        # Patrons de referència — actualitzar només patterns, mantenir la resta
+        for attr, config_key in [
+            ("pr_c_patterns", "PATRÓ_REF_C"),
+            ("pr_i_patterns", "PATRÓ_REF_I"),
+            ("pr_n_patterns", "PATRÓ_REF_N"),
+        ]:
+            existing = cfg.get("sample_types", config_key, default={})
+            existing["patterns"] = getattr(self, attr).save()
+            cfg.set("sample_types", config_key, existing)
 
         if cfg.save():
             self._original_values = self._capture_current_values()

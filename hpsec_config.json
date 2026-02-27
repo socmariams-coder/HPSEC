@@ -79,6 +79,7 @@
       230,
       240,
       250,
+      252,
       254,
       260,
       272,
@@ -91,6 +92,7 @@
     ],
     "selected": [
       220,
+      252,
       254,
       272,
       290,
@@ -194,6 +196,7 @@
   "control_injections": {
     "patterns": [
       "NAOH",
+      "HCL",
       "WASH",
       "CONTROL"
     ],
@@ -259,13 +262,11 @@
       ],
       "color": "#2A9D8F"
     },
-    "PATRÓ_REF": {
-      "label": "PATRÓ_REF",
-      "description": "Patró de referència per QC",
+    "PATRÓ_REF_C": {
+      "label": "PATRÓ_REF_C",
+      "description": "Patró de referència de carboni (DOC)",
       "patterns": [
-        "Br",
-        "NO3",
-        "CaCO3",
+        "PATR_C",
         "SUWANNEE",
         "SRNOM"
       ],
@@ -273,7 +274,29 @@
         "HA",
         "FA"
       ],
+      "quantify": true,
+      "color": "#8E44AD"
+    },
+    "PATRÓ_REF_I": {
+      "label": "PATRÓ_REF_I",
+      "description": "Patró de referència inorgànic (sense DOC)",
+      "patterns": [
+        "PATR_I",
+        "Br",
+        "NO3",
+        "CaCO3"
+      ],
+      "quantify": false,
       "color": "#9B59B6"
+    },
+    "PATRÓ_REF_N": {
+      "label": "PATRÓ_REF_N",
+      "description": "Patró de referència de nitrogen",
+      "patterns": [
+        "PATR_N"
+      ],
+      "quantify": true,
+      "color": "#7D3C98"
     },
     "CONTROL": {
       "label": "CONTROL",

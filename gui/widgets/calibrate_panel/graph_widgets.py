@@ -22,22 +22,22 @@ except ImportError:
 
 
 class KHPReplicaGraphWidget(QWidget):
-    """Widget que mostra gràfics de KHP per rèplica amb DOC (fila 1) i DAD 254nm (fila 2)."""
+    """Widget que mostra gràfics de KHP per rèplica: DOC Direct+UIB+254nm unificats."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.figure = Figure(figsize=(10, 6), dpi=100)
+        self.figure = Figure(figsize=(10, 3.5), dpi=100)
         self.canvas = FigureCanvas(self.figure)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.canvas)
 
-        self.setMinimumHeight(350)
+        self.setMinimumHeight(250)
 
     def plot_replicas(self, replicas_direct, replicas_uib=None):
         """
-        Grafica rèpliques: fila 1 = DOC (Direct+UIB superposats), fila 2 = 254nm.
+        Grafica rèpliques: 1 fila × N cols, cada subplot amb DOC+UIB+254nm superposats.
 
         Args:
             replicas_direct: Lista de dicts amb dades Direct per cada rèplica
@@ -58,37 +58,21 @@ class KHPReplicaGraphWidget(QWidget):
         n_replicas = len(replicas_direct)
         has_uib = replicas_uib and len(replicas_uib) > 0
 
-        # Check if any replica has 254nm data
-        has_any_254 = any(
-            rep.get('t_dad') is not None and rep.get('y_dad_254') is not None
-            for rep in replicas_direct
-        )
-
-        # Grid: 2 rows (DOC + 254nm) x N cols, or 1 row if no 254nm
-        n_rows = 2 if has_any_254 else 1
-        n_cols = n_replicas
-
-        # Row 1: DOC plots (Direct + UIB overlaid)
+        # 1 row × N cols: all signals unified per subplot
         for i, rep_direct in enumerate(replicas_direct):
-            ax = self.figure.add_subplot(n_rows, n_cols, i + 1)
+            ax = self.figure.add_subplot(1, n_replicas, i + 1)
             rep_uib = replicas_uib[i] if has_uib and i < len(replicas_uib) else None
-            self._plot_doc(ax, rep_direct, rep_uib, i + 1)
-
-        # Row 2: 254nm plots
-        if has_any_254:
-            for i, rep in enumerate(replicas_direct):
-                ax = self.figure.add_subplot(n_rows, n_cols, n_cols + i + 1)
-                self._plot_254(ax, rep, i + 1)
+            self._plot_unified(ax, rep_direct, rep_uib, i + 1)
 
         self.figure.tight_layout()
         self.canvas.draw()
 
-    def _plot_doc(self, ax, rep_direct, rep_uib, replica_num):
-        """Plot DOC subplot: Direct (blau) + UIB (verd) superposats, amb àrea ombrejada i fit."""
+    def _plot_unified(self, ax, rep_direct, rep_uib, replica_num):
+        """Plot unified subplot: Direct (blau) + UIB (verd) + 254nm (taronja, eix dret).
+        Inclou zoom inset de la zona del pic."""
         t_doc = rep_direct.get('t_doc')
         y_doc = rep_direct.get('y_doc')
         area = rep_direct.get('area', 0)
-        snr = rep_direct.get('snr', 0)
 
         if t_doc is None or y_doc is None:
             self._plot_doc_fallback(ax, rep_direct, replica_num)
@@ -97,9 +81,13 @@ class KHPReplicaGraphWidget(QWidget):
         t_doc = np.asarray(t_doc)
         y_doc = np.asarray(y_doc)
 
+        # Colors consistents amb analyze panel
+        color_direct = '#1565C0'   # Deep blue (analyze R1)
+        color_uib = '#2E7D32'     # Dark green (analyze UIB)
+        color_254 = '#E67E22'     # Orange (254nm)
+
         # --- Direct DOC curve ---
-        color_direct = '#2E86AB'
-        ax.plot(t_doc, y_doc, color=color_direct, linewidth=1.2)
+        ax.plot(t_doc, y_doc, color=color_direct, linewidth=1.2, label='Direct')
 
         # Shaded integrated area (Direct)
         li = rep_direct.get('peak_left_idx', 0)
@@ -107,8 +95,10 @@ class KHPReplicaGraphWidget(QWidget):
         if 0 <= li < ri < len(t_doc):
             ax.fill_between(t_doc[li:ri+1], 0, y_doc[li:ri+1],
                            alpha=0.15, color=color_direct)
+            ax.axvline(t_doc[li], color=color_direct, linestyle=':', linewidth=0.8, alpha=0.5)
+            ax.axvline(t_doc[ri], color=color_direct, linestyle=':', linewidth=0.8, alpha=0.5)
 
-        # Cim irregular: show original if repaired (jagged/batman)
+        # Cim irregular: show original if repaired
         if rep_direct.get('irregular_top_repaired', rep_direct.get('batman_repaired')) and rep_direct.get('y_doc_repaired') is not None:
             y_repaired = np.asarray(rep_direct['y_doc_repaired'])
             if len(y_repaired) == len(t_doc):
@@ -118,39 +108,133 @@ class KHPReplicaGraphWidget(QWidget):
         # Bigaussian fit (dashed over DOC)
         self._plot_bigaussian_fit(ax, rep_direct)
 
-        # --- UIB DOC curve (overlaid in green) ---
+        # --- UIB DOC curve (overlaid) ---
         area_uib = 0
         has_uib_curve = False
+        t_uib_arr = None
+        y_uib_arr = None
+        li_u = 0
+        ri_u = 0
         if rep_uib is not None:
             t_uib = rep_uib.get('t_doc')
             y_uib = rep_uib.get('y_doc')
             area_uib = rep_uib.get('area', 0)
             if t_uib is not None and y_uib is not None:
                 has_uib_curve = True
-                t_uib = np.asarray(t_uib)
-                y_uib = np.asarray(y_uib)
-                color_uib = '#27AE60'
-                ax.plot(t_uib, y_uib, color=color_uib, linewidth=1.2)
+                t_uib_arr = np.asarray(t_uib)
+                y_uib_arr = np.asarray(y_uib)
+                ax.plot(t_uib_arr, y_uib_arr, color=color_uib, linewidth=1.2, label='UIB')
                 li_u = rep_uib.get('peak_left_idx', 0)
-                ri_u = rep_uib.get('peak_right_idx', len(t_uib) - 1)
-                if 0 <= li_u < ri_u < len(t_uib):
-                    ax.fill_between(t_uib[li_u:ri_u+1], 0, y_uib[li_u:ri_u+1],
+                ri_u = rep_uib.get('peak_right_idx', len(t_uib_arr) - 1)
+                if 0 <= li_u < ri_u < len(t_uib_arr):
+                    ax.fill_between(t_uib_arr[li_u:ri_u+1], 0, y_uib_arr[li_u:ri_u+1],
                                    alpha=0.10, color=color_uib)
+
+        # --- 254nm (secondary Y axis) ---
+        a254_area = rep_direct.get('a254_area', 0)
+        t_dad = rep_direct.get('t_dad')
+        y_dad = rep_direct.get('y_dad_254')
+        has_254 = False
+
+        if t_dad is not None and y_dad is not None:
+            t_dad = np.asarray(t_dad)
+            y_dad = np.asarray(y_dad)
+            if len(t_dad) > 0 and len(y_dad) > 0:
+                has_254 = True
+                ax2 = ax.twinx()
+                ax2.plot(t_dad, y_dad, color=color_254, linewidth=0.8, alpha=0.7, label='254nm')
+                ax2.set_ylabel('254nm', fontsize=6, color=color_254)
+                ax2.tick_params(axis='y', labelsize=5, colors=color_254)
+                ax2.spines['right'].set_color(color_254)
+
+                dad_peak = rep_direct.get('dad_peak_info', {})
+                if dad_peak and dad_peak.get('valid'):
+                    d_li = dad_peak.get('left_idx', 0)
+                    d_ri = dad_peak.get('right_idx', len(t_dad) - 1)
+                    if 0 <= d_li < d_ri < len(t_dad):
+                        ax.axvline(t_dad[d_li], color=color_254, linestyle='--', linewidth=0.6, alpha=0.4)
+                        ax.axvline(t_dad[d_ri], color=color_254, linestyle='--', linewidth=0.6, alpha=0.4)
 
         # Axes formatting
         ax.set_xlabel('Temps (min)', fontsize=7)
-        ax.set_ylabel('DOC (mAU)', fontsize=7)
+        ax.set_ylabel('DOC (ppb)', fontsize=7)
         ax.tick_params(axis='both', labelsize=6)
         ax.grid(True, alpha=0.3)
+        ax.set_title(f"R{replica_num}", fontsize=8, fontweight='bold')
 
-        # --- Title ---
-        ax.set_title(f"R{replica_num} DOC", fontsize=8, fontweight='bold')
-
-        # --- Info box: llegenda + mètriques unificades ---
-        self._draw_info_box(ax, rep_direct, area, snr, has_uib_curve, area_uib)
+        # --- Compact legend ---
+        legend_parts = [f"Direct A={area:.0f}"]
+        if has_uib_curve:
+            legend_parts.append(f"UIB A={area_uib:.0f}")
+        if has_254:
+            legend_parts.append(f"254nm A={a254_area:.1f}")
+        legend_text = " | ".join(legend_parts)
+        ax.text(0.97, 0.97, legend_text,
+                transform=ax.transAxes, fontsize=5.5,
+                verticalalignment='top', horizontalalignment='right',
+                bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.85, edgecolor='#BDC3C7'),
+                family='monospace')
 
         # --- Timeout zones ---
         self._draw_timeout_zones(ax, rep_direct)
+
+        # --- Zoom inset (peak area) ---
+        self._add_peak_zoom_inset(ax, t_doc, y_doc, li, ri, color_direct,
+                                  t_uib_arr, y_uib_arr, li_u, ri_u, color_uib,
+                                  has_uib_curve)
+
+    def _add_peak_zoom_inset(self, ax, t_doc, y_doc, li, ri, color_direct,
+                             t_uib, y_uib, li_u, ri_u, color_uib, has_uib):
+        """Afegeix un inset amb zoom de la zona del pic."""
+        if not (0 <= li < ri < len(t_doc)):
+            return
+
+        # Determine zoom window: peak ± 1 min margin
+        t_left = t_doc[li]
+        t_right = t_doc[ri]
+        peak_width = t_right - t_left
+        margin = max(peak_width * 0.5, 0.3)
+        zoom_t_min = t_left - margin
+        zoom_t_max = t_right + margin
+
+        # Y range within zoom window
+        mask = (t_doc >= zoom_t_min) & (t_doc <= zoom_t_max)
+        if mask.sum() < 3:
+            return
+        y_in_window = y_doc[mask]
+        zoom_y_max = float(np.max(y_in_window)) * 1.15
+        zoom_y_min = max(0, float(np.min(y_in_window)) - zoom_y_max * 0.05)
+
+        # Create inset axes (lower-right corner)
+        try:
+            axins = ax.inset_axes([0.55, 0.02, 0.43, 0.45])  # [x, y, width, height]
+        except AttributeError:
+            return  # matplotlib < 3.0
+
+        # Plot Direct in inset
+        axins.plot(t_doc, y_doc, color=color_direct, linewidth=1.0)
+        axins.fill_between(t_doc[li:ri+1], 0, y_doc[li:ri+1],
+                          alpha=0.20, color=color_direct)
+        axins.axvline(t_doc[li], color=color_direct, linestyle=':', linewidth=0.6, alpha=0.6)
+        axins.axvline(t_doc[ri], color=color_direct, linestyle=':', linewidth=0.6, alpha=0.6)
+
+        # Plot UIB in inset
+        if has_uib and t_uib is not None and y_uib is not None:
+            axins.plot(t_uib, y_uib, color=color_uib, linewidth=1.0)
+            if 0 <= li_u < ri_u < len(t_uib):
+                axins.fill_between(t_uib[li_u:ri_u+1], 0, y_uib[li_u:ri_u+1],
+                                  alpha=0.12, color=color_uib)
+
+        axins.set_xlim(zoom_t_min, zoom_t_max)
+        axins.set_ylim(zoom_y_min, zoom_y_max)
+        axins.tick_params(axis='both', labelsize=4)
+        axins.grid(True, alpha=0.2)
+
+        # Draw rectangle indicator on main axes
+        try:
+            ax.indicate_inset_zoom(axins, edgecolor='#666', linewidth=0.5, alpha=0.5)
+        except AttributeError:
+            pass
 
     def _plot_doc_fallback(self, ax, rep, replica_num):
         """Fallback when no raw DOC signal available."""
@@ -175,7 +259,7 @@ class KHPReplicaGraphWidget(QWidget):
                     ax.set_xlabel('Temps (min)', fontsize=7)
                     ax.set_ylabel('DOC (mAU)', fontsize=7)
                     ax.grid(True, alpha=0.3)
-                    ax.set_title(f"R{replica_num} DOC: A={area:.0f} [fit]",
+                    ax.set_title(f"R{replica_num}: A={area:.0f} [fit]",
                                 fontsize=8, fontweight='bold')
                     ax.legend(fontsize=6, loc='upper right')
                     return
@@ -198,7 +282,7 @@ class KHPReplicaGraphWidget(QWidget):
         else:
             ax.text(0.5, 0.5, "Sense dades", ha='center', va='center',
                    fontsize=10, color='gray')
-        ax.set_title(f"R{replica_num} DOC", fontsize=8)
+        ax.set_title(f"R{replica_num}", fontsize=8)
         ax.set_xlim(0, 1)
         ax.set_ylim(0, 1)
         ax.axis('off')
@@ -215,63 +299,14 @@ class KHPReplicaGraphWidget(QWidget):
             mu = bigauss.get('mu', 0)
             sigma_l = bigauss.get('sigma_left', 0)
             sigma_r = bigauss.get('sigma_right', 0)
-            r2 = bigauss.get('r2', 0)
             if amp > 0 and mu > 0 and sigma_l > 0 and sigma_r > 0:
                 t_fit = np.linspace(mu - 4*sigma_l, mu + 4*sigma_r, 200)
                 y_fit = bigaussian(t_fit, amp, mu, sigma_l, sigma_r, 0)
                 fit_color = '#27AE60' if bigauss.get('status') == 'VALID' else '#F39C12'
                 ax.plot(t_fit, y_fit, color=fit_color, linewidth=1.3, linestyle='--',
-                       alpha=0.8, label='Fit BiGauss')
+                       alpha=0.8)
         except Exception:
             pass
-
-    def _draw_info_box(self, ax, rep, area, snr, has_uib, area_uib):
-        """Bloc únic amb llegenda (colors) + mètriques a upper right."""
-        # --- Llegenda amb colors reals ---
-        legend_y = 0.97
-        legend_x = 0.97
-        color_direct = '#2E86AB'
-        color_uib = '#27AE60'
-
-        ax.text(legend_x, legend_y, f"\u2501\u2501 Direct  A={area:.0f}",
-                transform=ax.transAxes, fontsize=6, color=color_direct,
-                verticalalignment='top', horizontalalignment='right',
-                family='monospace', fontweight='bold')
-        legend_y -= 0.08
-
-        if has_uib:
-            ax.text(legend_x, legend_y, f"\u2501\u2501 UIB     A={area_uib:.0f}",
-                    transform=ax.transAxes, fontsize=6, color=color_uib,
-                    verticalalignment='top', horizontalalignment='right',
-                    family='monospace', fontweight='bold')
-            legend_y -= 0.08
-
-        # --- Mètriques (info box) ---
-        metrics = []
-        if snr > 0:
-            metrics.append(f"SNR={snr:.0f}")
-
-        bg = rep.get('bigaussian_doc', {})
-        if bg:
-            r2 = bg.get('r2', 0)
-            status = bg.get('status', '')
-            if r2 > 0:
-                tag = 'OK' if status == 'VALID' else ('!!' if status in ('CHECK', 'INVALID') else '')
-                metrics.append(f"R\u00B2={r2:.4f} {tag}")
-
-        if rep.get('has_irregular_top', rep.get('has_batman')):
-            metrics.append("Pic_J" + (" (rep)" if rep.get('irregular_top_repaired', rep.get('batman_repaired')) else " !!"))
-        r2_bg = (rep.get('bigaussian_doc') or {}).get('r2', 0)
-        if r2_bg > 0:
-            tag = "!" if r2_bg < 0.95 else ""
-            metrics.append(f"R²bg={r2_bg:.3f}{tag}")
-
-        if metrics:
-            text = "\n".join(metrics)
-            props = dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.8, edgecolor='#BDC3C7')
-            ax.text(0.98, legend_y, text, transform=ax.transAxes, fontsize=6,
-                   verticalalignment='top', horizontalalignment='right',
-                   bbox=props, family='monospace')
 
     def _draw_timeout_zones(self, ax, rep):
         """Draw timeout zones and annotations on a subplot."""
@@ -310,64 +345,18 @@ class KHPReplicaGraphWidget(QWidget):
                 ax.annotate(f'TO@{t_label:.1f}', xy=(0.02, 0.88),
                            xycoords='axes fraction', fontsize=6, color='#E67E22', va='top')
 
-    def _plot_254(self, ax, rep, replica_num):
-        """Plot 254nm subplot with shaded area."""
-        t_dad = rep.get('t_dad')
-        y_dad = rep.get('y_dad_254')
-        a254_area = rep.get('a254_area', 0)
-
-        if t_dad is None or y_dad is None:
-            ax.text(0.5, 0.5, "Sense 254nm", ha='center', va='center',
-                   fontsize=9, color='gray')
-            ax.set_title(f"R{replica_num} 254nm", fontsize=8)
-            ax.set_xlim(0, 1)
-            ax.set_ylim(0, 1)
-            ax.axis('off')
-            return
-
-        t_dad = np.asarray(t_dad)
-        y_dad = np.asarray(y_dad)
-        color_254 = '#E67E22'
-
-        ax.plot(t_dad, y_dad, color=color_254, linewidth=1.0, label=f'254nm (A={a254_area:.1f})')
-
-        # Shaded integrated area for 254nm
-        dad_peak = rep.get('dad_peak_info', {})
-        if dad_peak and dad_peak.get('valid'):
-            d_li = dad_peak.get('left_idx', 0)
-            d_ri = dad_peak.get('right_idx', len(t_dad) - 1)
-            if 0 <= d_li < d_ri < len(t_dad):
-                ax.fill_between(t_dad[d_li:d_ri+1], 0, y_dad[d_li:d_ri+1],
-                               alpha=0.2, color=color_254)
-
-        ax.set_xlabel('Temps (min)', fontsize=7)
-        ax.set_ylabel('254nm (mAU)', fontsize=7)
-        ax.tick_params(axis='both', labelsize=6)
-        ax.grid(True, alpha=0.3)
-
-        # Title with key info (G5)
-        bg_254 = rep.get('bigaussian_254', {})
-        r2_254 = bg_254.get('r2', 0) if bg_254 else 0
-        status_254 = bg_254.get('status', '') if bg_254 else ''
-        status_icon = 'OK' if status_254 == 'VALID' else ('!!' if status_254 in ('CHECK', 'INVALID') else '')
-        title_parts = [f"R{replica_num} 254nm: A={a254_area:.1f}"]
-        if r2_254 > 0:
-            title_parts.append(f"R\u00B2={r2_254:.3f}")
-        if status_icon:
-            title_parts.append(status_icon)
-        ax.set_title("  ".join(title_parts), fontsize=8, fontweight='bold')
-
     def clear(self):
         self.figure.clear()
         self.canvas.draw()
 
 
 class CalibrationLineWidget(QWidget):
-    """Widget que mostra la recta de calibració amb punts de SEQs recents."""
+    """Widget que mostra la recta de calibració guardada (regression_data)
+    amb punts Direct + UIB i el punt actual de la SEQ."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.figure = Figure(figsize=(5, 2.5), dpi=100)
+        self.figure = Figure(figsize=(6, 2.8), dpi=100)
         self.canvas = FigureCanvas(self.figure)
 
         layout = QVBoxLayout(self)
@@ -375,193 +364,187 @@ class CalibrationLineWidget(QWidget):
         layout.addWidget(self.canvas)
 
         self.setMinimumHeight(200)
-        self.setMaximumHeight(280)
+        self.setMaximumHeight(300)
 
-    def plot_calibration(self, qc_history, current_seq_name, rf_mass_cal=682,
-                         warning_pct=5.0, fail_pct=10.0, n_context=2,
-                         rf_mass_cal_bp=None, current_mode='column',
-                         intercept_col=0, intercept_bp=0):
+    def plot_stored_regression(self, cal_direct, cal_uib=None,
+                               current_direct=None, current_uib=None,
+                               current_mode='column', current_seq_name='',
+                               warning_pct=5.0, fail_pct=10.0):
         """
-        Gràfic de recta de calibració amb punts de SEQs recents.
+        Mostra la recta de calibració guardada a Calibration_Reference.json.
 
         Args:
-            qc_history: Llista d'entrades del QC_History.json
-            current_seq_name: Nom de la SEQ actual
-            rf_mass_cal: Pendent de la recta COLUMN (rf_mass de calibració)
+            cal_direct: dict calibració activa Direct (amb regression_data)
+            cal_uib: dict calibració activa UIB (opcional)
+            current_direct: dict {'ug_doc': float, 'area': float} punt actual Direct
+            current_uib: dict {'ug_doc': float, 'area': float} punt actual UIB
+            current_mode: 'column' o 'bp'
+            current_seq_name: Nom curt de la SEQ actual (ex: "291")
             warning_pct: % tolerància warning
             fail_pct: % tolerància fail
-            n_context: Nombre de SEQs a mostrar abans/després de l'actual
-            rf_mass_cal_bp: Pendent de la recta BP (opcional)
-            current_mode: Mode actual ('column' o 'bp') per destacar la recta activa
         """
         self.figure.clear()
-        ax = self.figure.add_subplot(111)
 
-        # Recollir punts de dades per autoajustar eixos
-        data_x = []
-        data_y = []
+        has_uib = cal_uib is not None and cal_uib.get('regression_data')
+        n_cols = 2 if has_uib else 1
 
-        # Punts de QC history (1 punt per SEQ = mitjana de rèpliques)
-        entries_to_plot = []
-        current_short = ""
-        if qc_history:
-            current_short = current_seq_name.replace('_SEQ', '').replace('_BP', '') if current_seq_name else ""
+        mode_key = current_mode.lower()
+        if mode_key not in ('column', 'bp'):
+            mode_key = 'column'
 
-            # Agrupar entrades per SEQ i fer mitjana
-            from collections import defaultdict
-            seq_groups = defaultdict(list)
-            for entry in qc_history:
-                seq_key = entry.get('seq_name', '')
-                seq_groups[seq_key].append(entry)
+        # --- Direct subplot ---
+        ax_d = self.figure.add_subplot(1, n_cols, 1)
+        self._plot_regression_subplot(
+            ax_d, cal_direct, current_direct, mode_key,
+            current_seq_name, warning_pct, fail_pct,
+            signal_label='Direct', color_line='#1565C0', color_point='#1565C0'
+        )
 
-            averaged_entries = []
-            for seq_key, group in seq_groups.items():
-                areas = [e.get('measured', {}).get('area', 0) for e in group if e.get('measured', {}).get('area', 0) > 0]
-                if not areas:
-                    continue
-                ref = group[-1]
-                avg_entry = dict(ref)
-                avg_measured = dict(ref.get('measured', {}))
-                avg_measured['area'] = float(np.mean(areas))
-                avg_entry['measured'] = avg_measured
-                averaged_entries.append(avg_entry)
-
-            entries = sorted(averaged_entries, key=lambda e: e.get('seq_name', ''))
-
-            current_idx = None
-            for i, entry in enumerate(entries):
-                name = entry.get('seq_name', '').replace('_SEQ', '').replace('_BP', '')
-                if name == current_short:
-                    current_idx = i
-                    break
-
-            if current_idx is not None:
-                start = max(0, current_idx - n_context)
-                end = min(len(entries), current_idx + n_context + 1)
-                entries_to_plot = entries[start:end]
-            else:
-                entries_to_plot = entries[-5:] if len(entries) > 5 else entries
-
-            # Recollir coordenades per autoajustar
-            for entry in entries_to_plot:
-                measured = entry.get('measured', {})
-                area = measured.get('area', 0)
-                conc = entry.get('khp_conc_ppm', 0)
-                volume = entry.get('volume_uL', 0)
-                if area > 0 and conc > 0 and volume > 0:
-                    ug_doc = conc * volume / 1000
-                    data_x.append(ug_doc)
-                    data_y.append(area)
-
-        # Autoajustar eixos basant-se en les dades
-        if data_x:
-            margin = 0.3
-            x_min = min(data_x) * (1 - margin)
-            x_max = max(data_x) * (1 + margin)
-        else:
-            x_min, x_max = 0, 5
-
-        x_min = max(0, x_min)
-        x_line = np.linspace(x_min, x_max, 100)
-
-        # Y max: consider line values at x_max AND data points, start from 0
-        all_y_vals = list(data_y)
-        all_y_vals.append(rf_mass_cal * x_max + intercept_col)
-        if rf_mass_cal_bp and rf_mass_cal_bp > 0:
-            all_y_vals.append(rf_mass_cal_bp * x_max + intercept_bp)
-        y_max = max(all_y_vals) * 1.1 if all_y_vals else rf_mass_cal * 5 * 1.1
-
-        # Recta COLUMN
-        is_column_active = 'column' in current_mode.lower() or 'dual' in current_mode.lower()
-        y_line = rf_mass_cal * x_line + intercept_col
-        lw_col = 2.0 if is_column_active else 1.0
-        alpha_col = 1.0 if is_column_active else 0.5
-        col_label = f'Column rf={rf_mass_cal:.0f}'
-        if intercept_col:
-            col_label += f' +{intercept_col:.0f}' if intercept_col > 0 else f' {intercept_col:.0f}'
-        ax.plot(x_line, y_line, color='#2C3E50', linewidth=lw_col, alpha=alpha_col,
-                label=col_label)
-
-        # Bandes de tolerància (només per la recta activa)
-        active_rf = rf_mass_cal
-        active_intercept = intercept_col
-        if rf_mass_cal_bp and 'bp' in current_mode.lower():
-            active_rf = rf_mass_cal_bp
-            active_intercept = intercept_bp
-
-        y_active = active_rf * x_line + active_intercept
-        y_warning_upper = y_active * (1 + warning_pct / 100)
-        y_warning_lower = y_active * (1 - warning_pct / 100)
-        y_fail_upper = y_active * (1 + fail_pct / 100)
-        y_fail_lower = y_active * (1 - fail_pct / 100)
-
-        ax.fill_between(x_line, y_fail_lower, y_fail_upper,
-                       alpha=0.08, color='#E74C3C', label=f'±{fail_pct:.0f}%')
-        ax.fill_between(x_line, y_warning_lower, y_warning_upper,
-                       alpha=0.12, color='#F39C12', label=f'±{warning_pct:.0f}%')
-
-        # Recta BP (si disponible)
-        if rf_mass_cal_bp and rf_mass_cal_bp > 0:
-            is_bp_active = 'bp' in current_mode.lower()
-            y_line_bp = rf_mass_cal_bp * x_line + intercept_bp
-            lw_bp = 2.0 if is_bp_active else 1.0
-            alpha_bp = 1.0 if is_bp_active else 0.5
-            bp_label = f'BP rf={rf_mass_cal_bp:.0f}'
-            if intercept_bp:
-                bp_label += f' +{intercept_bp:.0f}' if intercept_bp > 0 else f' {intercept_bp:.0f}'
-            ax.plot(x_line, y_line_bp, color='#8E44AD', linewidth=lw_bp, alpha=alpha_bp,
-                    linestyle='--' if not is_bp_active else '-',
-                    label=bp_label)
-
-        # Plotar punts
-        for entry in entries_to_plot:
-            seq_name = entry.get('seq_name', '').replace('_SEQ', '').replace('_BP', '')
-            measured = entry.get('measured', {})
-            area = measured.get('area', 0)
-            conc = entry.get('khp_conc_ppm', 0)
-            volume = entry.get('volume_uL', 0)
-
-            if area > 0 and conc > 0 and volume > 0:
-                ug_doc = conc * volume / 1000
-                is_current = seq_name == current_short
-                status = entry.get('qc_result', {}).get('status', 'UNKNOWN')
-
-                if is_current:
-                    color = '#27AE60'
-                    marker = 's'
-                    size = 80
-                    zorder = 10
-                elif status == 'PASS':
-                    color = '#3498DB'
-                    marker = 'o'
-                    size = 50
-                    zorder = 5
-                elif status == 'WARNING':
-                    color = '#F39C12'
-                    marker = '^'
-                    size = 60
-                    zorder = 6
-                else:
-                    color = '#E74C3C'
-                    marker = 'x'
-                    size = 70
-                    zorder = 7
-
-                ax.scatter(ug_doc, area, c=color, marker=marker, s=size,
-                          zorder=zorder, edgecolors='white', linewidths=0.5)
-                ax.annotate(seq_name, (ug_doc, area), fontsize=7,
-                           xytext=(3, 3), textcoords='offset points',
-                           color=color if is_current else 'gray')
-
-        ax.set_xlabel('µg DOC', fontsize=9)
-        ax.set_ylabel('Àrea (mAU·min)', fontsize=9)
-        ax.set_xlim(x_min, x_max)
-        ax.set_ylim(0, y_max)
-        ax.grid(True, alpha=0.3)
-        ax.legend(loc='upper left', fontsize=7, framealpha=0.9)
+        # --- UIB subplot ---
+        if has_uib:
+            ax_u = self.figure.add_subplot(1, n_cols, 2)
+            self._plot_regression_subplot(
+                ax_u, cal_uib, current_uib, mode_key,
+                current_seq_name, warning_pct, fail_pct,
+                signal_label='UIB', color_line='#2E7D32', color_point='#2E7D32'
+            )
 
         self.figure.tight_layout()
         self.canvas.draw()
+
+    def _plot_regression_subplot(self, ax, cal, current_point, mode_key,
+                                  current_seq_name, warning_pct, fail_pct,
+                                  signal_label='Direct', color_line='#1565C0',
+                                  color_point='#1565C0'):
+        """Ploteja un subplot amb regressió guardada + punt actual."""
+
+        if not cal:
+            ax.text(0.5, 0.5, f"No hi ha calibració {signal_label}",
+                   ha='center', va='center', fontsize=9, color='gray')
+            ax.axis('off')
+            return
+
+        # Extreure RF i intercept per al mode actiu
+        rf_dict = cal.get('rf_mass_cal', {})
+        intercept_dict = cal.get('intercept', {})
+
+        # Suport format planer i nested
+        if isinstance(rf_dict, dict):
+            rf = rf_dict.get(mode_key, 0)
+        else:
+            rf = float(rf_dict) if rf_dict else 0
+
+        if isinstance(intercept_dict, dict):
+            intercept = intercept_dict.get(mode_key, 0)
+        else:
+            intercept = float(intercept_dict) if intercept_dict else 0
+
+        if rf <= 0:
+            ax.text(0.5, 0.5, f"RF=0 per {signal_label}/{mode_key}",
+                   ha='center', va='center', fontsize=9, color='gray')
+            ax.axis('off')
+            return
+
+        # Punts de la regressió guardada
+        reg_data = cal.get('regression_data', {})
+        points = reg_data.get('points', [])
+        r2 = cal.get('r2', reg_data.get('r2', 0))
+        if isinstance(r2, dict):
+            r2 = r2.get(mode_key, 0)
+        rms = reg_data.get('residuals_rms', 0)
+
+        # Separar punts inclosos / exclosos
+        x_inc, y_inc = [], []
+        x_exc, y_exc = [], []
+        for p in points:
+            ug = p.get('ug_doc', 0)
+            area = p.get('area', 0)
+            if ug > 0 and area > 0:
+                if p.get('excluded', False):
+                    x_exc.append(ug)
+                    y_exc.append(area)
+                else:
+                    x_inc.append(ug)
+                    y_inc.append(area)
+
+        # Eixos: cobrir tots els punts + punt actual
+        all_x = x_inc + x_exc
+        all_y = y_inc + y_exc
+        if current_point and current_point.get('ug_doc', 0) > 0:
+            all_x.append(current_point['ug_doc'])
+            all_y.append(current_point.get('area', 0))
+
+        if all_x:
+            margin = 0.2
+            x_min = max(0, min(all_x) * (1 - margin))
+            x_max = max(all_x) * (1 + margin)
+        else:
+            x_min, x_max = 0, 3
+
+        x_line = np.linspace(x_min, x_max, 100)
+        y_line = rf * x_line + intercept
+
+        # Recta de regressió
+        eq_label = f'{signal_label}: RF={rf:.0f}'
+        if intercept:
+            eq_label += f'{intercept:+.0f}'
+        if r2:
+            eq_label += f' (R²={r2:.4f})'
+        ax.plot(x_line, y_line, color=color_line, linewidth=2.0, label=eq_label)
+
+        # Bandes tolerància
+        y_w_up = y_line * (1 + warning_pct / 100)
+        y_w_lo = y_line * (1 - warning_pct / 100)
+        y_f_up = y_line * (1 + fail_pct / 100)
+        y_f_lo = y_line * (1 - fail_pct / 100)
+        ax.fill_between(x_line, y_f_lo, y_f_up, alpha=0.06, color='#E74C3C')
+        ax.fill_between(x_line, y_w_lo, y_w_up, alpha=0.10, color='#F39C12')
+
+        # Punts inclosos (cercles)
+        if x_inc:
+            ax.scatter(x_inc, y_inc, c=color_point, marker='o', s=40,
+                      zorder=5, edgecolors='white', linewidths=0.5, alpha=0.8,
+                      label=f'Punts cal. ({len(x_inc)})')
+
+        # Punts exclosos (× vermell)
+        if x_exc:
+            ax.scatter(x_exc, y_exc, c='#E74C3C', marker='x', s=50,
+                      zorder=5, linewidths=1.5, alpha=0.6, label=f'Exclosos ({len(x_exc)})')
+
+        # Punt actual (quadrat verd gran)
+        if current_point and current_point.get('ug_doc', 0) > 0:
+            cx = current_point['ug_doc']
+            cy = current_point.get('area', 0)
+            ax.scatter(cx, cy, c='#27AE60', marker='s', s=80,
+                      zorder=10, edgecolors='white', linewidths=1.0,
+                      label=f'▸{current_seq_name}◂')
+
+            # Desviació vs recta
+            y_expected = rf * cx + intercept
+            if y_expected > 0:
+                dev_pct = (cy - y_expected) / y_expected * 100
+                dev_color = '#27AE60' if abs(dev_pct) < warning_pct else (
+                    '#F39C12' if abs(dev_pct) < fail_pct else '#E74C3C')
+                ax.annotate(f'{dev_pct:+.1f}%', (cx, cy), fontsize=7,
+                           fontweight='bold', color=dev_color,
+                           xytext=(5, -10), textcoords='offset points')
+
+        # Format
+        y_max = max(all_y + [rf * x_max + intercept]) * 1.15 if all_y else rf * x_max * 1.15
+        ax.set_xlabel('µg DOC', fontsize=8)
+        ax.set_ylabel('Àrea', fontsize=8)
+        ax.set_xlim(x_min, x_max)
+        ax.set_ylim(0, max(y_max, 1))
+        ax.tick_params(axis='both', labelsize=6)
+        ax.grid(True, alpha=0.3)
+        ax.legend(loc='upper left', fontsize=6, framealpha=0.9)
+
+        # Font de la calibració
+        source = cal.get('source', {})
+        source_desc = source.get('description', cal.get('id', ''))
+        if source_desc and len(source_desc) > 40:
+            source_desc = source_desc[:37] + '...'
+        ax.set_title(f'{signal_label} — {mode_key.upper()}', fontsize=8, fontweight='bold')
 
     def clear(self):
         self.figure.clear()
@@ -614,7 +597,6 @@ class HistoryBarWidget(QWidget):
             bar.set_linewidth(3 if i == bar_idx else 1)
             if i == bar_idx:
                 bar.set_edgecolor('#2C3E50')
-            # Restaurar edge color original per les no seleccionades
         self.canvas.draw_idle()
 
     def plot_history(self, history_list, current_seq_name, valid_indices=None):
@@ -634,7 +616,7 @@ class HistoryBarWidget(QWidget):
         self._selected_idx = -1
 
         if not history_list:
-            ax.text(0.5, 0.5, "No hi ha històric",
+            ax.text(0.5, 0.5, "No hi ha hist\u00f2ric",
                    ha='center', va='center', fontsize=10, color='gray')
             ax.axis('off')
             self.canvas.draw()
@@ -699,6 +681,7 @@ class HistoryBarWidget(QWidget):
         ax.tick_params(axis='y', labelsize=7)
         ax.grid(True, alpha=0.3, axis='y')
         ax.set_xlim(-0.5, len(x) - 0.5)
+        ax.set_ylim(bottom=0)
 
         self.figure.tight_layout()
         self.canvas.draw()
