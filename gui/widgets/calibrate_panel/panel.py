@@ -578,6 +578,12 @@ class CalibratePanel(QWidget):
         cal_line_layout = QVBoxLayout(self.cal_line_group)
         self.prominent_cal_line_graph = CalibrationLineWidget()
         cal_line_layout.addWidget(self.prominent_cal_line_graph)
+        self.cal_line_seqs_label = QLabel()
+        self.cal_line_seqs_label.setStyleSheet(
+            "color: #555; font-size: 10px; font-style: italic; padding: 2px 4px;"
+        )
+        self.cal_line_seqs_label.setWordWrap(True)
+        cal_line_layout.addWidget(self.cal_line_seqs_label)
         content_layout.addWidget(self.cal_line_group)
 
         # Alias per backward compat
@@ -1391,6 +1397,42 @@ class CalibratePanel(QWidget):
                         item.setBackground(QColor(230, 230, 230))
                         item.setForeground(QColor(160, 160, 160))
 
+            # Sub-rows per anomalies (blocker/warning)
+            if raw_anomalies and cal_anomalies:
+                classified_sub = classify_anomalies(cal_anomalies)
+                vis_anomalies = classified_sub.get("blocker", []) + classified_sub.get("warning", [])
+                for anom in vis_anomalies:
+                    if not isinstance(anom, dict):
+                        continue
+                    sub_row = self.metrics_table.rowCount()
+                    self.metrics_table.insertRow(sub_row)
+                    code = anom.get("code", "")
+                    entry = ANOMALY_CATALOG.get(code, {})
+                    label = anom.get("label", code)
+                    action = entry.get("action", "")
+                    sev = anom.get("severity", "info")
+                    icon = "\u2718" if sev == "blocker" else "\u26a0"
+                    text = f"  \u21b3 {icon} {code} \u2192 {action}" if action else f"  \u21b3 {icon} {label}"
+                    # Merged-style: col 0 empty, text at col 1 spanning
+                    item_empty = QTableWidgetItem("")
+                    item_empty.setBackground(QColor(248, 249, 250))
+                    self.metrics_table.setItem(sub_row, 0, item_empty)
+                    item_text = QTableWidgetItem(text)
+                    item_text.setToolTip(label)
+                    sub_font = QFont()
+                    sub_font.setPointSize(8)
+                    item_text.setFont(sub_font)
+                    item_text.setForeground(QColor('#C62828') if sev == "blocker" else QColor('#E65100'))
+                    item_text.setBackground(QColor(248, 249, 250))
+                    self.metrics_table.setItem(sub_row, 1, item_text)
+                    # Fill remaining cells with grey background
+                    for c in range(2, 14):
+                        filler = QTableWidgetItem("")
+                        filler.setBackground(QColor(248, 249, 250))
+                        self.metrics_table.setItem(sub_row, c, filler)
+                    # Span col 1 across visible area
+                    self.metrics_table.setSpan(sub_row, 1, 1, 12)
+
     def _on_metrics_outlier_toggled(self, replica_num, signal_type, state):
         """Handler quan canvia el checkbox outlier a la taula de mètriques."""
         is_outlier = (state == Qt.Checked.value if hasattr(Qt.Checked, 'value') else state == 2)
@@ -1647,6 +1689,27 @@ class CalibratePanel(QWidget):
                         warning_pct=config.get('calibration', 'qc_thresholds', 'warning_pct', default=5.0),
                         fail_pct=config.get('calibration', 'qc_thresholds', 'fail_pct', default=10.0),
                     )
+
+                    # Etiquetes SEQs visibles a la recta
+                    seq_names = []
+                    for cal in filtered_history:
+                        sn = cal.get('seq_name', '')
+                        m = re.search(r'(\d+)', sn)
+                        short = m.group(1) if m else sn
+                        if short and short not in seq_names:
+                            seq_names.append(short)
+                    if seq_names:
+                        current_short = re.search(r'(\d+)', current_seq or '')
+                        current_short = current_short.group(1) if current_short else ''
+                        parts = []
+                        for s in seq_names:
+                            if s == current_short:
+                                parts.append(f"<b>\u25b8{s}\u25c2</b>")
+                            else:
+                                parts.append(s)
+                        self.cal_line_seqs_label.setText(f"SEQs: {', '.join(parts)}")
+                    else:
+                        self.cal_line_seqs_label.setText("")
             except Exception as e:
                 logger.error(f"Error plotant gr\u00e0fic calibraci\u00f3: {e}")
                 import traceback; traceback.print_exc()
