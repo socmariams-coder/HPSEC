@@ -548,7 +548,7 @@ def generate_consolidation_report(seq_path, xlsx_files, info, output_path=None):
         fig.text(0.1, 0.12, "• Baseline: Finestres temporals (evita timeouts) | Suavitzat: Savitzky-Golay (11,3) | "
                 f"Alineació: {'Pel màxim (BP)' if info.get('bp') else 'KHP + A254'}", fontsize=7)
 
-        draw_footer(fig, "Serveis Tècnics de Recerca", script_version)
+        draw_footer(fig, "LEQUIA · UdG", script_version)
         pdf.savefig(fig, dpi=150)
         plt.close(fig)
 
@@ -1593,7 +1593,7 @@ def generate_calibration_report(calibration=None, output_path=None):
                 elif cv > 10:
                     tbl3[(i, 6)].set_facecolor('#fff3cd')
 
-        draw_footer(fig, "Serveis Tècnics de Recerca")
+        draw_footer(fig, "LEQUIA · UdG")
         pdf.savefig(fig, dpi=150)
         plt.close(fig)
 
@@ -1701,7 +1701,7 @@ def generate_calibration_report(calibration=None, output_path=None):
                    ha='center', va='center', fontsize=14, color='gray')
             ax.axis('off')
 
-        draw_footer(fig, "Serveis Tècnics de Recerca")
+        draw_footer(fig, "LEQUIA · UdG")
         pdf.savefig(fig, dpi=150)
         plt.close(fig)
 
@@ -1765,7 +1765,7 @@ def generate_calibration_report(calibration=None, output_path=None):
                    ha='center', va='center', fontsize=14, color='gray')
             ax.axis('off')
 
-        draw_footer(fig, "Serveis Tècnics de Recerca")
+        draw_footer(fig, "LEQUIA · UdG")
         pdf.savefig(fig, dpi=150)
         plt.close(fig)
 
@@ -1850,7 +1850,7 @@ def generate_calibration_report(calibration=None, output_path=None):
             ax.text(0.5, 0.5, msg, ha='center', va='center', fontsize=14, color='gray')
             ax.axis('off')
 
-        draw_footer(fig, "Serveis Tècnics de Recerca")
+        draw_footer(fig, "LEQUIA · UdG")
         pdf.savefig(fig, dpi=150)
         plt.close(fig)
 
@@ -1918,7 +1918,7 @@ def generate_calibration_report(calibration=None, output_path=None):
                     for j in range(9):
                         tbl4[(i, j)].set_facecolor('#d4edda')
 
-        draw_footer(fig, "Serveis Tècnics de Recerca")
+        draw_footer(fig, "LEQUIA · UdG")
         pdf.savefig(fig, dpi=150)
         plt.close(fig)
 

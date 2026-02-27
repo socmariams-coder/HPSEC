@@ -193,6 +193,8 @@ class ReviewSummaryPanel(QWidget):
         self._current_method = "COLUMN"
         self._current_seq_path = ""
         self._current_sample_names = []
+        self._auto_generated = False  # Evitar doble generació
+        self._populated_seq = ""  # Evitar doble populate
         self._setup_ui()
 
     def _setup_ui(self):
@@ -399,6 +401,10 @@ class ReviewSummaryPanel(QWidget):
         seq_path = processed_data.get("seq_path", "")
         is_bp = method.upper() == "BP"
 
+        # Marcar seqüència populada (evitar re-populate a showEvent)
+        self._populated_seq = seq_path or seq_name
+        self._auto_generated = False
+
         # Separate regular and light samples
         regular = {}
         light = {}
@@ -433,7 +439,7 @@ class ReviewSummaryPanel(QWidget):
         self._bp_resolved = None
 
         if method.upper() == "COLUMN" and seq_path:
-            # Llançar cerca BP en background
+            # Llançar cerca BP en background — auto-generate al callback
             self._current_sample_names = [
                 name for name, d in regular.items()
                 if d.get("analysis_type") != "khp"
@@ -444,6 +450,8 @@ class ReviewSummaryPanel(QWidget):
             self._launch_bp_discovery(seq_path, self._current_sample_names)
         else:
             self.bp_group.setVisible(False)
+            # BP o mode sense consolidació: auto-generar directament
+            self._auto_generate()
 
         # --- PATHS ---
         if seq_path:
@@ -691,6 +699,9 @@ class ReviewSummaryPanel(QWidget):
 
         # Omplir taula
         self._populate_bp_table(result)
+
+        # Auto-generar resultats ara que tenim BP resolt
+        self._auto_generate()
 
     def _on_bp_discovery_error(self, error_msg):
         """Error durant la cerca BP."""
@@ -986,21 +997,31 @@ class ReviewSummaryPanel(QWidget):
     # Generate results
     # ------------------------------------------------------------------
 
-    def _run_generate(self):
+    def _auto_generate(self):
+        """Auto-genera resultats si encara no s'ha fet per aquesta seqüència."""
+        if self._auto_generated:
+            return
+        self._auto_generated = True
+        self._run_generate(silent=True)
+
+    def _run_generate(self, silent=False):
         """Genera Excels individuals + SUMMARY."""
         processed_data = self.main_window.processed_data
         if not processed_data:
-            QMessageBox.warning(self, "Avís", "No hi ha dades processades.")
+            if not silent:
+                QMessageBox.warning(self, "Avís", "No hi ha dades processades.")
             return
 
         samples_grouped = processed_data.get("samples_grouped", {})
         if not samples_grouped:
-            QMessageBox.warning(self, "Avís", "No hi ha mostres per exportar.")
+            if not silent:
+                QMessageBox.warning(self, "Avís", "No hi ha mostres per exportar.")
             return
 
         seq_path = self.main_window.seq_path or processed_data.get("seq_path", "")
         if not seq_path:
-            QMessageBox.warning(self, "Avís", "No s'ha trobat el path de la seqüència.")
+            if not silent:
+                QMessageBox.warning(self, "Avís", "No s'ha trobat el path de la seqüència.")
             return
 
         method = processed_data.get("method", "COLUMN")
@@ -1027,6 +1048,7 @@ class ReviewSummaryPanel(QWidget):
 
     def _on_finished(self, results):
         self.generate_btn.setEnabled(True)
+        self.generate_btn.setText("Regenerar Resultats")
         self.progress_bar.setVisible(False)
 
         errors = results.get("errors", [])
@@ -1036,9 +1058,13 @@ class ReviewSummaryPanel(QWidget):
 
         if errors:
             self.status_label.setText(f"Completat amb {len(errors)} errors")
-            QMessageBox.warning(self, "Avisos", f"Errors durant la generació:\n" + "\n".join(errors[:5]))
+            self.status_label.setVisible(True)
+            # Només mostrar diàleg si generació manual (no auto)
+            if not self._auto_generated:
+                QMessageBox.warning(self, "Avisos", f"Errors durant la generació:\n" + "\n".join(errors[:5]))
         else:
             self.status_label.setText(f"{n_exported} Excels + SUMMARY generats correctament")
+            self.status_label.setVisible(True)
 
         # Escriure review_result.json
         self._write_review_result(results)
@@ -1135,6 +1161,7 @@ class ReviewSummaryPanel(QWidget):
         self.status_label.setText("")
         self.paths_label.setText("")
         self.generate_btn.setEnabled(True)
+        self.generate_btn.setText("Generar Resultats")
         # BP state
         self._bp_resolved = None
         self._bp_available = []
@@ -1143,10 +1170,18 @@ class ReviewSummaryPanel(QWidget):
         self.bp_combo.clear()
         self.bp_status_label.setText("")
         self.bp_info_label.setText("")
+        # Auto-generate state
+        self._auto_generated = False
+        self._populated_seq = ""
 
     def showEvent(self, event):
         """Quan es mostra el panel, omplir amb dades actuals."""
         super().showEvent(event)
         processed_data = self.main_window.processed_data
-        if processed_data and processed_data.get("success"):
-            self.populate(processed_data)
+        if not processed_data or not processed_data.get("success"):
+            return
+        # Evitar re-populate si és la mateixa seqüència
+        seq_id = processed_data.get("seq_path", "") or processed_data.get("seq_name", "")
+        if seq_id and seq_id == self._populated_seq:
+            return
+        self.populate(processed_data)

@@ -129,7 +129,7 @@ class HPSECSuiteWindow(QMainWindow):
         layout.addStretch()
 
         # Info UdG/LEQUIA
-        info = QLabel("Serveis Tècnics de Recerca · UdG")
+        info = QLabel("LEQUIA · UdG")
         info.setObjectName("headerInfo")
         info.setFont(QFont("Segoe UI", 9))
         layout.addWidget(info)
@@ -218,9 +218,11 @@ class HPSECSuiteWindow(QMainWindow):
             "Sobre HPSEC Suite",
             """<h3>HPSEC Suite v2.0</h3>
             <p>Anàlisi de NOM per HPSEC-DAD-DOC</p>
-            <p>Serveis Tècnics de Recerca<br>
-            Universitat de Girona</p>
-            <p>LEQUIA Research Group</p>"""
+            <p><b>LEQUIA</b> — Laboratori d'Enginyeria Química<br>
+            i Ambiental · Universitat de Girona</p>
+            <p style='font-size:10px; color:#666;'>
+            Projecte finançat per l'ACA<br>
+            (Agència Catalana de l'Aigua)</p>"""
         )
 
     # === Mètodes per comunicació entre panels ===
