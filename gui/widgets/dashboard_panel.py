@@ -58,22 +58,18 @@ COLOR_CAL_BG = "#E8F0FE"   # Fons blau suau per SEQ_CAL
 COLOR_CAL_TEXT = "#1A56DB"  # Blau fosc per text CAL
 
 # Constants de columna (amb checkbox a col 0)
+# Redisseny minimalista: 15 → 9 columnes
+# Eliminades: NUM (#), TYPE, MODE, M, PC, PR — integrades a tooltip/INJ
 COL_CHECK = 0
-COL_NUM = 1
-COL_NAME = 2
-COL_DATE = 3
-COL_TYPE = 4
-COL_MODE = 5
-COL_M = 6
-COL_PC = 7
-COL_PR = 8
-COL_INJ = 9
-COL_IMPORT = 10
-COL_CAL = 11
-COL_ANA = 12
-COL_REVIEW = 13
-COL_NOTES = 14
-NUM_COLS = 15
+COL_NAME = 1
+COL_DATE = 2
+COL_INJ = 3       # Format compacte: "33M 4K 2P"
+COL_IMPORT = 4
+COL_CAL = 5
+COL_ANA = 6
+COL_REVIEW = 7
+COL_NOTES = 8
+NUM_COLS = 9
 
 
 # =============================================================================
@@ -361,8 +357,10 @@ class DashboardPanel(QWidget):
         cfg = get_config()
         data_folder = cfg.get("paths", "data_folder")
 
-        self.lbl_title = QLabel(f"Seqüències - {data_folder}")
+        folder_short = os.path.basename(data_folder) or data_folder
+        self.lbl_title = QLabel(f"Seqüències ({folder_short})")
         self.lbl_title.setFont(QFont("Segoe UI", 14, QFont.Bold))
+        self.lbl_title.setToolTip(data_folder)
         header.addWidget(self.lbl_title)
 
         header.addStretch()
@@ -409,7 +407,7 @@ class DashboardPanel(QWidget):
         # Filtre Estat
         filter_layout.addWidget(QLabel("Estat:"))
         self.filter_estat = QComboBox()
-        self.filter_estat.addItems(["Tots", "Pendent", "En curs", "Complet", "Error"])
+        self.filter_estat.addItems(["Tots", "Pendent", "En curs", "Complet", "Error", "CAL"])
         self.filter_estat.setMinimumWidth(90)
         self.filter_estat.currentTextChanged.connect(self._apply_filter)
         filter_layout.addWidget(self.filter_estat)
@@ -432,12 +430,10 @@ class DashboardPanel(QWidget):
         batch_bar.setSpacing(8)
 
         self.btn_select_filtered = QPushButton("✓ Sel. filtrades")
-        self.btn_select_filtered.setFixedWidth(110)
         self.btn_select_filtered.clicked.connect(self._select_filtered)
         batch_bar.addWidget(self.btn_select_filtered)
 
         self.btn_deselect_all = QPushButton("✗ Deseleccionar")
-        self.btn_deselect_all.setFixedWidth(110)
         self.btn_deselect_all.clicked.connect(self._deselect_all)
         batch_bar.addWidget(self.btn_deselect_all)
 
@@ -453,28 +449,21 @@ class DashboardPanel(QWidget):
 
         batch_bar.addStretch()
 
-        # Botó Processar amb menú per etapa
+        # Botó Processar amb menú per etapa + reset
         self.btn_batch_process = QPushButton("▶ Processar ▾")
-        self.btn_batch_process.setFixedWidth(120)
         process_menu = QMenu(self)
         process_menu.addAction("Importar seleccionades", lambda: self._batch_process_stage(Phase.IMPORT))
         process_menu.addAction("Verificar seleccionades", lambda: self._batch_process_stage(Phase.CALIBRATE))
         process_menu.addAction("Analitzar seleccionades", lambda: self._batch_process_stage(Phase.ANALYZE))
         process_menu.addSeparator()
         process_menu.addAction("Pipeline complet", lambda: self._batch_process_stage(None))
+        process_menu.addSeparator()
+        process_menu.addAction("↺ Reset des d'Importar", lambda: self._batch_reset_stage(0))
+        process_menu.addAction("↺ Reset des de Verificar", lambda: self._batch_reset_stage(1))
+        process_menu.addAction("↺ Reset des d'Analitzar", lambda: self._batch_reset_stage(2))
+        process_menu.addAction("↺ Reset Resultats", lambda: self._batch_reset_stage(3))
         self.btn_batch_process.setMenu(process_menu)
         batch_bar.addWidget(self.btn_batch_process)
-
-        # Botó Reset amb menú per etapa
-        self.btn_batch_reset = QPushButton("↺ Reset ▾")
-        self.btn_batch_reset.setFixedWidth(100)
-        reset_menu = QMenu(self)
-        reset_menu.addAction("Reset des d'IMPORTAR", lambda: self._batch_reset_stage(0))
-        reset_menu.addAction("Reset des de CALIBRAR", lambda: self._batch_reset_stage(1))
-        reset_menu.addAction("Reset des d'ANALITZAR", lambda: self._batch_reset_stage(2))
-        reset_menu.addAction("Reset RESULTATS", lambda: self._batch_reset_stage(3))
-        self.btn_batch_reset.setMenu(reset_menu)
-        batch_bar.addWidget(self.btn_batch_reset)
 
         layout.addLayout(batch_bar)
 
@@ -482,15 +471,16 @@ class DashboardPanel(QWidget):
         self.table = QTableWidget()
         self.table.setColumnCount(NUM_COLS)
         self.table.setHorizontalHeaderLabels([
-            "", "#", "Seqüència", "Data", "Tipus", "Mode", "M", "PC", "PR", "Inj",
-            "Importar", "Verificar", "Analitzar", "Revisar", "Notes"
+            "", "Seqüència", "Data", "Inj",
+            "I", "V", "A", "R", "Notes"
         ])
 
-        # Tooltips per capçaleres
-        self.table.horizontalHeaderItem(COL_M).setToolTip("Mostres")
-        self.table.horizontalHeaderItem(COL_PC).setToolTip("Patrons de Calibració (KHP)")
-        self.table.horizontalHeaderItem(COL_PR).setToolTip("Patrons de Referència")
-        self.table.horizontalHeaderItem(COL_INJ).setToolTip("Injeccions importades / total MasterFile")
+        # Tooltips per capçaleres abreujades
+        self.table.horizontalHeaderItem(COL_INJ).setToolTip("Injeccions (Mostres · KHP · PR)")
+        self.table.horizontalHeaderItem(COL_IMPORT).setToolTip("Importar")
+        self.table.horizontalHeaderItem(COL_CAL).setToolTip("Verificar")
+        self.table.horizontalHeaderItem(COL_ANA).setToolTip("Analitzar")
+        self.table.horizontalHeaderItem(COL_REVIEW).setToolTip("Revisar")
         self.table.horizontalHeaderItem(COL_NOTES).setToolTip("Doble-clic per afegir notes")
 
         # Configurar columnes - autoajust amb mínims per capçaleres
@@ -509,19 +499,13 @@ class DashboardPanel(QWidget):
 
         # Mínims per assegurar que capçaleres es veuen
         self._header_min_widths = {
-            COL_NUM: 30,    # #
-            COL_NAME: 100,  # Seqüència
-            COL_DATE: 70,   # Data
-            COL_TYPE: 55,   # Tipus
-            COL_MODE: 50,   # Mode
-            COL_M: 30,      # M
-            COL_PC: 32,     # PC
-            COL_PR: 32,     # PR
-            COL_INJ: 48,    # Inj
-            COL_IMPORT: 65, # Importar
-            COL_CAL: 65,    # Verificar
-            COL_ANA: 68,    # Analitzar
-            COL_REVIEW: 60, # Revisar
+            COL_NAME: 110,   # Seqüència
+            COL_DATE: 70,    # Data
+            COL_INJ: 70,     # Inj (format compacte)
+            COL_IMPORT: 28,  # I
+            COL_CAL: 28,     # V
+            COL_ANA: 28,     # A
+            COL_REVIEW: 28,  # R
         }
 
         # Estil per mantenir colors dels punts en selecció
@@ -537,9 +521,9 @@ class DashboardPanel(QWidget):
             }
         """)
 
-        # Permetre ordenació
+        # Permetre ordenació (per data descendent — SEQs recents primer)
         self.table.setSortingEnabled(True)
-        self.table.sortByColumn(COL_NUM, Qt.DescendingOrder)
+        self.table.sortByColumn(COL_DATE, Qt.DescendingOrder)
 
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.setSelectionMode(QTableWidget.SingleSelection)
@@ -560,8 +544,10 @@ class DashboardPanel(QWidget):
         data_folder = cfg.get("paths", "data_folder")
         self.sequences = get_all_sequences(data_folder)
 
-        # Actualitzar títol amb carpeta
-        self.lbl_title.setText(f"{len(self.sequences)} Seqüències - {data_folder}")
+        # Actualitzar títol amb carpeta abreujada
+        folder_short = os.path.basename(data_folder) or data_folder
+        self.lbl_title.setText(f"{len(self.sequences)} Seqüències ({folder_short})")
+        self.lbl_title.setToolTip(data_folder)
 
         self._apply_filter()
         self._update_stats()
@@ -607,10 +593,71 @@ class DashboardPanel(QWidget):
                 )
                 if not has_error:
                     continue
+            elif filter_estat == "CAL":
+                if "_CAL" not in seq.seq_name.upper():
+                    continue
 
             self.filtered_sequences.append(seq)
 
         self._update_table()
+
+    def _build_inj_cell(self, seq):
+        """Construeix text compacte i tooltip per la columna INJ fusionada.
+
+        Format curt: "33M 4K 2P" (omet si 0).
+        Tooltip detallat amb comptadors + info importació.
+        """
+        n_samples = seq.n_samples or 0
+        n_khp = seq.n_khp or 0
+        n_pr = seq.n_pr or 0
+        n_imp = seq.n_inj_imported
+        n_mst = seq.n_inj_master
+        incomplete = n_mst > 0 and n_imp < n_mst and seq.import_status.completed
+
+        if not seq.import_status.completed:
+            return "-", "Pendent d'importar", QColor(COLOR_PENDING), False
+
+        # Text compacte
+        parts = []
+        if n_samples:
+            parts.append(f"{n_samples}M")
+        if n_khp:
+            parts.append(f"{n_khp}K")
+        if n_pr:
+            parts.append(f"{n_pr}P")
+        inj_text = " ".join(parts) if parts else "-"
+
+        if incomplete:
+            inj_text += f" ({n_imp}/{n_mst})"
+
+        # Tooltip detallat
+        tooltip_lines = [f"{n_samples} mostres · {n_khp} KHP · {n_pr} PR"]
+        if incomplete:
+            tooltip_lines.append(f"INCOMPLETA: {n_imp}/{n_mst} injeccions importades")
+            tooltip_lines.append(f"Falten {n_mst - n_imp} injeccions")
+        elif n_imp > 0:
+            tooltip_lines.append(f"Injeccions: {n_imp}")
+
+        inj_tooltip = "\n".join(tooltip_lines)
+        inj_color = QColor(COLOR_ERROR) if incomplete else QColor("#666")
+
+        return inj_text, inj_tooltip, inj_color, incomplete
+
+    def _build_name_tooltip(self, seq):
+        """Construeix tooltip enriquit pel nom (Tipus + Mode + siblings)."""
+        parts = []
+        # Tipus i mode
+        method = seq.method if seq.method else "?"
+        data_mode = seq.data_mode if seq.data_mode else "?"
+        parts.append(f"{method} · {data_mode}")
+
+        # Siblings
+        if seq.siblings:
+            sibling_names = [os.path.basename(s) for s in seq.siblings]
+            parts.append(f"Pack amb {len(seq.siblings)} siblings:")
+            parts.extend(f"  {s}" for s in sibling_names)
+
+        return "\n".join(parts)
 
     def _update_table(self):
         # Bloquejar signals i sorting mentre actualitzem
@@ -618,7 +665,7 @@ class DashboardPanel(QWidget):
         self.table.setSortingEnabled(False)
         self.table.setRowCount(0)
 
-        for idx, seq in enumerate(self.filtered_sequences, 1):
+        for seq in self.filtered_sequences:
             row = self.table.rowCount()
             self.table.insertRow(row)
 
@@ -633,16 +680,7 @@ class DashboardPanel(QWidget):
                 item_check.setBackground(cal_bg)
             self.table.setItem(row, COL_CHECK, item_check)
 
-            # Col NUM: # (per ordenar numèricament)
-            item_num = SortableTableItem(str(idx))
-            item_num.setData(Qt.UserRole, idx)
-            item_num.setTextAlignment(Qt.AlignCenter)
-            item_num.setFlags(item_num.flags() & ~Qt.ItemIsEditable)
-            if cal_bg:
-                item_num.setBackground(cal_bg)
-            self.table.setItem(row, COL_NUM, item_num)
-
-            # Col NAME: Nom (amb indicador de siblings si n'hi ha)
+            # Col NAME: Nom (amb indicador de siblings + [CAL])
             display_name = seq.seq_name
             if seq.siblings:
                 display_name = f"{seq.seq_name} [+{len(seq.siblings)}]"
@@ -657,10 +695,8 @@ class DashboardPanel(QWidget):
                 font.setBold(True)
                 item_name.setFont(font)
                 item_name.setBackground(cal_bg)
-            # Tooltip amb detall de siblings
-            if seq.siblings:
-                sibling_names = [os.path.basename(s) for s in seq.siblings]
-                item_name.setToolTip(f"Pack amb {len(seq.siblings)} siblings:\n" + "\n".join(sibling_names))
+            # Tooltip enriquit: Tipus + Mode + siblings
+            item_name.setToolTip(self._build_name_tooltip(seq))
             self.table.setItem(row, COL_NAME, item_name)
 
             # Col DATE: Data (amb valor ordenable)
@@ -674,99 +710,27 @@ class DashboardPanel(QWidget):
             # Guardar data en format ordenable (YYYYMMDD)
             if seq.seq_date and seq.seq_date != "-":
                 try:
-                    # Format DD/MM/YY -> YYYYMMDD
                     parts = seq.seq_date.split('/')
                     if len(parts) == 3:
                         year = int(parts[2])
                         year = 2000 + year if year < 100 else year
                         sort_val = year * 10000 + int(parts[1]) * 100 + int(parts[0])
                         item_date.setData(Qt.UserRole, sort_val)
-                except:
+                except Exception:
                     item_date.setData(Qt.UserRole, 0)
             else:
                 item_date.setData(Qt.UserRole, 0)
             self.table.setItem(row, COL_DATE, item_date)
 
-            # Col TYPE: Tipus
-            item_tipus = QTableWidgetItem(seq.method if seq.method else "-")
-            item_tipus.setTextAlignment(Qt.AlignCenter)
-            item_tipus.setForeground(QColor("#666"))
-            item_tipus.setFlags(item_tipus.flags() & ~Qt.ItemIsEditable)
-            if cal_bg:
-                item_tipus.setBackground(cal_bg)
-            self.table.setItem(row, COL_TYPE, item_tipus)
-
-            # Col MODE: Mode
-            item_mode = QTableWidgetItem(seq.data_mode if seq.data_mode else "-")
-            item_mode.setTextAlignment(Qt.AlignCenter)
-            item_mode.setForeground(QColor("#666"))
-            item_mode.setFlags(item_mode.flags() & ~Qt.ItemIsEditable)
-            if cal_bg:
-                item_mode.setBackground(cal_bg)
-            self.table.setItem(row, COL_MODE, item_mode)
-
-            # Col M: Mostres
-            n_samples = seq.n_samples if seq.n_samples else 0
-            item_m = SortableTableItem(str(n_samples))
-            item_m.setData(Qt.UserRole, n_samples)
-            item_m.setTextAlignment(Qt.AlignCenter)
-            item_m.setFlags(item_m.flags() & ~Qt.ItemIsEditable)
-            item_m.setToolTip(f"Mostres: {n_samples}")
-            if cal_bg:
-                item_m.setBackground(cal_bg)
-            self.table.setItem(row, COL_M, item_m)
-
-            # Col PC: Patrons Calibració
-            n_khp = seq.n_khp if seq.n_khp else 0
-            item_pc = SortableTableItem(str(n_khp))
-            item_pc.setData(Qt.UserRole, n_khp)
-            item_pc.setTextAlignment(Qt.AlignCenter)
-            item_pc.setFlags(item_pc.flags() & ~Qt.ItemIsEditable)
-            item_pc.setToolTip(f"Patrons de Calibració (KHP): {n_khp}")
-            if cal_bg:
-                item_pc.setBackground(cal_bg)
-            self.table.setItem(row, COL_PC, item_pc)
-
-            # Col PR: Patrons Referència
-            n_pr = seq.n_pr if seq.n_pr else 0
-            item_pr = SortableTableItem(str(n_pr))
-            item_pr.setData(Qt.UserRole, n_pr)
-            item_pr.setTextAlignment(Qt.AlignCenter)
-            item_pr.setFlags(item_pr.flags() & ~Qt.ItemIsEditable)
-            item_pr.setToolTip(f"Patrons de Referència: {n_pr}")
-            if cal_bg:
-                item_pr.setBackground(cal_bg)
-            self.table.setItem(row, COL_PR, item_pr)
-
-            # Col INJ: Injeccions (importades/masterfile)
-            n_imp = seq.n_inj_imported
-            n_mst = seq.n_inj_master
-            if n_mst > 0 and seq.import_status.completed:
-                if n_imp < n_mst:
-                    inj_text = f"{n_imp}/{n_mst}"
-                    inj_tooltip = (f"INCOMPLETA: {n_imp} importades de {n_mst} al MasterFile\n"
-                                   f"Falten {n_mst - n_imp} injeccions (possibles Inj# duplicats)")
-                    inj_color = QColor(COLOR_ERROR)
-                else:
-                    inj_text = str(n_imp)
-                    inj_tooltip = f"Injeccions: {n_imp} (MasterFile: {n_mst})"
-                    inj_color = QColor("#666")
-            elif seq.import_status.completed:
-                inj_text = str(n_imp) if n_imp > 0 else "-"
-                inj_tooltip = f"Injeccions: {n_imp}" if n_imp > 0 else "Sense dades d'injeccions"
-                inj_color = QColor("#666")
-            else:
-                inj_text = "-"
-                inj_tooltip = "Pendent d'importar"
-                inj_color = QColor(COLOR_PENDING)
-
+            # Col INJ: Compacte (fusiona M + PC + PR + injeccions)
+            inj_text, inj_tooltip, inj_color, incomplete = self._build_inj_cell(seq)
             item_inj = SortableTableItem(inj_text)
-            item_inj.setData(Qt.UserRole, n_imp)
+            item_inj.setData(Qt.UserRole, seq.n_inj_imported)
             item_inj.setTextAlignment(Qt.AlignCenter)
             item_inj.setForeground(inj_color)
             item_inj.setFlags(item_inj.flags() & ~Qt.ItemIsEditable)
             item_inj.setToolTip(inj_tooltip)
-            if n_imp < n_mst and n_mst > 0:
+            if incomplete:
                 font = item_inj.font()
                 font.setBold(True)
                 item_inj.setFont(font)
@@ -795,19 +759,16 @@ class DashboardPanel(QWidget):
                 item.setTextAlignment(Qt.AlignCenter)
                 item.setFlags(item.flags() & ~Qt.ItemIsEditable)
 
-                # Font pels indicadors
                 font = item.font()
                 font.setPointSize(11)
                 item.setFont(font)
 
                 if is_cal and col_offset > 0:
-                    # SEQ_CAL: fases 2-4 no apliquen (flux calibració directe)
                     item.setText("—")
                     item.setForeground(QColor(COLOR_PENDING))
                     item.setToolTip("Flux calibració (sense wizard)")
                     if cal_bg:
                         item.setBackground(cal_bg)
-                # Determinar icona, color i tooltip segons estat
                 elif state == 'ok':
                     item.setText("✔")
                     item.setForeground(QColor(COLOR_OK))
@@ -819,19 +780,14 @@ class DashboardPanel(QWidget):
                     if cal_bg:
                         item.setBackground(cal_bg)
                 elif state == 'warning':
-                    # BP stale: icona ⟳ en lloc de ⚠
                     if phase_name == "Revisar" and seq.is_bp_stale:
                         item.setText("⟳")
                     else:
                         item.setText("⚠")
                     item.setForeground(QColor(COLOR_WARNING))
                     tooltip_parts = []
-                    # Import incomplet: indicar quantes injeccions
                     if phase_name == "Importar" and seq.import_incomplete:
-                        n_imp = seq.n_inj_imported
-                        n_mst = seq.n_inj_master
-                        tooltip_parts.append(f"{n_imp}/{n_mst} injeccions importades")
-                    # Warnings concrets
+                        tooltip_parts.append(f"{seq.n_inj_imported}/{seq.n_inj_master} injeccions importades")
                     if phase_warnings:
                         tooltip_parts.extend(phase_warnings[:5])
                     elif phase_name == "Verificar":
@@ -883,7 +839,7 @@ class DashboardPanel(QWidget):
 
         # Reactivar sorting i signals
         self.table.setSortingEnabled(True)
-        self.table.sortByColumn(COL_NUM, Qt.DescendingOrder)
+        self.table.sortByColumn(COL_DATE, Qt.DescendingOrder)
         self.table.blockSignals(False)
 
         # Aplicar mínims de capçalera
@@ -953,35 +909,35 @@ class DashboardPanel(QWidget):
                 h.resizeSection(col, min_width)
 
     def _update_stats(self):
-        """Actualitza estadístiques per etapa."""
+        """Actualitza estadístiques per etapa (format compacte)."""
         total = len(self.sequences)
         if total == 0:
             self.lbl_stats.setText("Cap seqüència")
+            self.lbl_stats.setToolTip("")
             return
 
         imported = sum(1 for s in self.sequences if s.import_status.completed)
         calibrated = sum(1 for s in self.sequences if s.calibrate_status.completed)
         analyzed = sum(1 for s in self.sequences if s.analyze_status.completed)
-        consolidated = sum(1 for s in self.sequences if s.review_status.completed)
+        reviewed = sum(1 for s in self.sequences if s.review_status.completed)
 
-        # Comptar errors
         errors = sum(1 for s in self.sequences if (
             s.import_state == 'error' or
             s.calibrate_state == 'error' or
             s.analyze_state == 'error'
         ))
 
-        stats_text = (
-            f"Importades: {imported}/{total} | "
-            f"Calibrades: {calibrated}/{total} | "
-            f"Analitzades: {analyzed}/{total} | "
-            f"Consolidades: {consolidated}/{total}"
+        stats = f"I:{imported} V:{calibrated} A:{analyzed} R:{reviewed} /{total}"
+        if errors:
+            stats += f" · {errors} errors"
+
+        self.lbl_stats.setText(stats)
+        self.lbl_stats.setToolTip(
+            f"Importades: {imported}/{total}\n"
+            f"Verificades: {calibrated}/{total}\n"
+            f"Analitzades: {analyzed}/{total}\n"
+            f"Revisades: {reviewed}/{total}"
         )
-
-        if errors > 0:
-            stats_text += f" | Errors: {errors}"
-
-        self.lbl_stats.setText(stats_text)
 
     def _show_context_menu(self, pos):
         """Mostra menú contextual amb opcions per la seqüència."""
@@ -1037,6 +993,14 @@ class DashboardPanel(QWidget):
         # Obrir al wizard
         action_wizard = menu.addAction("Obrir al Wizard...")
         action_wizard.triggered.connect(lambda: self._open_in_wizard(seq))
+
+        # Submenu Reset per SEQ individual
+        menu.addSeparator()
+        reset_submenu = menu.addMenu("↺ Reset...")
+        reset_submenu.addAction("Des d'Importar", lambda s=seq: self._reset_single(s, 0))
+        reset_submenu.addAction("Des de Verificar", lambda s=seq: self._reset_single(s, 1))
+        reset_submenu.addAction("Des d'Analitzar", lambda s=seq: self._reset_single(s, 2))
+        reset_submenu.addAction("Resultats", lambda s=seq: self._reset_single(s, 3))
 
         menu.exec(self.table.mapToGlobal(pos))
 
@@ -1399,6 +1363,31 @@ class DashboardPanel(QWidget):
 
         self.refresh_sequences()
 
+    def _reset_single(self, seq, from_stage):
+        """Reset d'una sola seqüència des d'una etapa determinada."""
+        from hpsec_reset import reset_batch, STAGE_NAMES
+
+        stages_affected = [STAGE_NAMES[s] for s in range(from_stage, 4)]
+
+        reply = QMessageBox.warning(
+            self, "Confirmar Reset",
+            f"Reset {seq.seq_name} des de '{STAGE_NAMES[from_stage]}'\n"
+            f"Cascade: {' → '.join(stages_affected)}\n\n"
+            "Això esborrarà JSONs i outputs. Continuar?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        result = reset_batch([seq.seq_path], from_stage)
+
+        self.main_window.set_status(
+            f"{seq.seq_name}: Reset completat" if result['ok'] else f"{seq.seq_name}: Reset error",
+            3000
+        )
+        self.refresh_sequences()
+
     def _on_batch_progress(self, current, total, message):
         pct = int(100 * current / total) if total > 0 else 0
         self.main_window.show_progress(pct)
@@ -1408,14 +1397,18 @@ class DashboardPanel(QWidget):
         """Actualitza la fila de la seqüència completada a la taula."""
         for row in range(self.table.rowCount()):
             item = self.table.item(row, COL_NAME)
-            if item and item.text() == seq_name:
-                seq_path = item.data(Qt.UserRole)
-                for seq in self.sequences:
-                    if seq.seq_path == seq_path:
-                        seq.refresh()
-                        self._update_table_row(row, seq)
-                        break
-                break
+            if not item:
+                continue
+            seq_path = item.data(Qt.UserRole)
+            # Buscar per seq_path (robust, el text pot tenir prefixos [CAL])
+            for seq in self.sequences:
+                if seq.seq_path == seq_path and seq.seq_name == seq_name:
+                    seq.refresh()
+                    self._update_table_row(row, seq)
+                    break
+            else:
+                continue
+            break
         self._update_stats()
 
     def _update_table_row(self, row, seq: SequenceState):
@@ -1423,17 +1416,14 @@ class DashboardPanel(QWidget):
         is_cal = "_CAL" in seq.seq_name.upper()
         cal_bg = QColor(COLOR_CAL_BG) if is_cal else None
 
-        # Actualitzar comptadors M, PC, PR
-        n_samples = seq.n_samples if seq.n_samples else 0
-        n_khp = seq.n_khp if seq.n_khp else 0
-        n_pr = seq.n_pr if seq.n_pr else 0
-
-        self.table.item(row, COL_M).setText(str(n_samples))
-        self.table.item(row, COL_M).setData(Qt.UserRole, n_samples)
-        self.table.item(row, COL_PC).setText(str(n_khp))
-        self.table.item(row, COL_PC).setData(Qt.UserRole, n_khp)
-        self.table.item(row, COL_PR).setText(str(n_pr))
-        self.table.item(row, COL_PR).setData(Qt.UserRole, n_pr)
+        # Actualitzar INJ compacte
+        inj_text, inj_tooltip, inj_color, incomplete = self._build_inj_cell(seq)
+        item_inj = self.table.item(row, COL_INJ)
+        if item_inj:
+            item_inj.setText(inj_text)
+            item_inj.setToolTip(inj_tooltip)
+            item_inj.setForeground(inj_color)
+            item_inj.setData(Qt.UserRole, seq.n_inj_imported)
 
         phases_data = [
             (seq.import_status, seq.import_state, "Importar", seq.import_warnings),
@@ -1557,7 +1547,6 @@ class DashboardPanel(QWidget):
     def _set_controls_enabled(self, enabled):
         self.refresh_btn.setEnabled(enabled)
         self.btn_batch_process.setEnabled(enabled)
-        self.btn_batch_reset.setEnabled(enabled)
         self.btn_select_filtered.setEnabled(enabled)
         self.btn_deselect_all.setEnabled(enabled)
         self.filter_tipus.setEnabled(enabled)

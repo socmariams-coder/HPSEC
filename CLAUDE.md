@@ -152,14 +152,15 @@ Mark features as DONE only when code is fully functional end-to-end, not when pl
 - [x] Wizard: SEQ_CAL detection at step 2 (CalibratePanel) + regression moved to step 3 (AnalyzePanel) — DONE
 - [x] Wizard: Apply calibration at step 4 (Revisar) + retroactive requantification + SEQ list — DONE
 - [x] Dashboard: diferenciar SEQ_CAL visualment (fons blau, [CAL] prefix, fases 2-4 = "—") — DONE (347c6b4)
-- [ ] **Dashboard: redisseny minimalista** — PENDING
-  - Eliminar columnes #, Tipus, Mode, PC, PR (integrar a tooltip del nom)
-  - Capçaleres fases abreujades (I V A R) en lloc de noms complets
-  - Treure `setFixedWidth` dels botons (es tallen amb fonts grans/DPI alt)
-  - Moure botó Reset al menú contextual (clic dret) — acció rara, no mereix botó permanent
-  - Compactar estadístiques: `I:45 V:42 A:38 R:12 /120` en lloc de text llarg
-  - Afegir "CAL" al filtre Estat o Tipus per filtrar SEQ_CAL
-  - Header: comptador + carpeta abreujada en lloc de path complet
+- [x] **Dashboard: redisseny minimalista** — DONE
+  - 15→9 columnes: eliminat #, Tipus, Mode, M, PC, PR (integrat a tooltip nom + col INJ compacta)
+  - Capçaleres fases abreujades (I V A R) amb tooltip complet
+  - `setFixedWidth` eliminat de tots els botons
+  - Botó Reset eliminat: opcions al menú Processar + submenu context menu per SEQ individual
+  - Stats compactes: `I:45 V:42 A:38 R:12 /120` amb tooltip detallat
+  - Filtre Estat: opció "CAL" per filtrar SEQ_CAL
+  - Header: `Seqüències (DATA_HPSEC)` amb path complet al tooltip
+  - Sort default per data descendent (SEQs recents primer)
 
 ## Research / Exploration (not integrated into Suite)
 
