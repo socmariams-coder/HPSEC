@@ -105,6 +105,13 @@ Mark features as DONE only when code is fully functional end-to-end, not when pl
 - [x] Export: lightweight Excel for BLANK/CONTROL (ID + DOC sheets only) — DONE
 - [x] Export: SUMMARY.xlsx Type column (SAMPLE/PR/BLANK/CONTROL) — DONE
 - [x] Architecture refactor: unify anomaly system (ANOMALY_CATALOG in hpsec_warnings.py) — DONE (0d0b960)
+- [x] Architecture refactor: unify warnings — single source ANOMALY_CATALOG + wizard warning bar — DONE
+  - create_warning() + WARNING_DEFINITIONS eliminats (~200 línies codi mort)
+  - Tots els backends usen create_anomaly() (hpsec_import, hpsec_calibrate, hpsec_analyze)
+  - WarningBarWidget al wizard: barra persistent entre header i tabs
+  - WarningReviewDialog eliminat (la barra mostra tot directament)
+  - _update_validation() simplificada (usa warnings_structured directament)
+  - get_max_warning_level() suporta severity (nou) i level (antic) keys
 - [ ] **Import: GUI pregunta volum quan no trobat al v11** — PENDING (IMPORTANT)
   - Quan `inj_volume_source='default'` o `inj_volume=None`, diàleg confirmació a l'usuari
   - Validació creuada col13 vs 0-INFO quan ambdós existeixen i discrepan
@@ -122,14 +129,20 @@ Mark features as DONE only when code is fully functional end-to-end, not when pl
 - [x] Warnings: dashboard alimenta Verificar/Revisar (calibrate_warnings, review_warnings) — DONE
 - [x] Warnings: calibrate_panel badges severitat (icona+color+tooltip acció) en lloc de score numèric — DONE
 - [x] Warnings: analyze_panel tooltips amb guia d'acció ("→ Excloure rèplica", etc.) — DONE
-- [ ] **⚡ Consolidació BP+COLUMN al Revisar (Pas 4)** — PENDENT (PRIORITAT ALTA)
+- [x] Warnings: unificació font única + barra wizard (ANOMALY_CATALOG, WarningBarWidget) — DONE
+- [x] Analyze: BLANK (MQ) → anàlisi completa + quantificació (no light) — DONE
+- [x] Analyze: PR exclusió quantificació configurable (no_quantification_patterns) — DONE
+- [x] Analyze: menú contextual "Excloure/Incloure quantificació" per mostra — DONE
+- [x] **⚡ Consolidació BP+COLUMN al Revisar (Pas 4)** — DONE (Fases 1-5)
   - Pla complet a `~/.claude/plans/synthetic-tinkering-hoare.md` (6 fases)
-  - Bug: review_result.json MAI s'escriu → dashboard Revisar sempre pendent
-  - Nova secció Revisar: taula mostres BP vinculades + dropdown override SEQ BP
-  - BPDiscoveryWorker (cerca proximitat + nom mostra per SEQs antigues)
+  - Fix: review_result.json s'escriu al completar generació → dashboard Revisar funcional
+  - Secció BP al Revisar: taula mostres vinculades + dropdown override SEQ BP
+  - BPDiscoveryWorker + _BPReloadWorker (cerca background + canvi dropdown)
+  - find_bp_for_samples() a hpsec_consolidate.py (proximitat + nom)
   - export_sequence() accepta bp_resolved pre-resolt (evita doble cerca)
   - Dashboard: indicador ⟳ quan BP actualitzada post-revisió (is_bp_stale)
-  - Cleanup: eliminar ConsolidatePanel (489 línies mortes)
+  - sequence_state.py: review_bp_name, review_bp_mtime, is_bp_stale property
+  - [x] Cleanup: ConsolidatePanel eliminat (488 línies mortes) — Fase 6
   - Fitxers: review_summary_panel.py, hpsec_export.py, sequence_state.py, dashboard_panel.py, hpsec_consolidate.py
 - [x] Config backend: config fingerprint (SHA-256 16 chars) per detectar obsolescència — DONE
 - [x] Config backend: migració batman_max_sep → batman_max_sep_min — DONE
@@ -213,6 +226,46 @@ All exploratory scripts and results live in `research/` — NOT part of the prod
 ## Working notes
 
 > Last updated: 2026-02-26
+
+### Unificació avisos — font única + barra wizard (2026-02-26)
+
+**Problema**: 2 sistemes paral·lels d'avisos (`create_warning()` + `WARNING_DEFINITIONS` i
+`create_anomaly()` + `ANOMALY_CATALOG`). El wizard amagava avisos darrere un botó status_indicator;
+l'usuari no els veia si no clicava. ~200 línies de codi mort (funcions de migració, filtres, etc).
+
+**Solució implementada:**
+
+1. **`hpsec_warnings.py`**: `ANOMALY_CATALOG` com a font ÚNICA. Eliminats: `WARNING_DEFINITIONS`,
+   `create_warning()`, `filter_warnings_by_level()`, `filter_warnings_by_stage()`, `has_blockers()`,
+   `dismiss_warning()`, `warnings_summary()`, `migrate_legacy_warning()`, `migrate_warnings_list()`,
+   `normalize_warnings()`, `create_warnings_from_timeout_info()`, `create_warnings_from_irregular_top_info()`.
+   Afegits codis: `IMP_NO_DATA`, `IMP_MISSING_UIB`, `IMP_MISSING_DAD`, `IMP_ORPHAN_FILES`,
+   `IMP_INCOMPLETE`, `CAL_NO_KHP`, `CAL_ALL_REPLICAS_INVALID`, `CAL_GLOBAL_ONLY`,
+   `CAL_REPLICA_OUTLIER`, `ANA_NO_CALIBRATION`, `ANA_EMPTY_SAMPLES`.
+   `get_max_warning_level()` mantingut com a alias backward-compat (suporta `severity` i `level` keys).
+
+2. **Backends migrats**: `_generate_import_warnings()`, `_generate_calibration_warnings()`,
+   `_generate_analysis_warnings()` usen `create_anomaly()` en lloc de `create_warning()`.
+   `IMP_EMPTY_CSV` i `IMP_FALLBACK_DAD` eliminats (no accionables).
+
+3. **`WarningBarWidget`** (`process_wizard_panel.py`): barra persistent entre header i tabs.
+   Mostra avisos de TOTES les fases completades. Desplegada si ≤3, plegada si >3.
+   Color fons adaptat a severitat màxima (vermell/groc/blau). Cada avis mostra icona + missatge + acció.
+
+4. **`WarningReviewDialog` eliminat**: la barra ja mostra tot directament. El status_indicator
+   marca avisos com a OK amb un clic (sense diàleg). `WarningSkipDialog` mantingut (per "Següent" amb avisos).
+
+5. **`_update_validation()` simplificada** (`calibrate_panel/panel.py`): ja no recolleix anomalies
+   duplicades de `khp_data_direct/uib` — usa `warnings_structured` directament del backend.
+
+6. **`_get_warning_level()` simplificat**: sempre calcula des de `warnings_structured` via
+   `get_max_warning_level()`, eliminats fallbacks a `warning_level` key i `warnings` strings.
+
+7. **`_on_*_completed()` actualitzats**: calculen `warning_level` des de `warnings_structured`
+   (no del backend `data.get('warning_level')`). Criden `_update_warning_bar()` al final.
+
+**Fitxers modificats**: hpsec_warnings.py, hpsec_import.py, hpsec_calibrate.py, hpsec_analyze.py,
+gui/widgets/process_wizard_panel.py, gui/widgets/calibrate_panel/panel.py
 
 ### Calibracions independents per senyal/sensibilitat — v3.0 (2026-02-26)
 

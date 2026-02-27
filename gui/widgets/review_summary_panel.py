@@ -14,6 +14,8 @@ Contingut:
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QFrame, QScrollArea, QMessageBox, QSizePolicy, QProgressBar,
+    QTableWidget, QTableWidgetItem, QComboBox, QHeaderView,
+    QGroupBox,
 )
 from PySide6.QtCore import Qt, Signal, QThread
 from PySide6.QtGui import QFont, QColor
@@ -50,19 +52,85 @@ FRACTION_COLORS = {
 FRACTION_ORDER = ["BioP", "HS", "BB", "SB", "LMW"]
 
 
+class BPDiscoveryWorker(QThread):
+    """Worker per cercar dades BP en background."""
+    finished = Signal(dict)
+    error = Signal(str)
+
+    def __init__(self, seq_path, sample_names, data_folder=None):
+        super().__init__()
+        self.seq_path = seq_path
+        self.sample_names = sample_names
+        self.data_folder = data_folder
+
+    def run(self):
+        try:
+            from hpsec_consolidate import find_bp_for_samples
+            result = find_bp_for_samples(
+                self.seq_path, self.sample_names, self.data_folder
+            )
+            self.finished.emit(result)
+        except Exception as e:
+            self.error.emit(str(e))
+
+
+class _BPReloadWorker(QThread):
+    """Worker per recarregar dades BP des d'una BP diferent (canvi dropdown)."""
+    finished = Signal(dict)
+    error = Signal(str)
+
+    def __init__(self, bp_path, sample_names, available_bps, column_seq_path):
+        super().__init__()
+        self.bp_path = bp_path
+        self.sample_names = sample_names
+        self.available_bps = available_bps
+        self.column_seq_path = column_seq_path
+
+    def run(self):
+        try:
+            from hpsec_consolidate import load_bp_data_for_sample
+            result = {
+                "primary_bp": {
+                    "path": self.bp_path,
+                    "name": Path(self.bp_path).name,
+                },
+                "available_bps": self.available_bps,
+                "samples": {},
+            }
+            for name in self.sample_names:
+                bp_data = load_bp_data_for_sample(self.bp_path, name)
+                if bp_data:
+                    result["samples"][name] = {
+                        "bp_seq": Path(self.bp_path).name,
+                        "bp_data": bp_data,
+                        "source": "manual",
+                    }
+                else:
+                    result["samples"][name] = {
+                        "bp_seq": None,
+                        "bp_data": None,
+                        "source": None,
+                    }
+            self.finished.emit(result)
+        except Exception as e:
+            self.error.emit(str(e))
+
+
 class GenerateWorker(QThread):
     """Worker per generar resultats en background."""
     progress = Signal(int, str)
     finished = Signal(dict)
     error = Signal(str)
 
-    def __init__(self, samples_grouped, seq_path, calibration_data, mode, config):
+    def __init__(self, samples_grouped, seq_path, calibration_data, mode, config,
+                 bp_resolved=None):
         super().__init__()
         self.samples_grouped = samples_grouped
         self.seq_path = seq_path
         self.calibration_data = calibration_data
         self.mode = mode
         self.config = config
+        self.bp_resolved = bp_resolved
 
     def run(self):
         try:
@@ -84,6 +152,7 @@ class GenerateWorker(QThread):
                 config,
                 progress_cb,
                 seq_path=self.seq_path,
+                bp_resolved=self.bp_resolved,
             )
             results["excel_files"] = excel_result
             results["errors"].extend(excel_result.get("errors", []))
@@ -118,6 +187,12 @@ class ReviewSummaryPanel(QWidget):
         super().__init__()
         self.main_window = main_window
         self.worker = None
+        self._bp_worker = None
+        self._bp_resolved = None
+        self._bp_available = []  # BPs disponibles per dropdown
+        self._current_method = "COLUMN"
+        self._current_seq_path = ""
+        self._current_sample_names = []
         self._setup_ui()
 
     def _setup_ui(self):
@@ -163,6 +238,67 @@ class ReviewSummaryPanel(QWidget):
             self.dad_canvas = FigureCanvas(self.dad_figure)
             self.dad_canvas.setMinimumHeight(180)
             self.content_layout.addWidget(self.dad_canvas)
+
+        # === SECCIÓ CONSOLIDACIÓ BP ===
+        self.bp_group = QGroupBox("CONSOLIDACIÓ BP")
+        self.bp_group.setStyleSheet("""
+            QGroupBox {
+                font-weight: bold; font-size: 11px; color: #2c3e50;
+                border: 1px solid #d5dbdb; border-radius: 6px;
+                margin-top: 8px; padding-top: 18px;
+                background-color: #fafafa;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin; left: 12px; padding: 0 4px;
+            }
+        """)
+        bp_layout = QVBoxLayout(self.bp_group)
+        bp_layout.setContentsMargins(12, 8, 12, 8)
+        bp_layout.setSpacing(6)
+
+        # Dropdown per seleccionar BP
+        bp_selector_row = QHBoxLayout()
+        bp_selector_row.addWidget(QLabel("SEQ BP:"))
+        self.bp_combo = QComboBox()
+        self.bp_combo.setMinimumWidth(220)
+        self.bp_combo.currentIndexChanged.connect(self._on_bp_combo_changed)
+        bp_selector_row.addWidget(self.bp_combo)
+        self.bp_status_label = QLabel("")
+        self.bp_status_label.setStyleSheet("color: #7f8c8d; font-size: 11px;")
+        bp_selector_row.addWidget(self.bp_status_label, 1)
+        bp_layout.addLayout(bp_selector_row)
+
+        # Taula de mostres BP
+        self.bp_table = QTableWidget()
+        self.bp_table.setColumnCount(5)
+        self.bp_table.setHorizontalHeaderLabels(
+            ["Mostra", "BP", "Rèplica", "ppm", "SNR"]
+        )
+        self.bp_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        for col in range(1, 5):
+            self.bp_table.horizontalHeader().setSectionResizeMode(
+                col, QHeaderView.ResizeToContents
+            )
+        self.bp_table.verticalHeader().setVisible(False)
+        self.bp_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.bp_table.setAlternatingRowColors(True)
+        self.bp_table.setMaximumHeight(200)
+        self.bp_table.setStyleSheet("""
+            QTableWidget {
+                font-size: 11px; border: 1px solid #e0e0e0;
+                gridline-color: #f0f0f0;
+            }
+            QTableWidget::item { padding: 2px 6px; }
+        """)
+        bp_layout.addWidget(self.bp_table)
+
+        # Info label (mostres sense BP, etc.)
+        self.bp_info_label = QLabel("")
+        self.bp_info_label.setStyleSheet("color: #7f8c8d; font-size: 10px; font-style: italic;")
+        bp_layout.addWidget(self.bp_info_label)
+
+        self.bp_group.setVisible(False)  # Oculta per defecte (només per COLUMN)
+        self.content_layout.addWidget(self.bp_group)
 
         # === BOTÓ GENERAR + PROGRÉS ===
         gen_frame = QFrame()
@@ -290,6 +426,24 @@ class ReviewSummaryPanel(QWidget):
         if HAS_MATPLOTLIB:
             self._plot_doc_chart(regular, light, is_bp)
             self._plot_dad_chart(regular, light)
+
+        # --- CONSOLIDACIÓ BP ---
+        self._current_method = method
+        self._current_seq_path = seq_path
+        self._bp_resolved = None
+
+        if method.upper() == "COLUMN" and seq_path:
+            # Llançar cerca BP en background
+            self._current_sample_names = [
+                name for name, d in regular.items()
+                if d.get("analysis_type") != "khp"
+            ]
+            self.bp_group.setVisible(True)
+            self.bp_status_label.setText("Cercant BP...")
+            self.bp_table.setRowCount(0)
+            self._launch_bp_discovery(seq_path, self._current_sample_names)
+        else:
+            self.bp_group.setVisible(False)
 
         # --- PATHS ---
         if seq_path:
@@ -497,6 +651,166 @@ class ReviewSummaryPanel(QWidget):
         return f"<span style='color:{COLOR_SUCCESS}'>&#9679;</span> {name}: OK<br>"
 
 
+    # ------------------------------------------------------------------
+    # BP Consolidation
+    # ------------------------------------------------------------------
+
+    def _launch_bp_discovery(self, seq_path, sample_names):
+        """Llança BPDiscoveryWorker per cercar dades BP."""
+        if self._bp_worker and self._bp_worker.isRunning():
+            self._bp_worker.wait(2000)
+
+        data_folder = str(Path(seq_path).parent)
+        self._bp_worker = BPDiscoveryWorker(seq_path, sample_names, data_folder)
+        self._bp_worker.finished.connect(self._on_bp_discovery_finished)
+        self._bp_worker.error.connect(self._on_bp_discovery_error)
+        self._bp_worker.start()
+
+    def _on_bp_discovery_finished(self, result):
+        """Gestiona el resultat de la cerca BP."""
+        self._bp_resolved = result
+        self._bp_available = result.get("available_bps", [])
+
+        # Omplir dropdown
+        self.bp_combo.blockSignals(True)
+        self.bp_combo.clear()
+        primary = result.get("primary_bp")
+        selected_idx = 0
+
+        if not self._bp_available:
+            self.bp_combo.addItem("Cap BP trobada", None)
+        else:
+            for i, bp in enumerate(self._bp_available):
+                bp_name = bp.get("name", "?")
+                self.bp_combo.addItem(bp_name, bp.get("path"))
+                if primary and bp.get("path") == primary.get("path"):
+                    selected_idx = i
+
+        self.bp_combo.setCurrentIndex(selected_idx)
+        self.bp_combo.blockSignals(False)
+
+        # Omplir taula
+        self._populate_bp_table(result)
+
+    def _on_bp_discovery_error(self, error_msg):
+        """Error durant la cerca BP."""
+        logger.error(f"Error BP discovery: {error_msg}")
+        self.bp_status_label.setText(f"Error: {error_msg}")
+        self.bp_group.setVisible(False)
+
+    def _populate_bp_table(self, bp_result):
+        """Omple la taula de mostres BP amb el resultat de la cerca."""
+        samples = bp_result.get("samples", {})
+        n_linked = sum(1 for s in samples.values() if s.get("bp_data"))
+        n_total = len(samples)
+
+        self.bp_status_label.setText(f"({n_linked}/{n_total} mostres vinculades)")
+
+        self.bp_table.setRowCount(n_total)
+
+        # Ordenar: vinculades primer, després sense match
+        sorted_names = sorted(
+            samples.keys(),
+            key=lambda n: (0 if samples[n].get("bp_data") else 1, n)
+        )
+
+        for row, name in enumerate(sorted_names):
+            sdata = samples[name]
+            bp_data = sdata.get("bp_data")
+
+            # Col 0: Nom mostra
+            item_name = QTableWidgetItem(name)
+            self.bp_table.setItem(row, 0, item_name)
+
+            if bp_data:
+                # Col 1: Estat (✔ + font)
+                source = sdata.get("source", "")
+                source_tag = " *" if source == "name_search" else ""
+                item_status = QTableWidgetItem(f"✔{source_tag}")
+                item_status.setForeground(QColor(COLOR_SUCCESS))
+                item_status.setTextAlignment(Qt.AlignCenter)
+                if source == "name_search":
+                    item_status.setToolTip(
+                        f"Trobat per nom a {bp_data.get('seq_name', '?')}"
+                    )
+                self.bp_table.setItem(row, 1, item_status)
+
+                # Col 2: Rèplica
+                replica = bp_data.get("replica", "?")
+                item_rep = QTableWidgetItem(f"R{replica}")
+                item_rep.setTextAlignment(Qt.AlignCenter)
+                self.bp_table.setItem(row, 2, item_rep)
+
+                # Col 3: ppm
+                ppm = bp_data.get("concentration_ppm")
+                ppm_text = f"{ppm:.2f}" if ppm else "—"
+                item_ppm = QTableWidgetItem(ppm_text)
+                item_ppm.setTextAlignment(Qt.AlignCenter)
+                self.bp_table.setItem(row, 3, item_ppm)
+
+                # Col 4: SNR
+                snr = bp_data.get("snr_direct")
+                snr_text = f"{snr:.0f}" if snr else "—"
+                item_snr = QTableWidgetItem(snr_text)
+                item_snr.setTextAlignment(Qt.AlignCenter)
+                self.bp_table.setItem(row, 4, item_snr)
+            else:
+                # Sense match — fila gris
+                item_status = QTableWidgetItem("✘")
+                item_status.setForeground(QColor("#bdc3c7"))
+                item_status.setTextAlignment(Qt.AlignCenter)
+                self.bp_table.setItem(row, 1, item_status)
+
+                for col in range(2, 5):
+                    item = QTableWidgetItem("—")
+                    item.setForeground(QColor("#bdc3c7"))
+                    item.setTextAlignment(Qt.AlignCenter)
+                    self.bp_table.setItem(row, col, item)
+
+                # Fons gris per la fila sencera
+                for col in range(5):
+                    it = self.bp_table.item(row, col)
+                    if it:
+                        it.setBackground(QColor("#f5f5f5"))
+
+        # Info label
+        n_missing = n_total - n_linked
+        if n_missing > 0:
+            self.bp_info_label.setText(
+                f"{n_missing} mostr{'a' if n_missing == 1 else 'es'} sense dades BP"
+            )
+        else:
+            self.bp_info_label.setText("Totes les mostres tenen dades BP vinculades")
+
+    def _on_bp_combo_changed(self, index):
+        """Quan l'usuari canvia la BP al dropdown, relança la cerca."""
+        if index < 0 or not self._bp_available:
+            return
+
+        bp_path = self.bp_combo.currentData()
+        if not bp_path:
+            return
+
+        # Relançar cerca amb la BP seleccionada com a primària
+        self.bp_status_label.setText("Actualitzant...")
+
+        if self._bp_worker and self._bp_worker.isRunning():
+            self._bp_worker.wait(2000)
+
+        # Carregar dades per cada mostra des de la BP seleccionada
+        self._bp_worker = _BPReloadWorker(
+            bp_path, self._current_sample_names,
+            self._bp_available, self._current_seq_path
+        )
+        self._bp_worker.finished.connect(self._on_bp_reload_finished)
+        self._bp_worker.error.connect(self._on_bp_discovery_error)
+        self._bp_worker.start()
+
+    def _on_bp_reload_finished(self, result):
+        """Gestiona el resultat de la recàrrega BP (canvi de dropdown)."""
+        self._bp_resolved = result
+        self._populate_bp_table(result)
+
     def _on_generate_cal_report(self):
         """Genera informe PDF de la calibració activa."""
         try:
@@ -699,7 +1013,8 @@ class ReviewSummaryPanel(QWidget):
         self.status_label.setText("Generant...")
 
         self.worker = GenerateWorker(
-            samples_grouped, seq_path, calibration_data, method, None
+            samples_grouped, seq_path, calibration_data, method, None,
+            bp_resolved=self._bp_resolved,
         )
         self.worker.progress.connect(self._on_progress)
         self.worker.finished.connect(self._on_finished)
@@ -725,6 +1040,9 @@ class ReviewSummaryPanel(QWidget):
         else:
             self.status_label.setText(f"{n_exported} Excels + SUMMARY generats correctament")
 
+        # Escriure review_result.json
+        self._write_review_result(results)
+
         self.review_completed.emit(results)
 
     def _on_error(self, error_msg):
@@ -732,6 +1050,71 @@ class ReviewSummaryPanel(QWidget):
         self.progress_bar.setVisible(False)
         self.status_label.setText("Error")
         QMessageBox.critical(self, "Error", f"Error durant la generació:\n{error_msg}")
+
+    # ------------------------------------------------------------------
+    # review_result.json
+    # ------------------------------------------------------------------
+
+    def _write_review_result(self, results):
+        """Persisteix l'estat de la revisió a review_result.json."""
+        try:
+            from datetime import datetime
+
+            seq_path = self._current_seq_path
+            if not seq_path:
+                return
+
+            data_dir = Path(seq_path) / "CHECK" / "data"
+            data_dir.mkdir(parents=True, exist_ok=True)
+
+            excel_result = results.get("excel_files", {}) or {}
+            n_exported = excel_result.get("n_exported", 0)
+            n_skipped = excel_result.get("n_skipped", 0)
+
+            # BP info
+            bp_info = {}
+            if self._bp_resolved:
+                primary = self._bp_resolved.get("primary_bp")
+                if primary:
+                    bp_info["bp_seq_name"] = primary.get("name")
+                    bp_info["bp_seq_path"] = primary.get("path")
+                    bp_samples = self._bp_resolved.get("samples", {})
+                    bp_info["n_linked"] = sum(
+                        1 for s in bp_samples.values() if s.get("bp_data")
+                    )
+                    # mtime del analysis_result.json de la BP
+                    bp_analysis = Path(primary["path"]) / "CHECK" / "data" / "analysis_result.json"
+                    if bp_analysis.exists():
+                        bp_info["bp_analysis_mtime"] = os.path.getmtime(str(bp_analysis))
+
+            # Mostres descartades (sample_valid=False)
+            processed_data = self.main_window.processed_data or {}
+            samples_grouped = processed_data.get("samples_grouped", {})
+            discarded = [
+                name for name, d in samples_grouped.items()
+                if d.get("sample_valid") is False
+            ]
+
+            review_data = {
+                "success": not results.get("errors"),
+                "timestamp": datetime.now().isoformat(),
+                "version": "1.0",
+                "seq_name": Path(seq_path).name,
+                "method": self._current_method,
+                "n_exported": n_exported,
+                "n_skipped": n_skipped,
+                "discarded_samples": discarded,
+                "bp_info": bp_info,
+                "summary_path": str(Path(seq_path) / "CHECK" / "SUMMARY.xlsx"),
+            }
+
+            review_path = data_dir / "review_result.json"
+            with open(review_path, 'w', encoding='utf-8') as f:
+                _json.dump(review_data, f, indent=2, ensure_ascii=False)
+
+            logger.info(f"review_result.json escrit: {review_path}")
+        except Exception as e:
+            logger.error(f"Error escrivint review_result.json: {e}")
 
     # ------------------------------------------------------------------
     # Reset / showEvent
@@ -752,6 +1135,14 @@ class ReviewSummaryPanel(QWidget):
         self.status_label.setText("")
         self.paths_label.setText("")
         self.generate_btn.setEnabled(True)
+        # BP state
+        self._bp_resolved = None
+        self._bp_available = []
+        self.bp_group.setVisible(False)
+        self.bp_table.setRowCount(0)
+        self.bp_combo.clear()
+        self.bp_status_label.setText("")
+        self.bp_info_label.setText("")
 
     def showEvent(self, event):
         """Quan es mostra el panel, omplir amb dades actuals."""

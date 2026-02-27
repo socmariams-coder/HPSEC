@@ -819,7 +819,11 @@ class DashboardPanel(QWidget):
                     if cal_bg:
                         item.setBackground(cal_bg)
                 elif state == 'warning':
-                    item.setText("⚠")
+                    # BP stale: icona ⟳ en lloc de ⚠
+                    if phase_name == "Revisar" and seq.is_bp_stale:
+                        item.setText("⟳")
+                    else:
+                        item.setText("⚠")
                     item.setForeground(QColor(COLOR_WARNING))
                     tooltip_parts = []
                     # Import incomplet: indicar quantes injeccions
@@ -1433,9 +1437,9 @@ class DashboardPanel(QWidget):
 
         phases_data = [
             (seq.import_status, seq.import_state, "Importar", seq.import_warnings),
-            (seq.calibrate_status, seq.calibrate_state, "Verificar", []),
+            (seq.calibrate_status, seq.calibrate_state, "Verificar", seq.calibrate_warnings),
             (seq.analyze_status, seq.analyze_state, "Analitzar", seq.analyze_warnings),
-            (seq.review_status, seq.review_state, "Revisar", []),
+            (seq.review_status, seq.review_state, "Revisar", seq.review_warnings),
         ]
 
         current_phase_idx = None

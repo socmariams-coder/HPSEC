@@ -333,6 +333,8 @@ def _build_id_sheet(sample_name, sample_data, calibration_data, mode, is_dual):
         if zone_summary:
             zones_str = "; ".join(f"{zone}: {count}" for zone, count in zone_summary.items())
             rows.append(("Timeout_Zones", zones_str))
+    if timeout_info.get("toc_minute_precision"):
+        rows.append(("TOC_Timestamp_Repair", "YES — cadencia 4s reconstruida (timestamps originals arrodonits al minut)"))
 
     # Irregular top repair info (jagged/batman artifact)
     irregular_top_repaired = sample_data.get("irregular_top_direct_repaired",
@@ -524,7 +526,7 @@ def _build_results_sheet(t_doc, y_doc_net, df_dad, mode, config, bp_data=None):
     # Calcular àrees per cada fracció
     fraction_names = list(fractions.keys())
     if mode == "BP":
-        # Per BP, només total
+        # Per BP o mostres sense fraccions, només total
         fraction_names = ["total"]
     else:
         fraction_names.append("total")
@@ -751,6 +753,7 @@ def export_sequence(
     config: dict = None,
     progress_callback=None,
     seq_path: str = None,
+    bp_resolved: dict = None,
 ):
     """
     Exporta totes les mostres d'una seqüència.
@@ -763,6 +766,7 @@ def export_sequence(
         config: Configuració
         progress_callback: Funció per reportar progrés (pct, msg)
         seq_path: Path de la seqüència (per cercar BP automàticament)
+        bp_resolved: Dades BP pre-resoltes des del wizard (evita re-descobriment)
 
     Returns:
         dict amb resultats d'exportació
@@ -782,17 +786,31 @@ def export_sequence(
 
     # Cercar i carregar dades BP si mode COLUMN
     bp_all = {}
-    if mode == "COLUMN" and seq_path:
-        if progress_callback:
-            progress_callback(0, "Cercant dades BP vinculades...")
-        bp_result = _find_and_load_bp_data(seq_path, samples_grouped)
-        bp_all = bp_result.get("samples", {})
-        if bp_result.get("bp_seq_path"):
-            results["bp_info"] = {
-                "bp_seq_path": bp_result["bp_seq_path"],
-                "bp_seq_name": bp_result["bp_seq_name"],
-                "n_linked": len(bp_all),
-            }
+    if mode == "COLUMN":
+        if bp_resolved:
+            # Usar dades pre-resoltes (wizard)
+            for name, sdata in bp_resolved.get("samples", {}).items():
+                if sdata and sdata.get("bp_data"):
+                    bp_all[name] = sdata["bp_data"]
+            bp_info = bp_resolved.get("primary_bp")
+            if bp_info:
+                results["bp_info"] = {
+                    "bp_seq_path": bp_info.get("path"),
+                    "bp_seq_name": bp_info.get("name"),
+                    "n_linked": len(bp_all),
+                }
+        elif seq_path:
+            # Fallback: descobriment automàtic (batch, backwards compat)
+            if progress_callback:
+                progress_callback(0, "Cercant dades BP vinculades...")
+            bp_result = _find_and_load_bp_data(seq_path, samples_grouped)
+            bp_all = bp_result.get("samples", {})
+            if bp_result.get("bp_seq_path"):
+                results["bp_info"] = {
+                    "bp_seq_path": bp_result["bp_seq_path"],
+                    "bp_seq_name": bp_result["bp_seq_name"],
+                    "n_linked": len(bp_all),
+                }
 
     total = len(samples_grouped)
     n_skipped = 0
@@ -802,7 +820,7 @@ def export_sequence(
             progress_callback(pct, f"Exportant {sample_name}...")
 
         try:
-            # Light samples (BLANK/CONTROL) — exportació lightweight
+            # Light samples (CONTROL) — exportació lightweight
             if sample_info.get("analysis_type") == "light":
                 selected = sample_info.get("selected", {})
                 doc_replica = selected.get("doc", "1")
@@ -977,7 +995,8 @@ def generate_summary_excel(
         dad_replica = selected.get("dad", "1")
 
         is_invalid = (doc_replica == "none"
-                      or sample_info.get("sample_valid") is False)
+                      or sample_info.get("sample_valid") is False
+                      or sample_info.get("skip_quantification", False))
 
         doc_data = sample_info.get("replicas", {}).get(doc_replica, {})
         snr_info = doc_data.get("snr_info", {})

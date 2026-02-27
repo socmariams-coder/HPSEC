@@ -380,6 +380,103 @@ def find_all_sample_versions(
 
 
 # =============================================================================
+# CERCA BP PER A TOTES LES MOSTRES D'UNA SEQÜÈNCIA
+# =============================================================================
+
+def find_bp_for_samples(
+    column_seq_path: str,
+    sample_names: List[str],
+    data_folder: str = None,
+    search_range: int = 2,
+) -> Dict:
+    """
+    Cerca dades BP per a un conjunt de mostres COLUMN.
+
+    1. find_matching_bp_sequence() per proximitat (±search_range)
+    2. Per cada mostra: load_bp_data_for_sample() des de la BP primària
+    3. Per mostres sense match i si data_folder donat: cerca ampliada per nom
+    4. find_related_sequences(search_range=10) per llistar BPs disponibles
+
+    Args:
+        column_seq_path: Path de la seqüència COLUMN
+        sample_names: Llista de noms de mostres
+        data_folder: Carpeta arrel de dades (per cerca ampliada). Si None, usa el parent.
+        search_range: Rang de cerca per proximitat
+
+    Returns:
+        {
+            "primary_bp": {"path": str, "name": str} or None,
+            "available_bps": [{"path": str, "name": str, "number": int}, ...],
+            "samples": {
+                "Sample1": {"bp_seq": str, "bp_data": dict, "source": "proximity"},
+                "Sample2": {"bp_seq": None, "bp_data": None, "source": None},
+            }
+        }
+    """
+    result = {
+        "primary_bp": None,
+        "available_bps": [],
+        "samples": {},
+    }
+
+    # Inicialitzar totes les mostres com a no trobades
+    for name in sample_names:
+        result["samples"][name] = {"bp_seq": None, "bp_data": None, "source": None}
+
+    # 1. Trobar BP primària per proximitat
+    bp_path = find_matching_bp_sequence(column_seq_path, search_range)
+    if bp_path:
+        result["primary_bp"] = {
+            "path": bp_path,
+            "name": Path(bp_path).name,
+        }
+
+        # 2. Carregar dades BP per cada mostra
+        for name in sample_names:
+            bp_data = load_bp_data_for_sample(bp_path, name)
+            if bp_data:
+                result["samples"][name] = {
+                    "bp_seq": Path(bp_path).name,
+                    "bp_data": bp_data,
+                    "source": "proximity",
+                }
+
+    # 3. Cerca ampliada per mostres sense match
+    if data_folder is None:
+        data_folder = str(Path(column_seq_path).parent)
+
+    missing = [n for n in sample_names if result["samples"][n]["bp_data"] is None]
+    if missing:
+        for name in missing:
+            versions = find_all_sample_versions(name, data_folder, seq_type="BP")
+            if versions:
+                # Preferir la versió més propera en número de seqüència
+                col_num = extract_seq_number(Path(column_seq_path).name)
+                if col_num is not None:
+                    versions.sort(key=lambda v: abs((v.get("seq_number") or 0) - col_num))
+                best = versions[0]
+                bp_data = _extract_bp_summary(best["data"], best["seq_path"])
+                result["samples"][name] = {
+                    "bp_seq": best["seq_name"],
+                    "bp_data": bp_data,
+                    "source": "name_search",
+                }
+
+    # 4. Llistar totes les BPs disponibles (per dropdown override)
+    related = find_related_sequences(column_seq_path, search_range=10)
+    for bp in related.get("bp_seqs", []):
+        bp_name = Path(bp).name
+        bp_number = extract_seq_number(bp_name)
+        result["available_bps"].append({
+            "path": bp,
+            "name": bp_name,
+            "number": bp_number,
+        })
+
+    return result
+
+
+# =============================================================================
 # FUNCIONS D'EXPORTACIÓ CONSOLIDADA
 # =============================================================================
 
