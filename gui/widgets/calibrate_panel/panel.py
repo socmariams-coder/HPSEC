@@ -96,6 +96,8 @@ class CalibratePanel(QWidget):
             self.history_graph.clear()
         if hasattr(self, 'history_uib_graph'):
             self.history_uib_graph.clear()
+        if hasattr(self, 'history_uib254_graph'):
+            self.history_uib254_graph.clear()
         if hasattr(self, 'calibration_line_graph'):
             self.calibration_line_graph.clear()
         if hasattr(self, 'cal_line_group'):
@@ -535,19 +537,19 @@ class CalibratePanel(QWidget):
         content_layout.addWidget(self.graphs_group)
 
         # === METRICS TABLE ===
-        self.metrics_group = QGroupBox("Mètriques per Rèplica")
+        self.metrics_group = QGroupBox("Rèpliques KHP")
         self.metrics_group.setVisible(False)
         metrics_layout = QVBoxLayout(self.metrics_group)
 
         self.metrics_table = QTableWidget()
-        self.metrics_table.setColumnCount(14)
+        self.metrics_table.setColumnCount(13)
         self.metrics_table.setHorizontalHeaderLabels([
-            "Rep", "Senyal", "\u00c0rea", "A_UIB", "A254",
+            "Rep", "Senyal", "\u00c0rea", "Comp.", "A254",
             "RF", "t_max", "FWHM", "SNR", "Shift", "R\u00b2bg",
-            "Estat", "Avisos", "Outlier"
+            "Estat", "Outlier"
         ])
         self.metrics_table.horizontalHeaderItem(2).setToolTip("\u00c0rea DOC integrada (senyal actual)")
-        self.metrics_table.horizontalHeaderItem(3).setToolTip("\u00c0rea DOC UIB (companion)")
+        self.metrics_table.horizontalHeaderItem(3).setToolTip("\u00c0rea DOC companion (UIB si Direct, Direct si UIB)")
         self.metrics_table.horizontalHeaderItem(4).setToolTip("\u00c0rea 254nm (DAD)")
         self.metrics_table.horizontalHeaderItem(5).setToolTip("RF_MASS = \u00c0rea\u00d71000/(ppm\u00d7\u00b5L)")
         self.metrics_table.horizontalHeaderItem(6).setToolTip("Temps del pic m\u00e0xim (min)")
@@ -555,8 +557,7 @@ class CalibratePanel(QWidget):
         self.metrics_table.horizontalHeaderItem(9).setToolTip("Shift vs 254nm (segons)")
         self.metrics_table.horizontalHeaderItem(10).setToolTip("R\u00b2 del fit bigaussi\u00e0\n\u22650.95 VALID, \u22650.80 CHECK")
         self.metrics_table.horizontalHeaderItem(11).setToolTip("Estat: \u2714 OK, \u26a0 Warning, \u2718 Blocker")
-        self.metrics_table.horizontalHeaderItem(12).setToolTip("Avisos i anomalies detectades")
-        self.metrics_table.horizontalHeaderItem(13).setToolTip("Marcar com a outlier (no s'usa per calibrar)")
+        self.metrics_table.horizontalHeaderItem(12).setToolTip("Marcar com a outlier (no s'usa per calibrar)")
         self.metrics_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         self.metrics_table.setAlternatingRowColors(True)
         self.metrics_table.setMinimumHeight(150)
@@ -638,6 +639,10 @@ class CalibratePanel(QWidget):
         self.history_doc254_graph = HistoryBarWidget(ylabel="DOC/254", value_key="a254_doc_ratio")
         self.history_doc254_graph.bar_selected.connect(self._on_history_bar_selected)
         history_content.addWidget(self.history_doc254_graph)
+
+        self.history_uib254_graph = HistoryBarWidget(ylabel="UIB/254", value_key="d254_u")
+        self.history_uib254_graph.bar_selected.connect(self._on_history_bar_selected)
+        history_content.addWidget(self.history_uib254_graph)
 
         history_layout.addLayout(history_content)
 
@@ -1032,10 +1037,38 @@ class CalibratePanel(QWidget):
         if shift_parts:
             shift_html = f' \u00b7 Shift: {" ".join(shift_parts)}'
 
+        # Badge [CAL]
+        cal_badge = ""
+        if "_CAL" in seq_name.upper():
+            cal_badge = '<span style="color:#1A56DB;font-weight:bold;">[CAL]</span> '
+
+        # UIB sensitivity
+        uib_sens_html = ""
+        khp_data_uib_info = result.get("khp_data_uib")
+        if khp_data_uib_info:
+            uib_sens = khp_data_uib_info.get('uib_sensitivity')
+            if not uib_sens:
+                uib_reps = khp_data_uib_info.get('replicas') or khp_data_uib_info.get('all_khp_data') or []
+                if uib_reps and isinstance(uib_reps, list):
+                    uib_sens = uib_reps[0].get('uib_sensitivity')
+            if uib_sens:
+                uib_sens_html = f" \u00b7 UIB {int(uib_sens)}ppb"
+
+        # KHP source
+        khp_source = result.get("khp_source", "")
+        source_html = ""
+        if khp_source:
+            if "LOCAL" in str(khp_source).upper() or "HIST" not in str(khp_source).upper():
+                source_html = " \u00b7 local"
+            elif "SIBLING" in str(khp_source).upper():
+                source_html = " \u00b7 sibling"
+            elif "HIST" in str(khp_source).upper():
+                source_html = " \u00b7 hist\u00f2ric"
+
         # Assemble
         html = (
-            f'<b>{seq_name}</b> \u00b7 {mode} \u00b7 {conc_text} \u00b7 {vol_text} \u00b7 '
-            f'{rep_text}{rf_html}{shift_html}'
+            f'{cal_badge}<b>{seq_name}</b> \u00b7 {mode} \u00b7 {conc_text} \u00b7 {vol_text} \u00b7 '
+            f'{rep_text}{rf_html}{shift_html}{uib_sens_html}{source_html}'
         )
 
         self.compact_header.setText(html)
@@ -1207,7 +1240,7 @@ class CalibratePanel(QWidget):
             area = khp.get('area', 0)
             self.metrics_table.setItem(row, 2, QTableWidgetItem(f"{area:.0f}"))
 
-            # Col 3: A_UIB (companion UIB area)
+            # Col 3: Comp. (companion area)
             match = _re.search(r'R(\d+)', filename)
             rep_key = match.group(1) if match else '1'
             if signal == 'Direct':
@@ -1332,43 +1365,7 @@ class CalibratePanel(QWidget):
                     item_status.setToolTip("\n".join(tooltip_lines))
             self.metrics_table.setItem(row, 11, item_status)
 
-            # Col 12: Avisos (columna compacta)
-            if raw_anomalies and cal_anomalies:
-                classified_for_col = classify_anomalies(cal_anomalies)
-                vis = classified_for_col.get("blocker", []) + classified_for_col.get("warning", [])
-                if vis:
-                    codes = []
-                    tooltip_parts = []
-                    for a in vis:
-                        if isinstance(a, dict):
-                            code = a.get("code", "")
-                            short = code.replace("KHP_", "").replace("UIB_", "U:")
-                            sev = a.get("severity", "info")
-                            icon = "\u2718" if sev == "blocker" else "\u26a0"
-                            codes.append(f"{icon}{short}")
-                            entry = ANOMALY_CATALOG.get(code, {})
-                            action = entry.get("action", "")
-                            label = a.get("label", code)
-                            tip = f"{icon} {label}"
-                            if action:
-                                tip += f"\n   \u2192 {action}"
-                            tooltip_parts.append(tip)
-                    item_avis = QTableWidgetItem(" ".join(codes))
-                    avis_font = QFont()
-                    avis_font.setPointSize(7)
-                    item_avis.setFont(avis_font)
-                    if any(a.get("severity") == "blocker" for a in vis if isinstance(a, dict)):
-                        item_avis.setForeground(QColor('#C62828'))
-                    else:
-                        item_avis.setForeground(QColor('#E65100'))
-                    item_avis.setToolTip("\n".join(tooltip_parts))
-                    self.metrics_table.setItem(row, 12, item_avis)
-                else:
-                    self.metrics_table.setItem(row, 12, QTableWidgetItem(""))
-            else:
-                self.metrics_table.setItem(row, 12, QTableWidgetItem(""))
-
-            # Col 13: Checkbox outlier
+            # Col 12: Checkbox outlier
             is_outlier = khp.get('is_outlier', False)
             cb = QCheckBox()
             cb.setChecked(is_outlier)
@@ -1387,11 +1384,11 @@ class CalibratePanel(QWidget):
                     self._on_metrics_outlier_toggled(rn, st, state)
             )
 
-            self.metrics_table.setCellWidget(row, 13, cb_widget)
+            self.metrics_table.setCellWidget(row, 12, cb_widget)
 
             # Apply grey if outlier
             if is_outlier:
-                for col in range(13):
+                for col in range(12):
                     item = self.metrics_table.item(row, col)
                     if item:
                         item.setBackground(QColor(230, 230, 230))
@@ -1426,12 +1423,12 @@ class CalibratePanel(QWidget):
                     item_text.setBackground(QColor(248, 249, 250))
                     self.metrics_table.setItem(sub_row, 1, item_text)
                     # Fill remaining cells with grey background
-                    for c in range(2, 14):
+                    for c in range(2, 13):
                         filler = QTableWidgetItem("")
                         filler.setBackground(QColor(248, 249, 250))
                         self.metrics_table.setItem(sub_row, c, filler)
                     # Span col 1 across visible area
-                    self.metrics_table.setSpan(sub_row, 1, 1, 12)
+                    self.metrics_table.setSpan(sub_row, 1, 1, 11)
 
     def _on_metrics_outlier_toggled(self, replica_num, signal_type, state):
         """Handler quan canvia el checkbox outlier a la taula de mètriques."""
@@ -1549,6 +1546,7 @@ class CalibratePanel(QWidget):
                 self.history_graph.clear()
                 self.history_uib_graph.clear()
                 self.history_doc254_graph.clear()
+                self.history_uib254_graph.clear()
                 self.calibration_line_graph.clear()
                 self.cal_line_group.setVisible(False)
                 self.history_group.setVisible(False)
@@ -1593,6 +1591,7 @@ class CalibratePanel(QWidget):
                 self.history_graph.clear()
                 self.history_uib_graph.clear()
                 self.history_doc254_graph.clear()
+                self.history_uib254_graph.clear()
                 self.calibration_line_graph.clear()
                 self.cal_line_group.setVisible(False)
                 self.history_group.setVisible(False)
@@ -1602,7 +1601,7 @@ class CalibratePanel(QWidget):
             outlier_text = " (amb outliers)" if include_outliers else ""
             sens_text = f" \u00b7 UIB {int(current_uib_sensitivity)}ppb" if current_uib_sensitivity else ""
             self.history_filters_label.setText(
-                f"<b>Filtres:</b> {method} \u00b7 KHP{khp_conc:.0f}ppm \u00b7 {int(current_volume)}\u00b5L{sens_text}{outlier_text} ({len(filtered_history)})"
+                f"{method} \u00b7 KHP{khp_conc:g}ppm \u00b7 {int(current_volume)}\u00b5L{sens_text}{outlier_text} ({len(filtered_history)})"
             )
 
             self._history_data = filtered_history
@@ -1629,13 +1628,21 @@ class CalibratePanel(QWidget):
             self.history_graph.plot_history(filtered_history, current_seq, valid_indices)
             self.history_doc254_graph.plot_history(filtered_history, current_seq, valid_indices)
 
-            # UIB graph: mostrar només si hi ha dades
+            # UIB graphs: mostrar només si hi ha dades UIB
             has_uib_data = any(cal.get('area_u', 0) > 0 for cal in filtered_history)
             if has_uib_data:
                 self.history_uib_graph.setVisible(True)
                 self.history_uib_graph.plot_history(filtered_history, current_seq, valid_indices)
+                # UIB/254 graph
+                has_uib254 = any(cal.get('d254_u', 0) > 0 for cal in filtered_history)
+                if has_uib254:
+                    self.history_uib254_graph.setVisible(True)
+                    self.history_uib254_graph.plot_history(filtered_history, current_seq, valid_indices)
+                else:
+                    self.history_uib254_graph.setVisible(False)
             else:
                 self.history_uib_graph.setVisible(False)
+                self.history_uib254_graph.setVisible(False)
 
             # Recta de calibració — regressió guardada a Calibration_Reference.json
             try:
@@ -1747,6 +1754,7 @@ class CalibratePanel(QWidget):
             self.history_graph.clear()
             self.history_uib_graph.clear()
             self.history_doc254_graph.clear()
+            self.history_uib254_graph.clear()
             self.calibration_line_graph.clear()
             self.cal_line_group.setVisible(False)
             self.history_group.setVisible(False)
@@ -1801,26 +1809,19 @@ class CalibratePanel(QWidget):
         self.delay_current_label.setStyleSheet("font-size: 13px;")
         info_layout.addWidget(self.delay_current_label, 0, 3)
 
-        info_layout.addWidget(QLabel("<b>Mode:</b>"), 1, 0)
-        self.delay_mode_label = QLabel("-")
-        info_layout.addWidget(self.delay_mode_label, 1, 1)
-
-        info_layout.addWidget(QLabel("<b>Injeccions / Files TOC:</b>"), 1, 2)
+        info_layout.addWidget(QLabel("<b>Injeccions / Files TOC:</b>"), 1, 0)
         self.delay_counts_label = QLabel("-")
-        info_layout.addWidget(self.delay_counts_label, 1, 3)
+        info_layout.addWidget(self.delay_counts_label, 1, 1, 1, 3)
 
         delay_main.addWidget(info_frame)
 
-        # Quality indicator
+        # Quality indicator (icona integrada al text)
         self.delay_quality_frame = QFrame()
         self.delay_quality_frame.setStyleSheet(
             "QFrame { border-radius: 4px; padding: 6px; }"
         )
         quality_layout = QHBoxLayout(self.delay_quality_frame)
         quality_layout.setContentsMargins(8, 4, 8, 4)
-        self.delay_quality_icon = QLabel("\u25cf")
-        self.delay_quality_icon.setStyleSheet("font-size: 18px;")
-        quality_layout.addWidget(self.delay_quality_icon)
         self.delay_quality_text = QLabel("-")
         self.delay_quality_text.setWordWrap(True)
         quality_layout.addWidget(self.delay_quality_text, 1)
@@ -1960,39 +1961,38 @@ class CalibratePanel(QWidget):
             n_injections = 0
             n_toc = 0
 
-        self.delay_mode_label.setText(f"<b>{method}</b>")
         shift_sec = shift_min * 60
-        self.delay_shift_label.setText(f"{shift_sec:.1f} s ({shift_min:.2f} min)")
-        self.delay_current_label.setText(f"{current_delay:.3f} min")
+        self.delay_shift_label.setText(f"{shift_sec:.1f}s ({shift_min:.2f} min)")
+        current_delay_sec = current_delay * 60
+        self.delay_current_label.setText(f"{current_delay_sec:.1f}s ({current_delay:.3f} min)")
         self.delay_counts_label.setText(f"{n_injections} inj / {n_toc} files TOC")
 
         if is_bp:
             if shift_abs < 0.5:
                 color = "#27AE60"
-                icon_style = f"color: {color}; font-size: 18px;"
                 bg = "#E8F8F5"
-                text = "Shift KHP petit \u2014 delay probablement correcte."
+                icon = "\u2714"
+                text = f"{icon} Shift KHP petit \u2014 delay probablement correcte."
             elif shift_abs < 2.0:
                 color = "#E67E22"
-                icon_style = f"color: {color}; font-size: 18px;"
                 bg = "#FEF9E7"
-                text = (f"Shift KHP moderat ({shift_min:.2f} min). "
+                icon = "\u26a0"
+                text = (f"{icon} Shift KHP moderat ({shift_sec:.1f}s). "
                         "Pot indicar un delay imprec\u00eds. Revisar el cromatograma DOC.")
             else:
                 color = "#E74C3C"
-                icon_style = f"color: {color}; font-size: 18px;"
                 bg = "#FDEDEC"
-                text = (f"Shift KHP gran ({shift_min:.2f} min). "
+                icon = "\u2718"
+                text = (f"{icon} Shift KHP gran ({shift_sec:.1f}s). "
                         "Les files TOC poden estar mal assignades. "
                         "Es recomana ajustar el delay i reimportar.")
         else:
             color = "#E67E22"
-            icon_style = f"color: {color}; font-size: 18px;"
             bg = "#FEF9E7"
-            text = (f"Shift KHP gran per COLUMN ({shift_min:.2f} min). "
+            icon = "\u26a0"
+            text = (f"{icon} Shift KHP gran per COLUMN ({shift_sec:.1f}s). "
                     "Normalment no afecta l'an\u00e0lisi per\u00f2 pot indicar un problema.")
 
-        self.delay_quality_icon.setStyleSheet(icon_style)
         self.delay_quality_frame.setStyleSheet(
             f"QFrame {{ background-color: {bg}; border: 1px solid {color}; "
             f"border-radius: 4px; padding: 6px; }}"
