@@ -487,9 +487,11 @@ class ReviewSummaryPanel(QWidget):
         total_to = 0
         total_major = 0
         zone_totals = {}
+        zone_samples = {}  # zone → set(sample_name)
         dt_medians = []
 
         for sample in all_samples:
+            sample_name = sample.get("name", "?")
             ti = sample.get("timeout_info", {})
             n = ti.get("n_timeouts", 0)
             if n > 0:
@@ -499,6 +501,8 @@ class ReviewSummaryPanel(QWidget):
                 zs = ti.get("zone_summary", {})
                 for zone, count in zs.items():
                     zone_totals[zone] = zone_totals.get(zone, 0) + count
+                    if count > 0:
+                        zone_samples.setdefault(zone, set()).add(sample_name)
             dm = ti.get("dt_median_sec")
             if dm:
                 dt_medians.append(dm)
@@ -528,7 +532,14 @@ class ReviewSummaryPanel(QWidget):
                 icon = f"<span style='color:#3498DB'>{'&#8505;' if count > 0 else '&#10003;'}</span>"
             else:
                 icon = f"<span style='color:{COLOR_SUCCESS}'>&#10003;</span>"
-            zone_lines.append(f"&nbsp;&nbsp;{zone}: <b>{count}</b> {icon}")
+            line = f"&nbsp;&nbsp;{zone}: <b>{count}</b> {icon}"
+            if count > 0 and zone in zone_samples:
+                names = sorted(zone_samples[zone])
+                if len(names) <= 5:
+                    line += f" <span style='color:#888;font-size:10px'>({', '.join(names)})</span>"
+                else:
+                    line += f" <span style='color:#888;font-size:10px'>({', '.join(names[:4])}, +{len(names)-4})</span>"
+            zone_lines.append(line)
 
         # Key verdict: HS free (COLUMN) or BP_PEAK free (BP)
         critical_zone = "BP_PEAK" if is_bp else "HS"
@@ -552,111 +563,83 @@ class ReviewSummaryPanel(QWidget):
         self.card_timeouts._content_label.setText(html.strip())
 
     def _populate_quality_card(self, processed_data, regular, light, is_bp):
-        """Card control qualitat: fases, KHP vs calibració, blancs, problemes."""
+        """Card control qualitat: resum mostres, problemes accionables, blancs."""
         lines = []
 
-        # --- Semàfor per fase ---
-        # Import
-        imported = self.main_window.imported_data
-        if imported and imported.get("success"):
-            imp_wl = imported.get("warning_level", "none")
-            lines.append(self._phase_line("Import", imp_wl))
+        # --- Resum mostres ---
+        n_valid = sum(1 for d in regular.values() if d.get("sample_valid") is not False)
+        n_invalid = sum(1 for d in regular.values() if d.get("sample_valid") is False)
+        n_excluded = sum(
+            1 for d in regular.values()
+            if d.get("selected", {}).get("doc") == "Cap"
+        )
+        # Count SNR warnings among valid samples
+        n_snr_warn = 0
+        for data in regular.values():
+            if data.get("sample_valid") is not False:
+                sel = data.get("selected", {}).get("doc", "1")
+                rep = data.get("replicas", {}).get(sel, {})
+                snr = (rep.get("snr_info") or {}).get("snr_direct", 0)
+                if snr and 0 < snr < 10:
+                    n_snr_warn += 1
+        n_problems = n_invalid + n_snr_warn
+
+        parts = [f"<b>{n_valid}</b> vàlides"]
+        if n_problems > 0:
+            parts.append(f"<span style='color:{COLOR_WARNING}'><b>{n_problems}</b> problemes</span>")
         else:
-            lines.append(self._phase_line("Import", "error"))
+            parts.append(f"<b>0</b> problemes")
+        if n_excluded > 0:
+            parts.append(f"<b>{n_excluded}</b> excloses")
+        lines.append(f"Mostres: {' &middot; '.join(parts)}<br>")
 
-        # Calibrate
-        cal_data = self.main_window.calibration_data
-        if cal_data and cal_data.get("success"):
-            cal_wl = cal_data.get("warning_level", "none")
-            lines.append(self._phase_line("Calibr", cal_wl))
-        else:
-            lines.append(self._phase_line("Calibr", "error" if cal_data else "pending"))
-
-        # Analyze
-        ana_wl = processed_data.get("warning_level", "none")
-        lines.append(self._phase_line("Anàlisi", ana_wl))
-
-        lines.append("<br>")
-
-        # --- KHP vs CALIBRACIÓ ---
-        khp_samples = processed_data.get("khp_samples", [])
-        if khp_samples and cal_data:
-            lines.append("<b>KHP vs CALIBRACIÓ</b><br>")
-            rf = cal_data.get("rf_direct") or cal_data.get("rf", 0)
-            conc = cal_data.get("khp_conc", 5)
-            expected_area = rf * conc if rf and conc else 0
-
-            for khp in khp_samples:
-                khp_name = khp.get("name", "KHP")
-                areas = khp.get("areas", {})
-                doc_areas = areas.get("DOC", {})
-                actual_area = doc_areas.get("total", 0)
-                if expected_area > 0 and actual_area > 0:
-                    dev_pct = (actual_area - expected_area) / expected_area * 100
-                    color = COLOR_SUCCESS if abs(dev_pct) < 5 else (COLOR_WARNING if abs(dev_pct) < 10 else COLOR_ERROR)
-                    lines.append(
-                        f"&nbsp;&nbsp;{khp_name}: {actual_area:.0f} vs {expected_area:.0f} "
-                        f"<span style='color:{color}'>({dev_pct:+.1f}%)</span><br>"
-                    )
-                elif actual_area > 0:
-                    lines.append(f"&nbsp;&nbsp;{khp_name}: {actual_area:.0f}<br>")
-
-            lines.append("<br>")
-
-        # --- BLANCS ---
-        blancs = {n: d for n, d in light.items() if d.get("sample_type") == "BLANK"}
-        if blancs:
-            lines.append("<b>BLANCS (MQ)</b><br>")
-            for name, data in blancs.items():
-                rep_key = data.get("selected", {}).get("doc", "1")
-                rep = data.get("replicas", {}).get(rep_key, {})
-                area = rep.get("area_total", 0)
-                area_254 = rep.get("area_254", 0)
-                # Low area for blank is good
-                icon = f"<span style='color:{COLOR_SUCCESS}'>&#10003;</span>"
-                if area and abs(area) > 500:
-                    icon = f"<span style='color:{COLOR_WARNING}'>&#9888;</span>"
-                a254_str = f" &nbsp; A254: {area_254:.0f}" if area_254 else ""
-                lines.append(f"&nbsp;&nbsp;{name}: DOC {area:.0f} {icon}{a254_str}<br>")
-            lines.append("<br>")
-
-        # --- MOSTRES AMB PROBLEMES ---
-        problems = []
+        # --- PROBLEMES (accionables) ---
+        problems_critical = []
+        problems_warning = []
         for name, data in regular.items():
             if data.get("sample_valid") is False:
                 reason = "NO VÀLIDA"
                 rec = data.get("recommendation", {})
                 if rec:
                     reason = rec.get("doc", {}).get("reason", reason)
-                problems.append(f"&nbsp;&nbsp;{name}: <span style='color:{COLOR_ERROR}'>{reason}</span>")
+                problems_critical.append(
+                    f"&nbsp;&nbsp;&#10007; {name}: "
+                    f"<span style='color:{COLOR_ERROR}'>{reason}</span>"
+                )
             else:
-                # Check SNR < 10
                 sel = data.get("selected", {}).get("doc", "1")
                 rep = data.get("replicas", {}).get(sel, {})
                 snr = (rep.get("snr_info") or {}).get("snr_direct", 0)
                 if snr and 0 < snr < 10:
-                    problems.append(f"&nbsp;&nbsp;{name}: <span style='color:{COLOR_WARNING}'>SNR={snr:.0f}</span>")
+                    problems_warning.append(
+                        f"&nbsp;&nbsp;&#9888; {name}: "
+                        f"<span style='color:{COLOR_WARNING}'>SNR={snr:.0f}</span>"
+                    )
 
-        if problems:
-            lines.append("<b>MOSTRES AMB PROBLEMES</b><br>")
-            for p in problems[:8]:  # Max 8 to keep compact
+        all_problems = problems_critical + problems_warning
+        if all_problems:
+            lines.append(f"<br><b>PROBLEMES ({len(all_problems)})</b><br>")
+            for p in all_problems[:10]:
                 lines.append(p + "<br>")
-            if len(problems) > 8:
-                lines.append(f"&nbsp;&nbsp;<i>...i {len(problems)-8} més</i><br>")
+            if len(all_problems) > 10:
+                lines.append(f"&nbsp;&nbsp;<i>...i {len(all_problems)-10} més</i><br>")
+
+        # --- BLANCS ---
+        blancs = {n: d for n, d in light.items() if d.get("sample_type") == "BLANK"}
+        if blancs:
+            lines.append(f"<br><b>BLANCS (MQ)</b><br>")
+            for name, data in blancs.items():
+                rep_key = data.get("selected", {}).get("doc", "1")
+                rep = data.get("replicas", {}).get(rep_key, {})
+                area = rep.get("area_total", 0)
+                area_254 = rep.get("area_254", 0)
+                icon = f"<span style='color:{COLOR_SUCCESS}'>&#10003;</span>"
+                if area and abs(area) > 500:
+                    icon = f"<span style='color:{COLOR_WARNING}'>&#9888;</span>"
+                a254_str = f" &nbsp; A254: {area_254:.0f}" if area_254 else ""
+                lines.append(f"&nbsp;&nbsp;{name}: DOC {area:.0f} {icon}{a254_str}<br>")
 
         self.card_quality._content_label.setText("".join(lines))
-
-    def _phase_line(self, name, level):
-        """Genera línia de semàfor per fase."""
-        if level in ("none", None):
-            return f"<span style='color:{COLOR_SUCCESS}'>&#9679;</span> {name}: OK<br>"
-        elif level == "warning":
-            return f"<span style='color:{COLOR_WARNING}'>&#9679;</span> {name}: avisos<br>"
-        elif level in ("blocker", "error"):
-            return f"<span style='color:{COLOR_ERROR}'>&#9679;</span> {name}: errors<br>"
-        elif level == "pending":
-            return f"<span style='color:#BDC3C7'>&#9679;</span> {name}: -<br>"
-        return f"<span style='color:{COLOR_SUCCESS}'>&#9679;</span> {name}: OK<br>"
 
 
     # ------------------------------------------------------------------
