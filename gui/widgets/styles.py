@@ -62,6 +62,10 @@ COLOR_WARNING = "#F39C12"       # Taronja avís
 COLOR_WARNING_LIGHT = "#FCF3CF" # Groc clar (fons)
 COLOR_ERROR = "#E74C3C"         # Vermell error
 COLOR_ERROR_LIGHT = "#FADBD8"   # Rosa clar (fons)
+COLOR_PENDING = "#BDC3C7"       # Gris pendent
+COLOR_CURRENT = "#2E86AB"       # Blau fase actual (= PRIMARY)
+COLOR_CAL_BG = "#E8F0FE"        # Fons blau suau per SEQ_CAL
+COLOR_CAL_TEXT = "#1A56DB"       # Blau fosc per text CAL
 
 # Colors neutres
 COLOR_TEXT = "#2C3E50"          # Text principal

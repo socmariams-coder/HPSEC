@@ -334,10 +334,6 @@ class ImportPanel(QWidget):
         self.info_frame.setVisible(False)
         self.placeholder.setVisible(True)
 
-    def _show_manifest_info(self):
-        """Info del manifest — la info del SEQ es mostra al header del ProcessWizardPanel."""
-        pass
-
     def _auto_load_from_manifest(self):
         """Carrega automàticament des del manifest existent (sense llegir MasterFile)."""
         self._loaded_from_manifest = True

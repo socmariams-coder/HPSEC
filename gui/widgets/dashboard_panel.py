@@ -24,6 +24,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from gui.models.sequence_state import SequenceState, Phase, get_all_sequences
+from gui.widgets.styles import (
+    COLOR_SUCCESS, COLOR_WARNING, COLOR_ERROR,
+    COLOR_PENDING, COLOR_CURRENT, COLOR_CAL_BG, COLOR_CAL_TEXT
+)
 from hpsec_config import get_config
 # NOTA: hpsec_import, hpsec_calibrate, hpsec_analyze, hpsec_reports
 # s'importen lazy dins les funcions run_*() per accelerar l'arrencada.
@@ -47,15 +51,6 @@ class SortableTableItem(QTableWidgetItem):
 
         # Altrament, ordenar per text
         return self.text() < (other.text() if other else "")
-
-# Colors per fases
-COLOR_OK = "#27AE60"       # Verd
-COLOR_WARNING = "#F39C12"  # Taronja
-COLOR_ERROR = "#E74C3C"    # Vermell
-COLOR_PENDING = "#BDC3C7"  # Gris
-COLOR_CURRENT = "#2E86AB"  # Blau (fase actual)
-COLOR_CAL_BG = "#E8F0FE"   # Fons blau suau per SEQ_CAL
-COLOR_CAL_TEXT = "#1A56DB"  # Blau fosc per text CAL
 
 # Constants de columna (amb checkbox a col 0)
 # Redisseny minimalista: 15 → 9 columnes
@@ -771,7 +766,7 @@ class DashboardPanel(QWidget):
                         item.setBackground(cal_bg)
                 elif state == 'ok':
                     item.setText("✔")
-                    item.setForeground(QColor(COLOR_OK))
+                    item.setForeground(QColor(COLOR_SUCCESS))
                     timestamp = status.timestamp[:16] if status.timestamp else ""
                     tooltip = f"{phase_name}: Completat"
                     if timestamp:
@@ -1455,7 +1450,7 @@ class DashboardPanel(QWidget):
                 item.setToolTip("Flux calibració (sense wizard)")
             elif state == 'ok':
                 item.setText("✔")
-                item.setForeground(QColor(COLOR_OK))
+                item.setForeground(QColor(COLOR_SUCCESS))
                 item.setToolTip(f"{phase_name}: Completat")
             elif state == 'warning':
                 item.setText("⚠")

@@ -270,12 +270,6 @@ from gui.widgets.export_panel import ExportPanel
 from gui.widgets.review_summary_panel import ReviewSummaryPanel
 
 
-# Colors per estat (importats de styles.py)
-COLOR_OK = COLOR_SUCCESS
-COLOR_PENDING = "#95A5A6"
-COLOR_CURRENT = COLOR_PRIMARY
-
-
 class ProcessWizardPanel(QWidget):
     """
     Panel per processar seqüències amb pestanyes.
@@ -445,10 +439,6 @@ class ProcessWizardPanel(QWidget):
         self.next_step_btn.setEnabled(False)
         self.next_step_btn.clicked.connect(self._go_next_step)
         layout.addWidget(self.next_step_btn)
-
-        # Backward compat aliases (used internally by some methods)
-        self.task_indicator = self.status_indicator
-        self.warnings_btn = self.status_indicator
 
         # Estat intern
         self._current_warning_level = "none"
