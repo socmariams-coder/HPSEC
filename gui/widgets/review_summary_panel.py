@@ -446,13 +446,14 @@ class ReviewSummaryPanel(QWidget):
 
         # Separate regular (samples), light (blancs/controls), and KHP
         regular = {}  # mostres reals
-        light = {}    # blancs / controls
+        light = {}    # blancs / controls (analysis light O sample_type BLANK/CONTROL)
         khp = {}      # KHP standards
         for name, data in samples_grouped.items():
-            if data.get("analysis_type") == "light":
-                light[name] = data
-            elif data.get("analysis_type") == "khp":
+            if data.get("analysis_type") == "khp":
                 khp[name] = data
+            elif (data.get("analysis_type") == "light"
+                  or data.get("sample_type") in ("BLANK", "CONTROL")):
+                light[name] = data
             else:
                 regular[name] = data
 
@@ -518,7 +519,8 @@ class ReviewSummaryPanel(QWidget):
         # Timeout verdict
         zone_totals = {}
         for sample in processed_data.get("samples", []):
-            for zone, count in (sample.get("timeout_info", {}).get("zone_summary", {}) or {}).items():
+            ti = sample.get("timeout_info") or {}
+            for zone, count in (ti.get("zone_summary") or {}).items():
                 zone_totals[zone] = zone_totals.get(zone, 0) + count
         critical_zone = "BP_PEAK" if is_bp else "HS"
         critical_count = zone_totals.get(critical_zone, 0)
@@ -822,8 +824,12 @@ class ReviewSummaryPanel(QWidget):
         if not HAS_MATPLOTLIB:
             return
         checked = self._get_checked_samples()
-        reg = {k: v for k, v in checked.items() if v.get("analysis_type") not in ("light",)}
-        light = {k: v for k, v in checked.items() if v.get("analysis_type") == "light"}
+        reg = {k: v for k, v in checked.items()
+               if v.get("analysis_type") not in ("light",)
+               and v.get("sample_type") not in ("BLANK", "CONTROL")}
+        light = {k: v for k, v in checked.items()
+                 if v.get("analysis_type") == "light"
+                 or v.get("sample_type") in ("BLANK", "CONTROL")}
         is_bp = getattr(self, '_chart_is_bp', False)
         try:
             self._plot_doc_chart(reg, light, is_bp)
@@ -844,7 +850,8 @@ class ReviewSummaryPanel(QWidget):
 
         zone_totals = {}
         for sample in processed_data.get("samples", []):
-            for zone, count in (sample.get("timeout_info", {}).get("zone_summary", {}) or {}).items():
+            ti = sample.get("timeout_info") or {}
+            for zone, count in (ti.get("zone_summary") or {}).items():
                 zone_totals[zone] = zone_totals.get(zone, 0) + count
 
         if is_bp:
@@ -902,8 +909,8 @@ class ReviewSummaryPanel(QWidget):
         # Regular samples
         for name in sorted(regular.keys()):
             data = regular[name]
-            sel = data.get("selected", {}).get("doc", "1")
-            rep = data.get("replicas", {}).get(sel, {})
+            sel = (data.get("selected") or {}).get("doc", "1")
+            rep = (data.get("replicas") or {}).get(sel, {})
             areas = (rep.get("areas") or {}).get("DOC", {})
             quant = data.get("quantification") or {}
 
@@ -916,8 +923,8 @@ class ReviewSummaryPanel(QWidget):
         light_start = len(names)
         for name in sorted(light.keys()):
             data = light[name]
-            sel = data.get("selected", {}).get("doc", "1")
-            rep = data.get("replicas", {}).get(sel, {})
+            sel = (data.get("selected") or {}).get("doc", "1")
+            rep = (data.get("replicas") or {}).get(sel, {})
             area = rep.get("area_total", 0)
 
             names.append(name)
@@ -985,8 +992,9 @@ class ReviewSummaryPanel(QWidget):
         # Regular
         for name in sorted(regular.keys()):
             data = regular[name]
-            sel = data.get("selected", {}).get("dad", data.get("selected", {}).get("doc", "1"))
-            rep = data.get("replicas", {}).get(sel, {})
+            selected = data.get("selected") or {}
+            sel = selected.get("dad", selected.get("doc", "1"))
+            rep = (data.get("replicas") or {}).get(sel, {})
             a254 = (rep.get("areas") or {}).get("A254", {}).get("total", 0)
             names.append(name)
             areas_254.append(a254)
@@ -995,8 +1003,8 @@ class ReviewSummaryPanel(QWidget):
         # Light
         for name in sorted(light.keys()):
             data = light[name]
-            sel = data.get("selected", {}).get("doc", "1")
-            rep = data.get("replicas", {}).get(sel, {})
+            sel = (data.get("selected") or {}).get("doc", "1")
+            rep = (data.get("replicas") or {}).get(sel, {})
             a254 = rep.get("area_254", 0)
             names.append(name)
             areas_254.append(a254)
@@ -1039,8 +1047,8 @@ class ReviewSummaryPanel(QWidget):
         cmap = cm.get_cmap('tab20', max(n, 1))
 
         for i, (name, data) in enumerate(sorted(all_samples.items())):
-            sel = data.get("selected", {}).get("doc", "1")
-            rep = data.get("replicas", {}).get(sel, {})
+            sel = (data.get("selected") or {}).get("doc", "1")
+            rep = (data.get("replicas") or {}).get(sel, {})
             t = rep.get("t_doc")
             y = rep.get("y_doc_net")
             if t is not None and y is not None and len(t) > 0:
@@ -1085,9 +1093,9 @@ class ReviewSummaryPanel(QWidget):
         cmap = cm.get_cmap('tab20', max(n, 1))
 
         for i, (name, data) in enumerate(sorted(all_samples.items())):
-            sel = data.get("selected", {}).get("dad",
-                        data.get("selected", {}).get("doc", "1"))
-            rep = data.get("replicas", {}).get(sel, {})
+            selected = data.get("selected") or {}
+            sel = selected.get("dad", selected.get("doc", "1"))
+            rep = (data.get("replicas") or {}).get(sel, {})
             df_dad = rep.get("df_dad")
             if df_dad is None:
                 continue

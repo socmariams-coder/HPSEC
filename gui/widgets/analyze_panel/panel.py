@@ -574,7 +574,7 @@ class AnalyzePanel(QWidget):
         n_ok, n_warning, n_error, n_light, n_khp = 0, 0, 0, 0, 0
 
         # Separar mostres per tipologia
-        sample_names = []   # SAMPLE + BLANK (anàlisi completa)
+        sample_names = []   # SAMPLE (mostres reals)
         pr_names = []       # Patrons (PR_*)
         khp_names = []      # KHP (calibració)
         light_names = []    # CONTROL / Neteja (anàlisi lleugera)
@@ -582,18 +582,17 @@ class AnalyzePanel(QWidget):
 
         for name in self.samples_grouped.keys():
             sd = self.samples_grouped[name]
+            st = sd.get("sample_type", "SAMPLE")
             if sd.get("analysis_type") == "khp":
                 khp_names.append(name)
-            elif sd.get("analysis_type") == "light":
+            elif sd.get("analysis_type") == "light" or st == "CONTROL":
                 light_names.append(name)
+            elif st.startswith("PR"):
+                pr_names.append(name)
+            elif st == "BLANK":
+                blank_names.append(name)
             else:
-                st = sd.get("sample_type", "SAMPLE")
-                if st.startswith("PR"):
-                    pr_names.append(name)
-                elif st == "BLANK":
-                    blank_names.append(name)
-                else:
-                    sample_names.append(name)
+                sample_names.append(name)
 
         # Ordenar per índex d'injecció (ordre cronològic al MasterFile)
         def _min_inj_index(name):

@@ -1738,7 +1738,7 @@ class ProcessWizardPanel(QWidget):
                 return states
 
             json_files = {
-                0: ("import_manifest.json", ["warnings", "orphan_files"]),
+                0: ("import_manifest.json", ["warnings"]),
                 1: ("calibration_result.json", ["warnings", "khp_warnings"]),
                 2: ("analysis_result.json", ["warnings", "anomalies"]),
                 3: ("review_result.json", []),
@@ -1799,21 +1799,29 @@ class ProcessWizardPanel(QWidget):
         'importat des de manifest existent',
         '4-toc_calc no trobat al masterfile, calculant automàticament...',
     }
+    # Prefixos de warnings informatius (no bloquejants)
+    _INFORMATIONAL_PREFIXES = (
+        'fitxers uib orfes',
+        'suggerits',
+    )
 
     def _check_has_warnings(self, data: dict, warning_fields: list) -> bool:
-        """Comprova si les dades tenen warnings significatius (no trivials)."""
+        """Comprova si les dades tenen warnings significatius (severity blocker/warning)."""
         for field in warning_fields:
             value = data.get(field)
             if value:
-                # Si és una llista, comprovar si té elements no trivials
+                # Si és una llista, comprovar si té elements amb severity blocker/warning
                 if isinstance(value, list) and len(value) > 0:
-                    real_warnings = [
-                        w for w in value
-                        if isinstance(w, dict)
-                        or (isinstance(w, str) and w.strip().lower() not in self._TRIVIAL_WARNINGS)
-                    ]
-                    if real_warnings:
-                        return True
+                    for w in value:
+                        if isinstance(w, dict):
+                            sev = w.get("severity", "info").lower()
+                            if sev in ("blocker", "warning"):
+                                return True
+                        elif isinstance(w, str):
+                            wl = w.strip().lower()
+                            if wl not in self._TRIVIAL_WARNINGS and \
+                               not any(wl.startswith(p) for p in self._INFORMATIONAL_PREFIXES):
+                                return True
                 # Si és un dict (com orphan_files), comprovar si té contingut
                 elif isinstance(value, dict):
                     for v in value.values():
