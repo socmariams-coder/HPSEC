@@ -105,6 +105,11 @@ class SampleDetailDialog(QDialog):
         # Info general
         stats_layout.addWidget(self._create_info_group())
 
+        # Anomalies (totes les de la rèplica seleccionada)
+        anomalies_group = self._create_anomalies_group()
+        if anomalies_group:
+            stats_layout.addWidget(anomalies_group)
+
         # Irregular top repair button (si la mostra té cim irregular reparable)
         repair_group = self._create_repair_group()
         if repair_group:
@@ -214,6 +219,74 @@ class SampleDetailDialog(QDialog):
                 hci_label.setStyleSheet("color: #27AE60; font-weight: bold;")
             layout.addWidget(QLabel("<b>HCI:</b>"), row, 0)
             layout.addWidget(hci_label, row, 1)
+
+        return group
+
+    # ------------------------------------------------------------------
+    # Anomalies group
+    # ------------------------------------------------------------------
+
+    def _create_anomalies_group(self):
+        """Mostra totes les anomalies de les rèpliques DOC+DAD seleccionades."""
+        from hpsec_warnings import ANOMALY_CATALOG, classify_anomalies
+
+        selected = self.sample_data.get("selected") or {}
+        replicas = self.sample_data.get("replicas") or {}
+        doc_sel = selected.get("doc", "1")
+        dad_sel = selected.get("dad", doc_sel)
+        doc_rep = replicas.get(doc_sel, {})
+        dad_rep = replicas.get(dad_sel, {}) if dad_sel != doc_sel else {}
+
+        # Merge anomalies (deduplicate by code)
+        all_anomalies = list(doc_rep.get("anomalies", []))
+        seen = {(a.get("code") if isinstance(a, dict) else str(a)) for a in all_anomalies}
+        for a in dad_rep.get("anomalies", []):
+            code = a.get("code") if isinstance(a, dict) else str(a)
+            if code not in seen:
+                all_anomalies.append(a)
+                seen.add(code)
+
+        # Also add comparison warnings (both DOC and DAD)
+        comparison = self.sample_data.get("comparison") or {}
+        for domain in ("doc", "dad"):
+            for w in (comparison.get(domain) or {}).get("warnings", []):
+                code = w.get("code") if isinstance(w, dict) else str(w)
+                if code not in seen:
+                    all_anomalies.append(w)
+                    seen.add(code)
+
+        if not all_anomalies:
+            return None
+
+        classified = classify_anomalies(all_anomalies)
+
+        group = QGroupBox(f"Anomalies ({len(all_anomalies)})")
+        layout = QVBoxLayout(group)
+        layout.setSpacing(4)
+
+        SEVERITY_STYLE = {
+            "blocker": ("✘", "#E74C3C", "CRÍTIC"),
+            "repaired": ("✔", "#27AE60", "REPARAT"),
+            "warning": ("⚠", "#F39C12", "Avís"),
+            "info": ("ℹ", "#3498DB", "Info"),
+        }
+
+        for key in ("blocker", "repaired", "warning", "info"):
+            for a in classified.get(key, []):
+                code = a.get("code") if isinstance(a, dict) else str(a)
+                entry = ANOMALY_CATALOG.get(code, {})
+                icon, color, prefix = SEVERITY_STYLE.get(key, ("?", "#666", "?"))
+                label = entry.get("label", code)
+                action = entry.get("action", "")
+
+                text = f"<span style='color:{color}'><b>{icon} {prefix}:</b></span> {label}"
+                if action:
+                    text += f"<br><span style='color:#888; margin-left:20px'>→ {action}</span>"
+
+                lbl = QLabel(text)
+                lbl.setWordWrap(True)
+                lbl.setStyleSheet("padding: 2px 0;")
+                layout.addWidget(lbl)
 
         return group
 

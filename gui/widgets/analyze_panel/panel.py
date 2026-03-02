@@ -170,6 +170,16 @@ class AnalyzePanel(QWidget):
         legend_layout.addWidget(legend)
         legend_layout.addStretch()
 
+        # Combo agrupació
+        legend_layout.addWidget(QLabel("Agrupar:"))
+        self.group_combo = QComboBox()
+        self.group_combo.addItems(["Ordre injecció", "Per tipus"])
+        self.group_combo.setStyleSheet(
+            "QComboBox { padding: 2px 8px; border: 1px solid #ccc; border-radius: 3px; }"
+        )
+        self.group_combo.currentIndexChanged.connect(self._on_group_changed)
+        legend_layout.addWidget(self.group_combo)
+
         # Botó Generar Report PDF (amagat per SEQ_CAL)
         self.report_btn = QPushButton("Generar Report PDF")
         self.report_btn.setStyleSheet(
@@ -604,11 +614,59 @@ class AnalyzePanel(QWidget):
         for lst in (sample_names, pr_names, blank_names, khp_names, light_names):
             lst.sort(key=_min_inj_index)
 
-        # Regular = mostres + patrons + blancs (en aquest ordre)
-        regular_names = sample_names + pr_names + blank_names
+        # Decidir ordre segons combo agrupació
+        group_mode = getattr(self, 'group_combo', None)
+        by_type = group_mode and group_mode.currentIndex() == 1
+
+        if by_type:
+            # "Per tipus": separadors entre grups
+            regular_names = []
+            self._type_groups = []  # [(label, names)]
+            if sample_names:
+                self._type_groups.append(("MOSTRES", sample_names))
+            if pr_names:
+                self._type_groups.append(("PATRONS REFERÈNCIA", pr_names))
+            if blank_names:
+                self._type_groups.append(("BLANCS / MQ", blank_names))
+            for _, names in self._type_groups:
+                regular_names.extend(names)
+        else:
+            # "Ordre injecció": tot barrejat per injection_index
+            regular_names = sample_names + pr_names + blank_names
+            self._type_groups = None
 
         # --- Regular samples ---
+        _type_group_idx = 0  # Tracking per separadors "Per tipus"
+        _type_group_offset = 0
         for sample_name in regular_names:
+            # Inserir separador si mode "Per tipus"
+            if by_type and self._type_groups:
+                while (_type_group_idx < len(self._type_groups) and
+                       _type_group_offset >= len(self._type_groups[_type_group_idx][1])):
+                    _type_group_idx += 1
+                    _type_group_offset = 0
+                if (_type_group_idx < len(self._type_groups) and
+                        _type_group_offset == 0):
+                    label = self._type_groups[_type_group_idx][0]
+                    n_cols = self.results_table.columnCount()
+                    sep_row = self.results_table.rowCount()
+                    self.results_table.insertRow(sep_row)
+                    sep_item = QTableWidgetItem(f"--- {label} ---")
+                    sep_item.setFlags(Qt.ItemIsEnabled)
+                    sep_font = QFont()
+                    sep_font.setBold(True)
+                    sep_item.setFont(sep_font)
+                    sep_item.setForeground(QBrush(QColor("#2E86AB")))
+                    self.results_table.setItem(sep_row, 0, sep_item)
+                    self.results_table.setSpan(sep_row, 0, 1, n_cols)
+                    sep_bg = QBrush(QColor("#EBF5FB"))
+                    for c in range(n_cols):
+                        item = self.results_table.item(sep_row, c)
+                        if item is None:
+                            item = QTableWidgetItem("")
+                            self.results_table.setItem(sep_row, c, item)
+                        item.setBackground(sep_bg)
+                _type_group_offset += 1
             sample_data = self.samples_grouped[sample_name]
             row = self.results_table.rowCount()
             self.results_table.insertRow(row)
@@ -1055,7 +1113,10 @@ class AnalyzePanel(QWidget):
         timeout_info = doc_rep_data.get("timeout_info", {})
         timeout_severity = timeout_info.get("severity", "OK")
         n_timeouts = timeout_info.get("n_timeouts", 0)
-        replica_warnings = comparison.get("doc", {}).get("warnings", []) if comparison else []
+        replica_warnings = []
+        if comparison:
+            for domain in ("doc", "dad"):
+                replica_warnings.extend((comparison.get(domain) or {}).get("warnings", []))
 
         # Determine severity
         has_blocker = bool(classified["blocker"])
@@ -1130,6 +1191,15 @@ class AnalyzePanel(QWidget):
 
         tooltip = "\n".join(tooltip_parts) if tooltip_parts else "OK"
         return status_color, status_text, tooltip
+
+    # ------------------------------------------------------------------
+    # Group mode change
+    # ------------------------------------------------------------------
+
+    def _on_group_changed(self, _index):
+        """Reomple la taula quan canvia el mode d'agrupació."""
+        if self.samples_grouped:
+            self._populate_table()
 
     # ------------------------------------------------------------------
     # Replica change (separate DOC / DAD handlers)
