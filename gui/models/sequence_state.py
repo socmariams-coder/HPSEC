@@ -280,8 +280,14 @@ class SequenceState:
             self.n_samples = summary.get('total_samples', 0)
             self.n_khp = summary.get('total_khp', 0)
             self.n_pr = summary.get('total_pr', 0)
-            self.n_blank = summary.get('total_blank', 0)
-            self.n_control = summary.get('total_control', 0)
+            # Blank/Control: del summary si disponible, sinó comptar de samples[]
+            if 'total_blank' in summary:
+                self.n_blank = summary.get('total_blank', 0)
+                self.n_control = summary.get('total_control', 0)
+            else:
+                samples_list = data.get('samples', [])
+                self.n_blank = sum(1 for s in samples_list if s.get('type') == 'BLANK')
+                self.n_control = sum(1 for s in samples_list if s.get('type') == 'CONTROL')
             # Comptadors d'injeccions (stats o summary)
             stats = data.get('stats', {})
             self.n_inj_master = stats.get('master_line_count', 0)

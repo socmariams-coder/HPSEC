@@ -17,6 +17,7 @@ from PySide6.QtCore import Qt, Signal, QThread
 from PySide6.QtGui import QFont, QColor, QBrush
 
 import os
+import re
 import sys
 import json
 from pathlib import Path
@@ -523,7 +524,7 @@ class DashboardPanel(QWidget):
 
         # Permetre ordenació (per data descendent — SEQs recents primer)
         self.table.setSortingEnabled(True)
-        self.table.sortByColumn(COL_DATE, Qt.DescendingOrder)
+        self.table.sortByColumn(COL_NAME, Qt.DescendingOrder)
 
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.setSelectionMode(QTableWidget.SingleSelection)
@@ -642,8 +643,11 @@ class DashboardPanel(QWidget):
             display_name = seq.seq_name
             if seq.siblings:
                 display_name = f"{seq.seq_name} [+{len(seq.siblings)}]"
-            item_name = QTableWidgetItem(display_name)
-            item_name.setData(Qt.UserRole, seq.seq_path)
+            item_name = SortableTableItem(display_name)
+            # UserRole = número SEQ per ordenació numèrica descendent
+            seq_num_match = re.match(r'(\d+)', seq.seq_name)
+            item_name.setData(Qt.UserRole, int(seq_num_match.group(1)) if seq_num_match else 0)
+            item_name.setData(Qt.UserRole + 1, seq.seq_path)
             item_name.setFlags(item_name.flags() & ~Qt.ItemIsEditable)
             if is_cal:
                 item_name.setForeground(QColor(COLOR_CAL_TEXT))
@@ -868,7 +872,7 @@ class DashboardPanel(QWidget):
 
         # Reactivar sorting i signals
         self.table.setSortingEnabled(True)
-        self.table.sortByColumn(COL_DATE, Qt.DescendingOrder)
+        self.table.sortByColumn(COL_NAME, Qt.DescendingOrder)
         self.table.blockSignals(False)
 
         # Aplicar mínims de capçalera
@@ -999,7 +1003,7 @@ class DashboardPanel(QWidget):
         if not item_name:
             return
 
-        seq_path = item_name.data(Qt.UserRole)
+        seq_path = item_name.data(Qt.UserRole + 1)
         seq = None
         for s in self.filtered_sequences:
             if s.seq_path == seq_path:
@@ -1092,7 +1096,7 @@ class DashboardPanel(QWidget):
         if not item_name:
             return
 
-        seq_path = item_name.data(Qt.UserRole)
+        seq_path = item_name.data(Qt.UserRole + 1)
         seq = None
         for s in self.filtered_sequences:
             if s.seq_path == seq_path:
@@ -1276,7 +1280,7 @@ class DashboardPanel(QWidget):
             if item_check and item_check.checkState() == Qt.Checked:
                 item_name = self.table.item(row, COL_NAME)
                 if item_name:
-                    seq_path = item_name.data(Qt.UserRole)
+                    seq_path = item_name.data(Qt.UserRole + 1)
                     for seq in self.filtered_sequences:
                         if seq.seq_path == seq_path:
                             checked.append(seq)
@@ -1449,7 +1453,7 @@ class DashboardPanel(QWidget):
             item = self.table.item(row, COL_NAME)
             if not item:
                 continue
-            seq_path = item.data(Qt.UserRole)
+            seq_path = item.data(Qt.UserRole + 1)
             # Buscar per seq_path (robust, independent del text de display)
             for seq in self.sequences:
                 if seq.seq_path == seq_path and seq.seq_name == seq_name:
