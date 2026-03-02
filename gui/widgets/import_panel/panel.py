@@ -60,6 +60,19 @@ MATCH_COLORS = {
 }
 
 
+class _SortableImportItem(QTableWidgetItem):
+    """Item que ordena per UserRole si existeix, sinó per text."""
+    def __lt__(self, other):
+        my_data = self.data(Qt.UserRole)
+        other_data = other.data(Qt.UserRole) if other else None
+        if my_data is not None and other_data is not None:
+            try:
+                return float(my_data) < float(other_data)
+            except (TypeError, ValueError):
+                pass
+        return self.text() < (other.text() if other else "")
+
+
 def load_sample_types_config():
     """Carrega configuració de tipus de mostra."""
     default_types = {
@@ -718,9 +731,9 @@ class ImportPanel(QWidget):
         sample_type = inj["sample_type"]
         rep = inj["rep"]
 
-        # Inj
-        inj_item = QTableWidgetItem()
-        inj_item.setData(Qt.DisplayRole, injection_num)
+        # Inj (SortableImportItem per ordenació numèrica correcta)
+        inj_item = _SortableImportItem(str(injection_num))
+        inj_item.setData(Qt.UserRole, injection_num)
         inj_item.setTextAlignment(Qt.AlignCenter)
         inj_item.setFlags(inj_item.flags() & ~Qt.ItemIsEditable)
         self.samples_table.setItem(row, self.COL_INJ, inj_item)
@@ -907,16 +920,27 @@ class ImportPanel(QWidget):
         "#BDC3C7": "\u25CB",  # ○ cercle buit gris = sense dades
     }
 
+    # Prioritat per ordenació (menor = més atenció)
+    _SEM_PRIORITY = {
+        "#E74C3C": 0,  # Vermell = falta → primer
+        "#F39C12": 1,  # Groc = revisar
+        "#BDC3C7": 2,  # Gris = sense dades
+        "#27AE60": 3,  # Verd = OK → últim
+    }
+
     def _create_semaphore_item(self, color, tooltip=""):
         """Crea un item semàfor amb forma + color per a la taula."""
         symbol = self._SEM_SHAPES.get(color, "\u25CF")
-        item = QTableWidgetItem(symbol)
+        item = _SortableImportItem(symbol)
         item.setTextAlignment(Qt.AlignCenter)
         item.setFlags(item.flags() & ~Qt.ItemIsEditable)
         item.setForeground(QBrush(QColor(color)))
         font = item.font()
         font.setPointSize(14)
         item.setFont(font)
+        # Guardar prioritat per ordenació
+        priority = self._SEM_PRIORITY.get(color, 3)
+        item.setData(Qt.UserRole, priority)
         if tooltip:
             item.setToolTip(tooltip)
         return item
@@ -970,6 +994,16 @@ class ImportPanel(QWidget):
         else:
             dad_item = self._create_semaphore_item(GREY, "DAD: sense dades")
         self.samples_table.setItem(row, self.COL_SEM_DAD, dad_item)
+
+        # Prioritat combinada al semàfor DOC (per ordenació per defecte)
+        # Menor valor = més atenció necessària
+        priorities = [doc_item.data(Qt.UserRole), dad_item.data(Qt.UserRole)]
+        if self.COL_SEM_UIB is not None:
+            uib_item_cur = self.samples_table.item(row, self.COL_SEM_UIB)
+            if uib_item_cur:
+                priorities.append(uib_item_cur.data(Qt.UserRole))
+        worst = min(p for p in priorities if p is not None)
+        doc_item.setData(Qt.UserRole, worst)
 
         if needs_review:
             self._unverified_fuzzy.add(row)
@@ -1076,6 +1110,8 @@ class ImportPanel(QWidget):
 
         self.samples_table.blockSignals(False)
         self.samples_table.setSortingEnabled(True)
+        # Per defecte, ordenar per atenció requerida (semàfor DOC conté prioritat combinada)
+        self.samples_table.sortByColumn(self.COL_SEM_DOC, Qt.AscendingOrder)
         self.samples_table.setVisible(True)
         self.table_help.setVisible(True)
 
