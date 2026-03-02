@@ -299,17 +299,27 @@ class SequenceState:
             # Últim fallback: total_injections (igual a master_line_count si no hi ha pèrdues)
             if self.n_inj_imported == 0:
                 self.n_inj_imported = stats.get('total_injections', 0)
-            # Data de la seqüència
+            # Data de la seqüència — normalitzar a DD/MM/YY
             seq_info = data.get('sequence', {})
-            date_str = seq_info.get('date', '')
+            date_str = seq_info.get('date', '').strip()
             if date_str:
-                # Convertir a format curt DD/MM/YY
+                from datetime import datetime
+                dt = None
+                # Intentar múltiples formats
+                # 1. ISO: "2026-01-26 00:00:00" o "2026-01-26"
                 try:
-                    from datetime import datetime
                     dt = datetime.fromisoformat(date_str.replace(' ', 'T').split('T')[0])
-                    self.seq_date = dt.strftime("%d/%m/%y")
-                except:
-                    self.seq_date = date_str[:10] if len(date_str) >= 10 else date_str
+                except (ValueError, TypeError):
+                    pass
+                # 2. DD/MM/YYYY o DD/M/YYYY: "14/5/2021", "28/4/2022"
+                if not dt:
+                    for fmt in ('%d/%m/%Y', '%d/%m/%y', '%m/%d/%Y'):
+                        try:
+                            dt = datetime.strptime(date_str, fmt)
+                            break
+                        except (ValueError, TypeError):
+                            pass
+                self.seq_date = dt.strftime("%d/%m/%y") if dt else date_str
 
         # De la calibració
         if self.calibrate_status.data:

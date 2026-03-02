@@ -667,15 +667,13 @@ class DashboardPanel(QWidget):
             item_date.setFlags(item_date.flags() & ~Qt.ItemIsEditable)
             if cal_bg:
                 item_date.setBackground(cal_bg)
-            # Guardar data en format ordenable (YYYYMMDD)
+            # Guardar data en format ordenable (YYYYMMDD) — sempre DD/MM/YY normalitzat
             if seq.seq_date and seq.seq_date != "-":
                 try:
-                    parts = seq.seq_date.split('/')
-                    if len(parts) == 3:
-                        year = int(parts[2])
-                        year = 2000 + year if year < 100 else year
-                        sort_val = year * 10000 + int(parts[1]) * 100 + int(parts[0])
-                        item_date.setData(Qt.UserRole, sort_val)
+                    d, m, y = seq.seq_date.split('/')
+                    y = int(y)
+                    y = 2000 + y if y < 100 else y
+                    item_date.setData(Qt.UserRole, y * 10000 + int(m) * 100 + int(d))
                 except Exception:
                     item_date.setData(Qt.UserRole, 0)
             else:
