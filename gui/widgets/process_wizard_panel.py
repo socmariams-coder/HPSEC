@@ -1679,6 +1679,7 @@ class ProcessWizardPanel(QWidget):
                             "control_samples": [s.get("name", "") for s in manifest_samples
                                                 if isinstance(s, dict) and s.get("type") == "CONTROL"]
                                                if isinstance(manifest_samples, list) else [],
+                            "stats": manifest.get("stats", {}),
                             "data_deferred": True,
                         }
                 except Exception as e:

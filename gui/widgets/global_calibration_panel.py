@@ -2075,7 +2075,8 @@ class CalibrationLineView(QWidget):
         from hpsec_calibrate import get_rf_mass_cal, get_calibration_intercept
 
         signal = self._seq_cal_signal
-        current_cal = get_active_global_calibration(signal=signal)
+        sens = self._seq_cal_sensitivity
+        current_cal = get_active_global_calibration(signal=signal, sensitivity=sens)
 
         # Extreure dades vigent
         current_rf = 0
@@ -2087,8 +2088,10 @@ class CalibrationLineView(QWidget):
 
         if current_cal:
             has_vigent = True
-            current_rf = get_rf_mass_cal(signal=signal, mode=method.lower()) or 0
-            current_intercept = get_calibration_intercept(signal=signal, mode=method.lower()) or 0
+            current_rf = get_rf_mass_cal(signal=signal, mode=method.lower(),
+                                         sensitivity=sens) or 0
+            current_intercept = get_calibration_intercept(signal=signal, mode=method.lower(),
+                                                          sensitivity=sens) or 0
 
             current_r2_raw = current_cal.get('r2', {})
             if isinstance(current_r2_raw, dict):
@@ -2291,8 +2294,11 @@ class CalibrationLineView(QWidget):
             # Recta vigent (referència)
             from hpsec_calibrate import get_rf_mass_cal, get_calibration_intercept
             cal_signal = getattr(self, '_seq_cal_signal', 'direct') or 'direct'
-            current_rf = get_rf_mass_cal(signal=cal_signal, mode=method.lower()) or 0
-            current_intercept = get_calibration_intercept(signal=cal_signal, mode=method.lower()) or 0
+            cal_sens = getattr(self, '_seq_cal_sensitivity', None)
+            current_rf = get_rf_mass_cal(signal=cal_signal, mode=method.lower(),
+                                         sensitivity=cal_sens) or 0
+            current_intercept = get_calibration_intercept(signal=cal_signal, mode=method.lower(),
+                                                          sensitivity=cal_sens) or 0
             if current_rf > 0:
                 y_current = current_rf * x_line + current_intercept
                 ax_main.plot(x_line, y_current, '--', color='#E67E22', linewidth=1.5, alpha=0.7,
@@ -2673,10 +2679,11 @@ class CalibrationLineView(QWidget):
             if retroactive and retro_count > 0:
                 self._cal_apply_status.setText(f"Requantificant {retro_count} SEQs...")
 
-                rf_col = get_rf_mass_cal(signal=cal_signal, mode="column")
-                int_col = get_calibration_intercept(signal=cal_signal, mode="column")
-                rf_bp = get_rf_mass_cal(signal=cal_signal, mode="bp")
-                int_bp = get_calibration_intercept(signal=cal_signal, mode="bp")
+                cal_sens = self._seq_cal_sensitivity
+                rf_col = get_rf_mass_cal(signal=cal_signal, mode="column", sensitivity=cal_sens)
+                int_col = get_calibration_intercept(signal=cal_signal, mode="column", sensitivity=cal_sens)
+                rf_bp = get_rf_mass_cal(signal=cal_signal, mode="bp", sensitivity=cal_sens)
+                int_bp = get_calibration_intercept(signal=cal_signal, mode="bp", sensitivity=cal_sens)
 
                 for cb in self._retro_seq_checkboxes:
                     if not cb.isChecked():

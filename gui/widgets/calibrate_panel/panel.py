@@ -999,7 +999,14 @@ class CalibratePanel(QWidget):
 
             if rf_mass_measured > 0:
                 mode_str = mode.lower() if mode else 'column'
-                rf_mass_cal = get_rf_mass_cal(signal='direct', mode=mode_str)
+                # Determinar senyal i sensibilitat del KHP principal
+                main_signal = 'direct' if result.get("khp_data_direct") else 'uib'
+                main_sensitivity = None
+                if main_signal == 'uib':
+                    imported = self.main_window.imported_data or {}
+                    main_sensitivity = imported.get("uib_sensitivity")
+                rf_mass_cal = get_rf_mass_cal(signal=main_signal, mode=mode_str,
+                                              sensitivity=main_sensitivity)
                 if rf_mass_cal and rf_mass_cal > 0:
                     deviation_pct = (rf_mass_measured - rf_mass_cal) / rf_mass_cal * 100
                     if abs(deviation_pct) < 5:
@@ -1649,7 +1656,9 @@ class CalibratePanel(QWidget):
                 config = get_config()
 
                 cal_direct = get_active_global_calibration(signal='direct')
-                cal_uib = get_active_global_calibration(signal='uib')
+                imported = self.main_window.imported_data or {}
+                uib_sens = imported.get("uib_sensitivity")
+                cal_uib = get_active_global_calibration(signal='uib', sensitivity=uib_sens)
 
                 if not cal_direct and not cal_uib:
                     self.calibration_line_graph.clear()

@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QFrame, QScrollArea, QMessageBox, QSizePolicy, QProgressBar,
     QTableWidget, QTableWidgetItem, QComboBox, QHeaderView,
-    QGroupBox,
+    QGroupBox, QCheckBox, QGridLayout,
 )
 from PySide6.QtCore import Qt, Signal, QThread
 from PySide6.QtGui import QFont, QColor
@@ -195,6 +195,11 @@ class ReviewSummaryPanel(QWidget):
         self._current_sample_names = []
         self._auto_generated = False  # Evitar doble generació
         self._populated_seq = ""  # Evitar doble populate
+        self._sample_checkboxes = []
+        self._chart_regular = {}
+        self._chart_light = {}
+        self._chart_khp = {}
+        self._chart_is_bp = False
         self._setup_ui()
 
     def _setup_ui(self):
@@ -212,21 +217,73 @@ class ReviewSummaryPanel(QWidget):
         self.content_layout.setSpacing(12)
         scroll.setWidget(content)
 
-        # === 3 CARDS SUPERIORS ===
-        cards_layout = QHBoxLayout()
-        cards_layout.setSpacing(12)
-
-        self.card_seq = self._create_card("SEQÜÈNCIA")
-        self.card_timeouts = self._create_card("TIMEOUTS TOC")
-        self.card_quality = self._create_card("CONTROL QUALITAT")
-
-        cards_layout.addWidget(self.card_seq, 1)
-        cards_layout.addWidget(self.card_timeouts, 1)
-        cards_layout.addWidget(self.card_quality, 1)
-        self.content_layout.addLayout(cards_layout)
+        # === HEADER COMPACTE ===
+        self.header_label = QLabel()
+        self.header_label.setTextFormat(Qt.RichText)
+        self.header_label.setWordWrap(True)
+        self.header_label.setStyleSheet(
+            "font-size: 12px; color: #2c3e50; padding: 6px 10px;"
+            "background: #fff; border: 1px solid #e0e0e0; border-radius: 6px;"
+        )
+        self.content_layout.addWidget(self.header_label)
 
         # === GRÀFICS ===
         if HAS_MATPLOTLIB:
+            # Timeout timeline
+            self.timeout_figure = Figure(figsize=(10, 1.2), dpi=100)
+            self.timeout_figure.set_facecolor("#FAFAFA")
+            self.timeout_canvas = FigureCanvas(self.timeout_figure)
+            self.timeout_canvas.setMinimumHeight(80)
+            self.timeout_canvas.setMaximumHeight(100)
+            self.content_layout.addWidget(self.timeout_canvas)
+
+            # === SELECCIÓ MOSTRES (checkboxes) ===
+            sel_frame = QFrame()
+            sel_frame.setStyleSheet(
+                "QFrame { background: #fff; border: 1px solid #e0e0e0;"
+                " border-radius: 6px; }"
+            )
+            sel_layout = QVBoxLayout(sel_frame)
+            sel_layout.setContentsMargins(8, 6, 8, 6)
+            sel_layout.setSpacing(4)
+
+            sel_header = QHBoxLayout()
+            sel_header.addWidget(QLabel(
+                "<b style='font-size:11px;color:#555'>Mostres a visualitzar</b>"
+            ))
+            self.btn_sel_all = QPushButton("Tot")
+            self.btn_sel_samples = QPushButton("Mostres")
+            self.btn_sel_none = QPushButton("Cap")
+            for btn in (self.btn_sel_all, self.btn_sel_samples, self.btn_sel_none):
+                btn.setFixedHeight(22)
+                btn.setStyleSheet(
+                    "QPushButton { font-size: 10px; padding: 2px 8px;"
+                    " border: 1px solid #ccc; border-radius: 3px; background: #f8f8f8; }"
+                    "QPushButton:hover { background: #e8e8e8; }"
+                )
+                sel_header.addWidget(btn)
+            sel_header.addStretch()
+            sel_layout.addLayout(sel_header)
+
+            self.samples_check_scroll = QScrollArea()
+            self.samples_check_scroll.setWidgetResizable(True)
+            self.samples_check_scroll.setMaximumHeight(80)
+            self.samples_check_scroll.setFrameShape(QFrame.NoFrame)
+            self.samples_check_widget = QWidget()
+            self.samples_check_grid = QGridLayout(self.samples_check_widget)
+            self.samples_check_grid.setContentsMargins(0, 0, 0, 0)
+            self.samples_check_grid.setSpacing(2)
+            self.samples_check_scroll.setWidget(self.samples_check_widget)
+            sel_layout.addWidget(self.samples_check_scroll)
+
+            self.content_layout.addWidget(sel_frame)
+
+            self.btn_sel_all.clicked.connect(lambda: self._set_all_checks(True))
+            self.btn_sel_samples.clicked.connect(self._check_only_samples)
+            self.btn_sel_none.clicked.connect(lambda: self._set_all_checks(False))
+
+            self._sample_checkboxes = []  # list of (QCheckBox, name, category)
+
             # DOC stacked bar
             self.doc_figure = Figure(figsize=(10, 3.5), dpi=100)
             self.doc_figure.set_facecolor("#FAFAFA")
@@ -234,12 +291,26 @@ class ReviewSummaryPanel(QWidget):
             self.doc_canvas.setMinimumHeight(220)
             self.content_layout.addWidget(self.doc_canvas)
 
+            # DOC overlay (chromatograms)
+            self.doc_overlay_figure = Figure(figsize=(10, 4), dpi=100)
+            self.doc_overlay_figure.set_facecolor("#FAFAFA")
+            self.doc_overlay_canvas = FigureCanvas(self.doc_overlay_figure)
+            self.doc_overlay_canvas.setMinimumHeight(250)
+            self.content_layout.addWidget(self.doc_overlay_canvas)
+
             # A254 bar
             self.dad_figure = Figure(figsize=(10, 2.5), dpi=100)
             self.dad_figure.set_facecolor("#FAFAFA")
             self.dad_canvas = FigureCanvas(self.dad_figure)
             self.dad_canvas.setMinimumHeight(180)
             self.content_layout.addWidget(self.dad_canvas)
+
+            # DAD overlay (254nm chromatograms)
+            self.dad_overlay_figure = Figure(figsize=(10, 4), dpi=100)
+            self.dad_overlay_figure.set_facecolor("#FAFAFA")
+            self.dad_overlay_canvas = FigureCanvas(self.dad_overlay_figure)
+            self.dad_overlay_canvas.setMinimumHeight(250)
+            self.content_layout.addWidget(self.dad_overlay_canvas)
 
         # === SECCIÓ CONSOLIDACIÓ BP ===
         self.bp_group = QGroupBox("CONSOLIDACIÓ BP")
@@ -354,38 +425,6 @@ class ReviewSummaryPanel(QWidget):
         main_layout.addWidget(scroll)
 
     # ------------------------------------------------------------------
-    # Card factory
-    # ------------------------------------------------------------------
-
-    def _create_card(self, title):
-        """Crea un card frame amb títol i label de contingut."""
-        card = QFrame()
-        card.setStyleSheet("""
-            QFrame {
-                background-color: #ffffff;
-                border: 1px solid #e0e0e0;
-                border-radius: 8px;
-            }
-        """)
-        layout = QVBoxLayout(card)
-        layout.setContentsMargins(14, 10, 14, 10)
-        layout.setSpacing(4)
-
-        title_label = QLabel(title)
-        title_label.setStyleSheet("font-weight: bold; font-size: 11px; color: #555; border: none;")
-        layout.addWidget(title_label)
-
-        content_label = QLabel("")
-        content_label.setWordWrap(True)
-        content_label.setTextFormat(Qt.RichText)
-        content_label.setStyleSheet("font-size: 12px; color: #2c3e50; border: none;")
-        content_label.setAlignment(Qt.AlignTop | Qt.AlignLeft)
-        layout.addWidget(content_label, 1)
-
-        card._content_label = content_label
-        return card
-
-    # ------------------------------------------------------------------
     # Populate from data
     # ------------------------------------------------------------------
 
@@ -405,12 +444,15 @@ class ReviewSummaryPanel(QWidget):
         self._populated_seq = seq_path or seq_name
         self._auto_generated = False
 
-        # Separate regular and light samples
-        regular = {}
-        light = {}
+        # Separate regular (samples), light (blancs/controls), and KHP
+        regular = {}  # mostres reals
+        light = {}    # blancs / controls
+        khp = {}      # KHP standards
         for name, data in samples_grouped.items():
             if data.get("analysis_type") == "light":
                 light[name] = data
+            elif data.get("analysis_type") == "khp":
+                khp[name] = data
             else:
                 regular[name] = data
 
@@ -419,19 +461,24 @@ class ReviewSummaryPanel(QWidget):
             len(d.get("replicas", {})) for d in samples_grouped.values()
         )
 
-        # --- CARD 1: SEQÜÈNCIA ---
-        self._populate_seq_card(seq_name, method, summary, regular, light, n_injections)
-
-        # --- CARD 2: TIMEOUTS ---
-        self._populate_timeout_card(processed_data, is_bp)
-
-        # --- CARD 3: QUALITAT ---
-        self._populate_quality_card(processed_data, regular, light, is_bp)
+        # --- HEADER COMPACTE ---
+        self._populate_compact_header(
+            seq_name, method, summary, regular, light, khp, n_injections, is_bp,
+            processed_data,
+        )
 
         # --- GRÀFICS ---
+        self._chart_regular = regular
+        self._chart_light = light
+        self._chart_khp = khp
+        self._chart_is_bp = is_bp
         if HAS_MATPLOTLIB:
-            self._plot_doc_chart(regular, light, is_bp)
-            self._plot_dad_chart(regular, light)
+            try:
+                self._plot_timeout_chart(processed_data, is_bp)
+            except Exception as e:
+                logger.error(f"Error plotting timeout chart: {e}")
+            self._build_sample_checkboxes(regular, light, khp)
+            self._redraw_charts()
 
         # --- CONSOLIDACIÓ BP ---
         self._current_method = method
@@ -460,186 +507,46 @@ class ReviewSummaryPanel(QWidget):
                 f"SUMMARY.xlsx → {seq_path}/CHECK/"
             )
 
-    def _populate_seq_card(self, seq_name, method, summary, regular, light, n_injections):
+    def _populate_compact_header(self, seq_name, method, summary, regular,
+                                 light, khp, n_injections, is_bp, processed_data):
+        """Header compacte de 2 línies amb tota la info."""
         n_blancs = sum(1 for d in light.values() if d.get("sample_type") == "BLANK")
         n_controls = sum(1 for d in light.values() if d.get("sample_type") == "CONTROL")
+        n_invalid = sum(1 for d in regular.values() if d.get("sample_valid") is False)
         n_errors = summary.get("with_anomalies", 0)
-        n_warnings = summary.get("with_replica_warnings", 0)
 
-        html = f"""
-        <b>{seq_name}</b><br>
-        Mètode: <b>{method}</b><br>
-        <br>
-        Injeccions: <b>{n_injections}</b><br>
-        Mostres: <b>{len(regular)}</b><br>
-        Blancs: <b>{n_blancs}</b> &nbsp; Controls: <b>{n_controls}</b><br>
-        KHP: <b>{summary.get('n_khp', 0)}</b><br>
-        <br>
-        Anomalies: <b>{n_errors}</b><br>
-        Avisos rèpliques: <b>{n_warnings}</b>
-        """
-        self.card_seq._content_label.setText(html.strip())
-
-    def _populate_timeout_card(self, processed_data, is_bp):
-        """Agrega estadístiques de timeout de totes les rèpliques."""
-        all_samples = processed_data.get("samples", [])
-        n_with_to = 0
-        total_to = 0
-        total_major = 0
+        # Timeout verdict
         zone_totals = {}
-        zone_samples = {}  # zone → set(sample_name)
-        dt_medians = []
-
-        for sample in all_samples:
-            sample_name = sample.get("name", "?")
-            ti = sample.get("timeout_info", {})
-            n = ti.get("n_timeouts", 0)
-            if n > 0:
-                n_with_to += 1
-                total_to += n
-                total_major += ti.get("n_major_timeouts", 0)
-                zs = ti.get("zone_summary", {})
-                for zone, count in zs.items():
-                    zone_totals[zone] = zone_totals.get(zone, 0) + count
-                    if count > 0:
-                        zone_samples.setdefault(zone, set()).add(sample_name)
-            dm = ti.get("dt_median_sec")
-            if dm:
-                dt_medians.append(dm)
-
-        n_total_inj = len(all_samples)
-        avg_cadence = np.median(dt_medians) if dt_medians else 0
-
-        # Build zone lines with severity icons
-        if is_bp:
-            zone_defs = [
-                ("BP_PEAK", "CRITICAL"), ("BP_TAIL", "WARNING"), ("POST_RUN", "OK")
-            ]
-        else:
-            zone_defs = [
-                ("RUN_START", "OK"), ("BioP", "WARNING"), ("HS", "CRITICAL"),
-                ("BB", "WARNING"), ("SB", "WARNING"), ("LMW", "INFO"), ("POST_RUN", "OK")
-            ]
-
-        zone_lines = []
-        for zone, sev in zone_defs:
-            count = zone_totals.get(zone, 0)
-            if sev == "CRITICAL":
-                icon = f"<span style='color:{COLOR_ERROR}'>{'&#10007;' if count > 0 else '&#10003;'}</span>"
-            elif sev == "WARNING":
-                icon = f"<span style='color:{COLOR_WARNING}'>{'&#9888;' if count > 0 else '&#10003;'}</span>"
-            elif sev == "INFO":
-                icon = f"<span style='color:#3498DB'>{'&#8505;' if count > 0 else '&#10003;'}</span>"
-            else:
-                icon = f"<span style='color:{COLOR_SUCCESS}'>&#10003;</span>"
-            line = f"&nbsp;&nbsp;{zone}: <b>{count}</b> {icon}"
-            if count > 0 and zone in zone_samples:
-                names = sorted(zone_samples[zone])
-                if len(names) <= 5:
-                    line += f" <span style='color:#888;font-size:10px'>({', '.join(names)})</span>"
-                else:
-                    line += f" <span style='color:#888;font-size:10px'>({', '.join(names[:4])}, +{len(names)-4})</span>"
-            zone_lines.append(line)
-
-        # Key verdict: HS free (COLUMN) or BP_PEAK free (BP)
+        for sample in processed_data.get("samples", []):
+            for zone, count in (sample.get("timeout_info", {}).get("zone_summary", {}) or {}).items():
+                zone_totals[zone] = zone_totals.get(zone, 0) + count
         critical_zone = "BP_PEAK" if is_bp else "HS"
         critical_count = zone_totals.get(critical_zone, 0)
         if critical_count == 0:
-            verdict = f"<span style='color:{COLOR_SUCCESS}'><b>Zona {critical_zone} lliure &#10003;</b></span>"
+            to_verdict = f"<span style='color:{COLOR_SUCCESS}'>TO {critical_zone} lliure</span>"
         else:
-            verdict = f"<span style='color:{COLOR_ERROR}'><b>Zona {critical_zone} afectada ({critical_count}) &#10007;</b></span>"
+            to_verdict = (f"<span style='color:{COLOR_ERROR}'>"
+                          f"TO {critical_zone} afectat ({critical_count})</span>")
 
-        html = f"""
-        Inj. amb timeout: <b>{n_with_to}/{n_total_inj}</b>
-        ({n_with_to*100//max(n_total_inj,1)}%)<br>
-        Total TO: <b>{total_to}</b> &nbsp; Majors (&#8805;70s): <b>{total_major}</b><br>
-        Cadència: <b>{avg_cadence:.2f}s</b><br>
-        <br>
-        <b>Per zona:</b><br>
-        {'<br>'.join(zone_lines)}<br>
-        <br>
-        {verdict}
-        """
-        self.card_timeouts._content_label.setText(html.strip())
-
-    def _populate_quality_card(self, processed_data, regular, light, is_bp):
-        """Card control qualitat: resum mostres, problemes accionables, blancs."""
-        lines = []
-
-        # --- Resum mostres ---
-        n_valid = sum(1 for d in regular.values() if d.get("sample_valid") is not False)
-        n_invalid = sum(1 for d in regular.values() if d.get("sample_valid") is False)
-        n_excluded = sum(
-            1 for d in regular.values()
-            if d.get("selected", {}).get("doc") == "Cap"
+        line1 = (
+            f"<b>{seq_name}</b> &nbsp;&middot;&nbsp; {method}"
+            f" &nbsp;&middot;&nbsp; {n_injections} inj"
         )
-        # Count SNR warnings among valid samples
-        n_snr_warn = 0
-        for data in regular.values():
-            if data.get("sample_valid") is not False:
-                sel = data.get("selected", {}).get("doc", "1")
-                rep = data.get("replicas", {}).get(sel, {})
-                snr = (rep.get("snr_info") or {}).get("snr_direct", 0)
-                if snr and 0 < snr < 10:
-                    n_snr_warn += 1
-        n_problems = n_invalid + n_snr_warn
+        parts2 = [f"<b>{len(regular)}</b> mostres"]
+        if n_blancs:
+            parts2.append(f"{n_blancs} blancs")
+        if n_controls:
+            parts2.append(f"{n_controls} controls")
+        if khp:
+            parts2.append(f"{len(khp)} KHP")
+        if n_invalid:
+            parts2.append(f"<span style='color:{COLOR_ERROR}'>{n_invalid} no vàlides</span>")
+        if n_errors:
+            parts2.append(f"<span style='color:{COLOR_WARNING}'>{n_errors} anomalies</span>")
+        parts2.append(to_verdict)
+        line2 = " &middot; ".join(parts2)
 
-        parts = [f"<b>{n_valid}</b> vàlides"]
-        if n_problems > 0:
-            parts.append(f"<span style='color:{COLOR_WARNING}'><b>{n_problems}</b> problemes</span>")
-        else:
-            parts.append(f"<b>0</b> problemes")
-        if n_excluded > 0:
-            parts.append(f"<b>{n_excluded}</b> excloses")
-        lines.append(f"Mostres: {' &middot; '.join(parts)}<br>")
-
-        # --- PROBLEMES (accionables) ---
-        problems_critical = []
-        problems_warning = []
-        for name, data in regular.items():
-            if data.get("sample_valid") is False:
-                reason = "NO VÀLIDA"
-                rec = data.get("recommendation", {})
-                if rec:
-                    reason = rec.get("doc", {}).get("reason", reason)
-                problems_critical.append(
-                    f"&nbsp;&nbsp;&#10007; {name}: "
-                    f"<span style='color:{COLOR_ERROR}'>{reason}</span>"
-                )
-            else:
-                sel = data.get("selected", {}).get("doc", "1")
-                rep = data.get("replicas", {}).get(sel, {})
-                snr = (rep.get("snr_info") or {}).get("snr_direct", 0)
-                if snr and 0 < snr < 10:
-                    problems_warning.append(
-                        f"&nbsp;&nbsp;&#9888; {name}: "
-                        f"<span style='color:{COLOR_WARNING}'>SNR={snr:.0f}</span>"
-                    )
-
-        all_problems = problems_critical + problems_warning
-        if all_problems:
-            lines.append(f"<br><b>PROBLEMES ({len(all_problems)})</b><br>")
-            for p in all_problems[:10]:
-                lines.append(p + "<br>")
-            if len(all_problems) > 10:
-                lines.append(f"&nbsp;&nbsp;<i>...i {len(all_problems)-10} més</i><br>")
-
-        # --- BLANCS ---
-        blancs = {n: d for n, d in light.items() if d.get("sample_type") == "BLANK"}
-        if blancs:
-            lines.append(f"<br><b>BLANCS (MQ)</b><br>")
-            for name, data in blancs.items():
-                rep_key = data.get("selected", {}).get("doc", "1")
-                rep = data.get("replicas", {}).get(rep_key, {})
-                area = rep.get("area_total", 0)
-                area_254 = rep.get("area_254", 0)
-                icon = f"<span style='color:{COLOR_SUCCESS}'>&#10003;</span>"
-                if area and abs(area) > 500:
-                    icon = f"<span style='color:{COLOR_WARNING}'>&#9888;</span>"
-                a254_str = f" &nbsp; A254: {area_254:.0f}" if area_254 else ""
-                lines.append(f"&nbsp;&nbsp;{name}: DOC {area:.0f} {icon}{a254_str}<br>")
-
-        self.card_quality._content_label.setText("".join(lines))
+        self.header_label.setText(f"{line1}<br>{line2}")
 
 
     # ------------------------------------------------------------------
@@ -844,6 +751,142 @@ class ReviewSummaryPanel(QWidget):
             QMessageBox.critical(self, "Error", f"Error generant informe:\n{e}")
 
     # ------------------------------------------------------------------
+    # Sample checkboxes
+    # ------------------------------------------------------------------
+
+    def _build_sample_checkboxes(self, regular, light, khp):
+        """Crea checkboxes per cada mostra dins el grid."""
+        # Netejar grid anterior
+        for cb, _n, _c in self._sample_checkboxes:
+            self.samples_check_grid.removeWidget(cb)
+            cb.deleteLater()
+        self._sample_checkboxes = []
+
+        all_items = []
+        for name in sorted(regular.keys()):
+            all_items.append((name, "sample", regular[name]))
+        for name in sorted(light.keys()):
+            all_items.append((name, "light", light[name]))
+        for name in sorted(khp.keys()):
+            all_items.append((name, "khp", khp[name]))
+
+        n_cols = max(4, min(6, len(all_items) // 3 + 1))
+        for idx, (name, cat, _data) in enumerate(all_items):
+            cb = QCheckBox(name)
+            cb.setChecked(cat == "sample")  # Mostres checked, resta no
+            cb.setStyleSheet(
+                "QCheckBox { font-size: 10px; }"
+                + ("" if cat == "sample"
+                   else " QCheckBox { color: #888; }")
+            )
+            if cat == "light":
+                cb.setToolTip("Blanc / Control")
+            elif cat == "khp":
+                cb.setToolTip("KHP (calibració)")
+            cb.stateChanged.connect(self._on_sample_selection_changed)
+            row, col = divmod(idx, n_cols)
+            self.samples_check_grid.addWidget(cb, row, col)
+            self._sample_checkboxes.append((cb, name, cat))
+
+    def _set_all_checks(self, state):
+        for cb, _n, _c in self._sample_checkboxes:
+            cb.blockSignals(True)
+            cb.setChecked(state)
+            cb.blockSignals(False)
+        self._redraw_charts()
+
+    def _check_only_samples(self):
+        for cb, _n, cat in self._sample_checkboxes:
+            cb.blockSignals(True)
+            cb.setChecked(cat == "sample")
+            cb.blockSignals(False)
+        self._redraw_charts()
+
+    def _get_checked_samples(self):
+        """Retorna dict {name: data} de mostres seleccionades."""
+        all_data = {}
+        all_data.update(self._chart_regular)
+        all_data.update(self._chart_light)
+        all_data.update(getattr(self, '_chart_khp', {}))
+        checked = {}
+        for cb, name, _cat in self._sample_checkboxes:
+            if cb.isChecked() and name in all_data:
+                checked[name] = all_data[name]
+        return checked
+
+    def _on_sample_selection_changed(self, _state=None):
+        self._redraw_charts()
+
+    def _redraw_charts(self):
+        """Redibuixa els 4 gràfics amb les mostres seleccionades."""
+        if not HAS_MATPLOTLIB:
+            return
+        checked = self._get_checked_samples()
+        reg = {k: v for k, v in checked.items() if v.get("analysis_type") not in ("light",)}
+        light = {k: v for k, v in checked.items() if v.get("analysis_type") == "light"}
+        is_bp = getattr(self, '_chart_is_bp', False)
+        try:
+            self._plot_doc_chart(reg, light, is_bp)
+            self._plot_dad_chart(reg, light)
+            self._plot_doc_overlay(reg, light, is_bp)
+            self._plot_dad_overlay(reg, light)
+        except Exception as e:
+            logger.error(f"Error redrawing charts: {e}")
+
+    # ------------------------------------------------------------------
+    # Timeout timeline
+    # ------------------------------------------------------------------
+
+    def _plot_timeout_chart(self, processed_data, is_bp):
+        """Diagrama fraccions (eix temps) amb comptador timeouts per zona."""
+        self.timeout_figure.clear()
+        ax = self.timeout_figure.add_subplot(111)
+
+        zone_totals = {}
+        for sample in processed_data.get("samples", []):
+            for zone, count in (sample.get("timeout_info", {}).get("zone_summary", {}) or {}).items():
+                zone_totals[zone] = zone_totals.get(zone, 0) + count
+
+        if is_bp:
+            zones = [
+                ("BP_PEAK", 0, 8, "#E74C3C"),
+                ("BP_TAIL", 8, 20, "#F39C12"),
+                ("POST_RUN", 20, 70, "#95a5a6"),
+            ]
+        else:
+            zones = [
+                ("RUN_START", 0, 10.8, "#95a5a6"),
+                ("BioP", 10.8, 18, FRACTION_COLORS["BioP"]),
+                ("HS", 18, 23, FRACTION_COLORS["HS"]),
+                ("BB", 23, 30, FRACTION_COLORS["BB"]),
+                ("SB", 30, 37, FRACTION_COLORS["SB"]),
+                ("LMW", 37, 48, FRACTION_COLORS["LMW"]),
+                ("POST_RUN", 48, 70, "#95a5a6"),
+            ]
+
+        for zone_name, t0, t1, color in zones:
+            count = zone_totals.get(zone_name, 0)
+            alpha = 0.8 if count > 0 else 0.3
+            ax.barh(0, t1 - t0, left=t0, height=0.6, color=color,
+                    alpha=alpha, edgecolor='white', linewidth=0.5)
+            mid = (t0 + t1) / 2
+            label = f"{zone_name}\n{count}" if count > 0 else zone_name
+            fw = 'bold' if count > 0 else 'normal'
+            fc = '#c0392b' if count > 0 else '#555'
+            ax.text(mid, 0, label, ha='center', va='center',
+                    fontsize=6, fontweight=fw, color=fc)
+
+        ax.set_xlim(0, 70)
+        ax.set_yticks([])
+        ax.set_xlabel("Temps (min)", fontsize=7)
+        ax.tick_params(axis='x', labelsize=7)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.spines['left'].set_visible(False)
+        self.timeout_figure.tight_layout(pad=0.3)
+        self.timeout_canvas.draw()
+
+    # ------------------------------------------------------------------
     # Charts
     # ------------------------------------------------------------------
 
@@ -976,6 +1019,143 @@ class ReviewSummaryPanel(QWidget):
         self.dad_figure.tight_layout()
         self.dad_canvas.draw()
 
+    def _plot_doc_overlay(self, regular, light, is_bp):
+        """Cromatogrames DOC superposats."""
+        self.doc_overlay_figure.clear()
+        ax = self.doc_overlay_figure.add_subplot(111)
+
+        all_samples = {}
+        all_samples.update(regular)
+        all_samples.update(light)
+
+        if not all_samples:
+            ax.text(0.5, 0.5, "Sense dades", ha='center', va='center',
+                    transform=ax.transAxes, color='#999')
+            self.doc_overlay_canvas.draw()
+            return
+
+        import matplotlib.cm as cm
+        n = len(all_samples)
+        cmap = cm.get_cmap('tab20', max(n, 1))
+
+        for i, (name, data) in enumerate(sorted(all_samples.items())):
+            sel = data.get("selected", {}).get("doc", "1")
+            rep = data.get("replicas", {}).get(sel, {})
+            t = rep.get("t_doc")
+            y = rep.get("y_doc_net")
+            if t is not None and y is not None and len(t) > 0:
+                ax.plot(t, y, label=name, linewidth=0.8, alpha=0.7, color=cmap(i))
+
+        ax.set_xlabel("Temps (min)", fontsize=9)
+        ax.set_ylabel("DOC (ppb)", fontsize=9)
+        ax.set_title("Cromatogrames DOC superposats", fontsize=10, fontweight='bold')
+        ax.tick_params(axis='both', labelsize=8)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+
+        handles, labels = ax.get_legend_handles_labels()
+        if handles:
+            if len(handles) > 12:
+                ax.legend(handles, labels, loc='upper left',
+                          bbox_to_anchor=(1.01, 1), fontsize=6, framealpha=0.8,
+                          ncol=1, handlelength=1.5, borderaxespad=0)
+            else:
+                ax.legend(loc='upper right', fontsize=7, framealpha=0.8)
+
+        self.doc_overlay_figure.tight_layout()
+        self.doc_overlay_canvas.draw()
+
+    def _plot_dad_overlay(self, regular, light):
+        """Cromatogrames A254 superposats."""
+        self.dad_overlay_figure.clear()
+        ax = self.dad_overlay_figure.add_subplot(111)
+
+        all_samples = {}
+        all_samples.update(regular)
+        all_samples.update(light)
+
+        if not all_samples:
+            ax.text(0.5, 0.5, "Sense dades", ha='center', va='center',
+                    transform=ax.transAxes, color='#999')
+            self.dad_overlay_canvas.draw()
+            return
+
+        import matplotlib.cm as cm
+        n = len(all_samples)
+        cmap = cm.get_cmap('tab20', max(n, 1))
+
+        for i, (name, data) in enumerate(sorted(all_samples.items())):
+            sel = data.get("selected", {}).get("dad",
+                        data.get("selected", {}).get("doc", "1"))
+            rep = data.get("replicas", {}).get(sel, {})
+            df_dad = rep.get("df_dad")
+            if df_dad is None:
+                continue
+            try:
+                if df_dad.empty:
+                    continue
+            except AttributeError:
+                continue
+
+            # Find time and 254nm columns
+            t_col = None
+            for c in df_dad.columns:
+                if 'time' in str(c).lower():
+                    t_col = c
+                    break
+            col_254 = None
+            for c in df_dad.columns:
+                if '254' in str(c):
+                    col_254 = c
+                    break
+
+            if t_col is not None and col_254 is not None:
+                ax.plot(df_dad[t_col], df_dad[col_254], label=name,
+                        linewidth=0.8, alpha=0.7, color=cmap(i))
+
+        ax.set_xlabel("Temps (min)", fontsize=9)
+        ax.set_ylabel("A254 (mAU)", fontsize=9)
+        ax.set_title("Cromatogrames A254 superposats", fontsize=10, fontweight='bold')
+        ax.tick_params(axis='both', labelsize=8)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+
+        handles, labels = ax.get_legend_handles_labels()
+        if handles:
+            if len(handles) > 12:
+                ax.legend(handles, labels, loc='upper left',
+                          bbox_to_anchor=(1.01, 1), fontsize=6, framealpha=0.8,
+                          ncol=1, handlelength=1.5, borderaxespad=0)
+            else:
+                ax.legend(loc='upper right', fontsize=7, framealpha=0.8)
+
+        self.dad_overlay_figure.tight_layout()
+        self.dad_overlay_canvas.draw()
+
+    def _save_charts(self, seq_path):
+        """Guarda els 4 gràfics a SEQ/CHECK/plots/."""
+        if not HAS_MATPLOTLIB or not seq_path:
+            return
+        try:
+            plots_dir = Path(seq_path) / "CHECK" / "plots"
+            plots_dir.mkdir(parents=True, exist_ok=True)
+
+            for name, fig in [
+                ("timeout_zones.png", self.timeout_figure),
+                ("doc_areas.png", self.doc_figure),
+                ("doc_overlay.png", self.doc_overlay_figure),
+                ("dad_areas.png", self.dad_figure),
+                ("dad_overlay.png", self.dad_overlay_figure),
+            ]:
+                fig.savefig(
+                    str(plots_dir / name), dpi=150, bbox_inches='tight',
+                    facecolor='#FAFAFA', edgecolor='none',
+                )
+
+            logger.info(f"Charts saved to {plots_dir}")
+        except Exception as e:
+            logger.error(f"Error saving charts: {e}")
+
     # ------------------------------------------------------------------
     # Generate results
     # ------------------------------------------------------------------
@@ -1048,6 +1228,9 @@ class ReviewSummaryPanel(QWidget):
         else:
             self.status_label.setText(f"{n_exported} Excels + SUMMARY generats correctament")
             self.status_label.setVisible(True)
+
+        # Guardar gràfics a CHECK/plots/
+        self._save_charts(self._current_seq_path)
 
         # Escriure review_result.json
         self._write_review_result(results)
@@ -1131,14 +1314,27 @@ class ReviewSummaryPanel(QWidget):
 
     def reset(self):
         """Reseteja el panel."""
-        self.card_seq._content_label.setText("")
-        self.card_timeouts._content_label.setText("")
-        self.card_quality._content_label.setText("")
+        self.header_label.setText("")
         if HAS_MATPLOTLIB:
+            self.timeout_figure.clear()
+            self.timeout_canvas.draw()
             self.doc_figure.clear()
             self.doc_canvas.draw()
+            self.doc_overlay_figure.clear()
+            self.doc_overlay_canvas.draw()
             self.dad_figure.clear()
             self.dad_canvas.draw()
+            self.dad_overlay_figure.clear()
+            self.dad_overlay_canvas.draw()
+            # Netejar checkboxes
+            for cb, _n, _c in self._sample_checkboxes:
+                self.samples_check_grid.removeWidget(cb)
+                cb.deleteLater()
+            self._sample_checkboxes = []
+        self._chart_regular = {}
+        self._chart_light = {}
+        self._chart_khp = {}
+        self._chart_is_bp = False
         self.progress_bar.setVisible(False)
         self.status_label.setVisible(False)
         self.status_label.setText("")

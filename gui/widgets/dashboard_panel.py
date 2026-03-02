@@ -52,19 +52,20 @@ class SortableTableItem(QTableWidgetItem):
         # Altrament, ordenar per text
         return self.text() < (other.text() if other else "")
 
-# Constants de columna (amb checkbox a col 0)
-# Redisseny minimalista: 15 → 9 columnes
-# Eliminades: NUM (#), TYPE, MODE, M, PC, PR — integrades a tooltip/INJ
+# Constants de columna
 COL_CHECK = 0
 COL_NAME = 1
 COL_DATE = 2
-COL_INJ = 3       # Format compacte: "33M 4K 2P"
-COL_IMPORT = 4
-COL_CAL = 5
-COL_ANA = 6
-COL_REVIEW = 7
-COL_NOTES = 8
-NUM_COLS = 9
+COL_MOSTRES = 3    # Nombre de mostres
+COL_REF = 4        # Patrons de referència (KHP, PR)
+COL_CTRL = 5       # Blancs i controls (MQ, NaOH, etc.)
+COL_IMPORT = 6
+COL_CAL = 7
+COL_ANA = 8
+COL_REVIEW = 9
+COL_WARNINGS = 10  # Avisos de processament (recompte + tooltip)
+COL_NOTES = 11     # Notes manuals
+NUM_COLS = 12
 
 
 # =============================================================================
@@ -466,24 +467,25 @@ class DashboardPanel(QWidget):
         self.table = QTableWidget()
         self.table.setColumnCount(NUM_COLS)
         self.table.setHorizontalHeaderLabels([
-            "", "Seqüència", "Data", "Inj",
-            "I", "V", "A", "R", "Notes"
+            "", "Seqüència", "Data", "Mostres", "Ref", "Ctrl",
+            "Importar", "Verificar", "Analitzar", "Revisar",
+            "Avisos", "Notes"
         ])
 
-        # Tooltips per capçaleres abreujades
-        self.table.horizontalHeaderItem(COL_INJ).setToolTip("Injeccions (Mostres · KHP · PR)")
-        self.table.horizontalHeaderItem(COL_IMPORT).setToolTip("Importar")
-        self.table.horizontalHeaderItem(COL_CAL).setToolTip("Verificar")
-        self.table.horizontalHeaderItem(COL_ANA).setToolTip("Analitzar")
-        self.table.horizontalHeaderItem(COL_REVIEW).setToolTip("Revisar")
+        # Tooltips per capçaleres
+        self.table.horizontalHeaderItem(COL_MOSTRES).setToolTip("Nombre de mostres")
+        self.table.horizontalHeaderItem(COL_REF).setToolTip("Patrons de referència (KHP, PR)")
+        self.table.horizontalHeaderItem(COL_CTRL).setToolTip("Blancs i controls (MQ, NaOH, etc.)")
+        self.table.horizontalHeaderItem(COL_WARNINGS).setToolTip("Avisos de processament")
         self.table.horizontalHeaderItem(COL_NOTES).setToolTip("Doble-clic per afegir notes")
 
         # Configurar columnes - autoajust amb mínims per capçaleres
         h = self.table.horizontalHeader()
 
         # Primer: ResizeToContents per totes (ajusta a contingut)
-        for i in range(self.table.columnCount() - 1):  # Totes menys Notes
-            h.setSectionResizeMode(i, QHeaderView.ResizeToContents)
+        for i in range(self.table.columnCount()):
+            if i not in (COL_NOTES,):
+                h.setSectionResizeMode(i, QHeaderView.ResizeToContents)
 
         # Notes expandeix per omplir espai restant
         h.setSectionResizeMode(COL_NOTES, QHeaderView.Stretch)
@@ -494,13 +496,16 @@ class DashboardPanel(QWidget):
 
         # Mínims per assegurar que capçaleres es veuen
         self._header_min_widths = {
-            COL_NAME: 110,   # Seqüència
-            COL_DATE: 70,    # Data
-            COL_INJ: 70,     # Inj (format compacte)
-            COL_IMPORT: 28,  # I
-            COL_CAL: 28,     # V
-            COL_ANA: 28,     # A
-            COL_REVIEW: 28,  # R
+            COL_NAME: 110,
+            COL_DATE: 70,
+            COL_MOSTRES: 55,
+            COL_REF: 35,
+            COL_CTRL: 35,
+            COL_IMPORT: 60,
+            COL_CAL: 60,
+            COL_ANA: 60,
+            COL_REVIEW: 55,
+            COL_WARNINGS: 50,
         }
 
         # Estil per mantenir colors dels punts en selecció
@@ -596,48 +601,6 @@ class DashboardPanel(QWidget):
 
         self._update_table()
 
-    def _build_inj_cell(self, seq):
-        """Construeix text compacte i tooltip per la columna INJ fusionada.
-
-        Format curt: "33M 4K 2P" (omet si 0).
-        Tooltip detallat amb comptadors + info importació.
-        """
-        n_samples = seq.n_samples or 0
-        n_khp = seq.n_khp or 0
-        n_pr = seq.n_pr or 0
-        n_imp = seq.n_inj_imported
-        n_mst = seq.n_inj_master
-        incomplete = n_mst > 0 and n_imp < n_mst and seq.import_status.completed
-
-        if not seq.import_status.completed:
-            return "-", "Pendent d'importar", QColor(COLOR_PENDING), False
-
-        # Text compacte
-        parts = []
-        if n_samples:
-            parts.append(f"{n_samples}M")
-        if n_khp:
-            parts.append(f"{n_khp}K")
-        if n_pr:
-            parts.append(f"{n_pr}P")
-        inj_text = " ".join(parts) if parts else "-"
-
-        if incomplete:
-            inj_text += f" ({n_imp}/{n_mst})"
-
-        # Tooltip detallat
-        tooltip_lines = [f"{n_samples} mostres · {n_khp} KHP · {n_pr} PR"]
-        if incomplete:
-            tooltip_lines.append(f"INCOMPLETA: {n_imp}/{n_mst} injeccions importades")
-            tooltip_lines.append(f"Falten {n_mst - n_imp} injeccions")
-        elif n_imp > 0:
-            tooltip_lines.append(f"Injeccions: {n_imp}")
-
-        inj_tooltip = "\n".join(tooltip_lines)
-        inj_color = QColor(COLOR_ERROR) if incomplete else QColor("#666")
-
-        return inj_text, inj_tooltip, inj_color, incomplete
-
     def _build_name_tooltip(self, seq):
         """Construeix tooltip enriquit pel nom (Tipus + Mode + siblings)."""
         parts = []
@@ -675,12 +638,10 @@ class DashboardPanel(QWidget):
                 item_check.setBackground(cal_bg)
             self.table.setItem(row, COL_CHECK, item_check)
 
-            # Col NAME: Nom (amb indicador de siblings + [CAL])
+            # Col NAME: Nom (amb indicador de siblings, sense prefix [CAL])
             display_name = seq.seq_name
             if seq.siblings:
                 display_name = f"{seq.seq_name} [+{len(seq.siblings)}]"
-            if is_cal:
-                display_name = f"[CAL] {display_name}"
             item_name = QTableWidgetItem(display_name)
             item_name.setData(Qt.UserRole, seq.seq_path)
             item_name.setFlags(item_name.flags() & ~Qt.ItemIsEditable)
@@ -717,21 +678,84 @@ class DashboardPanel(QWidget):
                 item_date.setData(Qt.UserRole, 0)
             self.table.setItem(row, COL_DATE, item_date)
 
-            # Col INJ: Compacte (fusiona M + PC + PR + injeccions)
-            inj_text, inj_tooltip, inj_color, incomplete = self._build_inj_cell(seq)
-            item_inj = SortableTableItem(inj_text)
-            item_inj.setData(Qt.UserRole, seq.n_inj_imported)
-            item_inj.setTextAlignment(Qt.AlignCenter)
-            item_inj.setForeground(inj_color)
-            item_inj.setFlags(item_inj.flags() & ~Qt.ItemIsEditable)
-            item_inj.setToolTip(inj_tooltip)
-            if incomplete:
-                font = item_inj.font()
-                font.setBold(True)
-                item_inj.setFont(font)
+            # Col MOSTRES: nombre de mostres
+            n_samples = seq.n_samples or 0
+            n_imp = seq.n_inj_imported
+            n_mst = seq.n_inj_master
+            incomplete = n_mst > 0 and n_imp < n_mst and seq.import_status.completed
+
+            if seq.import_status.completed:
+                mostres_text = str(n_samples) if n_samples else "-"
+                mostres_tooltip = f"{n_samples} mostres"
+                if incomplete:
+                    mostres_tooltip += f"\nIMPORTACIÓ INCOMPLETA: {n_imp}/{n_mst}"
+            else:
+                mostres_text = "-"
+                mostres_tooltip = "Pendent d'importar"
+
+            item_mostres = SortableTableItem(mostres_text)
+            item_mostres.setData(Qt.UserRole, n_samples)
+            item_mostres.setTextAlignment(Qt.AlignCenter)
+            item_mostres.setForeground(QColor(COLOR_ERROR) if incomplete else QColor("#666"))
+            item_mostres.setFlags(item_mostres.flags() & ~Qt.ItemIsEditable)
+            item_mostres.setToolTip(mostres_tooltip)
             if cal_bg:
-                item_inj.setBackground(cal_bg)
-            self.table.setItem(row, COL_INJ, item_inj)
+                item_mostres.setBackground(cal_bg)
+            self.table.setItem(row, COL_MOSTRES, item_mostres)
+
+            # Col REF: patrons de referència (KHP, PR)
+            n_khp = seq.n_khp or 0
+            n_pr = seq.n_pr or 0
+            n_ref = n_khp + n_pr
+
+            if seq.import_status.completed:
+                ref_text = str(n_ref) if n_ref else "-"
+                ref_parts = []
+                if n_khp:
+                    ref_parts.append(f"{n_khp} KHP")
+                if n_pr:
+                    ref_parts.append(f"{n_pr} PR")
+                ref_tooltip = " · ".join(ref_parts) if ref_parts else "Cap patró"
+            else:
+                ref_text = "-"
+                ref_tooltip = "Pendent d'importar"
+
+            item_ref = SortableTableItem(ref_text)
+            item_ref.setData(Qt.UserRole, n_ref)
+            item_ref.setTextAlignment(Qt.AlignCenter)
+            item_ref.setForeground(QColor("#666"))
+            item_ref.setFlags(item_ref.flags() & ~Qt.ItemIsEditable)
+            item_ref.setToolTip(ref_tooltip)
+            if cal_bg:
+                item_ref.setBackground(cal_bg)
+            self.table.setItem(row, COL_REF, item_ref)
+
+            # Col CTRL: blancs i controls (MQ, NaOH, etc.)
+            n_blank = seq.n_blank or 0
+            n_control = seq.n_control or 0
+            n_ctrl = n_blank + n_control
+
+            if seq.import_status.completed:
+                ctrl_text = str(n_ctrl) if n_ctrl else "-"
+                ctrl_parts = []
+                if n_blank:
+                    ctrl_parts.append(f"{n_blank} Blanc")
+                if n_control:
+                    ctrl_parts.append(f"{n_control} Control")
+                ctrl_tooltip = " · ".join(ctrl_parts) if ctrl_parts else "Cap blanc/control"
+            else:
+                ctrl_text = "-"
+                ctrl_tooltip = "Pendent d'importar"
+
+            item_ctrl = SortableTableItem(ctrl_text)
+            item_ctrl.setData(Qt.UserRole, n_ctrl)
+            item_ctrl.setTextAlignment(Qt.AlignCenter)
+            item_ctrl.setForeground(QColor("#666"))
+            item_ctrl.setFlags(item_ctrl.flags() & ~Qt.ItemIsEditable)
+            item_ctrl.setToolTip(ctrl_tooltip)
+            if cal_bg:
+                item_ctrl.setBackground(cal_bg)
+            self.table.setItem(row, COL_CTRL, item_ctrl)
 
             # Fases (Importar, Verificar, Analitzar, Revisar)
             phases_data = [
@@ -822,11 +846,21 @@ class DashboardPanel(QWidget):
 
                 self.table.setItem(row, col, item)
 
-            # Col NOTES: resum compacte + doble-clic per detall/editar
-            preview, tooltip, color = self._format_notes_cell(seq)
-            item_notes = QTableWidgetItem(preview)
-            item_notes.setToolTip(tooltip)
-            item_notes.setForeground(color)
+            # Col WARNINGS: avisos de processament (recompte + tooltip)
+            warn_preview, warn_tooltip, warn_color = self._format_warnings_cell(seq)
+            item_warn = QTableWidgetItem(warn_preview)
+            item_warn.setToolTip(warn_tooltip)
+            item_warn.setForeground(warn_color)
+            item_warn.setFlags(item_warn.flags() & ~Qt.ItemIsEditable)
+            if cal_bg:
+                item_warn.setBackground(cal_bg)
+            self.table.setItem(row, COL_WARNINGS, item_warn)
+
+            # Col NOTES: notes manuals (doble-clic per editar)
+            note_preview, note_tooltip, note_color = self._format_notes_only_cell(seq)
+            item_notes = QTableWidgetItem(note_preview)
+            item_notes.setToolTip(note_tooltip)
+            item_notes.setForeground(note_color)
             item_notes.setFlags(item_notes.flags() & ~Qt.ItemIsEditable)
             if cal_bg:
                 item_notes.setBackground(cal_bg)
@@ -841,17 +875,13 @@ class DashboardPanel(QWidget):
         self._apply_min_widths()
         self._update_selection_count()
 
-    def _format_notes_cell(self, seq: SequenceState):
-        """Genera text, tooltip i color per la cel·la Notes del dashboard.
+    def _format_warnings_cell(self, seq: SequenceState):
+        """Genera text, tooltip i color per la cel·la Avisos (processament).
 
-        Format compacte: "2 avisos · 1 nota" (+ detall al tooltip).
+        Mostra recompte d'avisos amb tooltip detallat per etapa.
         """
         json_notes = seq.dashboard_notes
-        manual_notes = seq.notes.strip() if seq.notes else ""
-
-        # Comptar per tipus
-        n_warn = 0  # WARN + ANOM + QUAL
-        n_note = 0  # NOTE + USR
+        n_warn = 0
         has_blocker = False
         tooltip_parts = []
 
@@ -865,33 +895,58 @@ class DashboardPanel(QWidget):
                 n_warn += 1
                 if sev == "blocker":
                     has_blocker = True
-            elif ntype in ("NOTE", "USR"):
-                n_note += 1
+                tooltip_parts.append(f"[{stage}] {content}")
 
-            tooltip_parts.append(f"[{stage}] {content}")
-
-        if manual_notes:
-            n_note += 1
-            tooltip_parts.append(f"[MAN] {manual_notes}")
-
-        # Preview compacte
-        parts = []
         if n_warn:
-            parts.append(f"{n_warn} {'avis' if n_warn == 1 else 'avisos'}")
-        if n_note:
-            parts.append(f"{n_note} {'nota' if n_note == 1 else 'notes'}")
-        preview = " · ".join(parts)
+            preview = str(n_warn)
+        else:
+            preview = ""
 
-        # Color
         if has_blocker:
             color = QColor("#C62828")
         elif n_warn:
             color = QColor("#E65100")
-        elif n_note:
-            color = QColor("#1565C0")
         else:
             color = QColor("#999")
 
+        tooltip = "\n".join(tooltip_parts) if tooltip_parts else ""
+
+        return preview, tooltip, color
+
+    def _format_notes_only_cell(self, seq: SequenceState):
+        """Genera text, tooltip i color per la cel·la Notes (manuals + info).
+
+        Mostra preview de notes manuals i notes informatives del processament.
+        """
+        json_notes = seq.dashboard_notes
+        manual_notes = seq.notes.strip() if seq.notes else ""
+
+        tooltip_parts = []
+        n_info = 0
+
+        for jn in json_notes:
+            ntype = jn.get("type", "")
+            stage = jn.get("stage", "?")
+            content = jn.get("content", "")
+
+            if ntype in ("NOTE", "USR"):
+                n_info += 1
+                tooltip_parts.append(f"[{stage}] {content}")
+
+        if manual_notes:
+            tooltip_parts.insert(0, manual_notes)
+
+        # Preview: primera línia de notes manuals o recompte info
+        if manual_notes:
+            preview = manual_notes.split('\n')[0][:50]
+            if len(manual_notes) > 50 or '\n' in manual_notes:
+                preview += "..."
+        elif n_info:
+            preview = f"{n_info} {'nota' if n_info == 1 else 'notes'}"
+        else:
+            preview = ""
+
+        color = QColor("#1565C0") if (manual_notes or n_info) else QColor("#999")
         tooltip = "\n".join(tooltip_parts) if tooltip_parts else "Doble-clic per afegir notes"
 
         return preview, tooltip, color
@@ -922,7 +977,7 @@ class DashboardPanel(QWidget):
             s.analyze_state == 'error'
         ))
 
-        stats = f"I:{imported} V:{calibrated} A:{analyzed} R:{reviewed} /{total}"
+        stats = f"Importar:{imported}  Verificar:{calibrated}  Analitzar:{analyzed}  Revisar:{reviewed}  /{total}"
         if errors:
             stats += f" · {errors} errors"
 
@@ -1047,8 +1102,8 @@ class DashboardPanel(QWidget):
         if not seq:
             return
 
-        # Si és la columna Notes, obrir popup per editar
-        if col == COL_NOTES:
+        # Si és la columna Notes o Avisos, obrir popup per editar/veure
+        if col == COL_NOTES or col == COL_WARNINGS:
             self._edit_notes_popup(row, seq)
             return
 
@@ -1395,7 +1450,7 @@ class DashboardPanel(QWidget):
             if not item:
                 continue
             seq_path = item.data(Qt.UserRole)
-            # Buscar per seq_path (robust, el text pot tenir prefixos [CAL])
+            # Buscar per seq_path (robust, independent del text de display)
             for seq in self.sequences:
                 if seq.seq_path == seq_path and seq.seq_name == seq_name:
                     seq.refresh()
@@ -1411,14 +1466,38 @@ class DashboardPanel(QWidget):
         is_cal = "_CAL" in seq.seq_name.upper()
         cal_bg = QColor(COLOR_CAL_BG) if is_cal else None
 
-        # Actualitzar INJ compacte
-        inj_text, inj_tooltip, inj_color, incomplete = self._build_inj_cell(seq)
-        item_inj = self.table.item(row, COL_INJ)
-        if item_inj:
-            item_inj.setText(inj_text)
-            item_inj.setToolTip(inj_tooltip)
-            item_inj.setForeground(inj_color)
-            item_inj.setData(Qt.UserRole, seq.n_inj_imported)
+        # Actualitzar Mostres + Ref + Ctrl
+        n_samples = seq.n_samples or 0
+        item_mostres = self.table.item(row, COL_MOSTRES)
+        if item_mostres:
+            item_mostres.setText(str(n_samples) if n_samples else "-")
+            item_mostres.setData(Qt.UserRole, n_samples)
+
+        n_khp = seq.n_khp or 0
+        n_pr = seq.n_pr or 0
+        n_ref = n_khp + n_pr
+        item_ref = self.table.item(row, COL_REF)
+        if item_ref:
+            item_ref.setText(str(n_ref) if n_ref else "-")
+            ref_parts = []
+            if n_khp:
+                ref_parts.append(f"{n_khp} KHP")
+            if n_pr:
+                ref_parts.append(f"{n_pr} PR")
+            item_ref.setToolTip(" · ".join(ref_parts) if ref_parts else "Cap patró")
+
+        n_blank = seq.n_blank or 0
+        n_control = seq.n_control or 0
+        n_ctrl = n_blank + n_control
+        item_ctrl = self.table.item(row, COL_CTRL)
+        if item_ctrl:
+            item_ctrl.setText(str(n_ctrl) if n_ctrl else "-")
+            ctrl_parts = []
+            if n_blank:
+                ctrl_parts.append(f"{n_blank} Blanc")
+            if n_control:
+                ctrl_parts.append(f"{n_control} Control")
+            item_ctrl.setToolTip(" · ".join(ctrl_parts) if ctrl_parts else "Cap blanc/control")
 
         phases_data = [
             (seq.import_status, seq.import_state, "Importar", seq.import_warnings),
@@ -1480,13 +1559,21 @@ class DashboardPanel(QWidget):
                 item.setBackground(cal_bg)
             self.table.setItem(row, col, item)
 
+        # Actualitzar avisos
+        warn_preview, warn_tooltip, warn_color = self._format_warnings_cell(seq)
+        current_warn = self.table.item(row, COL_WARNINGS)
+        if current_warn:
+            current_warn.setText(warn_preview)
+            current_warn.setToolTip(warn_tooltip)
+            current_warn.setForeground(warn_color)
+
         # Actualitzar notes
-        preview, tooltip, color = self._format_notes_cell(seq)
+        note_preview, note_tooltip, note_color = self._format_notes_only_cell(seq)
         current_notes = self.table.item(row, COL_NOTES)
         if current_notes:
-            current_notes.setText(preview)
-            current_notes.setToolTip(tooltip)
-            current_notes.setForeground(color)
+            current_notes.setText(note_preview)
+            current_notes.setToolTip(note_tooltip)
+            current_notes.setForeground(note_color)
 
     def _on_batch_finished(self, success, fail):
         self.main_window.show_progress(-1)

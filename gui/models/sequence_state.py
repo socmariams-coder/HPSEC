@@ -76,6 +76,8 @@ class SequenceState:
     n_samples: int = 0      # M = Mostres
     n_khp: int = 0          # PC = Patrons Calibració
     n_pr: int = 0           # PR = Patrons Referència
+    n_blank: int = 0        # Blancs (MQ, etc.)
+    n_control: int = 0      # Controls (NaOH, etc.)
 
     # Comptadors d'injeccions (del manifest stats)
     n_inj_master: int = 0   # Línies al MasterFile (1-HPLC-SEQ)
@@ -278,6 +280,8 @@ class SequenceState:
             self.n_samples = summary.get('total_samples', 0)
             self.n_khp = summary.get('total_khp', 0)
             self.n_pr = summary.get('total_pr', 0)
+            self.n_blank = summary.get('total_blank', 0)
+            self.n_control = summary.get('total_control', 0)
             # Comptadors d'injeccions (stats o summary)
             stats = data.get('stats', {})
             self.n_inj_master = stats.get('master_line_count', 0)

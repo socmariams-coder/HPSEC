@@ -704,7 +704,7 @@ def quantify_with_global_calibration(area, volume_uL, signal='direct', mode='col
     }
 
 
-def validate_khp_qc(khp_data, seq_date=None, signal='direct', mode='column'):
+def validate_khp_qc(khp_data, seq_date=None, signal='direct', mode='column', sensitivity=None):
     """
     Valida el KHP d'una SEQ com a QC check.
 
@@ -730,7 +730,7 @@ def validate_khp_qc(khp_data, seq_date=None, signal='direct', mode='column'):
     warning_pct = config.get('calibration', 'qc_thresholds', 'warning_pct', default=5.0)
     fail_pct = config.get('calibration', 'qc_thresholds', 'fail_pct', default=10.0)
 
-    rf_mass_cal = get_rf_mass_cal(signal, mode, seq_date)
+    rf_mass_cal = get_rf_mass_cal(signal, mode, seq_date, sensitivity=sensitivity)
     if rf_mass_cal is None:
         return {
             'status': 'UNKNOWN',
@@ -741,7 +741,9 @@ def validate_khp_qc(khp_data, seq_date=None, signal='direct', mode='column'):
             'message': 'No hi ha calibració de referència'
         }
 
-    cal = get_calibration_for_date(seq_date) if seq_date else get_active_global_calibration()
+    cal = (get_calibration_for_date(seq_date, signal=signal, sensitivity=sensitivity)
+           if seq_date
+           else get_active_global_calibration(signal=signal, sensitivity=sensitivity))
     cal_id = cal.get('id') if cal else None
 
     # Obtenir rf_mass mesurat del KHP
@@ -5049,7 +5051,8 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
     # QC per DOC UIB
     if result.get("khp_data_uib"):
         khp_data = result["khp_data_uib"]
-        qc = validate_khp_qc(khp_data, seq_date=seq_date, signal='uib', mode=method.lower())
+        qc = validate_khp_qc(khp_data, seq_date=seq_date, signal='uib', mode=method.lower(),
+                              sensitivity=uib_sensitivity)
         qc['signal'] = 'uib'
         qc_results.append(qc)
 

@@ -779,8 +779,9 @@ class SampleDetailDialog(QDialog):
             ax_tbl.axis('off')
 
             doc_areas = sel_areas.get("DOC", {})
-            doc_total = doc_areas.get("total", 0)
-            uib_total = areas_uib.get("total", 0)
+            # Sumar fraccions (consistent amb taula QTableWidget de _helpers.py)
+            doc_total = sum(doc_areas.get(fn, 0) for fn, _ in fracs)
+            uib_total = sum(areas_uib.get(fn, 0) for fn, _ in fracs)
 
             # Header: Senyal | BioP (10.8-18) | HS (18-23) | ... | TOTAL (0-70)
             col_labels = ["Senyal"]
@@ -805,7 +806,7 @@ class SampleDetailDialog(QDialog):
                     sig_areas, sig_total = areas_uib, uib_total
                 else:
                     sig_areas = sel_areas.get(sig, {})
-                    sig_total = sig_areas.get("total", 0)
+                    sig_total = sum(sig_areas.get(fn, 0) for fn, _ in fracs)
                 for fname, _finfo in fracs:
                     fval = sig_areas.get(fname, 0)
                     pct = (fval / sig_total * 100) if sig_total > 0 else 0

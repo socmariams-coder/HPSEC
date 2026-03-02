@@ -4130,6 +4130,8 @@ def generate_import_manifest(imported_data, include_injection_details=True):
         "total_samples": len([s for s in samples_detail if s["type"] == "SAMPLE"]),
         "total_khp": len([s for s in samples_detail if s["type"] == "KHP"]),
         "total_pr": len([s for s in samples_detail if s["type"].startswith("PR")]),
+        "total_blank": len([s for s in samples_detail if s["type"] == "BLANK"]),
+        "total_control": len([s for s in samples_detail if s["type"] == "CONTROL"]),
         "total_replicas": sum(len(s["replicas"]) for s in samples_detail),
         "replicas_with_direct": sum(
             1 for s in samples_detail
@@ -4719,11 +4721,15 @@ def import_from_manifest(seq_path, manifest=None, config=None, progress_callback
         if r.get("has_data")
     )
 
-    result["stats"] = {
+    # Recuperar stats complets del manifest (doc_direct_count, uib_count, dad_count, etc.)
+    # i sobreescriure amb valors actuals calculats
+    saved_stats = manifest.get("stats", {})
+    saved_stats.update({
         "total_samples": len(result["samples"]),
         "samples_with_data": samples_with_data,
         "from_manifest": True,
-    }
+    })
+    result["stats"] = saved_stats
 
     # Recuperar informació d'orfes i suggeriments del manifest
     orphan_info = manifest.get("orphan_files", {})
