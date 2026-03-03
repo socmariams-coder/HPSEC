@@ -98,8 +98,10 @@ Mark features as DONE only when code is fully functional end-to-end, not when pl
 - [x] Export: BP integration in COLUMN mode (ID_BP sheet, BP rows in RESULTS, BP cols in SUMMARY) — DONE
 - [x] Export: fractions loaded from hpsec_config.json (not hardcoded) — DONE
 - [x] Export: timeout zone_summary fix (dict format) — DONE
-- [x] Wizard: Step 4 "Revisar" replaces "Exportar" (ReviewSummaryPanel with stats, charts, generate button) — DONE
+- [x] Wizard: Step 4 "Exportar" (ExportPanel with BP consolidation, generate button, FAIR) — DONE
 - [x] Wizard: "Generar Resultats" exports to SEQ/RESULTATS/ (Excels) + SEQ/CHECK/ (SUMMARY) — DONE
+- [x] Analyze panel: Resum Visual collapsible (timeout, DOC stacked, DOC overlay, A254, DAD overlay) — DONE
+- [x] Architecture refactor: Fusió Analitzar+Revisar → Analitzar+Exportar (review_summary_panel eliminat) — DONE
 - [x] Analyze backend: light analysis for BLANK/CONTROL (area_total + SNR only, no fractions/quantification) — DONE
 - [x] Analyze panel: BLANC/CONTROL rows at bottom with separator + grey background — DONE
 - [x] Export: lightweight Excel for BLANK/CONTROL (ID + DOC sheets only) — DONE

@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QPushButton, QGroupBox,
     QGridLayout, QFrame, QHBoxLayout, QTableWidget, QTableWidgetItem,
     QHeaderView, QSplitter, QScrollArea, QSizePolicy, QComboBox,
-    QSlider, QDoubleSpinBox, QCheckBox
+    QCheckBox
 )
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont, QColor
@@ -55,6 +55,7 @@ class CalibratePanel(QWidget):
     """Panel QA/QC KHP: verificació vs calibració global i determinació del shift."""
 
     calibration_completed = Signal(dict)
+    delay_corrected = Signal()  # Delay corregit → wizard reimporta
 
     def __init__(self, main_window):
         super().__init__()
@@ -712,6 +713,8 @@ class CalibratePanel(QWidget):
         self.metrics_group.setVisible(False)
         self.history_group.setVisible(False)
 
+        if self.worker is not None:
+            self.worker.wait()
         self.worker = CalibrateWorker(imported_data)
         self.worker.progress.connect(self._on_progress)
         self.worker.finished.connect(self._on_finished)
@@ -725,6 +728,8 @@ class CalibratePanel(QWidget):
     def _on_finished(self, result):
         self.main_window.show_progress(-1)
         self.calibrate_btn.setEnabled(True)
+        if self.worker is not None:
+            self.worker.wait()
 
         # Copiar rf_mass_direct i rf_mass_uib a nivell superior
         for signal_key, data_key in [("direct", "khp_data_direct"), ("uib", "khp_data_uib")]:
@@ -1268,7 +1273,7 @@ class CalibratePanel(QWidget):
             self.metrics_table.setItem(row, 5, QTableWidgetItem(f"{rf_mass:.1f}" if rf_mass > 0 else "-"))
 
             # Col 6: t_max
-            peak_info = khp.get('peak_info', {})
+            peak_info = khp.get('peak_info') or {}
             t_max = khp.get('t_retention', 0) or peak_info.get('t_max', 0) or khp.get('t_doc_max', 0)
             self.metrics_table.setItem(row, 6, QTableWidgetItem(f"{t_max:.2f}" if t_max > 0 else "-"))
 
@@ -1658,7 +1663,10 @@ class CalibratePanel(QWidget):
                 cal_direct = get_active_global_calibration(signal='direct')
                 imported = self.main_window.imported_data or {}
                 uib_sens = imported.get("uib_sensitivity")
-                cal_uib = get_active_global_calibration(signal='uib', sensitivity=uib_sens)
+                # Només carregar calibració UIB si la SEQ té dades UIB
+                cal_uib = None
+                if has_uib_data:
+                    cal_uib = get_active_global_calibration(signal='uib', sensitivity=uib_sens)
 
                 if not cal_direct and not cal_uib:
                     self.calibration_line_graph.clear()
@@ -1788,7 +1796,7 @@ class CalibratePanel(QWidget):
     # =========================================================================
 
     def _build_delay_diagnostic_section(self, parent_layout):
-        """Construeix la secció de diagnòstic delay HPLC↔TOC."""
+        """Construeix la secció de diagnòstic delay HPLC\u2194TOC."""
         self.delay_group = QGroupBox("Diagn\u00f2stic Delay HPLC\u2194TOC")
         self.delay_group.setVisible(False)
         self.delay_group.setStyleSheet(
@@ -1824,7 +1832,7 @@ class CalibratePanel(QWidget):
 
         delay_main.addWidget(info_frame)
 
-        # Quality indicator (icona integrada al text)
+        # Quality indicator
         self.delay_quality_frame = QFrame()
         self.delay_quality_frame.setStyleSheet(
             "QFrame { border-radius: 4px; padding: 6px; }"
@@ -1836,63 +1844,14 @@ class CalibratePanel(QWidget):
         quality_layout.addWidget(self.delay_quality_text, 1)
         delay_main.addWidget(self.delay_quality_frame)
 
-        # Adjust frame
-        adjust_frame = QFrame()
-        adjust_frame.setStyleSheet(
-            "QFrame { background-color: #F8F9FA; border: 1px solid #E0E0E0; "
-            "border-radius: 4px; padding: 8px; }"
-        )
-        adjust_layout = QVBoxLayout(adjust_frame)
-
-        adjust_header = QHBoxLayout()
-        adjust_header.addWidget(QLabel("<b>Ajustar Net delay:</b>"))
-        adjust_header.addStretch()
-        self.delay_reset_btn = QPushButton("Reset")
-        self.delay_reset_btn.setFixedWidth(60)
-        self.delay_reset_btn.setToolTip("Restaurar delay original")
-        self.delay_reset_btn.clicked.connect(self._delay_reset)
-        adjust_header.addWidget(self.delay_reset_btn)
-        adjust_layout.addLayout(adjust_header)
-
-        slider_layout = QHBoxLayout()
-
-        self.delay_spin = QDoubleSpinBox()
-        self.delay_spin.setRange(-15.0, 15.0)
-        self.delay_spin.setDecimals(2)
-        self.delay_spin.setSingleStep(0.1)
-        self.delay_spin.setSuffix(" min")
-        self.delay_spin.setMinimumWidth(100)
-        self.delay_spin.valueChanged.connect(self._on_delay_spin_changed)
-        slider_layout.addWidget(self.delay_spin)
-
-        self.delay_slider = QSlider(Qt.Horizontal)
-        self.delay_slider.setRange(-1500, 1500)
-        self.delay_slider.setSingleStep(10)
-        self.delay_slider.setPageStep(100)
-        self.delay_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
-        self.delay_slider.setTickInterval(100)
-        self.delay_slider.valueChanged.connect(self._on_delay_slider_changed)
-        slider_layout.addWidget(self.delay_slider, 1)
-
-        adjust_layout.addLayout(slider_layout)
-
-        impact_layout = QHBoxLayout()
-        self.delay_impact_label = QLabel("")
-        self.delay_impact_label.setStyleSheet("color: #555; font-size: 12px;")
-        self.delay_impact_label.setWordWrap(True)
-        impact_layout.addWidget(self.delay_impact_label, 1)
-        adjust_layout.addLayout(impact_layout)
-
-        delay_main.addWidget(adjust_frame)
-
-        # Apply button
+        # Botó correcció (visible només si shift significatiu)
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
 
-        self.delay_apply_btn = QPushButton("Aplicar i Reimportar")
+        self.delay_apply_btn = QPushButton("Corregir delay i reimportar")
         self.delay_apply_btn.setToolTip(
-            "Actualitza el Net delay al MasterFile, regenera 4-TOC_CALC,\n"
-            "reimporta la seq\u00fc\u00e8ncia i re-executa la verificaci\u00f3."
+            "Afegeix el delay corregit al MasterFile (sense sobreescriure l'original),\n"
+            "regenera 4-TOC_CALC i reimporta la seq\u00fc\u00e8ncia."
         )
         self.delay_apply_btn.setStyleSheet(
             "QPushButton { background-color: #E67E22; color: white; "
@@ -1900,7 +1859,7 @@ class CalibratePanel(QWidget):
             "QPushButton:hover { background-color: #D35400; }"
             "QPushButton:disabled { background-color: #CCC; color: #999; }"
         )
-        self.delay_apply_btn.setEnabled(False)
+        self.delay_apply_btn.setVisible(False)
         self.delay_apply_btn.clicked.connect(self._delay_apply_and_reimport)
         btn_layout.addWidget(self.delay_apply_btn)
         delay_main.addLayout(btn_layout)
@@ -1909,8 +1868,7 @@ class CalibratePanel(QWidget):
         self._delay_original = None
         self._delay_mf_path = None
         self._delay_is_bp = False
-        self._delay_slider_updating = False
-        self._delay_cached_data = None
+        self._delay_shift_min = 0  # Shift detectat del KHP
 
         parent_layout.addWidget(self.delay_group)
 
@@ -1918,15 +1876,17 @@ class CalibratePanel(QWidget):
         """Actualitza la secció de diagnòstic delay."""
         import os
 
-        method = (result.get("mode") or "COLUMN").upper()
         imported_data = self.main_window.imported_data or {}
+        method = result.get("mode") or ""
         if not method or method == "-":
-            method = imported_data.get("method", "COLUMN").upper()
+            method = imported_data.get("method") or "COLUMN"
+        method = method.upper()
         is_bp = method == "BP"
         self._delay_is_bp = is_bp
 
         shift_min = result.get("shift_direct", 0)
         shift_abs = abs(shift_min)
+        self._delay_shift_min = shift_min
 
         show_delay = is_bp or shift_abs > 2.0
 
@@ -1962,19 +1922,19 @@ class CalibratePanel(QWidget):
 
         self._delay_original = current_delay
 
-        try:
-            self._delay_cache_timestamps(mf_path)
-            n_injections = len(self._delay_cached_data['hplc_times']) if self._delay_cached_data else 0
-            n_toc = len(self._delay_cached_data['toc_rows']) if self._delay_cached_data else 0
-        except Exception:
-            n_injections = 0
-            n_toc = 0
+        # Comptadors (des de imported_data, sense llegir MasterFile)
+        samples = imported_data.get("samples") or {}
+        n_injections = len(samples) if isinstance(samples, dict) else 0
+        n_toc = imported_data.get("n_toc_rows", 0)
 
         shift_sec = shift_min * 60
         self.delay_shift_label.setText(f"{shift_sec:.1f}s ({shift_min:.2f} min)")
         current_delay_sec = current_delay * 60
         self.delay_current_label.setText(f"{current_delay_sec:.1f}s ({current_delay:.3f} min)")
-        self.delay_counts_label.setText(f"{n_injections} inj / {n_toc} files TOC")
+        if n_injections > 0:
+            self.delay_counts_label.setText(f"{n_injections} injeccions")
+        else:
+            self.delay_counts_label.setText("-")
 
         if is_bp:
             if shift_abs < 0.5:
@@ -1993,8 +1953,7 @@ class CalibratePanel(QWidget):
                 bg = "#FDEDEC"
                 icon = "\u2718"
                 text = (f"{icon} Shift KHP gran ({shift_sec:.1f}s). "
-                        "Les files TOC poden estar mal assignades. "
-                        "Es recomana ajustar el delay i reimportar.")
+                        "Les files TOC poden estar mal assignades.")
         else:
             color = "#E67E22"
             bg = "#FEF9E7"
@@ -2008,153 +1967,42 @@ class CalibratePanel(QWidget):
         )
         self.delay_quality_text.setText(text)
 
-        self._delay_slider_updating = True
-        self.delay_spin.setValue(current_delay)
-        self.delay_slider.setValue(int(current_delay * 100))
-        self._delay_slider_updating = False
-
-        self.delay_impact_label.setText(
-            f"Delay actual: {current_delay:.3f} min \u2014 sense canvis."
-        )
-        self.delay_apply_btn.setEnabled(False)
+        # Botó correcció: visible si shift > threshold
+        show_btn = (is_bp and shift_abs >= 0.5) or shift_abs > 2.0
+        if show_btn:
+            new_delay = current_delay + shift_min
+            self.delay_apply_btn.setText(
+                f"Corregir delay ({shift_min:+.2f} min) i reimportar"
+            )
+            self.delay_apply_btn.setVisible(True)
+            self.delay_apply_btn.setEnabled(True)
+        else:
+            self.delay_apply_btn.setVisible(False)
 
         self.delay_group.setVisible(True)
 
-    def _delay_cache_timestamps(self, mf_path):
-        """Cachejar timestamps HPLC i TOC."""
-        import openpyxl
-        try:
-            wb = openpyxl.load_workbook(str(mf_path), read_only=True, data_only=True)
-            from hpsec_delay import _read_hplc_timestamps, _read_toc_timestamps
-            hplc_times, hplc_samples = _read_hplc_timestamps(wb)
-            toc_rows = _read_toc_timestamps(wb)
-            wb.close()
-            self._delay_cached_data = {
-                'hplc_times': hplc_times,
-                'hplc_samples': hplc_samples,
-                'toc_rows': toc_rows,
-            }
-        except Exception as e:
-            logger.warning(f"Error cachejant timestamps: {e}")
-            self._delay_cached_data = None
-
-    def _estimate_impact_cached(self, old_delay, new_delay, pre_margin_min=1.5):
-        """Estimació d'impacte usant dades cachejades."""
-        if not self._delay_cached_data:
-            return {'n_total': 0, 'n_changed': 0, 'n_injections': 0}
-
-        from hpsec_delay import _assign_toc_rows
-        hplc_times = self._delay_cached_data['hplc_times']
-        toc_rows = self._delay_cached_data['toc_rows']
-
-        if not hplc_times or not toc_rows:
-            return {'n_total': len(toc_rows), 'n_changed': 0, 'n_injections': len(hplc_times)}
-
-        old_assign = _assign_toc_rows(hplc_times, toc_rows, old_delay, pre_margin_min)
-        new_assign = _assign_toc_rows(hplc_times, toc_rows, new_delay, pre_margin_min)
-
-        n_changed = 0
-        for old_a, new_a in zip(old_assign, new_assign):
-            if old_a['inj_index'] != new_a['inj_index']:
-                n_changed += 1
-
-        return {
-            'n_total': len(toc_rows),
-            'n_changed': n_changed,
-            'n_injections': len(hplc_times),
-        }
-
-    def _on_delay_slider_changed(self, value):
-        if self._delay_slider_updating:
-            return
-        new_delay = value / 100.0
-        self._delay_slider_updating = True
-        self.delay_spin.setValue(new_delay)
-        self._delay_slider_updating = False
-        self._update_delay_impact(new_delay)
-
-    def _on_delay_spin_changed(self, value):
-        if self._delay_slider_updating:
-            return
-        self._delay_slider_updating = True
-        self.delay_slider.setValue(int(value * 100))
-        self._delay_slider_updating = False
-        self._update_delay_impact(value)
-
-    def _update_delay_impact(self, new_delay):
-        if self._delay_mf_path is None or self._delay_original is None:
-            return
-
-        delta = new_delay - self._delay_original
-        if abs(delta) < 0.005:
-            self.delay_impact_label.setText(
-                f"Delay actual: {self._delay_original:.3f} min \u2014 sense canvis."
-            )
-            self.delay_impact_label.setStyleSheet("color: #555; font-size: 12px;")
-            self.delay_apply_btn.setEnabled(False)
-            return
-
-        try:
-            impact = self._estimate_impact_cached(self._delay_original, new_delay)
-            n_changed = impact.get('n_changed', 0)
-            n_total = impact.get('n_total', 0)
-            n_injections = impact.get('n_injections', 0)
-
-            if n_changed == 0:
-                style = "color: #27AE60; font-size: 12px; font-weight: bold;"
-                text = (f"Nou delay: {new_delay:.3f} min (\u0394={delta:+.3f}) \u2014 "
-                        f"Cap fila TOC canvia d'assignaci\u00f3 ({n_total} files, {n_injections} inj).")
-            elif n_changed <= 3:
-                style = "color: #E67E22; font-size: 12px; font-weight: bold;"
-                text = (f"Nou delay: {new_delay:.3f} min (\u0394={delta:+.3f}) \u2014 "
-                        f"<b>{n_changed}</b> files TOC canvien d'assignaci\u00f3 "
-                        f"(de {n_total}, {n_injections} inj).")
-            else:
-                style = "color: #E74C3C; font-size: 12px; font-weight: bold;"
-                pct = n_changed / n_total * 100 if n_total > 0 else 0
-                text = (f"Nou delay: {new_delay:.3f} min (\u0394={delta:+.3f}) \u2014 "
-                        f"<b>{n_changed}</b> files TOC canvien d'assignaci\u00f3 "
-                        f"({pct:.0f}% de {n_total}, {n_injections} inj).")
-
-            self.delay_impact_label.setStyleSheet(style)
-            self.delay_impact_label.setText(text)
-            self.delay_apply_btn.setEnabled(True)
-
-        except Exception as e:
-            self.delay_impact_label.setText(f"Error estimant impacte: {e}")
-            self.delay_impact_label.setStyleSheet("color: #E74C3C; font-size: 12px;")
-            self.delay_apply_btn.setEnabled(False)
-
-    def _delay_reset(self):
-        if self._delay_original is not None:
-            self._delay_slider_updating = True
-            self.delay_spin.setValue(self._delay_original)
-            self.delay_slider.setValue(int(self._delay_original * 100))
-            self._delay_slider_updating = False
-            self._update_delay_impact(self._delay_original)
-
     def _delay_apply_and_reimport(self):
-        """Aplica el nou delay al MasterFile, reimporta i re-verifica."""
+        """Corregeix el delay al MasterFile i emet senyal per reimportar."""
         from PySide6.QtWidgets import QMessageBox
 
-        new_delay = self.delay_spin.value()
-        old_delay = self._delay_original
+        old_delay = self._delay_original or 0
+        shift = self._delay_shift_min
+        new_delay = old_delay + shift
         mf_path = self._delay_mf_path
 
         if mf_path is None:
             QMessageBox.warning(self, "Error", "No s'ha trobat el MasterFile.")
             return
 
-        delta = new_delay - old_delay if old_delay else new_delay
         reply = QMessageBox.question(
             self,
-            "Aplicar nou delay",
-            f"Es modificar\u00e0 el MasterFile:\n\n"
-            f"  Net delay: {old_delay:.3f} \u2192 {new_delay:.3f} min (\u0394={delta:+.3f})\n\n"
-            f"  Es crear\u00e0 backup del MasterFile.\n"
-            f"  Es regenerar\u00e0 4-TOC_CALC.\n"
-            f"  Es reimportar\u00e0 la seq\u00fc\u00e8ncia.\n"
-            f"  Es re-executar\u00e0 la verificaci\u00f3.\n\n"
+            "Corregir delay",
+            f"S'ha detectat un shift de {shift * 60:.1f}s ({shift:+.2f} min).\n\n"
+            f"Es corregir\u00e0 el delay al MasterFile:\n"
+            f"  Net delay: {old_delay:.3f} \u2192 {new_delay:.3f} min\n\n"
+            f"  \u2022 S'afegir\u00e0 'Net delay (Suite)' al MasterFile (l'original es conserva)\n"
+            f"  \u2022 Es regenerar\u00e0 4-TOC_CALC\n"
+            f"  \u2022 Es reimportar\u00e0 la seq\u00fc\u00e8ncia\n\n"
             f"Continuar?",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No
@@ -2182,36 +2030,12 @@ class CalibratePanel(QWidget):
                 )
                 return
 
-            n_assigned = update_result.get('n_assigned', 0)
-            n_total = update_result.get('n_total', 0)
             backup_path = update_result.get('backup_path', '')
+            logger.info(f"Delay corregit: {old_delay:.3f} \u2192 {new_delay:.3f}, "
+                        f"backup: {backup_path}")
 
-            logger.info(f"Delay actualitzat: {old_delay:.3f} \u2192 {new_delay:.3f}, "
-                        f"{n_assigned}/{n_total} files, backup: {backup_path}")
-
-            self._delay_cached_data = None
-
-            self.delay_apply_btn.setText("Reimportant...")
-            QApplication.processEvents()
-
-            seq_path = self.main_window.seq_path
-            if seq_path:
-                from hpsec_import import import_from_manifest
-                imported_data = import_from_manifest(seq_path)
-                if imported_data and imported_data.get('success'):
-                    self.main_window.imported_data = imported_data
-                    logger.info("Reimportaci\u00f3 completada")
-                else:
-                    logger.warning("Reimportaci\u00f3 fallida, intentant import complet")
-                    from hpsec_import import import_sequence
-                    imported_data = import_sequence(seq_path)
-                    if imported_data:
-                        self.main_window.imported_data = imported_data
-
-            self.delay_apply_btn.setText("Re-verificant...")
-            QApplication.processEvents()
-
-            self._run_calibrate()
+            # Emetre senyal per reimportar des del wizard (torna a tab 0)
+            self.delay_corrected.emit()
 
         except Exception as e:
             logger.error(f"Error aplicant delay: {e}")
@@ -2221,7 +2045,9 @@ class CalibratePanel(QWidget):
                 f"Error durant l'aplicaci\u00f3 del delay:\n{e}"
             )
         finally:
-            self.delay_apply_btn.setText("Aplicar i Reimportar")
+            self.delay_apply_btn.setText(
+                f"Corregir delay ({shift:+.2f} min) i reimportar"
+            )
             self.delay_apply_btn.setEnabled(True)
 
     # =========================================================================

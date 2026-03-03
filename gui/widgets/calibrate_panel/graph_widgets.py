@@ -447,11 +447,16 @@ class CalibrationLineWidget(QWidget):
 
         # Punts de la regressió guardada
         reg_data = cal.get('regression_data', {})
-        points = reg_data.get('points', [])
         r2 = cal.get('r2', reg_data.get('r2', 0))
         if isinstance(r2, dict):
             r2 = r2.get(mode_key, 0)
         rms = reg_data.get('residuals_rms', 0)
+
+        # Només mostrar punts si el mode de la regressió coincideix amb el mode actual
+        # (els punts són àrees reals d'un mode; la recta usa RF del mode actual)
+        reg_mode = (reg_data.get('mode', '') or '').lower()
+        mode_matches = (reg_mode == mode_key) or not reg_mode
+        points = reg_data.get('points', []) if mode_matches else []
 
         # Separar punts inclosos / exclosos
         x_inc, y_inc = [], []
@@ -528,6 +533,13 @@ class CalibrationLineWidget(QWidget):
                 ax.annotate(f'{dev_pct:+.1f}%', (cx, cy), fontsize=7,
                            fontweight='bold', color=dev_color,
                            xytext=(5, -10), textcoords='offset points')
+
+        # Nota si no hi ha punts de regressió per aquest mode
+        if not x_inc and not x_exc and not reg_mode:
+            pass  # No hi ha dades de regressió — no dir res
+        elif not mode_matches and reg_mode and not x_inc and not x_exc:
+            # Regressió d'un altre mode — no mostrar punts, nota discreta
+            pass  # La recta RF ja és correcta per aquest mode
 
         # Format
         y_max = max(all_y + [rf * x_max + intercept]) * 1.15 if all_y else rf * x_max * 1.15

@@ -20,7 +20,16 @@ from PySide6.QtGui import QColor, QBrush, QFont
 import logging
 from pathlib import Path
 
+import numpy as np
+
 logger = logging.getLogger(__name__)
+
+try:
+    from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+    from matplotlib.figure import Figure
+    HAS_MATPLOTLIB = True
+except ImportError:
+    HAS_MATPLOTLIB = False
 
 from hpsec_analyze import analyze_sequence, save_analysis_result, load_analysis_result
 from gui.widgets.styles import (
@@ -41,6 +50,16 @@ from ._helpers import (
     configure_table_style, populate_signal_summary, populate_fractions_table
 )
 
+# Fraction colors (consistent palette)
+FRACTION_COLORS = {
+    "BioP": "#3498DB",  # Blue
+    "HS":   "#E74C3C",  # Red
+    "BB":   "#F39C12",  # Orange
+    "SB":   "#2ECC71",  # Green
+    "LMW":  "#9B59B6",  # Purple
+}
+FRACTION_ORDER = ["BioP", "HS", "BB", "SB", "LMW"]
+
 
 class AnalyzePanel(QWidget):
     """Panel d'anàlisi de mostres (Fase 3) — Taula unificada."""
@@ -57,6 +76,11 @@ class AnalyzePanel(QWidget):
         self._selected_sample = None
         self._sample_row_map = {}       # P3: sample_name → row index (O(1) lookup)
         self._status_initialized = False  # B3: avoid redundant showEvent work
+        # Chart data
+        self._chart_regular = {}
+        self._chart_light = {}
+        self._chart_khp = {}
+        self._chart_is_bp = False
 
         self._setup_ui()
 
@@ -170,15 +194,17 @@ class AnalyzePanel(QWidget):
         legend_layout.addWidget(legend)
         legend_layout.addStretch()
 
-        # Combo agrupació
-        legend_layout.addWidget(QLabel("Agrupar:"))
-        self.group_combo = QComboBox()
-        self.group_combo.addItems(["Ordre injecció", "Per tipus"])
-        self.group_combo.setStyleSheet(
-            "QComboBox { padding: 2px 8px; border: 1px solid #ccc; border-radius: 3px; }"
-        )
-        self.group_combo.currentIndexChanged.connect(self._on_group_changed)
-        legend_layout.addWidget(self.group_combo)
+        # Botons agrupació (toggle)
+        self._group_mode = 0  # 0=injecció, 1=tipus
+        self._group_btns = []
+        for i, label in enumerate(["Injecció", "Tipus"]):
+            btn = QPushButton(label)
+            btn.setCheckable(True)
+            btn.setChecked(i == 0)
+            btn.clicked.connect(lambda _checked, idx=i: self._on_group_btn(idx))
+            self._group_btns.append(btn)
+            legend_layout.addWidget(btn)
+        self._style_group_btns()
 
         # Botó Generar Report PDF (amagat per SEQ_CAL)
         self.report_btn = QPushButton("Generar Report PDF")
@@ -208,20 +234,140 @@ class AnalyzePanel(QWidget):
         self.results_table.doubleClicked.connect(self._on_table_double_click)
         self.results_table.setToolTip("Doble-clic per detall complet")
 
-        # === STATS BAR ===
-        self.stats_frame = QFrame()
-        self.stats_frame.setStyleSheet("background-color: #f8f9fa; border-radius: 4px; padding: 8px;")
-        stats_layout = QHBoxLayout(self.stats_frame)
-        stats_layout.setContentsMargins(12, 8, 12, 8)
-
-        self.stats_label = QLabel()
-        self.stats_label.setFont(QFont("Segoe UI", 10))
-        stats_layout.addWidget(self.stats_label)
-        stats_layout.addStretch()
-
-        results_layout.addWidget(self.stats_frame)
-
         layout.addWidget(self.results_frame, 1)
+
+        # === CHARTS SECTION (collapsible) ===
+        self._charts_visible = False
+        self._charts_initialized = False
+        self.charts_section = QFrame()
+        self.charts_section.setVisible(False)
+        charts_outer = QVBoxLayout(self.charts_section)
+        charts_outer.setContentsMargins(0, 8, 0, 0)
+        charts_outer.setSpacing(4)
+
+        # Toggle header
+        charts_header = QFrame()
+        charts_header.setStyleSheet(
+            "QFrame { background: #EBF5FB; border: 1px solid #AED6F1;"
+            " border-radius: 4px; }"
+        )
+        charts_header_layout = QHBoxLayout(charts_header)
+        charts_header_layout.setContentsMargins(12, 6, 12, 6)
+
+        self._charts_toggle_btn = QPushButton("Resum Visual")
+        self._charts_toggle_btn.setCheckable(True)
+        self._charts_toggle_btn.setChecked(False)
+        self._charts_toggle_btn.setStyleSheet(
+            "QPushButton { background: transparent; border: none;"
+            " font-weight: bold; font-size: 11px; color: #2E86AB;"
+            " text-align: left; padding: 2px 0; }"
+        )
+        self._charts_toggle_btn.clicked.connect(self._on_charts_toggle)
+        charts_header_layout.addWidget(self._charts_toggle_btn)
+        charts_header_layout.addStretch()
+
+        charts_outer.addWidget(charts_header)
+
+        # Charts content (toggled)
+        self._charts_content = QWidget()
+        self._charts_content.setVisible(False)
+        self._charts_content_layout = QVBoxLayout(self._charts_content)
+        self._charts_content_layout.setContentsMargins(0, 4, 0, 0)
+        self._charts_content_layout.setSpacing(4)
+
+        if HAS_MATPLOTLIB:
+            # Category toggle buttons
+            sel_frame = QFrame()
+            sel_frame.setStyleSheet(
+                "QFrame { background: #fff; border: 1px solid #e0e0e0;"
+                " border-radius: 6px; }"
+            )
+            sel_layout = QHBoxLayout(sel_frame)
+            sel_layout.setContentsMargins(10, 6, 10, 6)
+            sel_layout.setSpacing(6)
+
+            sel_layout.addWidget(QLabel(
+                "<b style='font-size:11px;color:#555'>Visualitzar:</b>"
+            ))
+
+            self._cat_buttons = {}
+            self._cat_counts = {}
+            self._sample_checkboxes = []
+
+            for cat_key, label, color, checked in [
+                ("sample", "Mostres", "#2E86AB", True),
+                ("light", "Blancs/Control", "#888", False),
+                ("khp", "KHP", "#1565C0", False),
+            ]:
+                btn = QPushButton(label)
+                btn.setCheckable(True)
+                btn.setChecked(checked)
+                btn.clicked.connect(self._on_cat_toggle)
+                self._cat_buttons[cat_key] = btn
+                sel_layout.addWidget(btn)
+
+            self._update_cat_btn_styles()
+
+            # Separator
+            sel_layout.addWidget(QLabel(
+                "<span style='color:#ccc'>|</span>"
+            ))
+
+            # Wavelength selector for DAD charts
+            sel_layout.addWidget(QLabel(
+                "<b style='font-size:11px;color:#555'>DAD:</b>"
+            ))
+            self._wl_combo = QComboBox()
+            self._wl_combo.setStyleSheet(
+                "QComboBox { font-size: 11px; padding: 2px 6px;"
+                " border: 1px solid #ccc; border-radius: 3px; }"
+            )
+            for wl in ["254", "220", "252", "272", "290", "362"]:
+                self._wl_combo.addItem(f"A{wl}", wl)
+            self._wl_combo.currentIndexChanged.connect(self._on_wl_changed)
+            sel_layout.addWidget(self._wl_combo)
+
+            sel_layout.addStretch()
+            self._charts_content_layout.addWidget(sel_frame)
+
+            # Timeout timeline
+            self.timeout_figure = Figure(figsize=(10, 1.2), dpi=100)
+            self.timeout_figure.set_facecolor("#FAFAFA")
+            self.timeout_canvas = FigureCanvas(self.timeout_figure)
+            self.timeout_canvas.setMinimumHeight(80)
+            self.timeout_canvas.setMaximumHeight(100)
+            self._charts_content_layout.addWidget(self.timeout_canvas)
+
+            # DOC stacked bar
+            self.doc_figure = Figure(figsize=(10, 3.5), dpi=100)
+            self.doc_figure.set_facecolor("#FAFAFA")
+            self.doc_canvas = FigureCanvas(self.doc_figure)
+            self.doc_canvas.setMinimumHeight(220)
+            self._charts_content_layout.addWidget(self.doc_canvas)
+
+            # DOC overlay (chromatograms)
+            self.doc_overlay_figure = Figure(figsize=(10, 4), dpi=100)
+            self.doc_overlay_figure.set_facecolor("#FAFAFA")
+            self.doc_overlay_canvas = FigureCanvas(self.doc_overlay_figure)
+            self.doc_overlay_canvas.setMinimumHeight(250)
+            self._charts_content_layout.addWidget(self.doc_overlay_canvas)
+
+            # A254 bar
+            self.dad_figure = Figure(figsize=(10, 2.5), dpi=100)
+            self.dad_figure.set_facecolor("#FAFAFA")
+            self.dad_canvas = FigureCanvas(self.dad_figure)
+            self.dad_canvas.setMinimumHeight(180)
+            self._charts_content_layout.addWidget(self.dad_canvas)
+
+            # DAD overlay (254nm chromatograms)
+            self.dad_overlay_figure = Figure(figsize=(10, 4), dpi=100)
+            self.dad_overlay_figure.set_facecolor("#FAFAFA")
+            self.dad_overlay_canvas = FigureCanvas(self.dad_overlay_figure)
+            self.dad_overlay_canvas.setMinimumHeight(250)
+            self._charts_content_layout.addWidget(self.dad_overlay_canvas)
+
+        charts_outer.addWidget(self._charts_content)
+        layout.addWidget(self.charts_section)
 
         # Completar scroll area
         scroll_area.setWidget(scroll_content)
@@ -256,6 +402,11 @@ class AnalyzePanel(QWidget):
         self._selected_sample = None
         self._sample_row_map = {}
         self._status_initialized = False
+        self._chart_regular = {}
+        self._chart_light = {}
+        self._chart_khp = {}
+        self._chart_is_bp = False
+        self._charts_initialized = False
 
         self.results_table.setRowCount(0)
 
@@ -265,8 +416,11 @@ class AnalyzePanel(QWidget):
         self.progress_frame.setVisible(False)
         self.progress_bar.setValue(0)
         self.results_frame.setVisible(False)
+        self.charts_section.setVisible(False)
+        self._charts_content.setVisible(False)
+        self._charts_toggle_btn.setChecked(False)
         self.analyze_btn.setEnabled(True)
-        self.stats_label.setText("")
+        self.status_indicator.setText("")
 
     def _check_existing_analysis(self):
         """Comprova si existeix anàlisi prèvia i la carrega automàticament."""
@@ -289,6 +443,7 @@ class AnalyzePanel(QWidget):
         if self.samples_grouped:
             self.main_window.processed_data = result  # B1: needed for method/seq_path
             self._populate_table()
+            self._populate_charts(result)
             self.empty_state.setVisible(False)
             self.info_frame.setVisible(False)
             self.status_frame.setVisible(False)
@@ -309,8 +464,7 @@ class AnalyzePanel(QWidget):
             return
 
         self.empty_state.setVisible(False)
-        # Si ja hi ha resultats carregats, amagar info_frame (redundant)
-        self.info_frame.setVisible(not bool(self.samples_grouped))
+        self.info_frame.setVisible(True)
         self.status_frame.setVisible(False)
 
         # Use analyzed sample count if available, else imported injections
@@ -389,19 +543,13 @@ class AnalyzePanel(QWidget):
             )
             self.cal_info.setToolTip("No hi ha calibració disponible")
 
-        if self.samples_grouped:
-            n = len(self.samples_grouped)
-            self.status_indicator.setText(
-                f"<span style='background-color: #d4edda; color: #155724; "
-                f"padding: 4px 12px; border-radius: 12px; font-size: 11px;'>"
-                f"Anàlisi completada ({n} mostres)</span>"
-            )
-        else:
+        if not self.samples_grouped:
             self.status_indicator.setText(
                 f"<span style='background-color: #d4edda; color: #155724; "
                 f"padding: 4px 12px; border-radius: 12px; font-size: 11px;'>"
                 f"Llest per analitzar</span>"
             )
+        # Si ja hi ha resultats, status_indicator s'actualitza des de _populate_table
         self.analyze_btn.setEnabled(True)
 
     # ------------------------------------------------------------------
@@ -496,6 +644,8 @@ class AnalyzePanel(QWidget):
         self.progress_bar.setValue(0)
         self.results_frame.setVisible(False)
 
+        if self.worker is not None:
+            self.worker.wait()
         self.worker = AnalyzeWorker(imported_data, calibration_data)
         self.worker.progress.connect(self._on_progress)
         self.worker.finished.connect(self._on_finished)
@@ -508,6 +658,8 @@ class AnalyzePanel(QWidget):
 
     def _on_finished(self, result):
         """Gestiona la finalització de l'anàlisi."""
+        if self.worker is not None:
+            self.worker.wait()
         self.progress_frame.setVisible(False)
         self.analyze_btn.setEnabled(True)
 
@@ -526,6 +678,7 @@ class AnalyzePanel(QWidget):
 
         self._populate_table()
         self.results_frame.setVisible(True)
+        self._populate_charts(result)
 
         self.status_frame.setVisible(False)
         self.analyze_completed.emit(result)
@@ -581,7 +734,7 @@ class AnalyzePanel(QWidget):
         """Omple la taula unificada amb els resultats (13 cols, selectors DOC/DAD independents)."""
         self.results_table.setRowCount(0)
         self._sample_row_map = {}
-        n_ok, n_warning, n_error, n_light, n_khp = 0, 0, 0, 0, 0
+        n_ok, n_warning, n_error, n_light, n_khp, n_blank = 0, 0, 0, 0, 0, 0
 
         # Separar mostres per tipologia
         sample_names = []   # SAMPLE (mostres reals)
@@ -614,9 +767,8 @@ class AnalyzePanel(QWidget):
         for lst in (sample_names, pr_names, blank_names, khp_names, light_names):
             lst.sort(key=_min_inj_index)
 
-        # Decidir ordre segons combo agrupació
-        group_mode = getattr(self, 'group_combo', None)
-        by_type = group_mode and group_mode.currentIndex() == 1
+        # Decidir ordre segons botons agrupació
+        by_type = getattr(self, '_group_mode', 0) == 1
 
         if by_type:
             # "Per tipus": separadors entre grups
@@ -772,13 +924,13 @@ class AnalyzePanel(QWidget):
 
             # Col 8: A_254
             dad_areas = (dad_rep.get("areas") or {})
-            area_254 = dad_areas.get("A254", {}).get("total", 0)
+            area_254 = (dad_areas.get("A254") or {}).get("total", 0)
             self.results_table.setItem(row, 8, QTableWidgetItem(
                 f"{area_254:.1f}" if area_254 else "-"))
 
             # Col 9: SNR_254
             snr_info_dad = dad_rep.get("snr_info_dad") or {}
-            snr_254 = snr_info_dad.get("A254", {}).get("snr", 0)
+            snr_254 = (snr_info_dad.get("A254") or {}).get("snr", 0)
             snr_254_item = QTableWidgetItem(f"{snr_254:.0f}" if snr_254 else "-")
             if snr_254 and snr_254 < 10:
                 snr_254_item.setForeground(QBrush(QColor(COLOR_ERROR)))
@@ -846,8 +998,11 @@ class AnalyzePanel(QWidget):
             status_item.setToolTip(tooltip)
             self.results_table.setItem(row, 13, status_item)
 
-            # Count stats
-            if status_color == COLOR_ERROR:
+            # Count stats (blancs apart)
+            sample_data_st = sample_data.get("sample_type", "SAMPLE")
+            if sample_data_st == "BLANK":
+                n_blank += 1
+            elif status_color == COLOR_ERROR:
                 n_error += 1
             elif status_color == COLOR_WARNING:
                 n_warning += 1
@@ -911,7 +1066,7 @@ class AnalyzePanel(QWidget):
 
                 # Col 3: A_DOC
                 areas = doc_rep.get("areas", {})
-                area_doc = areas.get("DOC", {}).get("total", 0) if areas else 0
+                area_doc = (areas.get("DOC") or {}).get("total", 0) if areas else 0
                 area_item = QTableWidgetItem(f"{area_doc:.0f}" if area_doc else "-")
                 self.results_table.setItem(row, 3, area_item)
 
@@ -932,8 +1087,8 @@ class AnalyzePanel(QWidget):
                 # Col 8: A_254
                 a254 = 0
                 if areas:
-                    a254 = (areas.get("254nm", {}).get("total", 0) or
-                            areas.get("A254", {}).get("total", 0))
+                    a254 = ((areas.get("254nm") or {}).get("total", 0) or
+                            (areas.get("A254") or {}).get("total", 0))
                 a254_item = QTableWidgetItem(f"{a254:.0f}" if a254 else "-")
                 self.results_table.setItem(row, 8, a254_item)
 
@@ -1055,19 +1210,30 @@ class AnalyzePanel(QWidget):
 
                 n_light += 1
 
-        # Update stats bar
+        # Update stats (unified at top, in status_indicator)
         total = n_ok + n_warning + n_error
-        stats_text = (
-            f"<b>Total:</b> {total} mostres &nbsp;&nbsp;|&nbsp;&nbsp; "
-            f"<span style='color:#27AE60'>●</span> OK: {n_ok} &nbsp;&nbsp;"
-            f"<span style='color:#F39C12'>●</span> Warning: {n_warning} &nbsp;&nbsp;"
-            f"<span style='color:#E74C3C'>●</span> Error: {n_error}"
-        )
+        parts = [f"<b>{total}</b> mostres"]
+        if n_blank > 0:
+            parts.append(f"{n_blank} blancs")
         if n_khp > 0:
-            stats_text += f" &nbsp;&nbsp;|&nbsp;&nbsp; <span style='color:#1565C0'>●</span> KHP: {n_khp}"
+            parts.append(f"{n_khp} KHP")
         if n_light > 0:
-            stats_text += f" &nbsp;&nbsp;|&nbsp;&nbsp; <span style='color:#888888'>●</span> Neteja: {n_light}"
-        self.stats_label.setText(stats_text)
+            parts.append(f"{n_light} neteja")
+        counts = " &middot; ".join(parts)
+
+        status_parts = []
+        status_parts.append(f"<span style='color:#27AE60'>\u25cf</span>&nbsp;{n_ok}")
+        if n_warning > 0:
+            status_parts.append(f"<span style='color:#F39C12'>\u25cf</span>&nbsp;{n_warning}")
+        if n_error > 0:
+            status_parts.append(f"<span style='color:#E74C3C'>\u25cf</span>&nbsp;{n_error}")
+        status_str = " &nbsp;".join(status_parts)
+
+        self.status_indicator.setText(
+            f"<span style='background-color: #f8f9fa; color: #2c3e50; "
+            f"padding: 4px 12px; border-radius: 12px; font-size: 11px;'>"
+            f"{counts} &nbsp;|&nbsp; {status_str}</span>"
+        )
 
     # ------------------------------------------------------------------
     # Anomaly severity classification
@@ -1128,9 +1294,14 @@ class AnalyzePanel(QWidget):
         n_blocker = len(classified["blocker"])
         n_warn = len(classified["warning"])
         n_repaired = len(classified["repaired"])
+        # Repairable indicator
+        can_repair = (sample_data and sample_data.get("repairable")
+                      and not sample_data.get("repaired"))
+        repair_icon = " \u21bb" if can_repair else ""
+
         if has_blocker:
             status_color = COLOR_ERROR
-            status_text = f"{n_blocker} crític" if n_blocker == 1 else f"{n_blocker} crítics"
+            status_text = (f"{n_blocker} crític" if n_blocker == 1 else f"{n_blocker} crítics") + repair_icon
         elif has_warn or n_repaired:
             status_color = COLOR_WARNING
             parts = []
@@ -1140,7 +1311,7 @@ class AnalyzePanel(QWidget):
                 parts.append(f"{n_repaired} reparat" if n_repaired == 1 else f"{n_repaired} reparats")
             if n_timeouts > 0:
                 parts.append(f"{n_timeouts} timeout")
-            status_text = " · ".join(parts)
+            status_text = " \u00b7 ".join(parts) + repair_icon
         else:
             status_color = COLOR_SUCCESS
             status_text = "OK"
@@ -1196,8 +1367,29 @@ class AnalyzePanel(QWidget):
     # Group mode change
     # ------------------------------------------------------------------
 
-    def _on_group_changed(self, _index):
-        """Reomple la taula quan canvia el mode d'agrupació."""
+    def _style_group_btns(self):
+        """Aplica estil als botons toggle d'agrupació."""
+        for i, btn in enumerate(self._group_btns):
+            if i == self._group_mode:
+                btn.setStyleSheet(
+                    "QPushButton { background-color: #2E86AB; color: white; "
+                    "font-weight: bold; padding: 3px 12px; border-radius: 3px; "
+                    "border: none; font-size: 10px; }"
+                )
+            else:
+                btn.setStyleSheet(
+                    "QPushButton { background-color: #e9ecef; color: #495057; "
+                    "padding: 3px 12px; border-radius: 3px; "
+                    "border: 1px solid #ced4da; font-size: 10px; }"
+                    "QPushButton:hover { background-color: #dee2e6; }"
+                )
+
+    def _on_group_btn(self, idx):
+        """Canvia el mode d'agrupació i reomple la taula."""
+        self._group_mode = idx
+        for i, btn in enumerate(self._group_btns):
+            btn.setChecked(i == idx)
+        self._style_group_btns()
         if self.samples_grouped:
             self._populate_table()
 
@@ -1336,14 +1528,14 @@ class AnalyzePanel(QWidget):
 
         # Col 8: A_254
         dad_areas = (dad_rep.get("areas") or {})
-        area_254 = dad_areas.get("A254", {}).get("total", 0)
+        area_254 = (dad_areas.get("A254") or {}).get("total", 0)
         item_8 = self.results_table.item(row, 8)
         if item_8:
             item_8.setText(f"{area_254:.1f}" if area_254 else "-")
 
         # Col 9: SNR_254
         snr_info_dad = dad_rep.get("snr_info_dad") or {}
-        snr_254 = snr_info_dad.get("A254", {}).get("snr", 0)
+        snr_254 = (snr_info_dad.get("A254") or {}).get("snr", 0)
         snr_254_item = self.results_table.item(row, 9)
         if snr_254_item:
             snr_254_item.setText(f"{snr_254:.0f}" if snr_254 else "-")
@@ -1553,4 +1745,511 @@ class AnalyzePanel(QWidget):
                 self, "Error",
                 f"Error generant el report:\n{str(e)}"
             )
+
+    # ------------------------------------------------------------------
+    # Charts section (migrated from ReviewSummaryPanel)
+    # ------------------------------------------------------------------
+
+    def _on_charts_toggle(self):
+        """Toggle de la secció de gràfics."""
+        show = self._charts_toggle_btn.isChecked()
+        self._charts_content.setVisible(show)
+        arrow = "\u25bc" if show else "\u25b6"
+        self._charts_toggle_btn.setText(f"{arrow} Resum Visual")
+        if show and not self._charts_initialized:
+            self._charts_initialized = True
+            self._redraw_charts()
+
+    def _populate_charts(self, processed_data):
+        """Prepara dades pels gràfics i mostra la secció."""
+        if not HAS_MATPLOTLIB or not processed_data:
+            return
+
+        samples_grouped = processed_data.get("samples_grouped", {})
+        method = processed_data.get("method", "COLUMN")
+        is_bp = method.upper() == "BP"
+
+        regular = {}
+        light = {}
+        khp = {}
+        for name, data in samples_grouped.items():
+            if data.get("analysis_type") == "khp":
+                khp[name] = data
+            elif (data.get("analysis_type") == "light"
+                  or data.get("sample_type") in ("BLANK", "CONTROL")):
+                light[name] = data
+            else:
+                regular[name] = data
+
+        self._chart_regular = regular
+        self._chart_light = light
+        self._chart_khp = khp
+        self._chart_is_bp = is_bp
+
+        try:
+            self._plot_timeout_chart(processed_data, is_bp)
+        except Exception as e:
+            logger.error(f"Error plotting timeout chart: {e}")
+
+        self._build_sample_checkboxes(regular, light, khp)
+        self.charts_section.setVisible(True)
+        self._charts_toggle_btn.setText("\u25b6 Resum Visual")
+
+        if self._charts_toggle_btn.isChecked():
+            self._charts_initialized = True
+            self._redraw_charts()
+
+    def _build_sample_checkboxes(self, regular, light, khp):
+        """Registra mostres per categoria (sense checkboxes individuals)."""
+        self._sample_checkboxes = []
+        for name in sorted(regular.keys()):
+            self._sample_checkboxes.append((None, name, "sample"))
+        for name in sorted(light.keys()):
+            self._sample_checkboxes.append((None, name, "light"))
+        for name in sorted(khp.keys()):
+            self._sample_checkboxes.append((None, name, "khp"))
+
+        self._cat_counts = {
+            "sample": len(regular),
+            "light": len(light),
+            "khp": len(khp),
+        }
+        self._update_cat_btn_styles()
+
+    def _update_cat_btn_styles(self):
+        """Actualitza estil dels botons toggle de categoria."""
+        if not hasattr(self, '_cat_buttons'):
+            return
+        STYLES = {
+            "sample":  ("#2E86AB", "#fff"),
+            "light":   ("#888",    "#fff"),
+            "khp":     ("#1565C0", "#fff"),
+        }
+        for cat_key, btn in self._cat_buttons.items():
+            color, fg = STYLES.get(cat_key, ("#666", "#fff"))
+            count = self._cat_counts.get(cat_key, 0)
+            base_label = btn.text().split('(')[0].strip()
+            btn.setText(f"{base_label} ({count})" if count else base_label)
+            if btn.isChecked():
+                btn.setStyleSheet(
+                    f"QPushButton {{ background: {color}; color: {fg};"
+                    f" font-size: 10px; font-weight: bold; padding: 3px 10px;"
+                    f" border: none; border-radius: 3px; }}"
+                    f"QPushButton:hover {{ opacity: 0.9; }}"
+                )
+            else:
+                btn.setStyleSheet(
+                    f"QPushButton {{ background: #f0f0f0; color: {color};"
+                    f" font-size: 10px; padding: 3px 10px;"
+                    f" border: 1px solid #ddd; border-radius: 3px; }}"
+                    f"QPushButton:hover {{ background: #e4e4e4; }}"
+                )
+
+    def _on_cat_toggle(self):
+        """Un botó de categoria ha canviat."""
+        self._update_cat_btn_styles()
+        self._redraw_charts()
+
+    def _on_wl_changed(self):
+        """Longitud d'ona DAD seleccionada ha canviat — redibuixar gràfics DAD."""
+        if self._charts_initialized:
+            checked = self._get_checked_samples()
+            reg = {k: v for k, v in checked.items()
+                   if v.get("analysis_type") not in ("light",)
+                   and v.get("sample_type") not in ("BLANK", "CONTROL")}
+            light = {k: v for k, v in checked.items()
+                     if v.get("analysis_type") == "light"
+                     or v.get("sample_type") in ("BLANK", "CONTROL")}
+            try:
+                self._plot_dad_chart(reg, light)
+                self._plot_dad_overlay(reg, light)
+            except Exception as e:
+                logger.error(f"Error redrawing DAD charts: {e}")
+
+    def _get_selected_wl(self):
+        """Retorna la longitud d'ona DAD seleccionada (ex: '254')."""
+        if hasattr(self, '_wl_combo'):
+            return self._wl_combo.currentData() or "254"
+        return "254"
+
+    def _get_checked_samples(self):
+        """Retorna dict {name: data} de mostres de categories actives."""
+        all_data = {}
+        all_data.update(self._chart_regular)
+        all_data.update(self._chart_light)
+        all_data.update(getattr(self, '_chart_khp', {}))
+
+        active_cats = {cat for cat, btn in self._cat_buttons.items() if btn.isChecked()}
+        checked = {}
+        for _cb, name, cat in self._sample_checkboxes:
+            if cat in active_cats and name in all_data:
+                checked[name] = all_data[name]
+        return checked
+
+    def _redraw_charts(self):
+        """Redibuixa els 4 gràfics amb les mostres seleccionades."""
+        if not HAS_MATPLOTLIB:
+            return
+        checked = self._get_checked_samples()
+        reg = {k: v for k, v in checked.items()
+               if v.get("analysis_type") not in ("light",)
+               and v.get("sample_type") not in ("BLANK", "CONTROL")}
+        light = {k: v for k, v in checked.items()
+                 if v.get("analysis_type") == "light"
+                 or v.get("sample_type") in ("BLANK", "CONTROL")}
+        is_bp = getattr(self, '_chart_is_bp', False)
+        try:
+            self._plot_doc_chart(reg, light, is_bp)
+            self._plot_dad_chart(reg, light)
+            self._plot_doc_overlay(reg, light, is_bp)
+            self._plot_dad_overlay(reg, light)
+        except Exception as e:
+            logger.error(f"Error redrawing charts: {e}")
+
+    def _plot_timeout_chart(self, processed_data, is_bp):
+        """Diagrama fraccions (eix temps) amb comptador timeouts per zona."""
+        self.timeout_figure.clear()
+        ax = self.timeout_figure.add_subplot(111)
+
+        zone_totals = {}
+        for sample in processed_data.get("samples", []):
+            ti = sample.get("timeout_info") or {}
+            for zone, count in (ti.get("zone_summary") or {}).items():
+                zone_totals[zone] = zone_totals.get(zone, 0) + count
+
+        if is_bp:
+            zones = [
+                ("BP_PEAK", 0, 5, "#E74C3C"),
+                ("BP_TAIL", 5, 10, "#F39C12"),
+            ]
+            x_max = 12
+        else:
+            from hpsec_config import Config
+            cfg = Config()
+            fractions = cfg.get_all_fractions(mode="COLUMN")
+            max_dur = cfg.get("chromatogram", "max_duration_min", default=78.65)
+            zones = []
+            first_start = 10.8
+            if fractions:
+                first_start = fractions[0][1]["start"]
+            if first_start > 0:
+                zones.append(("RUN_START", 0, first_start, "#95a5a6"))
+            for name, frac in fractions:
+                color = FRACTION_COLORS.get(name, "#95a5a6")
+                zones.append((name, frac["start"], frac["end"], color))
+            last_end = zones[-1][2] if zones else 70
+            if max_dur > last_end:
+                zones.append(("POST_RUN", last_end, max_dur, "#d5dbdb"))
+            x_max = max_dur
+
+        for zone_name, t0, t1, color in zones:
+            count = zone_totals.get(zone_name, 0)
+            alpha = 0.8 if count > 0 else 0.3
+            ax.barh(0, t1 - t0, left=t0, height=0.6, color=color,
+                    alpha=alpha, edgecolor='white', linewidth=0.5)
+            mid = (t0 + t1) / 2
+            label = f"{zone_name}\n{count}" if count > 0 else zone_name
+            fw = 'bold' if count > 0 else 'normal'
+            fc = '#c0392b' if count > 0 else '#555'
+            ax.text(mid, 0, label, ha='center', va='center',
+                    fontsize=6, fontweight=fw, color=fc)
+
+        ax.set_xlim(0, x_max)
+        ax.set_yticks([])
+        ax.set_xlabel("Temps (min)", fontsize=7)
+        ax.tick_params(axis='x', labelsize=7)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.spines['left'].set_visible(False)
+        self.timeout_figure.tight_layout(pad=0.3)
+        self.timeout_canvas.draw()
+
+    def _plot_doc_chart(self, regular, light, is_bp):
+        """Gràfic DOC: barres stacked per fraccions (COLUMN) o simples (BP)."""
+        self.doc_figure.clear()
+        ax = self.doc_figure.add_subplot(111)
+
+        names = []
+        fractions_data = {f: [] for f in FRACTION_ORDER}
+        ppm_values = []
+
+        for name in sorted(regular.keys()):
+            data = regular[name]
+            sel = (data.get("selected") or {}).get("doc", "1")
+            rep = (data.get("replicas") or {}).get(sel, {})
+            areas = (rep.get("areas") or {}).get("DOC", {})
+            quant = data.get("quantification") or {}
+
+            names.append(name)
+            for frac in FRACTION_ORDER:
+                fractions_data[frac].append(areas.get(frac, 0))
+            ppm_values.append(quant.get("concentration_ppm") or 0)
+
+        light_start = len(names)
+        for name in sorted(light.keys()):
+            data = light[name]
+            sel = (data.get("selected") or {}).get("doc", "1")
+            rep = (data.get("replicas") or {}).get(sel, {})
+            area = rep.get("area_total", 0)
+
+            names.append(name)
+            for frac in FRACTION_ORDER:
+                fractions_data[frac].append(0)
+            ppm_values.append(0)
+            fractions_data["BioP"][-1] = area
+
+        if not names:
+            ax.text(0.5, 0.5, "Sense dades", ha='center', va='center', transform=ax.transAxes)
+            self.doc_canvas.draw()
+            return
+
+        x = np.arange(len(names))
+        bar_width = 0.7
+
+        if is_bp:
+            totals = [sum(fractions_data[f][i] for f in FRACTION_ORDER) for i in range(len(names))]
+            colors = ['#95a5a6' if i >= light_start else '#3498DB' for i in range(len(names))]
+            ax.bar(x, totals, bar_width, color=colors, edgecolor='white', linewidth=0.5)
+        else:
+            bottom = np.zeros(len(names))
+            for frac in FRACTION_ORDER:
+                values = np.array(fractions_data[frac], dtype=float)
+                colors = []
+                for i in range(len(names)):
+                    if i >= light_start:
+                        colors.append('#B0B0B0')
+                    else:
+                        colors.append(FRACTION_COLORS[frac])
+                ax.bar(x, values, bar_width, bottom=bottom, color=colors,
+                       edgecolor='white', linewidth=0.3, label=frac)
+                bottom += values
+
+            handles = [
+                ax.bar(0, 0, color=FRACTION_COLORS[f], label=f)[0]
+                for f in FRACTION_ORDER
+            ]
+            ax.legend(handles=handles, labels=FRACTION_ORDER,
+                      loc='upper right', fontsize=8, framealpha=0.8, ncol=len(FRACTION_ORDER))
+
+        ax.set_xticks(x)
+        ax.set_xticklabels(names, rotation=45, ha='right', fontsize=8)
+        ax.set_ylabel("Àrea DOC", fontsize=9)
+        ax.set_title("DOC per mostra (fraccions)", fontsize=10, fontweight='bold')
+        ax.tick_params(axis='y', labelsize=8)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        self.doc_figure.tight_layout()
+        self.doc_canvas.draw()
+
+    def _plot_dad_chart(self, regular, light):
+        """Gràfic DAD per mostra: barres stacked per fraccions (COLUMN) o simples (BP)."""
+        self.dad_figure.clear()
+        ax = self.dad_figure.add_subplot(111)
+        wl = self._get_selected_wl()
+        wl_key = f"A{wl}"
+        is_bp = getattr(self, '_chart_is_bp', False)
+
+        names = []
+        fractions_data = {f: [] for f in FRACTION_ORDER}
+
+        for name in sorted(regular.keys()):
+            data = regular[name]
+            selected = data.get("selected") or {}
+            sel = selected.get("dad", selected.get("doc", "1"))
+            rep = (data.get("replicas") or {}).get(sel, {})
+            areas = (rep.get("areas") or {}).get(wl_key, {})
+            names.append(name)
+            for frac in FRACTION_ORDER:
+                fractions_data[frac].append(areas.get(frac, 0))
+
+        light_start = len(names)
+        for name in sorted(light.keys()):
+            data = light[name]
+            sel = (data.get("selected") or {}).get("doc", "1")
+            rep = (data.get("replicas") or {}).get(sel, {})
+            area = ((rep.get("areas") or {}).get(wl_key) or {}).get("total", 0)
+            names.append(name)
+            for frac in FRACTION_ORDER:
+                fractions_data[frac].append(0)
+            fractions_data["BioP"][-1] = area
+
+        if not names:
+            ax.text(0.5, 0.5, "Sense dades", ha='center', va='center', transform=ax.transAxes)
+            self.dad_canvas.draw()
+            return
+
+        x = np.arange(len(names))
+        bar_width = 0.7
+
+        if is_bp:
+            totals = [sum(fractions_data[f][i] for f in FRACTION_ORDER) for i in range(len(names))]
+            colors = ['#95a5a6' if i >= light_start else '#E74C3C' for i in range(len(names))]
+            ax.bar(x, totals, bar_width, color=colors, edgecolor='white', linewidth=0.5)
+        else:
+            bottom = np.zeros(len(names))
+            for frac in FRACTION_ORDER:
+                values = np.array(fractions_data[frac], dtype=float)
+                colors = []
+                for i in range(len(names)):
+                    if i >= light_start:
+                        colors.append('#B0B0B0')
+                    else:
+                        colors.append(FRACTION_COLORS[frac])
+                ax.bar(x, values, bar_width, bottom=bottom, color=colors,
+                       edgecolor='white', linewidth=0.3, label=frac)
+                bottom += values
+
+            handles = [
+                ax.bar(0, 0, color=FRACTION_COLORS[f], label=f)[0]
+                for f in FRACTION_ORDER
+            ]
+            ax.legend(handles=handles, labels=FRACTION_ORDER,
+                      loc='upper right', fontsize=8, framealpha=0.8, ncol=len(FRACTION_ORDER))
+
+        ax.set_xticks(x)
+        ax.set_xticklabels(names, rotation=45, ha='right', fontsize=8)
+        ax.set_ylabel(f"Àrea {wl_key}", fontsize=9)
+        ax.set_title(f"{wl_key} per mostra (fraccions)", fontsize=10, fontweight='bold')
+        ax.tick_params(axis='y', labelsize=8)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        self.dad_figure.tight_layout()
+        self.dad_canvas.draw()
+
+    def _plot_doc_overlay(self, regular, light, is_bp):
+        """Cromatogrames DOC superposats."""
+        self.doc_overlay_figure.clear()
+        ax = self.doc_overlay_figure.add_subplot(111)
+
+        all_samples = {}
+        all_samples.update(regular)
+        all_samples.update(light)
+
+        if not all_samples:
+            ax.text(0.5, 0.5, "Sense dades", ha='center', va='center',
+                    transform=ax.transAxes, color='#999')
+            self.doc_overlay_canvas.draw()
+            return
+
+        import matplotlib.cm as cm
+        n = len(all_samples)
+        cmap = cm.get_cmap('tab20', max(n, 1))
+
+        for i, (name, data) in enumerate(sorted(all_samples.items())):
+            sel = (data.get("selected") or {}).get("doc", "1")
+            rep = (data.get("replicas") or {}).get(sel, {})
+            t = rep.get("t_doc")
+            y = rep.get("y_doc_net")
+            if t is not None and y is not None and len(t) > 0:
+                ax.plot(t, y, label=name, linewidth=0.8, alpha=0.7, color=cmap(i))
+
+        ax.set_xlabel("Temps (min)", fontsize=9)
+        ax.set_ylabel("DOC (ppb)", fontsize=9)
+        ax.set_title("Cromatogrames DOC superposats", fontsize=10, fontweight='bold')
+        ax.tick_params(axis='both', labelsize=8)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+
+        handles, labels = ax.get_legend_handles_labels()
+        if handles:
+            if len(handles) > 12:
+                ax.legend(handles, labels, loc='upper left',
+                          bbox_to_anchor=(1.01, 1), fontsize=6, framealpha=0.8,
+                          ncol=1, handlelength=1.5, borderaxespad=0)
+            else:
+                ax.legend(loc='upper right', fontsize=7, framealpha=0.8)
+
+        self.doc_overlay_figure.tight_layout()
+        self.doc_overlay_canvas.draw()
+
+    def _plot_dad_overlay(self, regular, light):
+        """Cromatogrames DAD superposats (longitud d'ona seleccionada)."""
+        self.dad_overlay_figure.clear()
+        ax = self.dad_overlay_figure.add_subplot(111)
+        wl = self._get_selected_wl()
+
+        all_samples = {}
+        all_samples.update(regular)
+        all_samples.update(light)
+
+        if not all_samples:
+            ax.text(0.5, 0.5, "Sense dades", ha='center', va='center',
+                    transform=ax.transAxes, color='#999')
+            self.dad_overlay_canvas.draw()
+            return
+
+        import matplotlib.cm as cm
+        n = len(all_samples)
+        cmap = cm.get_cmap('tab20', max(n, 1))
+
+        for i, (name, data) in enumerate(sorted(all_samples.items())):
+            selected = data.get("selected") or {}
+            sel = selected.get("dad", selected.get("doc", "1"))
+            rep = (data.get("replicas") or {}).get(sel, {})
+            df_dad = rep.get("df_dad")
+            if df_dad is None:
+                continue
+            try:
+                if df_dad.empty:
+                    continue
+            except AttributeError:
+                continue
+
+            t_col = None
+            for c in df_dad.columns:
+                if 'time' in str(c).lower():
+                    t_col = c
+                    break
+            wl_col = None
+            for c in df_dad.columns:
+                if wl in str(c):
+                    wl_col = c
+                    break
+
+            if t_col is not None and wl_col is not None:
+                ax.plot(df_dad[t_col], df_dad[wl_col], label=name,
+                        linewidth=0.8, alpha=0.7, color=cmap(i))
+
+        ax.set_xlabel("Temps (min)", fontsize=9)
+        ax.set_ylabel(f"A{wl} (mAU)", fontsize=9)
+        ax.set_title(f"Cromatogrames A{wl} superposats", fontsize=10, fontweight='bold')
+        ax.tick_params(axis='both', labelsize=8)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+
+        handles, labels = ax.get_legend_handles_labels()
+        if handles:
+            if len(handles) > 12:
+                ax.legend(handles, labels, loc='upper left',
+                          bbox_to_anchor=(1.01, 1), fontsize=6, framealpha=0.8,
+                          ncol=1, handlelength=1.5, borderaxespad=0)
+            else:
+                ax.legend(loc='upper right', fontsize=7, framealpha=0.8)
+
+        self.dad_overlay_figure.tight_layout()
+        self.dad_overlay_canvas.draw()
+
+    def save_charts(self, seq_path):
+        """Guarda els 5 gràfics a SEQ/CHECK/plots/."""
+        if not HAS_MATPLOTLIB or not seq_path:
+            return
+        try:
+            plots_dir = Path(seq_path) / "CHECK" / "plots"
+            plots_dir.mkdir(parents=True, exist_ok=True)
+
+            for name, fig in [
+                ("timeout_zones.png", self.timeout_figure),
+                ("doc_areas.png", self.doc_figure),
+                ("doc_overlay.png", self.doc_overlay_figure),
+                ("dad_areas.png", self.dad_figure),
+                ("dad_overlay.png", self.dad_overlay_figure),
+            ]:
+                fig.savefig(
+                    str(plots_dir / name), dpi=150, bbox_inches='tight',
+                    facecolor='#FAFAFA', edgecolor='none',
+                )
+
+            logger.info(f"Charts saved to {plots_dir}")
+        except Exception as e:
+            logger.error(f"Error saving charts: {e}")
 

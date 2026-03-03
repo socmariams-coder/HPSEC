@@ -1773,11 +1773,11 @@ def parse_injections_from_masterfile(master_data, config=None):
                 pass
             break
 
-    # Columna N (índex 13) per volum si no té etiqueta NI 0-INFO
+    # Columna N (índex 13) per volum — prioritat sobre 0-INFO
     # Heurístic: columna sense capçalera a posició 13 amb valors numèrics 50-1000.
     # S'aplica a TOTS els modes (COLUMN i BP). Els volums per injecció són
-    # la font de veritat — si no existeixen, NO suposar cap valor per defecte.
-    if volume_col is None and info_volume is None:
+    # la font de veritat (per-injecció > global 0-INFO).
+    if volume_col is None:
         col_list = list(df_seq.columns)
         if len(col_list) > 13:
             potential_vol_col = col_list[13]
@@ -1790,6 +1790,16 @@ def parse_injections_from_masterfile(master_data, config=None):
                         logger.info("Volume heuristic: columna index-13 '%s' detectada amb valors %s",
                                     potential_vol_col,
                                     [float(v) for v in numeric_vals.head(3)])
+                        # Validació creuada: si 0-INFO té volum i difereix de col N
+                        if info_volume is not None:
+                            col_n_vals = set(int(v) for v in numeric_vals)
+                            if len(col_n_vals) == 1 and int(info_volume) == list(col_n_vals)[0]:
+                                pass  # Coincideixen, tot OK
+                            elif len(col_n_vals) >= 1 and int(info_volume) not in col_n_vals:
+                                warnings.append(
+                                    f"VOLUM DISCREPANT: 0-INFO diu {int(info_volume)}µL "
+                                    f"però columna N (index-13) té {sorted(col_n_vals)}µL. "
+                                    f"S'utilitzen els volums per injecció de la columna N.")
             except Exception as e:
                 logger.debug("Volume column index-13 heuristic failed: %s", e)
 

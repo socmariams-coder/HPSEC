@@ -4070,11 +4070,16 @@ def _generate_calibration_warnings(result: dict, method: str = "COLUMN") -> list
             rsd_key = ("KHP_RSD_HIGH", cal.get("khp_name", "KHP"))
             if rsd_key not in seen_anomalies:
                 seen_anomalies.add(rsd_key)
-                warnings.append(create_anomaly(
+                anom = create_anomaly(
                     "KHP_RSD_HIGH",
                     details={"rsd": rsd, "threshold": 10},
                     sample=cal.get("khp_name", "KHP"),
-                ))
+                )
+                anom["message"] = (
+                    f"Variabilitat alta entre rèpliques KHP "
+                    f"(RSD={rsd:.1f}%, llindar=10%)"
+                )
+                warnings.append(anom)
 
     # 3. Sense KHP local — shift no verificable
     if result.get("khp_source") == "SENSE_KHP":

@@ -711,7 +711,7 @@ class SequenceState:
             Phase.IMPORT: "Importar",
             Phase.CALIBRATE: "Verificar",
             Phase.ANALYZE: "Analitzar",
-            Phase.REVIEW: "Revisar",
+            Phase.REVIEW: "Exportar",
         }
         return actions.get(phase, "Completat")
 

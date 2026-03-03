@@ -104,7 +104,7 @@ def populate_signal_summary(table, rep_data, signal_keys, show_timeouts=True):
 
         if key == "DOC":
             tmax = tmax_signals.get("DOC", 0)
-            area = areas.get("DOC", {}).get("total", 0)
+            area = (areas.get("DOC") or {}).get("total", 0)
             snr = snr_info.get("snr_direct", 0)
             timeout_text = ""
             if n_timeouts > 0:
@@ -118,8 +118,8 @@ def populate_signal_summary(table, rep_data, signal_keys, show_timeouts=True):
             timeout_text = "propagat de Direct" if n_timeouts > 0 else ""
         else:
             tmax = tmax_signals.get(key, 0)
-            area = areas.get(key, {}).get("total", 0)
-            snr_entry = snr_dad.get(key, {})
+            area = (areas.get(key) or {}).get("total", 0)
+            snr_entry = snr_dad.get(key) or {}
             snr = snr_entry.get("snr", 0) if isinstance(snr_entry, dict) else 0
             timeout_text = ""
 
@@ -179,12 +179,12 @@ def populate_fractions_table(table, rep_data, is_bp, wavelengths,
             totals["DOC_D"] = doc_areas.get("total", 0)
             totals["DOC_U"] = uib_areas.get("total", 0)
             for wl in wavelengths:
-                totals[wl] = areas.get(wl, {}).get("total", 0)
+                totals[wl] = (areas.get(wl) or {}).get("total", 0)
         else:
             totals["DOC_D"] += doc_areas.get(frac_name, 0)
             totals["DOC_U"] += uib_areas.get(frac_name, 0)
             for wl in wavelengths:
-                totals[wl] += areas.get(wl, {}).get(frac_name, 0)
+                totals[wl] += (areas.get(wl) or {}).get(frac_name, 0)
 
     # --- Area rows ---
     for frac_name, rang in fracs:
@@ -198,7 +198,7 @@ def populate_fractions_table(table, rep_data, is_bp, wavelengths,
         _set_area_cell(table, row, 3, uib_areas.get(key, 0))
 
         for j, wl in enumerate(wavelengths):
-            _set_area_cell(table, row, 4 + j, areas.get(wl, {}).get(key, 0))
+            _set_area_cell(table, row, 4 + j, (areas.get(wl) or {}).get(key, 0))
 
     # --- Total + percentage rows (COLUMN only) ---
     if not is_bp:
@@ -235,7 +235,7 @@ def populate_fractions_table(table, rep_data, is_bp, wavelengths,
             _set_pct_cell(table, row, 3, uib_areas.get(frac_name, 0), totals.get("DOC_U", 0))
 
             for j, wl in enumerate(wavelengths):
-                val = areas.get(wl, {}).get(frac_name, 0)
+                val = (areas.get(wl) or {}).get(frac_name, 0)
                 _set_pct_cell(table, row, 4 + j, val, totals.get(wl, 0))
 
         # --- DOC/A254 ratio (optional, for detail dialog) ---
@@ -256,7 +256,7 @@ def populate_fractions_table(table, rep_data, is_bp, wavelengths,
                 table.setItem(row, 1, QTableWidgetItem(""))
 
                 val_d = doc_areas.get(frac_name, 0)
-                val_254 = areas.get("A254", {}).get(frac_name, 0)
+                val_254 = (areas.get("A254") or {}).get(frac_name, 0)
                 ratio = (val_d / val_254) if val_254 > 0 else 0
                 ratio_item = QTableWidgetItem(f"{ratio:.2f}" if ratio > 0 else "-")
                 ratio_item.setFont(italic)

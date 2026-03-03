@@ -28,6 +28,8 @@ def read_current_delay(mf_path):
     """
     Llegeix el Net delay actual d'un MasterFile.
 
+    Prioritat: "Net delay (Suite)" (corregit) > B12 (original).
+
     Args:
         mf_path: Path al MasterFile (.xlsx)
 
@@ -42,10 +44,25 @@ def read_current_delay(mf_path):
             wb.close()
             return None
         ws = wb['0-INFO']
-        delay = ws['B12'].value
+
+        # Buscar "Net delay (Suite)" — valor corregit per la Suite (prioritari)
+        suite_delay = None
+        for row in range(1, ws.max_row + 1):
+            key = ws.cell(row=row, column=1).value
+            if key and 'net delay (suite)' in str(key).lower():
+                val = ws.cell(row=row, column=2).value
+                if val is not None:
+                    suite_delay = float(val)
+                break
+
+        # Fallback: B12 (delay original)
+        original_delay = ws['B12'].value
         wb.close()
-        if delay is not None:
-            return float(delay)
+
+        if suite_delay is not None:
+            return suite_delay
+        if original_delay is not None:
+            return float(original_delay)
         return None
     except Exception as e:
         logger.warning(f"Error llegint delay de {mf_path}: {e}")
@@ -271,12 +288,27 @@ def update_masterfile_delay(mf_path, net_delay_min, pre_margin_min=1.5,
 
         wb = openpyxl.load_workbook(str(mf_path))
 
-        # Llegir delay antic
+        # Llegir delay antic (B12 original)
         ws_info = wb['0-INFO']
-        result['old_delay'] = ws_info['B12'].value
+        original_b12 = ws_info['B12'].value
+        result['old_delay'] = original_b12
 
-        # Actualitzar delay
-        ws_info['B12'] = round(net_delay_min, 4)
+        # NO sobreescriure B12 — afegir fila "Net delay (Suite)" per audit trail
+        # Buscar si ja existeix una fila "Net delay (Suite)"
+        suite_row = None
+        last_row = ws_info.max_row
+        for row in range(1, last_row + 1):
+            key = ws_info.cell(row=row, column=1).value
+            if key and 'net delay (suite)' in str(key).lower():
+                suite_row = row
+                break
+
+        if suite_row is None:
+            # Afegir noves files al final
+            suite_row = last_row + 1
+            ws_info.cell(row=suite_row, column=1, value='Net delay (Suite)')
+
+        ws_info.cell(row=suite_row, column=2, value=round(net_delay_min, 4))
 
         # Llegir timestamps
         hplc_times, hplc_samples = _read_hplc_timestamps(wb)

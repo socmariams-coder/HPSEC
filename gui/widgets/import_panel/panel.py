@@ -473,6 +473,7 @@ class ImportPanel(QWidget):
         self.import_completed.emit({
             'success': True,
             'warnings': result.get('warnings', []),
+            'warnings_structured': result.get('warnings_structured', []),
             'orphan_files': result.get('orphan_files', {}),
             'warnings_confirmed': self._warnings_confirmed,
             'orphan_warning_dismissed': self._orphan_warning_dismissed,

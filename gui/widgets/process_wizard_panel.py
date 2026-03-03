@@ -7,7 +7,7 @@ Panel per processar seqüències amb pestanyes per cada fase:
 1. Importar - Llegir dades RAW
 2. Verificar - QA/QC KHP i diagnòstic delay
 3. Analitzar - Detectar anomalies i calcular àrees
-4. Revisar - Revisió de qualitat i generació de resultats
+4. Exportar - Generació de resultats i exportació
 
 Estructura visual optimitzada:
 - Header mínim amb nom SEQ i botó tornar
@@ -267,7 +267,6 @@ from gui.widgets.import_panel import ImportPanel
 from gui.widgets.calibrate_panel import CalibratePanel
 from gui.widgets.analyze_panel import AnalyzePanel
 from gui.widgets.export_panel import ExportPanel
-from gui.widgets.review_summary_panel import ReviewSummaryPanel
 
 
 class ProcessWizardPanel(QWidget):
@@ -280,7 +279,7 @@ class ProcessWizardPanel(QWidget):
     process_completed = Signal(dict)
     sequence_loaded = Signal(str)
 
-    TAB_NAMES = ["1. Importar", "2. Verificar", "3. Analitzar", "4. Revisar"]
+    TAB_NAMES = ["1. Importar", "2. Verificar", "3. Analitzar", "4. Exportar"]
     TAB_ICONS = {
         "pending": "○",
         "current": "►",
@@ -318,14 +317,16 @@ class ProcessWizardPanel(QWidget):
         self.import_panel = ImportPanel(self.main_window)
         self.calibrate_panel = CalibratePanel(self.main_window)
         self.analyze_panel = AnalyzePanel(self.main_window)
-        self.export_panel = ExportPanel(self.main_window)  # Kept for independent use
-        self.review_panel = ReviewSummaryPanel(self.main_window)
+        self.export_panel = ExportPanel(self.main_window)
+
+        # Reference for ExportPanel to access AnalyzePanel's save_charts
+        self.main_window._wizard_analyze_panel = self.analyze_panel
 
         # Afegir pestanyes
         self.tab_widget.addTab(self.import_panel, self._tab_title(0))
         self.tab_widget.addTab(self.calibrate_panel, self._tab_title(1))
         self.tab_widget.addTab(self.analyze_panel, self._tab_title(2))
-        self.tab_widget.addTab(self.review_panel, self._tab_title(3))
+        self.tab_widget.addTab(self.export_panel, self._tab_title(3))
 
         # Amagar botons de navegació dels panels (innecessaris amb pestanyes)
         self._hide_panel_navigation()
@@ -538,9 +539,9 @@ class ProcessWizardPanel(QWidget):
         elif current_idx == 2:  # Analitzar
             if hasattr(self.analyze_panel, '_run_analyze'):
                 self.analyze_panel._run_analyze()
-        elif current_idx == 3:  # Revisar
-            if hasattr(self.review_panel, '_run_generate'):
-                self.review_panel._run_generate()
+        elif current_idx == 3:  # Exportar
+            if hasattr(self.export_panel, '_run_generate'):
+                self.export_panel._run_generate()
 
     def _confirm_reprocess(self, current_idx: int) -> bool:
         """
@@ -549,7 +550,7 @@ class ProcessWizardPanel(QWidget):
         """
         # Comprovar si hi ha etapes posteriors completades
         later_completed = []
-        stage_names = {0: "Importar", 1: "Verificar", 2: "Analitzar", 3: "Revisar"}
+        stage_names = {0: "Importar", 1: "Verificar", 2: "Analitzar", 3: "Exportar"}
 
         for i in range(current_idx + 1, 4):
             if self.tab_states[i] in ("ok", "warning"):
@@ -612,9 +613,9 @@ class ProcessWizardPanel(QWidget):
             if hasattr(self.analyze_panel, 'next_btn'):
                 self.analyze_panel.next_btn.setEnabled(False)
 
-        if from_idx < 3:  # Si reimportem, recalibrem o reanalitzem, netejar revisió
-            if hasattr(self.review_panel, 'reset'):
-                self.review_panel.reset()
+        if from_idx < 3:  # Si reimportem, recalibrem o reanalitzem, netejar exportació
+            if hasattr(self.export_panel, 'reset'):
+                self.export_panel.reset()
 
     def _on_tab_context_menu(self, pos):
         """Context menu al clicar dret sobre un tab: permet reset des d'aquí."""
@@ -622,7 +623,7 @@ class ProcessWizardPanel(QWidget):
         if tab_idx < 0:
             return
 
-        stage_names = {0: "Importar", 1: "Verificar", 2: "Analitzar", 3: "Revisar"}
+        stage_names = {0: "Importar", 1: "Verificar", 2: "Analitzar", 3: "Exportar"}
         menu = QMenu(self)
         action = menu.addAction(f"↺ Reset des de '{stage_names[tab_idx]}'")
         action.triggered.connect(lambda: self._reset_from_stage(tab_idx))
@@ -739,7 +740,7 @@ class ProcessWizardPanel(QWidget):
 
     def _execute_stage(self, stage_idx: int):
         """Executa l'operaci\u00f3 de l'etapa indicada."""
-        stage_names = {1: "Calibrant", 2: "Analitzant", 3: "Revisant"}
+        stage_names = {1: "Calibrant", 2: "Analitzant", 3: "Exportant"}
         stage_name = stage_names.get(stage_idx, "Executant")
 
         self._show_executing_state(stage_name)
@@ -751,7 +752,7 @@ class ProcessWizardPanel(QWidget):
             elif stage_idx == 2:  # Analitzar
                 if hasattr(self.analyze_panel, '_run_analyze'):
                     self.analyze_panel._run_analyze()
-            elif stage_idx == 3:  # Revisar
+            elif stage_idx == 3:  # Exportar
                 self._update_header_for_tab(stage_idx)
         except Exception as e:
             logger.error(f"_execute_stage({stage_idx}): {e}")
@@ -895,13 +896,13 @@ class ProcessWizardPanel(QWidget):
             self._notes_dialog = None
 
         current_idx = self.tab_widget.currentIndex()
-        stage_names = {0: "Importar", 1: "Verificar", 2: "Analitzar", 3: "Revisar"}
+        stage_names = {0: "Importar", 1: "Verificar", 2: "Analitzar", 3: "Exportar"}
         stage_name = stage_names.get(current_idx, "Etapa")
 
         # Carregar totes les notes
         existing_notes = self._load_existing_notes()
         stage_labels = {"import": "Importar", "calibrate": "Verificar",
-                       "analyze": "Analitzar", "export": "Revisar"}
+                       "analyze": "Analitzar", "export": "Exportar"}
 
         dialog = QDialog(self)
         dialog.setWindowTitle("Notes")
@@ -1149,7 +1150,7 @@ class ProcessWizardPanel(QWidget):
     def _collect_warnings(self, data: dict, warning_fields: list, stage_idx: int) -> list:
         """Recull els avisos del JSON en format llegible per guardar com a notes."""
         notes = []
-        stage_names = {0: "Importar", 1: "Verificar", 2: "Analitzar", 3: "Revisar"}
+        stage_names = {0: "Importar", 1: "Verificar", 2: "Analitzar", 3: "Exportar"}
 
         for field in warning_fields:
             value = data.get(field)
@@ -1224,7 +1225,7 @@ class ProcessWizardPanel(QWidget):
         Layout ESTABLE: status_indicator + note_btn + action_btn + next_step_btn.
         Tots sempre visibles. Només canvien: enabled/disabled, text, color/estil, tooltip.
         """
-        tab_names = {0: "Importar", 1: "Verificar", 2: "Analitzar", 3: "Revisar"}
+        tab_names = {0: "Importar", 1: "Verificar", 2: "Analitzar", 3: "Exportar"}
         base_name = tab_names.get(index, "Executar")
         state = self.tab_states[index]
         has_confirmed = self._has_confirmed_warnings(index)
@@ -1256,9 +1257,9 @@ class ProcessWizardPanel(QWidget):
                 self.status_indicator.setToolTip("Hi ha errors que bloquegen. Clic per veure.")
                 self._set_status_indicator_style("blocker")
             elif warning_level == "warning":
-                self.status_indicator.setText("\u26A0 Revisar")
+                self.status_indicator.setText("\u26A0 Avisos")
                 self.status_indicator.setEnabled(True)
-                self.status_indicator.setToolTip("Hi ha avisos pendents. Clic per revisar.")
+                self.status_indicator.setToolTip("Hi ha avisos pendents. Clic per veure.")
                 self._set_status_indicator_style("warning")
             else:  # info
                 self.status_indicator.setText("\u2139 Info")
@@ -1418,7 +1419,7 @@ class ProcessWizardPanel(QWidget):
 
     def _show_error_details(self, stage_idx: int):
         """Mostra els detalls d'un error en un diàleg."""
-        stage_names = {0: "Importar", 1: "Verificar", 2: "Analitzar", 3: "Revisar"}
+        stage_names = {0: "Importar", 1: "Verificar", 2: "Analitzar", 3: "Exportar"}
         stage_name = stage_names.get(stage_idx, "Desconegut")
 
         # Intentar llegir errors del JSON
@@ -1487,7 +1488,7 @@ class ProcessWizardPanel(QWidget):
     def _hide_panel_navigation(self):
         """Amaga botons de navegació i acció dels panels (els botons són al header del wizard)."""
         for panel in [self.import_panel, self.calibrate_panel,
-                      self.analyze_panel, self.review_panel]:
+                      self.analyze_panel, self.export_panel]:
             if hasattr(panel, 'next_btn'):
                 panel.next_btn.setVisible(False)
             if hasattr(panel, 'prev_btn'):
@@ -1507,8 +1508,9 @@ class ProcessWizardPanel(QWidget):
         self.import_panel.import_completed.connect(self._on_import_completed)
         self.import_panel.warnings_dismissed.connect(self._on_import_warnings_dismissed)
         self.calibrate_panel.calibration_completed.connect(self._on_calibrate_completed)
+        self.calibrate_panel.delay_corrected.connect(self._on_delay_corrected)
         self.analyze_panel.analyze_completed.connect(self._on_analyze_completed)
-        self.review_panel.review_completed.connect(self._on_export_completed)
+        self.export_panel.export_completed.connect(self._on_export_completed)
 
     def _go_to_dashboard(self):
         """Torna al Dashboard."""
@@ -1542,10 +1544,10 @@ class ProcessWizardPanel(QWidget):
         self._preload_completed_stages(seq_path)
 
         # Anar a primera etapa que necessita atenció (warning o pending)
-        # Si tot és "ok", anar a l'última etapa (Revisar)
+        # Si tot és "ok", anar a l'última etapa (Exportar)
         first_needs_attention = next(
             (i for i, s in enumerate(self.tab_states) if s in ("warning", "pending", "current")),
-            3  # Tot completat → anar a Revisar
+            3  # Tot completat → anar a Exportar
         )
         self.tab_widget.setCurrentIndex(first_needs_attention)
         self._update_header_for_tab(first_needs_attention)
@@ -1577,8 +1579,8 @@ class ProcessWizardPanel(QWidget):
             self._execute_stage(1)
         elif stage_idx == 2:  # Analitzar
             self._execute_stage(2)
-        elif stage_idx == 3:  # Revisar
-            # No auto-executa; l'usuari revisa i clica "Generar Resultats"
+        elif stage_idx == 3:  # Exportar
+            # No auto-executa; l'usuari exporta des del panel
             pass
 
     def _reset_all_panels(self):
@@ -1601,8 +1603,8 @@ class ProcessWizardPanel(QWidget):
         if hasattr(self.analyze_panel, 'reset'):
             self.analyze_panel.reset()
 
-        if hasattr(self.review_panel, 'reset'):
-            self.review_panel.reset()
+        if hasattr(self.export_panel, 'reset'):
+            self.export_panel.reset()
 
     def _preload_completed_stages(self, seq_path: str):
         """Pre-carrega dades des de JSON per etapes ja completades (evita reimportar)."""
@@ -1846,7 +1848,7 @@ class ProcessWizardPanel(QWidget):
                 0: "import_manifest.json",
                 1: "calibration_result.json",
                 2: "analysis_result.json",
-                # Tab 3 (Revisar) no té JSON d'estat
+                # Tab 3 (Exportar) no té JSON d'estat
             }
 
             filename = json_files.get(stage_idx)
@@ -1900,8 +1902,8 @@ class ProcessWizardPanel(QWidget):
         elif index == 2:  # Analitzar
             if hasattr(self.analyze_panel, '_check_existing_analysis'):
                 self.analyze_panel._check_existing_analysis()
-        elif index == 3:  # Revisar
-            # Review panel s'actualitza automàticament via showEvent
+        elif index == 3:  # Exportar
+            # Export panel s'actualitza automàticament via showEvent
             pass
 
     def _on_import_completed(self, data):
@@ -1933,6 +1935,14 @@ class ProcessWizardPanel(QWidget):
         if self.tab_states[0] == "warning":
             self._set_tab_state(0, "ok")
             self.main_window.set_status("Avisos d'importació marcats com a revisats", 2000)
+
+    def _on_delay_corrected(self):
+        """Delay corregit al MasterFile — tornar a Importar i reimportar."""
+        self._invalidate_later_stages(0)
+        self.main_window.imported_data = None
+        self.main_window.set_status("Delay corregit — reimportant...", 5000)
+        self.tab_widget.setCurrentIndex(0)
+        self.import_panel._run_import(force_reimport=True)
 
     def _on_calibrate_completed(self, data):
         """Callback quan calibració completa."""

@@ -369,13 +369,23 @@ ANOMALY_CATALOG = {
         "invalidates": False,
         "action": "Revisar cromatograma — possible interferència o pic deformat",
     },
+    "KHP_RSD_HIGH": {
+        "severity": WarningLevel.WARNING,
+        "label": "KHP variabilitat alta entre rèpliques",
+        "icon": "RSD",
+        "description": "Desviació relativa (RSD) entre rèpliques KHP > 10%",
+        "stage": "calibrate",
+        "repairable": False,
+        "invalidates": False,
+        "action": "Revisar cromatogrames — possible error de preparació o injecció",
+    },
 }
 
 # Codis KHP eliminats — presents en JSONs antics, ignorats en lectura
 IGNORED_KHP_CODES = {
     'KHP_MULTI_PEAK', 'KHP_ASYMMETRY', 'KHP_SNR_LOW',
     'KHP_IRREGULAR_TOP', 'KHP_BASELINE_DRIFT', 'KHP_NO_DAD',
-    'KHP_DOC_GUIDED_BY_254', 'KHP_FWHM_HIGH', 'KHP_RSD_HIGH',
+    'KHP_DOC_GUIDED_BY_254', 'KHP_FWHM_HIGH',
     'KHP_CR_LOW',
 }
 

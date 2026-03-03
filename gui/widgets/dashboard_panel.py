@@ -253,8 +253,8 @@ class BatchWorker(QThread):
     """
     Worker per processar múltiples seqüències.
 
-    EXECUCIÓ VERTICAL: per cada fase, processa TOTES les seqüències.
-    Això permet veure el progrés per etapa i és més eficient.
+    EXECUCIÓ HORITZONTAL: per cada seqüència, executa TOTES les fases.
+    Això és més robust — si una SEQ falla, les següents continuen.
     """
     progress = Signal(int, int, str)  # current, total, message
     seq_completed = Signal(str, bool, str)  # seq_name, success, message
@@ -271,50 +271,56 @@ class BatchWorker(QThread):
         self._stop_requested = True
 
     def run(self):
-        """Execució VERTICAL: cada fase per totes les seqüències."""
+        """Execució HORITZONTAL: cada seqüència, totes les fases."""
         total_ok, total_fail = 0, 0
         n_seqs = len(self.sequences)
 
-        # VERTICAL: per cada fase
-        for phase in self.phases:
+        phase_names = {
+            Phase.IMPORT: "Importar",
+            Phase.CALIBRATE: "Verificar",
+            Phase.ANALYZE: "Analitzar",
+        }
+
+        for i, seq in enumerate(self.sequences):
             if self._stop_requested:
                 break
 
-            if phase == Phase.IMPORT:
-                phase_name = "Importar"
-                # Usar funció que passa siblings
-                def import_runner(seq):
-                    siblings = seq.siblings if hasattr(seq, 'siblings') else []
-                    return run_import(seq.seq_path, self.default_uib_sensitivity, siblings)
-                runner = import_runner
-            elif phase == Phase.CALIBRATE:
-                phase_name = "Verificar"
-                runner = lambda seq: run_calibrate(seq.seq_path)
-            elif phase == Phase.ANALYZE:
-                phase_name = "Analitzar"
-                runner = lambda seq: run_analyze(seq.seq_path)
-            else:
-                continue
-
-            # Processar TOTES les seqüències per aquesta fase
-            for i, seq in enumerate(self.sequences):
+            seq_ok = True
+            for phase in self.phases:
                 if self._stop_requested:
                     break
 
-                # Mostrar si és pack
+                phase_name = phase_names.get(phase, "?")
+
+                # Display name (pack info per imports)
                 if phase == Phase.IMPORT and hasattr(seq, 'siblings') and seq.siblings:
                     display_name = f"{seq.seq_name} [pack {len(seq.siblings)+1}]"
                 else:
                     display_name = seq.seq_name
-                self.progress.emit(i + 1, n_seqs, f"{phase_name}: {display_name}")
+                self.progress.emit(i + 1, n_seqs, f"{display_name}: {phase_name}")
 
-                ok, msg, _ = runner(seq)
-                self.seq_completed.emit(seq.seq_name, ok, msg)
-
-                if ok:
-                    total_ok += 1
+                # Executar fase
+                if phase == Phase.IMPORT:
+                    siblings = seq.siblings if hasattr(seq, 'siblings') else []
+                    ok, msg, _ = run_import(seq.seq_path, self.default_uib_sensitivity, siblings)
+                elif phase == Phase.CALIBRATE:
+                    ok, msg, _ = run_calibrate(seq.seq_path)
+                elif phase == Phase.ANALYZE:
+                    ok, msg, _ = run_analyze(seq.seq_path)
                 else:
-                    total_fail += 1
+                    continue
+
+                self.seq_completed.emit(seq.seq_name, ok, f"{phase_name}: {msg}")
+
+                if not ok and phase != Phase.CALIBRATE:
+                    # Verificar pot fallar sense KHP — no és blocker
+                    seq_ok = False
+                    break  # Saltar fases restants per aquesta SEQ
+
+            if seq_ok:
+                total_ok += 1
+            else:
+                total_fail += 1
 
         self.finished.emit(total_ok, total_fail)
 
@@ -325,7 +331,7 @@ class DashboardPanel(QWidget):
     sequence_selected = Signal(str, str)
 
     # Noms de les etapes
-    STAGE_NAMES = ["Importar", "Verificar", "Analitzar", "Revisar"]
+    STAGE_NAMES = ["Importar", "Verificar", "Analitzar", "Exportar"]
 
     def __init__(self, main_window):
         super().__init__()
@@ -469,7 +475,7 @@ class DashboardPanel(QWidget):
         self.table.setColumnCount(NUM_COLS)
         self.table.setHorizontalHeaderLabels([
             "", "Seqüència", "Data", "Mostres", "Ref", "Ctrl",
-            "Importar", "Verificar", "Analitzar", "Revisar",
+            "Importar", "Verificar", "Analitzar", "Exportar",
             "Avisos", "Notes"
         ])
 
@@ -759,12 +765,12 @@ class DashboardPanel(QWidget):
                 item_ctrl.setBackground(cal_bg)
             self.table.setItem(row, COL_CTRL, item_ctrl)
 
-            # Fases (Importar, Verificar, Analitzar, Revisar)
+            # Fases (Importar, Verificar, Analitzar, Exportar)
             phases_data = [
                 (seq.import_status, seq.import_state, "Importar", seq.import_warnings),
                 (seq.calibrate_status, seq.calibrate_state, "Verificar", seq.calibrate_warnings),
                 (seq.analyze_status, seq.analyze_state, "Analitzar", seq.analyze_warnings),
-                (seq.review_status, seq.review_state, "Revisar", seq.review_warnings),
+                (seq.review_status, seq.review_state, "Exportar", seq.review_warnings),
             ]
 
             current_phase_idx = None
@@ -801,7 +807,7 @@ class DashboardPanel(QWidget):
                     if cal_bg:
                         item.setBackground(cal_bg)
                 elif state == 'warning':
-                    if phase_name == "Revisar" and seq.is_bp_stale:
+                    if phase_name == "Exportar" and seq.is_bp_stale:
                         item.setText("⟳")
                     else:
                         item.setText("⚠")
@@ -979,7 +985,7 @@ class DashboardPanel(QWidget):
             s.analyze_state == 'error'
         ))
 
-        stats = f"Importar:{imported}  Verificar:{calibrated}  Analitzar:{analyzed}  Revisar:{reviewed}  /{total}"
+        stats = f"Importar:{imported}  Verificar:{calibrated}  Analitzar:{analyzed}  Exportar:{reviewed}  /{total}"
         if errors:
             stats += f" · {errors} errors"
 
@@ -1377,7 +1383,7 @@ class DashboardPanel(QWidget):
         """Reset per etapa de les seqüències seleccionades (cascade).
 
         Args:
-            from_stage: 0=Importar, 1=Verificar, 2=Analitzar, 3=Revisar
+            from_stage: 0=Importar, 1=Verificar, 2=Analitzar, 3=Exportar
         """
         from hpsec_reset import reset_batch, STAGE_NAMES
 
@@ -1505,7 +1511,7 @@ class DashboardPanel(QWidget):
             (seq.import_status, seq.import_state, "Importar", seq.import_warnings),
             (seq.calibrate_status, seq.calibrate_state, "Verificar", seq.calibrate_warnings),
             (seq.analyze_status, seq.analyze_state, "Analitzar", seq.analyze_warnings),
-            (seq.review_status, seq.review_state, "Revisar", seq.review_warnings),
+            (seq.review_status, seq.review_state, "Exportar", seq.review_warnings),
         ]
 
         current_phase_idx = None
