@@ -18,6 +18,7 @@ pip install -r requirements.txt
 
 ## Architecture summary
 
+- **hpsec_version.py** — centralized version constant (`SUITE_VERSION`, `SUITE_FULL`)
 - **hpsec_core.py** — shared math (bi-Gaussian, irregular top, SNR, peak repair, saturation detection)
 - **hpsec_calibrate.py** — calibration engine (rf_mass_cal, intercept, QC)
 - **hpsec_consolidate.py** — .D file consolidation to Excel
@@ -80,8 +81,10 @@ Mark features as DONE only when code is fully functional end-to-end, not when pl
 - [x] Calibration: v3.0 independent per signal_scope/uib_sensitivity — DONE (migració automàtica v2→v3)
 - [x] Calibration: UIB intercept independent a quantify_sample — DONE
 - [x] GlobalCalibrationPanel: vista resum sense SEQ_CAL (taula params, scatter, historial) — DONE
+- [x] GlobalCalibrationPanel: SEQ_CAL auto-flow (Direct→UIB→resum) — DONE
 - [x] Export: KHP chromatogram PNGs a CHECK/data/khp_plots/ — DONE (save_all_khp_chromatograms)
 - [x] Export: PDF calibration report amb pàgines cromatogrames KHP — DONE
+- [x] Export: PDF dual-signal calibration report (Direct+UIB combinat) — DONE
 - [x] Wizard: Rename step 2 "Calibrar" → "Verificar" (TAB_NAMES + tab_names) — DONE
 - [x] Wizard: Delay diagnostic tool at step 2 (shift indicator, slider, impact preview, reimport) — DONE
 - [x] Wizard: Apply calibration at step 4 (Revisar) + retroactive requantification + SEQ list — DONE
@@ -98,8 +101,29 @@ Mark features as DONE only when code is fully functional end-to-end, not when pl
 - [x] Export: BP integration in COLUMN mode (ID_BP sheet, BP rows in RESULTS, BP cols in SUMMARY) — DONE
 - [x] Export: fractions loaded from hpsec_config.json (not hardcoded) — DONE
 - [x] Export: timeout zone_summary fix (dict format) — DONE
+- [x] Export: noms fitxer sense rèplica — `{sample}_HPSEC_{C|B}.xlsx` amb col·lisions — DONE
+- [x] Export: CSV cromatogrames + resultats (FAIR format obert, separador configurable) — DONE
+- [x] Export: SUMMARY.csv amb metadades i fingerprints — DONE
+- [x] Export: ID sheet reorganitzada 10 seccions + nous camps traçabilitat — DONE
+- [x] Export: UI opcions CSV (checkboxes + separador combo) a ExportPanel — DONE
+- [x] **Export FAIR v2: RAW/PROCESSED subcarpetes + DAD full λ + ZIP** — DONE
+  - RAW/: DOC_Direct_RAW, DOC_UIB_RAW, DAD 101λ downsampled dt=0.04 min
+  - PROCESSED/: DOC_net (shift+baseline+smoothing+repair), 6λ DAD, fraccions, ppm
+  - BP DAD RAW: 1 fila a t_max amb totes les λ
+  - BP+COLUMN junts a les mateixes carpetes RAW/ i PROCESSED/
+  - ZIP packaging (checkbox a ExportPanel)
+  - metadata.json FAIR amb fingerprints + llista mostres
+  - `dad_export3d_path` propagat a `summarize_sample()` (hpsec_analyze.py)
 - [x] Wizard: Step 4 "Exportar" (ExportPanel with BP consolidation, generate button, FAIR) — DONE
 - [x] Wizard: "Generar Resultats" exports to SEQ/RESULTATS/ (Excels) + SEQ/CHECK/ (SUMMARY) — DONE
+- [x] Export panel redissenyat — auto-generació + export addicional — DONE
+  - Part 1: results_frame (auto-generació Excels+SUMMARY a SEQ/RESULTATS/ + SEQ/CHECK/)
+  - Part 2: consolidació BP (sense canvis)
+  - Part 3: "Export addicional" — checkboxes contingut + destí (carpeta o ZIP)
+  - Checkboxes: Excels, SUMMARY, RAW CSVs, PROCESSED CSVs, CSV SUMMARY, PDF, metadata.json
+  - Destí: carpeta (SharePoint/OneDrive/local) o ZIP (amb temp dir)
+  - GenerateWorker: SUMMARY a custom_output_dir quan set
+  - Decimals: sempre `.` (punt), dates ISO 8601, sense separador milers
 - [x] Analyze panel: Resum Visual collapsible (timeout, DOC stacked, DOC overlay, A254, DAD overlay) — DONE
 - [x] Architecture refactor: Fusió Analitzar+Revisar → Analitzar+Exportar (review_summary_panel eliminat) — DONE
 - [x] Analyze backend: light analysis for BLANK/CONTROL (area_total + SNR only, no fractions/quantification) — DONE
@@ -163,6 +187,40 @@ Mark features as DONE only when code is fully functional end-to-end, not when pl
   - Filtre Estat: opció "CAL" per filtrar SEQ_CAL
   - Header: `Seqüències (DATA_HPSEC)` amb path complet al tooltip
   - Sort default per data descendent (SEQs recents primer)
+- [x] **Dashboard: múltiples carpetes de dades** — DONE
+  - `hpsec_config.py`: `data_folders` (llista) substitueix `data_folder` (string)
+  - Migració automàtica `data_folder` → `data_folders` a `_migrate_config()`
+  - `get_data_folders()` retorna llista, `get_data_folder()` retorna la primera
+  - `get_registry_path()` suporta `registry_folder` explícit o derivat de 1a carpeta
+  - `SequenceState`: nous camps `source_folder`, `source_path`
+  - `get_all_sequences()` accepta llista de carpetes, escaneja totes
+  - Dashboard: combo filtre "Carpeta" (visible si >1 carpeta)
+  - Config Panel: `QListWidget` per carpetes amb validació anti-duplicats SEQ
+  - `global_calibration_panel.py`: cerca SEQ_CAL a TOTES les carpetes
+- [x] **Versió centralitzada — hpsec_version.py** — DONE
+  - `hpsec_version.py`: `SUITE_VERSION = "2.1.0"`, `SUITE_NAME`, `SUITE_FULL`
+  - Tots els JSON outputs (8 fitxers) usen `suite_version` + `*_module` consistentment
+  - PDF reports: header "HPSEC Suite v2.1.0", footer amb versió sempre present
+  - Excel ID sheet: `Suite_Version` únic (sense duplicats)
+  - metadata.json, import_manifest, analysis_result, calibration_result, review_result: uniformitzats
+- [x] **Architecture: fusió Dashboard+Processar → tab únic "Processar"** — DONE
+  - QStackedWidget: page 0 = DashboardPanel (eager), page 1 = ProcessWizardPanel (lazy)
+  - 7 tabs (era 8): Processar, Exportar, Mostres, Històric, Cal.Global, Manteniment, Config
+  - `show_dashboard()` / `_show_wizard()` per navegació stacked
+  - Tots els índexs de tab actualitzats (Exportar 2→1, Cal.Global 5→4, etc.)
+- [ ] **Anàlisi espectral DAD avançada** — PENDING (FUTUR)
+  - DAD actual: adquisició fins 400 nm
+  - E₂/E₃ (A₂₅₄/A₃₆₅): factible. S₂₇₅₋₂₉₅ i SR: factibles. E₄/E₆: NO (fora rang)
+  - HCI ja calculat (hpsec_humic.py) però amagat a la UI — fer visible
+  - Idea: tabs separats "Analitzar DOC" i "Analitzar DAD"
+  - Correlació DOC↔DAD com a exploració futura
+- [ ] **Tab Exportar: redisseny com a empaquetador standalone** — PENDING (FUTUR)
+  - Actual: duplicat del wizard pas 4, depèn de `processed_data` (no funciona sol)
+  - Objectiu: seleccionar SEQ ja processada → empaquetar fitxers existents → carpeta/ZIP
+  - Export "net": mostres + KHP, sense blancs/controls/NaOH
+  - COLUMN+BP combinats per mostra (via `find_bp_for_samples`)
+  - ZIP: nom automàtic + triar carpeta (no nom fitxer)
+  - Pendent definir: multi-SEQ, agrupació per campanya, relació amb inventari mostres
 
 ## Research / Exploration (not integrated into Suite)
 
@@ -228,7 +286,73 @@ All exploratory scripts and results live in `research/` — NOT part of the prod
 
 ## Working notes
 
-> Last updated: 2026-02-26
+> Last updated: 2026-03-04
+
+### SEQ_CAL Auto-flow + PDF Dual-Signal (2026-03-04, COMPLETAT)
+
+**Auto-flow (global_calibration_panel.py):**
+- `_cal_applied` reemplaçat per `_cal_applied_per_signal` (dict) + `_cal_applied_signals` (set)
+- Després d'aplicar Direct, si hi ha UIB → auto-switch al combo + missatge
+- Després d'aplicar tots els senyals → missatge "complet" + `show_summary()`
+- Combo marca senyals aplicats amb prefix "✓"
+- Botó "Aplicar" mostra "✓ Aplicada" per senyal ja aplicat
+- `_get_remaining_signals()`: retorna senyals disponibles no aplicats
+- Reset complet a `load_seq_cal_data()`
+
+**PDF Dual-Signal (hpsec_reports.py):**
+- `generate_dual_calibration_report()`: PDF combinat Direct+UIB
+  - Pàg 1: Resum executiu amb taula paràmetres 4 files (Direct COL/BP + UIB COL/BP)
+  - Pàg 2-3: Regressió per senyal (scatter + residuals)
+  - Pàg 4: Evolució temporal RF (2 subplots: Direct + UIB)
+  - Pàg 5: QC Levey-Jennings (2 subplots: Direct + UIB)
+  - Pàg 6: Historial calibracions (taula unificada)
+  - Pàg 7+: Cromatogrames KHP (ambdós senyals, dedup)
+- Si només 1 senyal disponible, genera amb 1 subplot (adaptatiu)
+
+**GUI wiring:**
+- `_on_summary_pdf()`: detecta ambdós senyals → genera dual, sinó single
+- `_on_generate_cal_report()`: idem (post-apply button)
+
+**Fitxers modificats**: global_calibration_panel.py, hpsec_reports.py
+
+### Export FAIR v2: RAW/PROCESSED + DAD complet + ZIP (2026-03-03, COMPLETAT)
+
+**Implementació completa en 2 sessions:**
+
+**Sessió 1 (fase 1-5 pla original):**
+- Noms fitxer sense rèplica: `{sample}_HPSEC_{C|B}.xlsx`
+- CSV cromatogrames+resultats, ID sheet 10 seccions
+- UI checkboxes CSV+separador, GenerateWorker integrat
+- `hpsec_export.py` v2.1.0
+
+**Sessió 2 (ampliació FAIR):**
+- `hpsec_export.py` v2.2.0
+
+1. **`write_csv_raw()`**: DOC_Direct_RAW + DOC_UIB_RAW a RESULTATS/RAW/
+   - DAD 101λ downsampled a dt=0.04 min via `_downsample_2d()` (bin-average 2D)
+   - Rellegeix Export3D complet des de disc via `dad_export3d_path`
+   - BP: 1 sola fila a t_max amb totes les λ
+   - `_is_numeric()` helper per filtrar columnes λ
+
+2. **`write_csv_processed()`**: DOC_net + 6λ DAD + fraccions + ppm a RESULTATS/PROCESSED/
+   - `_get_dad_column()` helper per accedir a DAD per wl
+
+3. **`write_metadata_json()`**: metadata.json amb fingerprints, llista mostres, calibració
+
+4. **`create_export_zip()`**: empaqueta RESULTATS/ en ZIP
+
+5. **`export_sequence()` actualitzat**: nous params `export_raw`, `export_processed`
+   (substitueixen `export_csv`). BP RAW/PROCESSED inclòs si COLUMN amb BP vinculat.
+
+6. **`summarize_sample()` (hpsec_analyze.py)**: `dad_export3d_path` propagat al JSON
+   d'anàlisi per poder rellegir Export3D complet durant l'export.
+
+7. **UI** (`export_panel.py`): checkboxes RAW/PROCESSED/CSV_SUMMARY/ZIP
+   (substitueixen els antics csv_chromatogram_check + csv_summary_check).
+   GenerateWorker amb params `export_raw`, `export_processed`, `export_zip`, `export_metadata`.
+
+**DAD downsampling**: dt=0.04 min, ≥6 punts sobre pic més estret (FWHM=0.25 min).
+Mida: 5.8 MB → 1.9 MB/mostra (67% reducció).
 
 ### Unificació avisos — font única + barra wizard (2026-02-26)
 

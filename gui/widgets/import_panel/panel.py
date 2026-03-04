@@ -337,8 +337,8 @@ class ImportPanel(QWidget):
         })
 
     def _go_to_dashboard(self):
-        """Torna al Dashboard per seleccionar una seqüència."""
-        self.main_window.tab_widget.setCurrentIndex(0)
+        """Torna a la llista de seqüències."""
+        self.main_window.show_dashboard()
 
     def _check_manifest(self):
         self.existing_manifest = load_manifest(self.seq_path)
@@ -411,8 +411,9 @@ class ImportPanel(QWidget):
                     from datetime import datetime
                     data_folder = os.path.join(seq_path, "CHECK", "data")
                     os.makedirs(data_folder, exist_ok=True)
+                    from hpsec_version import SUITE_VERSION
                     error_json = {
-                        "manifest_version": "1.0",
+                        "suite_version": SUITE_VERSION,
                         "generated_at": datetime.now().isoformat(),
                         "success": False,
                         "errors": errors,
@@ -710,11 +711,17 @@ class ImportPanel(QWidget):
                 try:
                     with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
                         config = json.load(f)
-                    data_folder = config.get("paths", {}).get("data_folder", "")
-                    if data_folder:
+                    paths = config.get("paths", {})
+                    folders = paths.get("data_folders", [])
+                    if not folders:
+                        single = paths.get("data_folder", "")
+                        if single:
+                            folders = [single]
+                    for data_folder in folders:
                         alt_path = os.path.join(data_folder, seq_name)
                         if os.path.isdir(alt_path):
                             seq_path = alt_path
+                            break
                 except Exception:
                     pass
 
@@ -1161,7 +1168,7 @@ class ImportPanel(QWidget):
         if self._data_mode == "DIRECT":
             # Sense UIB
             self.samples_table.setColumnCount(11)
-            headers = ["Inj", "Mostra", "Tipus", "Rep", "Vol (µL)", "Pts DOC", "Fila TOC", "Pts DAD", "Fitxer DAD", "✔DOC", "✔DAD"]
+            headers = ["Inj", "Mostra", "Tipus", "Rep", "Vol (µL)", "Pts DOC", "Fila TOC", "Pts DAD", "Fitxer DAD", "DOC", "DAD"]
             self.COL_DAD_PTS_ACTUAL = 7
             self.COL_DAD_FILE_ACTUAL = 8
             self.COL_SEM_DOC = 9
@@ -1170,7 +1177,7 @@ class ImportPanel(QWidget):
         else:
             # DUAL o UIB
             self.samples_table.setColumnCount(14)
-            headers = ["Inj", "Mostra", "Tipus", "Rep", "Vol (µL)", "Pts DOC", "Fila TOC", "Pts UIB", "Fitxer UIB", "Pts DAD", "Fitxer DAD", "✔DOC", "✔UIB", "✔DAD"]
+            headers = ["Inj", "Mostra", "Tipus", "Rep", "Vol (µL)", "Pts DOC", "Fila TOC", "Pts UIB", "Fitxer UIB", "Pts DAD", "Fitxer DAD", "DOC", "UIB", "DAD"]
             self.COL_UIB_PTS_ACTUAL = 7
             self.COL_UIB_FILE_ACTUAL = 8
             self.COL_DAD_PTS_ACTUAL = 9
@@ -1223,14 +1230,17 @@ class ImportPanel(QWidget):
         # Configurar mides
         header = self.samples_table.horizontalHeader()
         for col in range(self.samples_table.columnCount()):
-            header.setSectionResizeMode(col, QHeaderView.ResizeToContents)
+            if col == COL_MOSTRA:
+                header.setSectionResizeMode(col, QHeaderView.Stretch)
+            else:
+                header.setSectionResizeMode(col, QHeaderView.ResizeToContents)
 
-        # Semàfors amb amplada fixa (prou per capçalera ✔DOC)
+        # Semàfors amb amplada fixa compacta
         sem_cols = [self.COL_SEM_DOC, self.COL_SEM_UIB, self.COL_SEM_DAD]
         for col in sem_cols:
             if col is not None:
                 header.setSectionResizeMode(col, QHeaderView.Fixed)
-                self.samples_table.setColumnWidth(col, 62)
+                self.samples_table.setColumnWidth(col, 50)
 
     def _add_data_cell(self, row, col, text, match_type, editable=False):
         """Afegeix una cel·la amb color segons match_type."""
@@ -2023,12 +2033,10 @@ class ImportPanel(QWidget):
         # Si s'ha carregat des de manifest sense fer canvis, passar directament
         # (els orfes ja eren coneguts quan es va guardar el manifest)
         if self._loaded_from_manifest and not has_unsaved:
-            self.main_window.go_to_tab(1)
             return
 
         # Si no hi ha orfes ni canvis sense guardar, passar directament
         if not has_orphans and not has_unsaved:
-            self.main_window.go_to_tab(1)
             return
 
         # Construir missatge de confirmació
@@ -2065,8 +2073,6 @@ class ImportPanel(QWidget):
                 self.main_window.mark_manifest_saved()
             except Exception as e:
                 logger.warning(f"No s'ha pogut guardar manifest: {e}")
-
-        self.main_window.go_to_tab(1)
 
     def _apply_manual_assignments(self):
         """Aplica les assignacions manuals a imported_data."""

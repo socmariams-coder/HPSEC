@@ -29,6 +29,7 @@ from hpsec_import import is_khp
 # CONFIGURACIÓ I ESTILS
 # =============================================================================
 LOGO_FILENAME = "logo STRs.png"  # Nom real del fitxer
+INSTITUTION_LINE = "Serveis Tècnics de Recerca — Universitat de Girona · Developed by LEQUIA"
 
 # Colors corporatius
 COLORS = {
@@ -176,7 +177,7 @@ def draw_minimal_table(ax, data, col_widths=None, header_color=None,
 
 def draw_report_footer(fig, page_num):
     """Peu de pagina estandard per informes PDF."""
-    fig.text(0.5, 0.02, "Serveis Tecnics de Recerca - Universitat de Girona",
+    fig.text(0.5, 0.02, INSTITUTION_LINE,
              ha='center', fontsize=8, color=COLORS["text_secondary"])
     fig.text(0.95, 0.02, str(page_num), ha='right', fontsize=8,
              color=COLORS["text_secondary"])
@@ -287,9 +288,11 @@ def draw_header(fig, title, subtitle="", seq_name="", page_num=None, total_pages
     """
     Dibuixa capçalera minimalista.
     """
+    from hpsec_version import SUITE_FULL
+
     logo_path = get_logo_path()
 
-    # Logo a l'esquerra (més gran)
+    # Logo a l'esquerra
     if logo_path:
         try:
             logo = plt.imread(logo_path)
@@ -299,8 +302,8 @@ def draw_header(fig, title, subtitle="", seq_name="", page_num=None, total_pages
         except Exception:
             pass
 
-    # Capçalera principal
-    fig.text(0.5, 0.97, "HPSEC_Suite", ha='center', va='top',
+    # Capçalera: nom + versió
+    fig.text(0.5, 0.97, SUITE_FULL, ha='center', va='top',
              fontsize=12, fontweight='bold', color=COLORS["primary"])
     fig.text(0.5, 0.955, "Anàlisi de Matèria Orgànica per HPSEC-DAD-DOC", ha='center', va='top',
              fontsize=9, color=COLORS["dark"])
@@ -323,18 +326,18 @@ def draw_header(fig, title, subtitle="", seq_name="", page_num=None, total_pages
                  fontsize=8, color='gray')
 
 
-def draw_footer(fig, text="", version=""):
+def draw_footer(fig, text=""):
     """Dibuixa peu de pàgina minimalista."""
+    from hpsec_version import SUITE_FULL
+
     # Línia separadora
     fig.add_artist(plt.Line2D([0.05, 0.95], [0.02, 0.02],
                               color='lightgray', linewidth=0.5,
                               transform=fig.transFigure))
 
-    # Data i versió
+    # Data i versió (sempre)
     date_str = datetime.now().strftime("%d/%m/%Y %H:%M")
-    footer_left = f"Generat: {date_str}"
-    if version:
-        footer_left += f"  |  HPSEC Suite v{version}"
+    footer_left = f"Generat: {date_str}  |  {SUITE_FULL}"
     fig.text(0.05, 0.01, footer_left, ha='left', va='bottom',
              fontsize=6, color='gray')
 
@@ -658,7 +661,7 @@ def generate_consolidation_report(seq_path, xlsx_files, info, output_path=None):
         fig.text(0.1, 0.12, "• Baseline: Finestres temporals (evita timeouts) | Suavitzat: Savitzky-Golay (11,3) | "
                 f"Alineació: {'Pel màxim (BP)' if info.get('bp') else 'KHP + A254'}", fontsize=7)
 
-        draw_footer(fig, "LEQUIA · UdG", script_version)
+        draw_footer(fig, INSTITUTION_LINE)
         pdf.savefig(fig, dpi=150)
         plt.close(fig)
 
@@ -750,7 +753,7 @@ def generate_consolidation_report(seq_path, xlsx_files, info, output_path=None):
             fig.text(0.02, 0.03, "● KHP  ○ Control  Groc=Warning  Vermell=Critical/Absent",
                     fontsize=6, style='italic')
 
-            draw_footer(fig, version=script_version)
+            draw_footer(fig)
             pdf.savefig(fig, dpi=150)
             plt.close(fig)
 
@@ -1023,7 +1026,7 @@ def generate_chromatograms_report(seq_path, xlsx_files, info, output_path=None):
                                  fontsize=9, color='lightgray', style='italic')
                     ax_empty.axis('off')
 
-            draw_footer(fig, version=script_version)
+            draw_footer(fig)
             pdf.savefig(fig, dpi=150)
             plt.close(fig)
 
@@ -1703,7 +1706,7 @@ def generate_calibration_report(calibration=None, output_path=None):
                 elif cv > 10:
                     tbl3[(i, 6)].set_facecolor('#fff3cd')
 
-        draw_footer(fig, "LEQUIA · UdG")
+        draw_footer(fig, INSTITUTION_LINE)
         pdf.savefig(fig, dpi=150)
         plt.close(fig)
 
@@ -1811,7 +1814,7 @@ def generate_calibration_report(calibration=None, output_path=None):
                    ha='center', va='center', fontsize=14, color='gray')
             ax.axis('off')
 
-        draw_footer(fig, "LEQUIA · UdG")
+        draw_footer(fig, INSTITUTION_LINE)
         pdf.savefig(fig, dpi=150)
         plt.close(fig)
 
@@ -1825,13 +1828,19 @@ def generate_calibration_report(calibration=None, output_path=None):
 
         ax = fig.add_axes([0.08, 0.12, 0.84, 0.72])
 
-        # Filtrar entrades vàlides del historial
+        # Filtrar entrades vàlides del historial (per mode I senyal)
         mode_upper = mode.upper()
         hist_entries = []
         for entry in khp_history:
             if entry.get('mode', '').upper() != mode_upper:
                 continue
             if not entry.get('valid_for_calibration', True):
+                continue
+            # Filtrar per senyal (doc_mode): Direct, UIB o DUAL
+            entry_doc_mode = entry.get('doc_mode', 'Direct')
+            if cal_signal == 'direct' and entry_doc_mode not in ('Direct', 'DUAL'):
+                continue
+            if cal_signal == 'uib' and entry_doc_mode not in ('UIB', 'DUAL'):
                 continue
             rf = entry.get('rf_mass', 0)
             if rf <= 0:
@@ -1875,7 +1884,7 @@ def generate_calibration_report(calibration=None, output_path=None):
                    ha='center', va='center', fontsize=14, color='gray')
             ax.axis('off')
 
-        draw_footer(fig, "LEQUIA · UdG")
+        draw_footer(fig, INSTITUTION_LINE)
         pdf.savefig(fig, dpi=150)
         plt.close(fig)
 
@@ -1960,7 +1969,7 @@ def generate_calibration_report(calibration=None, output_path=None):
             ax.text(0.5, 0.5, msg, ha='center', va='center', fontsize=14, color='gray')
             ax.axis('off')
 
-        draw_footer(fig, "LEQUIA · UdG")
+        draw_footer(fig, INSTITUTION_LINE)
         pdf.savefig(fig, dpi=150)
         plt.close(fig)
 
@@ -2028,7 +2037,7 @@ def generate_calibration_report(calibration=None, output_path=None):
                     for j in range(9):
                         tbl4[(i, j)].set_facecolor('#d4edda')
 
-        draw_footer(fig, "LEQUIA · UdG")
+        draw_footer(fig, INSTITUTION_LINE)
         pdf.savefig(fig, dpi=150)
         plt.close(fig)
 
@@ -2084,6 +2093,676 @@ def generate_calibration_report(calibration=None, output_path=None):
 
     import logging
     logging.getLogger(__name__).info(f"Informe calibració generat: {pdf_path}")
+    return pdf_path
+
+
+def generate_dual_calibration_report(output_path=None):
+    """
+    Genera informe PDF de calibració amb AMBDÓS senyals (Direct + UIB).
+
+    Produeix un sol PDF combinat:
+    - Pàg 1: Resum executiu amb paràmetres Direct + UIB
+    - Pàg 2: Regressió Direct
+    - Pàg 3: Regressió UIB
+    - Pàg 4: Evolució temporal (2 subplots: Direct + UIB)
+    - Pàg 5: QC Levey-Jennings (2 subplots: Direct + UIB)
+    - Pàg 6: Historial calibracions
+    - Pàg 7+: Cromatogrames KHP
+
+    Args:
+        output_path: carpeta de sortida (None = REGISTRY/)
+
+    Returns:
+        str: path del PDF generat, o None si error
+    """
+    import json as _json
+    from hpsec_calibrate import (
+        load_calibration_reference, get_active_global_calibration,
+        get_registry_folder, compute_calibration_fingerprint,
+        load_khp_history, _extract_rf_from_cal, _extract_intercept_from_cal
+    )
+
+    apply_style()
+
+    # Obtenir calibracions Direct i UIB
+    cal_direct = get_active_global_calibration(signal='direct')
+    cal_uib = get_active_global_calibration(signal='uib')
+
+    if not cal_direct and not cal_uib:
+        logger.error("No hi ha cap calibració activa per generar informe dual")
+        return None
+
+    # Output path
+    if output_path is None:
+        registry = get_registry_folder()
+        if registry:
+            output_path = registry
+        else:
+            output_path = os.path.dirname(os.path.abspath(__file__))
+
+    os.makedirs(output_path, exist_ok=True)
+    ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+    pdf_path = os.path.join(output_path, f"REPORT_Calibracio_Dual_{ts}.pdf")
+
+    # Preparar dades per cada senyal
+    signals_data = []
+    for sig_name, cal in [('direct', cal_direct), ('uib', cal_uib)]:
+        if not cal:
+            continue
+        reg = cal.get('regression_data', {})
+        mode = (reg.get('mode') or
+                cal.get('source', {}).get('mode') or 'COLUMN')
+        rf_cal = reg.get('rf_mass_cal') or 0
+        intercept_raw = reg.get('intercept') or 0
+        if isinstance(rf_cal, dict):
+            rf_cal = rf_cal.get(mode.lower(), 0) or 0
+        if isinstance(intercept_raw, dict):
+            intercept_raw = intercept_raw.get(mode.lower(), 0) or 0
+        intercept = float(intercept_raw) if intercept_raw else 0
+        rf_cal = float(rf_cal) if rf_cal else 0
+        r2 = reg.get('r2', cal.get('r2', 0)) or 0
+        if isinstance(r2, dict):
+            r2 = r2.get(mode.lower(), 0) or 0
+        r2 = float(r2)
+        n_pts = reg.get('n_points', cal.get('n_points', 0)) or 0
+        rms = reg.get('residuals_rms', 0) or 0
+        model_type = reg.get('model', cal.get('model', 'intercept')) or 'intercept'
+
+        cal_signal_label = sig_name.upper()
+        sens = cal.get('uib_sensitivity')
+        if sens:
+            cal_signal_label = f"UIB {int(sens)}"
+
+        signals_data.append({
+            'signal': sig_name,
+            'cal': cal,
+            'reg': reg,
+            'mode': mode,
+            'rf_cal': rf_cal,
+            'intercept': intercept,
+            'r2': r2,
+            'n_pts': n_pts,
+            'rms': rms,
+            'model_type': model_type,
+            'points': reg.get('points', []),
+            'stats_conc': reg.get('stats_per_concentration', {}),
+            'label': cal_signal_label,
+            'sens': sens,
+        })
+
+    if not signals_data:
+        logger.error("Cap senyal amb dades de calibració vàlides")
+        return None
+
+    # Historial i referència
+    khp_history = load_khp_history(None) or []
+    ref = load_calibration_reference() or {}
+    all_calibrations = ref.get('calibrations', [])
+    fingerprint = compute_calibration_fingerprint()
+
+    n_signal_pages = len(signals_data)  # 1 o 2 pàgines de regressió
+    total_pages = 3 + n_signal_pages  # resum + n_regressions + temporal + QC + historial
+    # total_pages: 1 (resum) + n_signal_pages (regressió) + 1 (temporal) + 1 (QC) + 1 (historial)
+    total_pages = 2 + n_signal_pages + 2  # = resum + regressions + temporal+QC combinats + historial
+
+    with PdfPages(pdf_path) as pdf:
+        # =================================================================
+        # PÀGINA 1: Resum executiu combinat
+        # =================================================================
+        fig = plt.figure(figsize=(8.27, 11.69))  # A4
+        fig.patch.set_facecolor('white')
+
+        cal_ids = ", ".join(sd['cal'].get('id', '?')[-18:] for sd in signals_data)
+        draw_header(fig, "INFORME DE CALIBRACIÓ",
+                    f"Dual: Direct + UIB" if len(signals_data) > 1 else signals_data[0]['label'],
+                    page_num=1, total_pages=total_pages)
+
+        # Taula resum (dades de la primera calibració per les metadades generals)
+        first_cal = signals_data[0]['cal']
+        ax_info = fig.add_axes([0.05, 0.72, 0.9, 0.14])
+        ax_info.axis('off')
+
+        valid_from = first_cal.get('valid_from', '—')
+        valid_to = first_cal.get('valid_to', 'Vigent')
+        created = first_cal.get('metadata', {}).get('created_date', '—')
+        source_desc = first_cal.get('source', {}).get('description', '—')
+        seq_refs_all = set()
+        for sd in signals_data:
+            seq_refs_all.update(sd['cal'].get('source', {}).get('seq_references', []))
+        seq_refs = ", ".join(sorted(seq_refs_all))
+
+        info_data = [
+            ["PARÀMETRE", "VALOR", "PARÀMETRE", "VALOR"],
+            ["IDs", cal_ids, "Vigent des de", str(valid_from)],
+            ["Senyals", " + ".join(sd['label'] for sd in signals_data),
+             "Vigent fins", str(valid_to) if valid_to else "Vigent"],
+            ["Mode", signals_data[0]['mode'], "Creat", str(created)],
+            ["Font", source_desc[:30], "SEQs referència", seq_refs[:30] if seq_refs else "—"],
+            ["Fingerprint", fingerprint[:16], "Motiu",
+             first_cal.get('metadata', {}).get('reason', '—')[:30]],
+        ]
+
+        tbl = ax_info.table(cellText=info_data, loc='center', cellLoc='center',
+                            colWidths=[0.18, 0.32, 0.18, 0.32])
+        tbl.auto_set_font_size(False)
+        tbl.set_fontsize(8)
+        tbl.scale(1.0, 1.8)
+        for j in range(4):
+            tbl[(0, j)].set_facecolor(COLORS["primary"])
+            tbl[(0, j)].set_text_props(color='white', fontweight='bold')
+
+        # Taula paràmetres — files per cada senyal x mode
+        y_params = 0.52 if len(signals_data) > 1 else 0.56
+        h_params = 0.16 if len(signals_data) > 1 else 0.12
+        ax_params = fig.add_axes([0.05, y_params, 0.9, h_params])
+        ax_params.axis('off')
+
+        params_data = [["SENYAL / MODE", "RF (slope)", "Intercept", "R²", "N punts", "RMS"]]
+        for sd in signals_data:
+            for mode_name in ['COLUMN', 'BP']:
+                rf_v = _extract_rf_from_cal(sd['cal'], mode_name.lower(), sd['signal']) or 0
+                int_v = _extract_intercept_from_cal(sd['cal'], mode_name.lower(), sd['signal']) or 0
+                r2_v = ""
+                n_v = ""
+                rms_v = ""
+                if sd['mode'].upper() == mode_name:
+                    r2_v = f"{sd['r2']:.6f}" if sd['r2'] else "—"
+                    n_v = str(sd['n_pts'])
+                    rms_v = f"{sd['rms']:.2f}" if sd['rms'] else "—"
+                params_data.append([
+                    f"{sd['label']} / {mode_name}",
+                    f"{rf_v:.1f}" if rf_v else "—",
+                    f"{int_v:.1f}" if int_v else "—",
+                    r2_v, n_v, rms_v,
+                ])
+
+        tbl2 = ax_params.table(cellText=params_data, loc='center', cellLoc='center',
+                                colWidths=[0.25, 0.15, 0.15, 0.15, 0.15, 0.15])
+        tbl2.auto_set_font_size(False)
+        tbl2.set_fontsize(8)
+        tbl2.scale(1.0, 1.6)
+        for j in range(6):
+            tbl2[(0, j)].set_facecolor(COLORS["dark"])
+            tbl2[(0, j)].set_text_props(color='white', fontweight='bold')
+
+        # Equacions per cada senyal
+        eq_y = 0.46
+        for sd in signals_data:
+            if sd['model_type'] == 'origin':
+                eq_str = f"{sd['label']}: Àrea = {sd['rf_cal']:.1f} × µg_DOC   (R² = {sd['r2']:.6f})"
+            else:
+                eq_str = (f"{sd['label']}: Àrea = {sd['rf_cal']:.1f} × µg_DOC + "
+                          f"{sd['intercept']:.1f}   (R² = {sd['r2']:.6f})")
+            fig.text(0.5, eq_y, eq_str, ha='center', va='top',
+                     fontsize=10, fontfamily='monospace',
+                     bbox=dict(boxstyle='round,pad=0.4', facecolor='#e8f4fd',
+                               edgecolor='#2980B9'))
+            eq_y -= 0.04
+
+        # Stats per concentració — per cada senyal
+        stats_y = eq_y - 0.02
+        for sd in signals_data:
+            if not sd['stats_conc']:
+                continue
+            # Títol senyal
+            fig.text(0.05, stats_y, f"Estadístiques per concentració — {sd['label']}",
+                     fontsize=9, fontweight='bold', color=COLORS["dark"])
+            stats_y -= 0.01
+
+            ax_stats = fig.add_axes([0.05, max(stats_y - 0.13, 0.05), 0.9, 0.13])
+            ax_stats.axis('off')
+
+            stats_header = ["Conc (ppm)", "N", "Àrea mitj", "Àrea σ",
+                            "RF mitj", "RF σ", "RF CV%"]
+            stats_rows = []
+            for conc_str, st in sorted(sd['stats_conc'].items(),
+                                        key=lambda x: float(x[0])):
+                stats_rows.append([
+                    f"{float(conc_str):g}",
+                    str(st.get('n', 0)),
+                    f"{st.get('area_mean', 0):.1f}",
+                    f"{st.get('area_std', 0):.1f}",
+                    f"{st.get('rf_mean', 0):.1f}",
+                    f"{st.get('rf_std', 0):.1f}",
+                    f"{st.get('rf_cv_pct', 0):.1f}%",
+                ])
+
+            stats_data_tbl = [stats_header] + stats_rows
+            tbl3 = ax_stats.table(cellText=stats_data_tbl, loc='upper center',
+                                   cellLoc='center',
+                                   colWidths=[0.12, 0.08, 0.16, 0.14, 0.16, 0.14, 0.12])
+            tbl3.auto_set_font_size(False)
+            tbl3.set_fontsize(7)
+            tbl3.scale(1.0, 1.4)
+            for j in range(7):
+                tbl3[(0, j)].set_facecolor(COLORS["primary"])
+                tbl3[(0, j)].set_text_props(color='white', fontweight='bold')
+            for i, row in enumerate(stats_rows, 1):
+                cv = float(row[6].rstrip('%'))
+                if cv > 20:
+                    tbl3[(i, 6)].set_facecolor('#f8d7da')
+                elif cv > 10:
+                    tbl3[(i, 6)].set_facecolor('#fff3cd')
+
+            stats_y -= 0.16
+
+        draw_footer(fig, INSTITUTION_LINE)
+        pdf.savefig(fig, dpi=150)
+        plt.close(fig)
+
+        # =================================================================
+        # PÀGINES 2-(2+n): Regressió per senyal
+        # =================================================================
+        for page_i, sd in enumerate(signals_data, 2):
+            fig = plt.figure(figsize=(11.69, 8.27))  # A4 landscape
+            fig.patch.set_facecolor('white')
+
+            draw_header(fig, f"REGRESSIÓ LINEAL — {sd['label']}",
+                        f"Mode: {sd['mode']}",
+                        page_num=page_i, total_pages=total_pages)
+
+            points = sd['points']
+            rf_cal = sd['rf_cal']
+            intercept = sd['intercept']
+            rms = sd['rms']
+
+            if points:
+                gs = GridSpec(1, 2, figure=fig,
+                              left=0.08, right=0.95, top=0.85, bottom=0.12,
+                              wspace=0.25, width_ratios=[2, 1])
+
+                ax1 = fig.add_subplot(gs[0])
+                x_inc = [p['ug_doc'] for p in points if not p.get('excluded')]
+                y_inc = [p['area'] for p in points if not p.get('excluded')]
+                x_exc = [p['ug_doc'] for p in points if p.get('excluded')]
+                y_exc = [p['area'] for p in points if p.get('excluded')]
+
+                if x_inc:
+                    ax1.scatter(x_inc, y_inc, c=COLORS["primary"], s=50, zorder=5,
+                                edgecolors='white', linewidth=0.5, label='Inclòs')
+                if x_exc:
+                    ax1.scatter(x_exc, y_exc, c=COLORS["danger"], s=50, marker='x',
+                                zorder=5, linewidth=1.5, label='Exclòs')
+
+                all_x = [p['ug_doc'] for p in points]
+                if all_x and rf_cal > 0:
+                    x_line = np.linspace(0, max(all_x) * 1.1, 100)
+                    y_line = rf_cal * x_line + intercept
+                    ax1.plot(x_line, y_line, '-', color=COLORS["success"], linewidth=2,
+                             label=f'Regressió (RF={rf_cal:.1f})')
+
+                    n = len(x_inc)
+                    if n >= 3:
+                        try:
+                            from scipy.stats import t as t_dist
+                            x_arr = np.array(x_inc)
+                            y_arr = np.array(y_inc)
+                            x_mean = np.mean(x_arr)
+                            Sxx = np.sum((x_arr - x_mean) ** 2)
+                            mse = np.sum((y_arr - (rf_cal * x_arr + intercept)) ** 2) / (n - 2)
+                            t_val = t_dist.ppf(0.975, n - 2)
+                            se_pred = np.sqrt(mse * (1 + 1 / n + (x_line - x_mean) ** 2 / Sxx))
+                            ax1.fill_between(x_line,
+                                             y_line - t_val * se_pred,
+                                             y_line + t_val * se_pred,
+                                             alpha=0.12, color=COLORS["primary"],
+                                             label='Predicció 95%')
+                        except Exception:
+                            pass
+
+                ax1.set_xlabel('µg DOC injectat', fontsize=10)
+                ax1.set_ylabel('Àrea', fontsize=10)
+                ax1.set_title(f'Regressió {sd["mode"]} — {sd["label"]}',
+                              fontsize=11, fontweight='bold')
+                ax1.legend(fontsize=8, loc='upper left')
+                ax1.grid(True, alpha=0.3)
+                ax1.spines['top'].set_visible(False)
+                ax1.spines['right'].set_visible(False)
+
+                for p in points:
+                    if not p.get('excluded'):
+                        label = p.get('seq_name', '')[:6]
+                        ax1.annotate(label, (p['ug_doc'], p['area']),
+                                     fontsize=5, alpha=0.5, ha='center', va='bottom',
+                                     xytext=(0, 4), textcoords='offset points')
+
+                ax2 = fig.add_subplot(gs[1])
+                inc_pts = [p for p in points if not p.get('excluded')]
+                if inc_pts:
+                    x_res = [p['ug_doc'] for p in inc_pts]
+                    y_res = [p['residual'] for p in inc_pts]
+                    colors_res = [COLORS["success"] if abs(r) < rms * 2 else COLORS["warning"]
+                                  for r in y_res]
+                    ax2.bar(range(len(x_res)), y_res, color=colors_res, alpha=0.7)
+                    ax2.axhline(0, color='black', linewidth=0.5)
+                    ax2.axhline(rms, color=COLORS["warning"], linewidth=0.5,
+                                linestyle='--', alpha=0.5)
+                    ax2.axhline(-rms, color=COLORS["warning"], linewidth=0.5,
+                                linestyle='--', alpha=0.5)
+                    ax2.set_xticks(range(len(x_res)))
+                    ax2.set_xticklabels([f"{p['conc_ppm']:g}" for p in inc_pts],
+                                        fontsize=7, rotation=45)
+                    ax2.set_xlabel('Concentració (ppm)', fontsize=8)
+                ax2.set_ylabel('Residual', fontsize=8)
+                ax2.set_title('Residuals', fontsize=10, fontweight='bold')
+                ax2.grid(True, alpha=0.3, axis='y')
+                ax2.spines['top'].set_visible(False)
+                ax2.spines['right'].set_visible(False)
+            else:
+                ax = fig.add_axes([0.1, 0.1, 0.8, 0.7])
+                ax.text(0.5, 0.5,
+                        f"Sense dades de regressió per {sd['label']}\n"
+                        "(regression_data no disponible al JSON)",
+                        ha='center', va='center', fontsize=14, color='gray')
+                ax.axis('off')
+
+            draw_footer(fig, INSTITUTION_LINE)
+            pdf.savefig(fig, dpi=150)
+            plt.close(fig)
+
+        # =================================================================
+        # PÀGINA: Evolució temporal RF (2 subplots si dual)
+        # =================================================================
+        page_temporal = 2 + n_signal_pages
+        fig = plt.figure(figsize=(11.69, 8.27))
+        fig.patch.set_facecolor('white')
+        draw_header(fig, "EVOLUCIÓ TEMPORAL RF", page_num=page_temporal,
+                    total_pages=total_pages)
+
+        n_subplots = len(signals_data)
+        gs = GridSpec(n_subplots, 1, figure=fig,
+                      left=0.08, right=0.95,
+                      top=0.85, bottom=0.08,
+                      hspace=0.35)
+
+        for subplot_i, sd in enumerate(signals_data):
+            ax = fig.add_subplot(gs[subplot_i])
+            mode_upper = sd['mode'].upper()
+            cal_signal = sd['signal']
+
+            hist_entries = []
+            for entry in khp_history:
+                if entry.get('mode', '').upper() != mode_upper:
+                    continue
+                if not entry.get('valid_for_calibration', True):
+                    continue
+                entry_doc_mode = entry.get('doc_mode', 'Direct')
+                if cal_signal == 'direct' and entry_doc_mode not in ('Direct', 'DUAL'):
+                    continue
+                if cal_signal == 'uib' and entry_doc_mode not in ('UIB', 'DUAL'):
+                    continue
+                rf = entry.get('rf_mass', 0)
+                if rf <= 0:
+                    continue
+                hist_entries.append(entry)
+
+            if hist_entries:
+                cal_entries = [e for e in hist_entries
+                               if '_CAL' in e.get('seq_name', '').upper()]
+                prod_entries = [e for e in hist_entries
+                                if '_CAL' not in e.get('seq_name', '').upper()]
+
+                for i, entries in enumerate([prod_entries, cal_entries]):
+                    if not entries:
+                        continue
+                    x_vals = list(range(len(entries)))
+                    y_vals = [e['rf_mass'] for e in entries]
+                    color = COLORS["doc_direct"] if i == 0 else COLORS["success"]
+                    marker = 'o' if i == 0 else 's'
+                    label = 'Producció' if i == 0 else 'SEQ_CAL'
+                    ax.scatter(x_vals, y_vals, c=color, s=20, marker=marker,
+                               alpha=0.6, label=label, zorder=3)
+
+                if sd['rf_cal'] > 0:
+                    ax.axhline(sd['rf_cal'], color=COLORS["success"], linewidth=1.5,
+                               linestyle='-', alpha=0.8,
+                               label=f'RF vigent ({sd["rf_cal"]:.0f})')
+                    ax.axhspan(sd['rf_cal'] * 0.9, sd['rf_cal'] * 1.1,
+                               alpha=0.08, color=COLORS["success"])
+
+                ax.set_ylabel('RF mass', fontsize=8)
+                ax.set_title(f'{sd["label"]} — {sd["mode"]}', fontsize=10,
+                             fontweight='bold')
+                ax.legend(fontsize=7, loc='upper right')
+                ax.grid(True, alpha=0.3)
+                ax.spines['top'].set_visible(False)
+                ax.spines['right'].set_visible(False)
+            else:
+                ax.text(0.5, 0.5, f"Sense historial KHP per {sd['label']}",
+                        ha='center', va='center', fontsize=12, color='gray')
+                ax.axis('off')
+
+            if subplot_i == n_subplots - 1:
+                ax.set_xlabel('Entrada (ordre cronològic)', fontsize=8)
+
+        draw_footer(fig, INSTITUTION_LINE)
+        pdf.savefig(fig, dpi=150)
+        plt.close(fig)
+
+        # =================================================================
+        # PÀGINA: QC Levey-Jennings (2 subplots si dual)
+        # =================================================================
+        page_qc = page_temporal + 1
+        fig = plt.figure(figsize=(11.69, 8.27))
+        fig.patch.set_facecolor('white')
+        draw_header(fig, "CONTROL DE QUALITAT (LEVEY-JENNINGS)",
+                    page_num=page_qc, total_pages=total_pages)
+
+        gs = GridSpec(n_subplots, 1, figure=fig,
+                      left=0.08, right=0.95,
+                      top=0.85, bottom=0.08,
+                      hspace=0.35)
+
+        for subplot_i, sd in enumerate(signals_data):
+            ax = fig.add_subplot(gs[subplot_i])
+            mode_upper = sd['mode'].upper()
+            cal_signal = sd['signal']
+            rf_cal = sd['rf_cal']
+            intercept = sd['intercept']
+
+            # Re-filtrar historial per senyal
+            hist_entries = []
+            for entry in khp_history:
+                if entry.get('mode', '').upper() != mode_upper:
+                    continue
+                if not entry.get('valid_for_calibration', True):
+                    continue
+                entry_doc_mode = entry.get('doc_mode', 'Direct')
+                if cal_signal == 'direct' and entry_doc_mode not in ('Direct', 'DUAL'):
+                    continue
+                if cal_signal == 'uib' and entry_doc_mode not in ('UIB', 'DUAL'):
+                    continue
+                if entry.get('rf_mass', 0) <= 0:
+                    continue
+                hist_entries.append(entry)
+
+            prod_entries = [e for e in hist_entries
+                            if '_CAL' not in e.get('seq_name', '').upper()]
+
+            if prod_entries and rf_cal > 0:
+                dev_data = []
+                for e in prod_entries:
+                    area = e.get('area', 0)
+                    conc = e.get('conc_ppm', 0)
+                    vol = e.get('volume_uL', 0)
+                    if conc > 0 and vol > 0 and area > 0:
+                        ug_expected = conc * vol / 1000.0
+                        area_expected = rf_cal * ug_expected + intercept
+                        dev_pct = ((area - area_expected) / area_expected * 100
+                                   if area_expected > 0 else 0)
+                        dev_data.append({'dev_pct': dev_pct})
+
+                if dev_data:
+                    x = list(range(len(dev_data)))
+                    y = [d['dev_pct'] for d in dev_data]
+
+                    colors_bars = []
+                    for d in y:
+                        if abs(d) <= 10:
+                            colors_bars.append(COLORS["success"])
+                        elif abs(d) <= 20:
+                            colors_bars.append(COLORS["warning"])
+                        else:
+                            colors_bars.append(COLORS["danger"])
+
+                    ax.bar(x, y, color=colors_bars, alpha=0.7, width=0.8)
+                    ax.axhline(0, color='black', linewidth=0.8)
+
+                    for lim, style in [(10, '--'), (20, ':')]:
+                        ax.axhline(lim, color=COLORS["warning"], linewidth=0.8,
+                                   linestyle=style, alpha=0.7)
+                        ax.axhline(-lim, color=COLORS["warning"], linewidth=0.8,
+                                   linestyle=style, alpha=0.7)
+
+                    ax.axhspan(-10, 10, alpha=0.05, color=COLORS["success"])
+
+                    n_ok = sum(1 for d in y if abs(d) <= 10)
+                    n_out = sum(1 for d in y if abs(d) > 20)
+                    status_color = (COLORS["success"] if n_out == 0
+                                    else COLORS["danger"])
+                    ax.set_title(
+                        f'{sd["label"]} — EN CONTROL: {n_ok}/{len(y)}, '
+                        f'FORA: {n_out}',
+                        fontsize=10, fontweight='bold', color=status_color)
+                    ax.set_ylabel('Desviació %', fontsize=8)
+                    ax.grid(True, alpha=0.3, axis='y')
+                    ax.spines['top'].set_visible(False)
+                    ax.spines['right'].set_visible(False)
+                else:
+                    ax.text(0.5, 0.5, f"Sense desviacions per {sd['label']}",
+                            ha='center', va='center', fontsize=12, color='gray')
+                    ax.axis('off')
+            else:
+                ax.text(0.5, 0.5, f"Sense dades producció per {sd['label']}",
+                        ha='center', va='center', fontsize=12, color='gray')
+                ax.axis('off')
+
+            if subplot_i == n_subplots - 1:
+                ax.set_xlabel('Entrada KHP producció', fontsize=8)
+
+        draw_footer(fig, INSTITUTION_LINE)
+        pdf.savefig(fig, dpi=150)
+        plt.close(fig)
+
+        # =================================================================
+        # PÀGINA: Historial de calibracions
+        # =================================================================
+        page_hist = page_qc + 1
+        fig = plt.figure(figsize=(8.27, 11.69))  # A4 portrait
+        fig.patch.set_facecolor('white')
+        draw_header(fig, "HISTORIAL DE CALIBRACIONS",
+                    page_num=page_hist, total_pages=total_pages)
+
+        ax_hist = fig.add_axes([0.05, 0.15, 0.9, 0.70])
+        ax_hist.axis('off')
+
+        hist_header = ["ID", "Àmbit", "Des de", "Fins", "RF COL", "RF BP",
+                       "R²", "Punts", "Font"]
+        hist_rows = []
+        for cal_entry in all_calibrations[:20]:
+            scope_h = cal_entry.get('signal_scope', '?')
+            rf_col_val = _extract_rf_from_cal(cal_entry, 'column', scope_h) or 0
+            rf_bp_val = _extract_rf_from_cal(cal_entry, 'bp', scope_h) or 0
+            sens_h = cal_entry.get('uib_sensitivity')
+            scope_label = scope_h.upper()
+            if sens_h:
+                scope_label = f"UIB {int(sens_h)}"
+            r2_h = cal_entry.get('r2', 0) or 0
+            if isinstance(r2_h, dict):
+                r2_h = r2_h.get('column', 0) or r2_h.get('bp', 0) or 0
+            r2_h = float(r2_h) if r2_h else 0
+            n_pts_h = cal_entry.get('n_points', '—')
+            if isinstance(n_pts_h, dict):
+                n_pts_h = n_pts_h.get('column', 0) or n_pts_h.get('bp', 0) or '—'
+            src = cal_entry.get('source', {}).get('type', '')
+            hist_rows.append([
+                cal_entry.get('id', '—')[-18:],
+                scope_label,
+                str(cal_entry.get('valid_from', '—'))[:10],
+                (str(cal_entry.get('valid_to', 'Vigent'))[:10]
+                 if cal_entry.get('valid_to') else 'Vigent'),
+                f"{rf_col_val:.0f}" if rf_col_val else "—",
+                f"{rf_bp_val:.0f}" if rf_bp_val else "—",
+                f"{r2_h:.4f}" if r2_h else "—",
+                str(n_pts_h),
+                src[:12],
+            ])
+
+        if hist_rows:
+            hist_data = [hist_header] + hist_rows
+            tbl4 = ax_hist.table(cellText=hist_data, loc='upper center',
+                                  cellLoc='center',
+                                  colWidths=[0.16, 0.08, 0.10, 0.10, 0.09,
+                                             0.09, 0.10, 0.08, 0.10])
+            tbl4.auto_set_font_size(False)
+            tbl4.set_fontsize(7)
+            tbl4.scale(1.0, 1.5)
+            for j in range(9):
+                tbl4[(0, j)].set_facecolor(COLORS["primary"])
+                tbl4[(0, j)].set_text_props(color='white', fontweight='bold')
+            for i, cal_entry in enumerate(all_calibrations[:20], 1):
+                if cal_entry.get('is_active'):
+                    for j in range(9):
+                        tbl4[(i, j)].set_facecolor('#d4edda')
+
+        draw_footer(fig, INSTITUTION_LINE)
+        pdf.savefig(fig, dpi=150)
+        plt.close(fig)
+
+        # =================================================================
+        # PÀGINES EXTRA: Cromatogrames KHP (ambdós senyals)
+        # =================================================================
+        all_pngs = []
+        for sd in signals_data:
+            pngs = _find_khp_chromatogram_pngs(sd['cal'], sd['reg'])
+            all_pngs.extend(pngs)
+        # Dedup preserving order
+        seen = set()
+        unique_pngs = []
+        for p in all_pngs:
+            if p not in seen:
+                seen.add(p)
+                unique_pngs.append(p)
+
+        if unique_pngs:
+            plots_per_page = 6
+            n_chrom_pages = (len(unique_pngs) + plots_per_page - 1) // plots_per_page
+            for page_idx in range(n_chrom_pages):
+                fig = plt.figure(figsize=(11.69, 8.27))
+                fig.patch.set_facecolor('white')
+                start = page_idx * plots_per_page
+                end = min(start + plots_per_page, len(unique_pngs))
+                page_pngs = unique_pngs[start:end]
+                fig.text(0.5, 0.97,
+                         f"CROMATOGRAMES KHP — Pàg. {page_idx + 1}/{n_chrom_pages}",
+                         ha='center', va='top', fontsize=12, fontweight='bold',
+                         color='#2C3E50')
+                gs_chr = GridSpec(3, 2, figure=fig, left=0.04, right=0.96,
+                                  top=0.93, bottom=0.04, hspace=0.3, wspace=0.15)
+                for plot_idx, png_path in enumerate(page_pngs):
+                    row = plot_idx // 2
+                    col_idx = plot_idx % 2
+                    ax_chr = fig.add_subplot(gs_chr[row, col_idx])
+                    try:
+                        img = plt.imread(png_path)
+                        ax_chr.imshow(img)
+                        ax_chr.axis('off')
+                        fname = os.path.basename(png_path).replace('.png', '')
+                        ax_chr.set_title(fname, fontsize=7, pad=2)
+                    except Exception as e_img:
+                        ax_chr.text(0.5, 0.5, f"Error: {e_img}", ha='center',
+                                    va='center', fontsize=8, color='#E74C3C')
+                        ax_chr.axis('off')
+                for plot_idx in range(len(page_pngs), plots_per_page):
+                    row = plot_idx // 2
+                    col_idx = plot_idx % 2
+                    ax_empty = fig.add_subplot(gs_chr[row, col_idx])
+                    ax_empty.axis('off')
+                pdf.savefig(fig, dpi=120)
+                plt.close(fig)
+
+    import logging
+    logging.getLogger(__name__).info(f"Informe calibració dual generat: {pdf_path}")
     return pdf_path
 
 
@@ -2461,6 +3140,8 @@ def _khp_draw_page1(pdf, data, cal_ref, seq_name):
         else:
             ref_rf = str(rf_obj)
         r2_val = ref.get("r2")
+        if isinstance(r2_val, dict):
+            r2_val = next((v for v in r2_val.values() if v), None)
         ref_r2 = f"{r2_val:.4f}" if r2_val else "-"
         ref_n = str(ref.get("n_points", "-"))
 
@@ -3656,80 +4337,71 @@ def _ana_draw_page1_summary(pdf, data, seq_name):
     data_mode = data.get("data_mode", "-")
     summary = data.get("summary", {})
 
+    # Compute meaningful stats from samples_grouped
+    from hpsec_warnings import ANOMALY_CATALOG as _AC_p1
+    _sg_p1 = data.get("samples_grouped", {})
+    n_samples = 0
+    n_valid = 0
+    n_invalid = 0
+    n_blocker = 0
+    n_batman = 0
+    n_batman_repaired = 0
+    for _sn, _sd in _sg_p1.items():
+        if _sd.get("analysis_type") == "light":
+            continue
+        n_samples += 1
+        if not _sd.get("sample_valid", True):
+            n_invalid += 1
+            continue
+        n_valid += 1
+        _sel = (_sd.get("selected") or {}).get("doc", "1")
+        _rd = (_sd.get("replicas") or {}).get(_sel, {})
+        has_blocker = False
+        for _a in _rd.get("anomalies", []):
+            if isinstance(_a, dict):
+                _code = _a.get("code", "")
+                _repaired = _a.get("repaired", False)
+            else:
+                _code = str(_a).replace("_REPAIRED", "")
+                _repaired = "_REPAIRED" in str(_a)
+            _entry = _AC_p1.get(_code, {})
+            _sev = _entry.get("severity")
+            if "IRREGULAR_TOP" in _code:
+                if _repaired:
+                    n_batman_repaired += 1
+                else:
+                    n_batman += 1
+            if _sev and _sev.value == "blocker" and not _repaired:
+                has_blocker = True
+        if has_blocker:
+            n_blocker += 1
+
+    n_light = sum(1 for _sd in _sg_p1.values()
+                  if _sd.get("analysis_type") == "light")
+
     info_data = [
         ["Parametre", "Valor", "Parametre", "Valor"],
         ["Metode", method, "Mode dades", data_mode],
         ["Data processament", date_processed or "-",
-         "Mostres", str(summary.get("total_samples", 0))],
-        ["Repliques totals", str(summary.get("total_replicas", 0)),
-         "Pics valids", str(summary.get("valid_peaks", 0))],
-        ["Amb anomalies", str(summary.get("with_anomalies", 0)),
-         "Amb timeouts", str(summary.get("with_timeouts", 0))],
-        ["Warnings repliques", str(summary.get("with_replica_warnings", 0)),
-         "KHP processats", str(summary.get("n_khp", 0))],
+         "Mostres analitzades", str(n_samples)],
+        ["Mostres valides", str(n_valid),
+         "No valides", str(n_invalid) if n_invalid else "-"],
+        ["Amb anomalies critiques", str(n_blocker) if n_blocker else "-",
+         "Irregular top (batman)", str(n_batman) if n_batman else "-"],
+        ["Batman reparat", str(n_batman_repaired) if n_batman_repaired else "-",
+         "BLANC/CONTROL", str(n_light) if n_light else "-"],
     ]
 
     ax_info = fig.add_axes([0.08, 0.62, 0.84, 0.11])
     draw_minimal_table(ax_info, info_data,
                        col_widths=[0.20, 0.30, 0.20, 0.30], font_size=9)
 
-    # SNR stats
-    fig.text(0.08, 0.60, "Estadistiques SNR", fontsize=11,
-             fontweight='bold', color=COLORS["text"])
-
-    snr_directs = []
-    snr_uibs = []
-    snr_254s = []
-
-    samples_grouped = data.get("samples_grouped", {})
-    for sg_name, sg_data in samples_grouped.items():
-        selected = sg_data.get("selected") or {}
-        doc_sel = selected.get("doc", "1")
-        if doc_sel == "none":
-            continue
-        rep_data = (sg_data.get("replicas") or {}).get(doc_sel, {})
-        snr_info = rep_data.get("snr_info") or {}
-        snr_d = snr_info.get("snr_direct")
-        if snr_d and snr_d > 0:
-            snr_directs.append(snr_d)
-        snr_u = snr_info.get("snr_uib")
-        if snr_u and snr_u > 0:
-            snr_uibs.append(snr_u)
-
-        dad_sel = selected.get("dad", "1")
-        if dad_sel == "none":
-            continue
-        dad_data = (sg_data.get("replicas") or {}).get(dad_sel, {})
-        snr_dad = (dad_data.get("snr_info_dad") or {}).get("A254", {}).get("snr")
-        if snr_dad and snr_dad > 0:
-            snr_254s.append(snr_dad)
-
-    snr_table = [["Senyal", "n", "Mitjana", "Min", "Max", "< LOQ (n)"]]
-
-    def _snr_row(label, vals):
-        n = len(vals)
-        if n == 0:
-            return [label, "0", "-", "-", "-", "-"]
-        arr = np.array(vals)
-        n_below_loq = int(np.sum(arr < 10))
-        return [label, str(n), f"{np.mean(arr):.0f}", f"{np.min(arr):.0f}",
-                f"{np.max(arr):.0f}", str(n_below_loq)]
-
-    snr_table.append(_snr_row("DOC Direct", snr_directs))
-    if snr_uibs:
-        snr_table.append(_snr_row("DOC UIB", snr_uibs))
-    snr_table.append(_snr_row("A254 (DAD)", snr_254s))
-
-    ax_snr = fig.add_axes([0.08, 0.48, 0.84, 0.10])
-    draw_minimal_table(ax_snr, snr_table,
-                       col_widths=[0.18, 0.10, 0.18, 0.18, 0.18, 0.18],
-                       font_size=9)
-
     # Distribucio anomalies
-    fig.text(0.08, 0.46, "Distribucio d'anomalies", fontsize=11,
+    fig.text(0.08, 0.60, "Distribucio d'anomalies", fontsize=11,
              fontweight='bold', color=COLORS["text"])
 
     from hpsec_warnings import ANOMALY_CATALOG as _AC
+    samples_grouped = data.get("samples_grouped", {})
     anomaly_counts = {}
     for sg_name, sg_data in samples_grouped.items():
         for rep_key, rep_data in (sg_data.get("replicas") or {}).items():
@@ -3762,21 +4434,12 @@ def _ana_draw_page1_summary(pdf, data, seq_name):
 
         n_anom_rows = len(anom_table)
         table_h = min(0.015 * (n_anom_rows + 1), 0.20)
-        ax_anom = fig.add_axes([0.08, 0.44 - table_h, 0.84, table_h])
+        ax_anom = fig.add_axes([0.08, 0.58 - table_h, 0.84, table_h])
         draw_minimal_table(ax_anom, anom_table,
                            col_widths=[0.50, 0.20, 0.30], font_size=8)
     else:
-        fig.text(0.08, 0.42, "Cap anomalia detectada",
+        fig.text(0.08, 0.56, "Cap anomalia detectada",
                  fontsize=9, color=COLORS["accent"])
-
-    # Estat global
-    warning_level = data.get("warning_level", "OK")
-    badge_color = COLORS["accent"] if warning_level == "OK" else (
-        COLORS["warning"] if warning_level == "WARNING" else COLORS["danger"])
-    bbox_props = dict(boxstyle="round,pad=0.4", facecolor=badge_color,
-                      edgecolor='none', alpha=0.9)
-    fig.text(0.90, 0.60, warning_level, ha='center', va='center',
-             fontsize=11, fontweight='bold', color='white', bbox=bbox_props)
 
     draw_report_footer(fig, 1)
     pdf.savefig(fig, dpi=150)
@@ -3784,13 +4447,21 @@ def _ana_draw_page1_summary(pdf, data, seq_name):
 
 
 def _ana_draw_results_pages(pdf, data, page_start=2):
-    """Pagines landscape amb taula de resultats (13 columnes)."""
+    """Pagines landscape amb taula de resultats (13 columnes).
+
+    Mostres regulars primer, controls (MQ/KHP/BLANK/NaOH) al final amb fons gris.
+    Per KHP: mostra area_peak (integració pic principal) en lloc d'area_total.
+    """
     samples_grouped = data.get("samples_grouped", {})
     if not samples_grouped:
         return page_start
 
-    table_rows = []
-    for sample_name in sorted(samples_grouped.keys()):
+    regular_names, control_names = _ana_classify_samples(samples_grouped)
+    # Ordre: regulars primer, després controls (separador visual via color)
+    ordered_names = regular_names + control_names
+    control_set = set(control_names)
+
+    def _build_row(sample_name):
         sg = samples_grouped[sample_name]
         selected = sg.get("selected") or {}
         quant = sg.get("quantification") or {}
@@ -3800,10 +4471,19 @@ def _ana_draw_results_pages(pdf, data, page_start=2):
         doc_rep = (sg.get("replicas") or {}).get(doc_sel, {})
         dad_rep = (sg.get("replicas") or {}).get(dad_sel, {})
         sample_valid = sg.get("sample_valid", True)
+        is_control = sample_name in control_set
 
+        # Area DOC: per KHP usa area_peak (coherent amb calibració)
         areas = doc_rep.get("areas") or {}
         doc_areas = areas.get("DOC") or {}
-        area_direct = doc_areas.get("total", 0)
+        peak_info = doc_rep.get("peak_info") or {}
+        if is_khp(sample_name) and peak_info.get("area"):
+            area_direct = peak_info["area"]
+            area_label = f"{format_value(area_direct, '.0f')}*"
+        else:
+            area_direct = doc_areas.get("total", 0)
+            area_label = format_value(area_direct, ".0f")
+
         areas_uib = doc_rep.get("areas_uib") or {}
         area_uib = areas_uib.get("total", 0)
 
@@ -3823,12 +4503,12 @@ def _ana_draw_results_pages(pdf, data, page_start=2):
         status = _ana_status_text(anomalies, sample_valid)
         color = _ana_get_status_color(anomalies)
 
-        table_rows.append({
+        return {
             "row": [
                 sample_name[:20],
                 f"R{doc_sel}" if doc_sel != "none" else "Cap",
                 f"R{dad_sel}" if dad_sel != "none" else "Cap",
-                format_value(area_direct, ".0f"),
+                area_label,
                 format_value(ppm_d, ".2f") if sample_valid and ppm_d else "-",
                 format_value(area_uib, ".0f"),
                 format_value(ppm_u, ".2f") if ppm_u else "-",
@@ -3840,7 +4520,10 @@ def _ana_draw_results_pages(pdf, data, page_start=2):
                 status,
             ],
             "color": color,
-        })
+            "is_control": is_control,
+        }
+
+    table_rows = [_build_row(name) for name in ordered_names]
 
     rows_per_page = 20
     headers = ["Mostra", "DOC", "DAD", "A_DOC", "ppm",
@@ -3866,18 +4549,32 @@ def _ana_draw_results_pages(pdf, data, page_start=2):
 
         table_data = [headers]
         row_colors = {}
+        has_khp_star = False
         for idx, entry in enumerate(page_rows):
             table_data.append(entry["row"])
-            if entry["color"] == COLORS["danger"]:
+            if entry.get("is_control"):
+                row_colors[idx + 1] = "#F0F0F0"  # gris controls
+            elif entry["color"] == COLORS["danger"]:
                 row_colors[idx + 1] = "#FDEDEC"
             elif entry["color"] == COLORS["warning"]:
                 row_colors[idx + 1] = "#FEF9E7"
+            # Detectar si alguna fila té l'asterisc KHP
+            if any("*" in str(c) for c in entry["row"]):
+                has_khp_star = True
 
         n_rows = len(table_data)
         table_h = min(0.85, 0.035 * n_rows + 0.02)
         ax = fig.add_axes([0.03, 0.06, 0.94, table_h])
         draw_minimal_table(ax, table_data, col_widths=col_widths,
                            row_colors=row_colors, font_size=7.5)
+
+        # Nota al peu per KHP area_peak
+        if has_khp_star:
+            fig.text(0.03, 0.03,
+                     "* Àrea del pic principal (integració tangent). "
+                     "Les mostres mostren àrea total del cromatograma.",
+                     fontsize=6.5, color=COLORS["text_secondary"],
+                     style='italic')
 
         draw_report_footer(fig, page_num)
         pdf.savefig(fig, dpi=150)
@@ -3990,6 +4687,16 @@ def _ana_draw_chromatogram_pages(pdf, data, page_start):
                 if s > 0 and s <= x_max:
                     ax.axvline(s, color='#999', ls=':', lw=0.4, zorder=0)
 
+    def _add_timeout_zones(ax, timeout_info):
+        """Afegeix zones de timeout com a bandes vermelles translúcides."""
+        if not timeout_info:
+            return
+        for to in timeout_info.get("timeouts", []):
+            t_s = to.get("t_start_min")
+            t_e = to.get("t_end_min")
+            if t_s is not None and t_e is not None:
+                ax.axvspan(t_s, t_e, alpha=0.12, color='#E74C3C', zorder=0)
+
     for sample_name in sorted(samples_grouped.keys()):
         sg = samples_grouped[sample_name]
         replicas = sg.get("replicas", {})
@@ -4001,6 +4708,7 @@ def _ana_draw_chromatogram_pages(pdf, data, page_start):
         doc_comp = comparison.get("doc") or {}
         dad_comp = comparison.get("dad") or {}
         quant = sg.get("quantification") or {}
+        is_light = sg.get("analysis_type") == "light"
 
         rep_keys = sorted(replicas.keys())
         r1 = replicas.get(rep_keys[0], {})
@@ -4010,6 +4718,50 @@ def _ana_draw_chromatogram_pages(pdf, data, page_start):
         y1_d = r1.get("y_doc_net")
         y1_u = r1.get("y_doc_uib_net")
         has_chromatogram_data = t1 is not None and y1_d is not None
+
+        # Timeout info from selected replica
+        doc_sel = selected.get("doc", rep_keys[0])
+        sel_rep_data = replicas.get(doc_sel, r1)
+        timeout_info = sel_rep_data.get("timeout_info") or {}
+
+        # BLANK/CONTROL: simplified page (DOC only, full width)
+        if is_light and has_chromatogram_data:
+            fig = plt.figure(figsize=(11.69, 8.27))
+            fig.patch.set_facecolor('white')
+            _ana_draw_sample_header(fig, sg, sample_name)
+
+            ax = fig.add_axes([0.08, 0.10, 0.84, 0.75])
+            t1 = np.asarray(t1)
+            y1_d = np.asarray(y1_d)
+            ax.plot(t1, y1_d, color='#888', lw=LW, label=f'R{rep_keys[0]}')
+            if r2:
+                t2 = r2.get("t_doc")
+                y2_d = r2.get("y_doc_net")
+                if t2 is not None and y2_d is not None:
+                    ax.plot(np.asarray(t2), np.asarray(y2_d),
+                            color='#bbb', lw=LW, alpha=0.7, label=f'R{rep_keys[1]}')
+            ax.set_ylabel("DOC Direct", fontsize=8)
+            ax.set_xlabel("Temps (min)", fontsize=8)
+            ax.tick_params(labelsize=7)
+            ax.grid(True, alpha=0.2, lw=0.3)
+            ax.set_xlim(x_min, x_max)
+            _add_vlines(ax)
+            _add_timeout_zones(ax, timeout_info)
+            if ax.get_legend_handles_labels()[1]:
+                ax.legend(loc='upper right', fontsize=6, framealpha=0.7)
+            # SNR annotation
+            snr_info = sel_rep_data.get("snr_info") or {}
+            snr_d = snr_info.get("snr_direct", 0)
+            if snr_d > 0:
+                ax.text(0.99, 0.95, f"SNR={snr_d:.0f}",
+                        transform=ax.transAxes, fontsize=6,
+                        color='#555', ha='right', va='top')
+
+            draw_report_footer(fig, page_num)
+            pdf.savefig(fig, dpi=150)
+            plt.close(fig)
+            page_num += 1
+            continue
 
         df_dad1 = r1.get("df_dad")
         wl_cols = []
@@ -4029,37 +4781,13 @@ def _ana_draw_chromatogram_pages(pdf, data, page_start):
         fig = plt.figure(figsize=(11.69, 8.27))
         fig.patch.set_facecolor('white')
 
-        sample_valid = sg.get("sample_valid", True)
-        title_color = COLORS["danger"] if not sample_valid else COLORS["primary"]
-        fig.text(0.5, 0.97, sample_name, ha='center', va='top',
-                 fontsize=12, fontweight='bold', color=title_color)
-
-        ppm_d = quant.get("concentration_ppm_direct") or quant.get("concentration_ppm")
-        ppm_u = quant.get("concentration_ppm_uib")
-        subtitle_parts = [f"R_DOC={selected.get('doc', '?')}",
-                          f"R_DAD={selected.get('dad', '?')}"]
-        if ppm_d:
-            subtitle_parts.append(f"{ppm_d:.2f} ppm")
-        if ppm_u:
-            subtitle_parts.append(f"UIB: {ppm_u:.2f} ppm")
-
-        sel_rep = replicas.get(selected.get("doc", rep_keys[0]), r1)
-        bg_doc = sel_rep.get("bigaussian_doc")
-        if is_bp and bg_doc and bg_doc.get("valid"):
-            bg_r2 = bg_doc.get("r2", 0)
-            bg_asym = bg_doc.get("asymmetry", 1)
-            bg_qual = bg_doc.get("quality", "?")
-            subtitle_parts.append(
-                f"BiG: R2={bg_r2:.3f} asym={bg_asym:.2f} ({bg_qual})")
-
-        if not sample_valid:
-            subtitle_parts.append("NO VALIDA")
-
-        fig.text(0.5, 0.94, "  |  ".join(subtitle_parts),
-                 ha='center', va='top', fontsize=8, color=COLORS["text_secondary"])
+        # Enhanced header (replaces old title+subtitle)
+        _ana_draw_sample_header(fig, sg, sample_name)
 
         pearson_doc = doc_comp.get("pearson", 0)
         pearson_per_wl = dad_comp.get("pearson_per_wavelength", {})
+        ppm_d = quant.get("concentration_ppm_direct") or quant.get("concentration_ppm")
+        ppm_u = quant.get("concentration_ppm_uib")
 
         if not has_chromatogram_data:
             ax_msg = fig.add_axes([0.1, 0.35, 0.8, 0.5])
@@ -4085,7 +4813,7 @@ def _ana_draw_chromatogram_pages(pdf, data, page_start):
         gs = fig.add_gridspec(
             n_total_rows, 2, height_ratios=heights,
             hspace=0.35, wspace=0.25,
-            top=0.90, bottom=0.07, left=0.08, right=0.92)
+            top=0.85, bottom=0.07, left=0.08, right=0.92)
 
         # Row 0: DOC Direct | DOC UIB
         ax_doc = fig.add_subplot(gs[0, 0])
@@ -4106,6 +4834,7 @@ def _ana_draw_chromatogram_pages(pdf, data, page_start):
         ax_doc.grid(True, alpha=0.2, lw=0.3)
         ax_doc.set_xlim(x_min, x_max)
         _add_vlines(ax_doc)
+        _add_timeout_zones(ax_doc, timeout_info)
         if ax_doc.get_legend_handles_labels()[1]:
             ax_doc.legend(loc='upper right', fontsize=5.5, ncol=1,
                           framealpha=0.7, handlelength=1.2)
@@ -4140,6 +4869,7 @@ def _ana_draw_chromatogram_pages(pdf, data, page_start):
                     ax_uib.text(0.99, 0.72, f"{ppm_u:.2f} ppm",
                                 transform=ax_uib.transAxes, fontsize=5,
                                 color='#555', ha='right', va='top')
+                _add_timeout_zones(ax_uib, timeout_info)
 
         if not has_uib:
             ax_uib.text(0.5, 0.5, "UIB no disponible",
@@ -4197,6 +4927,9 @@ def _ana_draw_chromatogram_pages(pdf, data, page_start):
         pdf.savefig(fig, dpi=150)
         plt.close(fig)
         page_num += 1
+
+        # Heatmap DAD page (if Export3D available)
+        page_num = _ana_draw_heatmap_page(pdf, sg, sample_name, method, page_num)
 
     return page_num
 
@@ -4369,6 +5102,557 @@ def _ana_draw_anomalies_page(pdf, data, page_num):
     return page_num + 1
 
 
+# =============================================================================
+# OVERLAY & ENHANCED PAGES — Funcions noves per PDF d'anàlisi millorat
+# =============================================================================
+
+def _ana_classify_samples(samples_grouped):
+    """Classifica mostres en regulars vs controls (MQ/BLANK/NaOH/KHP).
+
+    Returns:
+        (regular_names, control_names) — llistes ordenades
+    """
+    regular = []
+    control = []
+    for name in sorted(samples_grouped.keys()):
+        sd = samples_grouped[name]
+        if sd.get("analysis_type") == "light":
+            control.append(name)
+            continue
+        stype = (sd.get("sample_type") or "").upper()
+        if stype in ("BLANK", "CONTROL", "KHP"):
+            control.append(name)
+            continue
+        is_ctrl = any(re.match(p, name, re.IGNORECASE) for p in CONTROL_PATTERNS)
+        if is_ctrl or is_khp(name):
+            control.append(name)
+        else:
+            regular.append(name)
+    return regular, control
+
+
+_FRAC_COLORS = {
+    "BioP": "#3498DB", "HS": "#E74C3C", "BB": "#F39C12",
+    "SB": "#2ECC71", "LMW": "#9B59B6",
+}
+_FRAC_ORDER = ["BioP", "HS", "BB", "SB", "LMW"]
+
+
+def _ana_draw_doc_overlay_page(pdf, data, page_num):
+    """Pàgina overlay: tots els cromatogrames DOC superposats."""
+    samples_grouped = data.get("samples_grouped", {})
+    method = data.get("method", "COLUMN")
+    is_bp = method.upper() == "BP"
+    x_min, x_max = (0, 10) if is_bp else (0, 70)
+    fracs = _ana_get_fractions(method)
+    seq_name = data.get("seq_name", "")
+
+    fig = plt.figure(figsize=(11.69, 8.27))
+    fig.patch.set_facecolor('white')
+    fig.text(0.5, 0.97, "CROMATOGRAMES DOC SUPERPOSATS", ha='center', va='top',
+             fontsize=14, fontweight='bold', color=COLORS["primary"])
+    fig.text(0.5, 0.94, f"{seq_name} — {len(samples_grouped)} mostres",
+             ha='center', va='top', fontsize=9, color=COLORS["text_secondary"])
+
+    ax = fig.add_axes([0.08, 0.10, 0.65, 0.80])
+    cmap = plt.cm.tab20
+    regular_names, control_names = _ana_classify_samples(samples_grouped)
+
+    for idx, name in enumerate(regular_names):
+        sg = samples_grouped[name]
+        sel = (sg.get("selected") or {}).get("doc", "1")
+        if sel == "none":
+            continue
+        rep = (sg.get("replicas") or {}).get(sel, {})
+        t = rep.get("t_doc")
+        y = rep.get("y_doc_net")
+        if t is None or y is None:
+            continue
+        t, y = np.asarray(t), np.asarray(y)
+        color = cmap(idx % 20)
+        ax.plot(t, y, color=color, lw=0.6, label=name[:18])
+
+    for name in control_names:
+        sg = samples_grouped[name]
+        sel = (sg.get("selected") or {}).get("doc", "1")
+        if sel == "none":
+            continue
+        rep = (sg.get("replicas") or {}).get(sel, {})
+        t = rep.get("t_doc")
+        y = rep.get("y_doc_net")
+        if t is None or y is None:
+            continue
+        t, y = np.asarray(t), np.asarray(y)
+        ax.plot(t, y, color='#999', lw=0.4, ls='--', label=name[:18])
+
+    ax.set_xlim(x_min, x_max)
+    ax.set_xlabel("Temps (min)", fontsize=8)
+    ax.set_ylabel("DOC (ppb)", fontsize=8)
+    ax.tick_params(labelsize=7)
+    ax.grid(True, alpha=0.2, lw=0.3)
+
+    if not is_bp and fracs:
+        for _fn, fi in fracs:
+            s = fi['start']
+            if 0 < s <= x_max:
+                ax.axvline(s, color='#999', ls=':', lw=0.4, zorder=0)
+
+    n_total = len(regular_names) + len(control_names)
+    ncol = 2 if n_total > 20 else 1
+    ax.legend(loc='upper left', bbox_to_anchor=(1.02, 1.0), fontsize=5,
+              ncol=ncol, framealpha=0.7, handlelength=1.2, borderaxespad=0)
+
+    draw_report_footer(fig, page_num)
+    pdf.savefig(fig, dpi=150)
+    plt.close(fig)
+    return page_num + 1
+
+
+def _ana_draw_a254_overlay_page(pdf, data, page_num):
+    """Pàgina overlay: tots els cromatogrames A254 superposats."""
+    samples_grouped = data.get("samples_grouped", {})
+    method = data.get("method", "COLUMN")
+    is_bp = method.upper() == "BP"
+    x_min, x_max = (0, 10) if is_bp else (0, 70)
+    fracs = _ana_get_fractions(method)
+    seq_name = data.get("seq_name", "")
+
+    fig = plt.figure(figsize=(11.69, 8.27))
+    fig.patch.set_facecolor('white')
+    fig.text(0.5, 0.97, "CROMATOGRAMES A254 SUPERPOSATS", ha='center', va='top',
+             fontsize=14, fontweight='bold', color=COLORS["primary"])
+    fig.text(0.5, 0.94, f"{seq_name} — {len(samples_grouped)} mostres",
+             ha='center', va='top', fontsize=9, color=COLORS["text_secondary"])
+
+    ax = fig.add_axes([0.08, 0.10, 0.65, 0.80])
+    cmap = plt.cm.tab20
+    regular_names, control_names = _ana_classify_samples(samples_grouped)
+
+    any_plotted = False
+    for idx, name in enumerate(regular_names):
+        sg = samples_grouped[name]
+        sel = (sg.get("selected") or {}).get("dad", (sg.get("selected") or {}).get("doc", "1"))
+        if sel == "none":
+            continue
+        rep = (sg.get("replicas") or {}).get(sel, {})
+        df_dad = rep.get("df_dad")
+        if df_dad is None or not hasattr(df_dad, 'columns'):
+            continue
+        wl_col = None
+        for candidate in ['254', 254, 'A254']:
+            if candidate in df_dad.columns:
+                wl_col = candidate
+                break
+        if wl_col is None:
+            continue
+        t_col = 'time (min)' if 'time (min)' in df_dad.columns else df_dad.columns[0]
+        color = cmap(idx % 20)
+        ax.plot(df_dad[t_col].values, df_dad[wl_col].values,
+                color=color, lw=0.6, label=name[:18])
+        any_plotted = True
+
+    for name in control_names:
+        sg = samples_grouped[name]
+        sel = (sg.get("selected") or {}).get("dad", (sg.get("selected") or {}).get("doc", "1"))
+        if sel == "none":
+            continue
+        rep = (sg.get("replicas") or {}).get(sel, {})
+        df_dad = rep.get("df_dad")
+        if df_dad is None or not hasattr(df_dad, 'columns'):
+            continue
+        wl_col = None
+        for candidate in ['254', 254, 'A254']:
+            if candidate in df_dad.columns:
+                wl_col = candidate
+                break
+        if wl_col is None:
+            continue
+        t_col = 'time (min)' if 'time (min)' in df_dad.columns else df_dad.columns[0]
+        ax.plot(df_dad[t_col].values, df_dad[wl_col].values,
+                color='#999', lw=0.4, ls='--', label=name[:18])
+        any_plotted = True
+
+    if not any_plotted:
+        ax.text(0.5, 0.5, "Dades A254 no disponibles",
+                ha='center', va='center', transform=ax.transAxes,
+                fontsize=14, color=COLORS["text_secondary"])
+
+    ax.set_xlim(x_min, x_max)
+    ax.set_xlabel("Temps (min)", fontsize=8)
+    ax.set_ylabel("Absorbància 254 nm (mAU)", fontsize=8)
+    ax.tick_params(labelsize=7)
+    ax.grid(True, alpha=0.2, lw=0.3)
+
+    if not is_bp and fracs:
+        for _fn, fi in fracs:
+            s = fi['start']
+            if 0 < s <= x_max:
+                ax.axvline(s, color='#999', ls=':', lw=0.4, zorder=0)
+
+    n_total = len(regular_names) + len(control_names)
+    ncol = 2 if n_total > 20 else 1
+    ax.legend(loc='upper left', bbox_to_anchor=(1.02, 1.0), fontsize=5,
+              ncol=ncol, framealpha=0.7, handlelength=1.2, borderaxespad=0)
+
+    draw_report_footer(fig, page_num)
+    pdf.savefig(fig, dpi=150)
+    plt.close(fig)
+    return page_num + 1
+
+
+def _ana_draw_doc_areas_page(pdf, data, page_num):
+    """Pàgina barres apilades: àrees DOC per fracció i mostra."""
+    samples_grouped = data.get("samples_grouped", {})
+    method = data.get("method", "COLUMN")
+    is_bp = method.upper() == "BP"
+    fracs = _ana_get_fractions(method)
+    seq_name = data.get("seq_name", "")
+
+    fig = plt.figure(figsize=(11.69, 8.27))
+    fig.patch.set_facecolor('white')
+    fig.text(0.5, 0.97, "ÀREES DOC PER FRACCIÓ", ha='center', va='top',
+             fontsize=14, fontweight='bold', color=COLORS["primary"])
+    fig.text(0.5, 0.94, f"{seq_name} — {len(samples_grouped)} mostres",
+             ha='center', va='top', fontsize=9, color=COLORS["text_secondary"])
+
+    ax = fig.add_axes([0.08, 0.15, 0.84, 0.73])
+
+    regular_names, control_names = _ana_classify_samples(samples_grouped)
+    ordered_names = regular_names + control_names
+
+    x_positions = np.arange(len(ordered_names))
+    bar_width = 0.7
+
+    if not is_bp and fracs:
+        # Stacked bars per fraction
+        frac_names = [fn for fn, _ in fracs]
+        bottoms = np.zeros(len(ordered_names))
+
+        for frac_name in _FRAC_ORDER:
+            if frac_name not in frac_names:
+                continue
+            values = []
+            for name in ordered_names:
+                sg = samples_grouped[name]
+                sel = (sg.get("selected") or {}).get("doc", "1")
+                if sel == "none":
+                    values.append(0)
+                    continue
+                rep = (sg.get("replicas") or {}).get(sel, {})
+                doc_areas = (rep.get("areas") or {}).get("DOC", {})
+                values.append(doc_areas.get(frac_name, 0))
+            values = np.array(values, dtype=float)
+            color = _FRAC_COLORS.get(frac_name, '#888')
+            is_light_mask = [n in control_names for n in ordered_names]
+            bar_colors = [('#C0C0C0' if il else color) for il in is_light_mask]
+            ax.bar(x_positions, values, bar_width, bottom=bottoms,
+                   color=bar_colors, edgecolor='white', linewidth=0.3,
+                   label=frac_name)
+            bottoms += values
+
+        handles = [mpatches.Patch(color=_FRAC_COLORS.get(fn, '#888'), label=fn)
+                   for fn in _FRAC_ORDER if fn in frac_names]
+        ax.legend(handles=handles, loc='upper right', fontsize=7, framealpha=0.8)
+    else:
+        # Simple bars for BP
+        values = []
+        for name in ordered_names:
+            sg = samples_grouped[name]
+            sel = (sg.get("selected") or {}).get("doc", "1")
+            if sel == "none":
+                values.append(0)
+                continue
+            rep = (sg.get("replicas") or {}).get(sel, {})
+            doc_areas = (rep.get("areas") or {}).get("DOC", {})
+            values.append(doc_areas.get("total", 0))
+        values = np.array(values, dtype=float)
+        bar_colors = ['#C0C0C0' if n in control_names else COLORS["primary"]
+                      for n in ordered_names]
+        ax.bar(x_positions, values, bar_width, color=bar_colors,
+               edgecolor='white', linewidth=0.3)
+        bottoms = values
+
+    # ppm annotation above each bar
+    for i, name in enumerate(ordered_names):
+        sg = samples_grouped[name]
+        quant = sg.get("quantification") or {}
+        ppm = quant.get("concentration_ppm_direct") or quant.get("concentration_ppm")
+        if ppm and bottoms[i] > 0:
+            ax.text(i, bottoms[i] + bottoms.max() * 0.01, f"{ppm:.1f}",
+                    ha='center', va='bottom', fontsize=4.5, color=COLORS["text"])
+
+    n_samples = len(ordered_names)
+    label_size = 8 if n_samples <= 15 else (6 if n_samples <= 30 else 5)
+    ax.set_xticks(x_positions)
+    ax.set_xticklabels([n[:15] for n in ordered_names], rotation=45,
+                       ha='right', fontsize=label_size)
+    ax.set_ylabel("Àrea DOC", fontsize=8)
+    ax.tick_params(axis='y', labelsize=7)
+    ax.grid(True, axis='y', alpha=0.2, lw=0.3)
+
+    draw_report_footer(fig, page_num)
+    pdf.savefig(fig, dpi=150)
+    plt.close(fig)
+    return page_num + 1
+
+
+def _ana_draw_sample_header(fig, sg, sample_name):
+    """Bloc informatiu a la part superior de la pàgina per mostra (y=0.97→0.88)."""
+    from hpsec_warnings import ANOMALY_CATALOG as _AC
+
+    selected = sg.get("selected") or {}
+    quant = sg.get("quantification") or {}
+    comparison = sg.get("comparison") or {}
+    sample_valid = sg.get("sample_valid", True)
+
+    # Line 1: name | ppm Direct | ppm UIB | HCI
+    title_color = COLORS["danger"] if not sample_valid else COLORS["primary"]
+    fig.text(0.04, 0.97, sample_name, va='top', fontsize=12,
+             fontweight='bold', color=title_color)
+
+    line1_parts = []
+    ppm_d = quant.get("concentration_ppm_direct") or quant.get("concentration_ppm")
+    ppm_u = quant.get("concentration_ppm_uib")
+    if ppm_d is not None:
+        line1_parts.append(f"DOC: {ppm_d:.2f} ppm")
+    if ppm_u is not None:
+        line1_parts.append(f"UIB: {ppm_u:.2f} ppm")
+    hci = quant.get("hci")
+    hci_char = quant.get("hci_character", "")
+    if hci is not None:
+        line1_parts.append(f"HCI={hci:.2f} ({hci_char})")
+    if not sample_valid:
+        line1_parts.append("NO VÀLIDA")
+    if line1_parts:
+        fig.text(0.96, 0.97, "  |  ".join(line1_parts), ha='right', va='top',
+                 fontsize=8, color=COLORS["text"])
+
+    # Line 2: anomaly badges (compact, max 6)
+    doc_sel = selected.get("doc", "1")
+    rep_data = (sg.get("replicas") or {}).get(doc_sel, {})
+    anomalies = rep_data.get("anomalies", [])
+
+    badge_parts = []
+    for anom in anomalies[:6]:
+        if isinstance(anom, dict):
+            code = anom.get("code", "")
+            repaired = anom.get("repaired", False)
+        else:
+            repaired = "_REPAIRED" in str(anom)
+            code = str(anom).replace("_REPAIRED", "")
+        entry = _AC.get(code, {})
+        icon = entry.get("icon", code[:3])
+        label = entry.get("label", code)
+        sev = entry.get("severity")
+        if repaired:
+            badge_parts.append((f"{icon}* {label}", '#888'))
+        elif sev and sev.value == "blocker":
+            badge_parts.append((f"{icon} {label}", COLORS["danger"]))
+        elif sev and sev.value == "warning":
+            badge_parts.append((f"{icon} {label}", COLORS["warning"]))
+        else:
+            badge_parts.append((f"{icon} {label}", COLORS["primary"]))
+
+    if badge_parts:
+        x_pos = 0.04
+        for text, color in badge_parts:
+            bbox = dict(boxstyle="round,pad=0.15", facecolor=color,
+                        edgecolor='none', alpha=0.15)
+            fig.text(x_pos, 0.935, text, va='top', fontsize=5.5,
+                     color=color, bbox=bbox)
+            x_pos += len(text) * 0.005 + 0.015
+            if x_pos > 0.90:
+                break
+
+    # Line 3: metrics
+    doc_comp = comparison.get("doc") or {}
+    dad_comp = comparison.get("dad") or {}
+    r2_doc = doc_comp.get("pearson", 0)
+    r2_dad = dad_comp.get("pearson_min", 0)
+    snr_info = rep_data.get("snr_info") or {}
+    snr_d = snr_info.get("snr_direct", 0)
+    snr_info_dad = rep_data.get("snr_info_dad") or {}
+    snr_254 = snr_info_dad.get("A254", {}).get("snr", 0)
+    area_diff_raw = rep_data.get("area_diff_pct")
+    area_diff = area_diff_raw.get("total") if isinstance(area_diff_raw, dict) else area_diff_raw
+
+    metrics = []
+    if r2_doc > 0:
+        clr = '#C62828' if r2_doc < 0.990 else COLORS["text_secondary"]
+        metrics.append((f"R²_DOC={r2_doc:.4f}", clr))
+    if r2_dad > 0:
+        clr = '#C62828' if r2_dad < 0.990 else COLORS["text_secondary"]
+        metrics.append((f"R²_DAD={r2_dad:.4f}", clr))
+    if area_diff is not None:
+        metrics.append((f"ΔA={area_diff:.1f}%", COLORS["text_secondary"]))
+    if snr_d > 0:
+        clr = '#C62828' if snr_d < 10 else COLORS["text_secondary"]
+        metrics.append((f"SNR_DOC={snr_d:.0f}", clr))
+    if snr_254 > 0:
+        clr = '#C62828' if snr_254 < 10 else COLORS["text_secondary"]
+        metrics.append((f"SNR_254={snr_254:.0f}", clr))
+    metrics.append((f"R_DOC={doc_sel}  R_DAD={selected.get('dad', '?')}",
+                    COLORS["text_secondary"]))
+
+    if metrics:
+        x_pos = 0.04
+        for text, color in metrics:
+            fig.text(x_pos, 0.905, text, va='top', fontsize=6, color=color)
+            x_pos += len(text) * 0.005 + 0.01
+
+
+def _ana_downsample_2d(t, data_2d, target_dt):
+    """Downsample matriu 2D per bin-average (còpia local de hpsec_export)."""
+    t = np.asarray(t, dtype=float)
+    if hasattr(data_2d, 'values'):
+        data_2d = data_2d.values
+    data_2d = np.asarray(data_2d, dtype=float)
+
+    dt_median = np.median(np.diff(t))
+    if dt_median >= target_dt * 0.8:
+        return t, data_2d
+
+    t_min, t_max_val = t[0], t[-1]
+    bins = np.arange(t_min, t_max_val + target_dt, target_dt)
+    n_bins = len(bins) - 1
+    if n_bins < 2:
+        return t, data_2d
+
+    t_new = np.zeros(n_bins)
+    data_new = np.zeros((n_bins, data_2d.shape[1] if data_2d.ndim > 1 else 1))
+    if data_2d.ndim == 1:
+        data_2d = data_2d.reshape(-1, 1)
+
+    indices = np.digitize(t, bins) - 1
+    indices = np.clip(indices, 0, n_bins - 1)
+
+    for b in range(n_bins):
+        mask = indices == b
+        if mask.any():
+            t_new[b] = np.mean(t[mask])
+            data_new[b] = np.mean(data_2d[mask], axis=0)
+        else:
+            t_new[b] = (bins[b] + bins[b + 1]) / 2
+            nearest = np.argmin(np.abs(t - t_new[b]))
+            data_new[b] = data_2d[nearest]
+
+    return t_new, data_new
+
+
+def _ana_draw_heatmap_page(pdf, sg, sample_name, method, page_num):
+    """Pàgina heatmap DAD espectral: RAW + normalitzat per λ."""
+    selected = sg.get("selected") or {}
+    doc_sel = selected.get("doc", "1")
+    rep_data = (sg.get("replicas") or {}).get(doc_sel, {})
+    dad_path = rep_data.get("dad_export3d_path")
+    if not dad_path or not os.path.exists(dad_path):
+        return page_num
+
+    try:
+        from hpsec_import import llegir_dad_export3d
+        df_full, status = llegir_dad_export3d(dad_path, wavelengths_to_keep=None)
+        if df_full is None or df_full.empty:
+            return page_num
+    except Exception:
+        return page_num
+
+    is_bp = method.upper() == "BP"
+    fracs = _ana_get_fractions(method)
+    x_min, x_max_plot = (0, 10) if is_bp else (0, 70)
+
+    # Extract time and wavelength data
+    t_col = 'time (min)' if 'time (min)' in df_full.columns else df_full.columns[0]
+    t_full = df_full[t_col].values
+    wl_cols = [c for c in df_full.columns if c != t_col]
+    wl_vals = []
+    for c in wl_cols:
+        try:
+            wl_vals.append(float(c))
+        except (ValueError, TypeError):
+            pass
+    if len(wl_vals) < 5:
+        return page_num
+
+    wl_cols_numeric = [c for c in wl_cols if _is_numeric_col(c)]
+    wl_floats = np.array([float(c) for c in wl_cols_numeric])
+    data_2d = df_full[wl_cols_numeric].values
+
+    # Downsample to dt=0.1 min for PDF
+    t_ds, data_ds = _ana_downsample_2d(t_full, data_2d, 0.1)
+
+    # Crop to plot range
+    mask = (t_ds >= x_min) & (t_ds <= x_max_plot)
+    t_ds = t_ds[mask]
+    data_ds = data_ds[mask]
+
+    if len(t_ds) < 3:
+        return page_num
+
+    fig = plt.figure(figsize=(11.69, 8.27))
+    fig.patch.set_facecolor('white')
+    fig.text(0.5, 0.97, f"HEATMAP DAD ESPECTRAL — {sample_name}",
+             ha='center', va='top', fontsize=12, fontweight='bold',
+             color=COLORS["primary"])
+
+    gs = fig.add_gridspec(1, 2, wspace=0.30, left=0.08, right=0.92,
+                          top=0.90, bottom=0.10)
+
+    # Left: RAW heatmap
+    ax1 = fig.add_subplot(gs[0, 0])
+    im1 = ax1.pcolormesh(t_ds, wl_floats, data_ds.T,
+                         shading='auto', cmap='viridis', rasterized=True)
+    ax1.set_xlabel("Temps (min)", fontsize=8)
+    ax1.set_ylabel("λ (nm)", fontsize=8)
+    ax1.set_title("Absorbància RAW (mAU)", fontsize=9)
+    ax1.tick_params(labelsize=6)
+    cb1 = fig.colorbar(im1, ax=ax1, fraction=0.046, pad=0.04)
+    cb1.ax.tick_params(labelsize=6)
+
+    if not is_bp and fracs:
+        for _fn, fi in fracs:
+            s = fi['start']
+            if 0 < s <= x_max_plot:
+                ax1.axvline(s, color='white', ls=':', lw=0.5, alpha=0.6)
+
+    # Right: normalized per-λ heatmap
+    ax2 = fig.add_subplot(gs[0, 1])
+    data_norm = data_ds.copy()
+    for j in range(data_norm.shape[1]):
+        col_max = np.max(np.abs(data_norm[:, j]))
+        if col_max > 0:
+            data_norm[:, j] /= col_max
+
+    im2 = ax2.pcolormesh(t_ds, wl_floats, data_norm.T,
+                         shading='auto', cmap='inferno', vmin=0, vmax=1,
+                         rasterized=True)
+    ax2.set_xlabel("Temps (min)", fontsize=8)
+    ax2.set_ylabel("λ (nm)", fontsize=8)
+    ax2.set_title("Normalitzat per λ (0-1)", fontsize=9)
+    ax2.tick_params(labelsize=6)
+    cb2 = fig.colorbar(im2, ax=ax2, fraction=0.046, pad=0.04)
+    cb2.ax.tick_params(labelsize=6)
+
+    if not is_bp and fracs:
+        for _fn, fi in fracs:
+            s = fi['start']
+            if 0 < s <= x_max_plot:
+                ax2.axvline(s, color='white', ls=':', lw=0.5, alpha=0.6)
+
+    draw_report_footer(fig, page_num)
+    pdf.savefig(fig, dpi=150)
+    plt.close(fig)
+    return page_num + 1
+
+
+def _is_numeric_col(col_name):
+    """Comprova si un nom de columna és numèric (wavelength)."""
+    try:
+        float(col_name)
+        return True
+    except (ValueError, TypeError):
+        return False
+
+
 def generate_analysis_report(seq_path, output_path=None, analysis_data=None):
     """
     Genera PDF d'analisi complet.
@@ -4420,6 +5704,11 @@ def generate_analysis_report(seq_path, output_path=None, analysis_data=None):
     with PdfPages(pdf_path) as pdf:
         _ana_draw_page1_summary(pdf, data, seq_name)
         next_page = _ana_draw_results_pages(pdf, data, page_start=2)
+        # Overlay pages (sequence-level)
+        next_page = _ana_draw_doc_overlay_page(pdf, data, next_page)
+        next_page = _ana_draw_a254_overlay_page(pdf, data, next_page)
+        next_page = _ana_draw_doc_areas_page(pdf, data, next_page)
+        # Per-sample chromatograms (enhanced + heatmaps)
         next_page = _ana_draw_chromatogram_pages(pdf, data, page_start=next_page)
         _ana_draw_anomalies_page(pdf, data, page_num=next_page)
 

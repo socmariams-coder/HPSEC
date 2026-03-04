@@ -3,8 +3,7 @@ HPSEC Suite - Main Window (PySide6)
 ====================================
 
 Finestra principal amb estructura simplificada:
-- Dashboard: Vista general de totes les SEQs
-- Processar: Wizard de 4 etapes per noves seqüències
+- Processar: QStackedWidget (Dashboard + Wizard)
 - Exportar: Generació de reports (opcional)
 - Auxiliars: Històric, Manteniment, Configuració
 """
@@ -18,7 +17,7 @@ from datetime import datetime
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTabWidget, QLabel, QPushButton, QFileDialog, QProgressBar,
-    QMessageBox, QFrame, QStatusBar
+    QMessageBox, QFrame, QStatusBar, QStackedWidget
 )
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont, QAction
@@ -26,9 +25,9 @@ from PySide6.QtGui import QFont, QAction
 # Importar estilos
 from gui.styles.theme import STYLESHEET, COLORS
 
-# Importar widgets essencials (només Tab 0 — visible a l'inici)
+# Importar widgets essencials (Dashboard dins Tab 0 — visible a l'inici)
 from gui.widgets.dashboard_panel import DashboardPanel
-# Tabs 1-7: lazy import quan l'usuari hi clica (estalvia ~3s d'arrencada)
+# Tabs 1-6 + Wizard: lazy import quan l'usuari hi clica (estalvia ~3s d'arrencada)
 
 
 class HPSECSuiteWindow(QMainWindow):
@@ -37,7 +36,8 @@ class HPSECSuiteWindow(QMainWindow):
     def __init__(self):
         super().__init__()
 
-        self.setWindowTitle("HPSEC Suite v2.0")
+        from hpsec_version import SUITE_FULL
+        self.setWindowTitle(SUITE_FULL)
         self.setMinimumSize(1200, 800)
 
         # Estat de l'aplicació
@@ -78,21 +78,31 @@ class HPSECSuiteWindow(QMainWindow):
 
         # === TABS PRINCIPALS ===
 
-        # Tab 0: Dashboard - Vista general i selector de seqüències
+        # Tab 0: Processar — QStackedWidget (Dashboard + Wizard)
+        self._process_stack = QStackedWidget()
+
+        # Page 0: Dashboard (eager)
         self.dashboard_panel = DashboardPanel(self)
         self.dashboard_panel.sequence_selected.connect(self._on_sequence_selected)
-        self.tab_widget.addTab(self.dashboard_panel, "📋 Dashboard")
+        self._process_stack.addWidget(self.dashboard_panel)
 
-        # Tabs 1-7: placeholders (lazy loading — s'instancien al primer clic)
+        # Page 1: Wizard (lazy — placeholder)
+        self._wizard_placeholder = QWidget()
+        self._process_stack.addWidget(self._wizard_placeholder)
+        self._wizard_loaded = False
+        self.process_panel = None
+
+        self.tab_widget.addTab(self._process_stack, "▶ Processar")
+
+        # Tabs 1-6: placeholders (lazy loading — s'instancien al primer clic)
         self._lazy_tabs = {}
         lazy_tab_defs = [
-            (1, "▶ Processar", "process_panel", "gui.widgets.process_wizard_panel", "ProcessWizardPanel"),
-            (2, "📄 Exportar", "export_panel", "gui.widgets.export_panel", "ExportPanel"),
-            (3, "🔬 Mostres", "samples_db_panel", "gui.widgets.samples_db_panel", "SamplesDBPanel"),
-            (4, "📊 Històric", "history_panel", "gui.widgets.history_panel", "HistoryPanel"),
-            (5, "📐 Calibració Global", "global_cal_panel", "gui.widgets.global_calibration_panel", "GlobalCalibrationPanel"),
-            (6, "🔧 Manteniment", "maintenance_panel", "gui.widgets.maintenance_panel", "MaintenancePanel"),
-            (7, "⚙ Configuració", "config_panel", "gui.widgets.config_panel", "ConfigPanel"),
+            (1, "📄 Exportar", "export_panel", "gui.widgets.export_panel", "ExportPanel"),
+            (2, "🔬 Mostres", "samples_db_panel", "gui.widgets.samples_db_panel", "SamplesDBPanel"),
+            (3, "📊 QC / KHP", "history_panel", "gui.widgets.history_panel", "HistoryPanel"),
+            (4, "📐 Calibració Global", "global_cal_panel", "gui.widgets.global_calibration_panel", "GlobalCalibrationPanel"),
+            (5, "🔧 Manteniment", "maintenance_panel", "gui.widgets.maintenance_panel", "MaintenancePanel"),
+            (6, "⚙ Configuració", "config_panel", "gui.widgets.config_panel", "ConfigPanel"),
         ]
         for tab_idx, label, attr_name, module_path, class_name in lazy_tab_defs:
             placeholder = QWidget()
@@ -128,11 +138,21 @@ class HPSECSuiteWindow(QMainWindow):
 
         layout.addStretch()
 
-        # Info UdG/LEQUIA
-        info = QLabel("LEQUIA · UdG")
+        # Info institucional
+        inst_layout = QVBoxLayout()
+        inst_layout.setSpacing(0)
+        info = QLabel("Serveis Tècnics de Recerca — Universitat de Girona")
         info.setObjectName("headerInfo")
         info.setFont(QFont("Segoe UI", 9))
-        layout.addWidget(info)
+        info.setAlignment(Qt.AlignRight)
+        inst_layout.addWidget(info)
+        dev_label = QLabel("desenvolupat per LEQUIA")
+        dev_label.setObjectName("headerDev")
+        dev_label.setFont(QFont("Segoe UI", 8))
+        dev_label.setStyleSheet("color: #999;")
+        dev_label.setAlignment(Qt.AlignRight)
+        inst_layout.addWidget(dev_label)
+        layout.addLayout(inst_layout)
 
         return header
 
@@ -176,7 +196,7 @@ class HPSECSuiteWindow(QMainWindow):
         self.status_bar.showMessage("Llest")
 
     def _on_tab_changed(self, index):
-        """Handler quan canvia el tab. Lazy loading de tabs 1-7."""
+        """Handler quan canvia el tab. Lazy loading de tabs 1-6."""
         if index in self._lazy_tabs:
             attr_name, module_path, class_name = self._lazy_tabs.pop(index)
             import importlib
@@ -189,16 +209,11 @@ class HPSECSuiteWindow(QMainWindow):
             layout = QVBoxLayout(placeholder)
             layout.setContentsMargins(0, 0, 0, 0)
             layout.addWidget(panel)
-            # Connectar senyals post-creació
-            if attr_name == "process_panel":
-                panel.process_completed.connect(self._on_process_completed)
-                panel.sequence_loaded.connect(self._on_wizard_sequence_loaded)
 
     def _open_sequence(self):
         """Obre diàleg per seleccionar carpeta SEQ."""
-        from hpsec_config import get_config
-        cfg = get_config()
-        data_folder = cfg.get("paths", "data_folder")
+        from hpsec_config import get_data_folder
+        data_folder = get_data_folder()
 
         path = QFileDialog.getExistingDirectory(
             self,
@@ -209,20 +224,21 @@ class HPSECSuiteWindow(QMainWindow):
         if path:
             self.load_sequence(path)
             # Anar al wizard
-            self.tab_widget.setCurrentIndex(1)
+            self._show_wizard()
 
     def _show_about(self):
         """Mostra diàleg Sobre."""
+        from hpsec_version import SUITE_FULL
         QMessageBox.about(
             self,
             "Sobre HPSEC Suite",
-            """<h3>HPSEC Suite v2.0</h3>
+            f"""<h3>{SUITE_FULL}</h3>
             <p>Anàlisi de NOM per HPSEC-DAD-DOC</p>
-            <p><b>LEQUIA</b> — Laboratori d'Enginyeria Química<br>
-            i Ambiental · Universitat de Girona</p>
-            <p style='font-size:10px; color:#666;'>
-            Projecte finançat per l'ACA<br>
-            (Agència Catalana de l'Aigua)</p>"""
+            <p><b>Serveis Tècnics de Recerca</b><br>
+            Universitat de Girona</p>
+            <p style='font-size:10px; color:#888;'>
+            Desenvolupat per LEQUIA — Laboratori d'Enginyeria Química i Ambiental<br>
+            Projecte finançat per l'ACA (Agència Catalana de l'Aigua)</p>"""
         )
 
     # === Mètodes per comunicació entre panels ===
@@ -240,14 +256,36 @@ class HPSECSuiteWindow(QMainWindow):
         if tab_index in self._lazy_tabs:
             self._on_tab_changed(tab_index)
 
+    def show_dashboard(self):
+        """Mostra la llista de seqüències (page 0 del stacked)."""
+        self._process_stack.setCurrentIndex(0)
+        self.tab_widget.setCurrentIndex(0)
+
+    def _show_wizard(self):
+        """Mostra el wizard dins el tab Processar (page 1 del stacked)."""
+        self._ensure_wizard()
+        self._process_stack.setCurrentIndex(1)
+        self.tab_widget.setCurrentIndex(0)
+
+    def _ensure_wizard(self):
+        """Crea el wizard lazy si no existeix."""
+        if self._wizard_loaded:
+            return
+        from gui.widgets.process_wizard_panel import ProcessWizardPanel
+        self.process_panel = ProcessWizardPanel(self)
+        self.process_panel.process_completed.connect(self._on_process_completed)
+        self.process_panel.sequence_loaded.connect(self._on_wizard_sequence_loaded)
+        layout = QVBoxLayout(self._wizard_placeholder)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.process_panel)
+        self._wizard_loaded = True
+
     def go_to_process_step(self, step_index):
         """
         Navega a una etapa específica del process wizard.
         0=Importar, 1=Calibrar, 2=Analitzar, 3=Consolidar
         """
-        # Assegurar que estem al tab de Processar
-        self._ensure_panel(1)
-        self.tab_widget.setCurrentIndex(1)  # Tab "Processar"
+        self._show_wizard()
         # Navegar dins del wizard
         if self.process_panel and hasattr(self.process_panel, 'tab_widget'):
             self.process_panel.tab_widget.setCurrentIndex(step_index)
@@ -299,7 +337,7 @@ class HPSECSuiteWindow(QMainWindow):
         self.setWindowTitle(f"HPSEC Suite - {seq_name}")
 
         # Carregar al wizard (assegurar que existeix)
-        self._ensure_panel(1)
+        self._ensure_wizard()
         if self.process_panel:
             self.process_panel.load_sequence_from_dashboard(seq_path)
 
@@ -313,13 +351,13 @@ class HPSECSuiteWindow(QMainWindow):
         try:
             self.set_status(f"Carregant {seq_name}...")
 
-            # SEQ_CAL → directament al tab Calibració Global (tab 5)
+            # SEQ_CAL → directament al tab Calibració Global (tab 4)
             if "_CAL" in seq_name.upper():
                 self._load_seq_cal(seq_path)
             else:
                 # Flux normal: wizard de 4 passos
                 self.load_sequence(seq_path)
-                self.tab_widget.setCurrentIndex(1)
+                self._show_wizard()
 
             self.set_status(f"{seq_name} carregat", 3000)
         finally:
@@ -327,7 +365,7 @@ class HPSECSuiteWindow(QMainWindow):
             self.dashboard_panel.hide_loading_overlay()
 
     def _load_seq_cal(self, seq_path):
-        """Carrega una SEQ_CAL directament al tab Calibració Global (tab 5)."""
+        """Carrega una SEQ_CAL directament al tab Calibració Global (tab 4)."""
         import os
         seq_name = os.path.basename(seq_path)
 
@@ -336,10 +374,10 @@ class HPSECSuiteWindow(QMainWindow):
         self.setWindowTitle(f"HPSEC Suite - {seq_name}")
 
         # Assegurar que el panell Calibració Global existeix (lazy loading)
-        self._ensure_panel(5)
+        self._ensure_panel(4)
 
-        # Navegar al tab 5
-        self.tab_widget.setCurrentIndex(5)
+        # Navegar al tab 4
+        self.tab_widget.setCurrentIndex(4)
 
         # Carregar la SEQ_CAL al panell
         if self.global_cal_panel:
@@ -354,7 +392,7 @@ class HPSECSuiteWindow(QMainWindow):
         """Callback quan el wizard completa el procés."""
         self.review_completed = True
         # Habilitar exportació
-        self.tab_widget.setTabEnabled(2, True)
+        self.tab_widget.setTabEnabled(1, True)
 
     def closeEvent(self, event):
         """Gestiona el tancament de la finestra."""
@@ -390,7 +428,7 @@ def main():
 
     # Configurar aplicació
     app.setApplicationName("HPSEC Suite")
-    app.setOrganizationName("UdG-LEQUIA")
+    app.setOrganizationName("UdG-STRs")
     app.setStyle("Fusion")
 
     # Crear i mostrar finestra principal

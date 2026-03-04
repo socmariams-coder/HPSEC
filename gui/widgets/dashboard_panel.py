@@ -29,7 +29,7 @@ from gui.widgets.styles import (
     COLOR_SUCCESS, COLOR_WARNING, COLOR_ERROR,
     COLOR_PENDING, COLOR_CURRENT, COLOR_CAL_BG, COLOR_CAL_TEXT
 )
-from hpsec_config import get_config
+from hpsec_config import get_config, get_data_folders
 # NOTA: hpsec_import, hpsec_calibrate, hpsec_analyze, hpsec_reports
 # s'importen lazy dins les funcions run_*() per accelerar l'arrencada.
 
@@ -353,17 +353,12 @@ class DashboardPanel(QWidget):
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(12)
 
-        # === HEADER: Títol amb carpeta ===
+        # === HEADER: Títol ===
         header = QHBoxLayout()
         header.setSpacing(16)
 
-        cfg = get_config()
-        data_folder = cfg.get("paths", "data_folder")
-
-        folder_short = os.path.basename(data_folder) or data_folder
-        self.lbl_title = QLabel(f"Seqüències ({folder_short})")
+        self.lbl_title = QLabel("Seqüències")
         self.lbl_title.setFont(QFont("Segoe UI", 14, QFont.Bold))
-        self.lbl_title.setToolTip(data_folder)
         header.addWidget(self.lbl_title)
 
         header.addStretch()
@@ -414,6 +409,18 @@ class DashboardPanel(QWidget):
         self.filter_estat.setMinimumWidth(90)
         self.filter_estat.currentTextChanged.connect(self._apply_filter)
         filter_layout.addWidget(self.filter_estat)
+
+        # Filtre Carpeta (visible només amb >1 carpeta)
+        self.lbl_filter_carpeta = QLabel("Carpeta:")
+        filter_layout.addWidget(self.lbl_filter_carpeta)
+        self.filter_carpeta = QComboBox()
+        self.filter_carpeta.addItem("Totes")
+        self.filter_carpeta.setMinimumWidth(90)
+        self.filter_carpeta.currentTextChanged.connect(self._apply_filter)
+        filter_layout.addWidget(self.filter_carpeta)
+        # Amagar per defecte — es mostra si >1 carpeta
+        self.lbl_filter_carpeta.setVisible(False)
+        self.filter_carpeta.setVisible(False)
 
         filter_layout.addSpacing(20)
 
@@ -548,13 +555,35 @@ class DashboardPanel(QWidget):
     def refresh_sequences(self):
         cfg = get_config()
         cfg.reload()
-        data_folder = cfg.get("paths", "data_folder")
-        self.sequences = get_all_sequences(data_folder)
+        data_folders = get_data_folders()
+        self.sequences = get_all_sequences(data_folders)
 
-        # Actualitzar títol amb carpeta abreujada
-        folder_short = os.path.basename(data_folder) or data_folder
-        self.lbl_title.setText(f"{len(self.sequences)} Seqüències ({folder_short})")
-        self.lbl_title.setToolTip(data_folder)
+        # Actualitzar títol
+        if len(data_folders) == 1:
+            folder_short = os.path.basename(data_folders[0]) or data_folders[0]
+            self.lbl_title.setText(f"{len(self.sequences)} Seqüències ({folder_short})")
+            self.lbl_title.setToolTip(data_folders[0])
+        elif data_folders:
+            self.lbl_title.setText(f"{len(self.sequences)} Seqüències")
+            self.lbl_title.setToolTip("\n".join(data_folders))
+        else:
+            self.lbl_title.setText("Seqüències")
+            self.lbl_title.setToolTip("Cap carpeta configurada")
+
+        # Actualitzar combo carpeta
+        folder_names = sorted(set(s.source_folder for s in self.sequences if s.source_folder))
+        multi_folder = len(folder_names) > 1
+        self.lbl_filter_carpeta.setVisible(multi_folder)
+        self.filter_carpeta.setVisible(multi_folder)
+
+        self.filter_carpeta.blockSignals(True)
+        current = self.filter_carpeta.currentText()
+        self.filter_carpeta.clear()
+        self.filter_carpeta.addItem("Totes")
+        self.filter_carpeta.addItems(folder_names)
+        idx = self.filter_carpeta.findText(current)
+        self.filter_carpeta.setCurrentIndex(max(0, idx))
+        self.filter_carpeta.blockSignals(False)
 
         self._apply_filter()
         self._update_stats()
@@ -563,6 +592,7 @@ class DashboardPanel(QWidget):
         filter_tipus = self.filter_tipus.currentText()
         filter_mode = self.filter_mode.currentText()
         filter_estat = self.filter_estat.currentText()
+        filter_carpeta = self.filter_carpeta.currentText()
         search_text = self.search_edit.text().lower()
 
         self.filtered_sequences = []
@@ -570,6 +600,10 @@ class DashboardPanel(QWidget):
         for seq in self.sequences:
             # Filtre cerca
             if search_text and search_text not in seq.seq_name.lower():
+                continue
+
+            # Filtre carpeta
+            if filter_carpeta != "Totes" and seq.source_folder != filter_carpeta:
                 continue
 
             # Filtre tipus (Column/BP)
@@ -609,12 +643,16 @@ class DashboardPanel(QWidget):
         self._update_table()
 
     def _build_name_tooltip(self, seq):
-        """Construeix tooltip enriquit pel nom (Tipus + Mode + siblings)."""
+        """Construeix tooltip enriquit pel nom (Tipus + Mode + origen + siblings)."""
         parts = []
         # Tipus i mode
         method = seq.method if seq.method else "?"
         data_mode = seq.data_mode if seq.data_mode else "?"
         parts.append(f"{method} · {data_mode}")
+
+        # Origen (si multi-folder)
+        if seq.source_folder:
+            parts.append(f"Carpeta: {seq.source_folder}")
 
         # Siblings
         if seq.siblings:

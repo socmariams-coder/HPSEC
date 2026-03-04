@@ -447,16 +447,39 @@ class CalibrationLineWidget(QWidget):
 
         # Punts de la regressió guardada
         reg_data = cal.get('regression_data', {})
-        r2 = cal.get('r2', reg_data.get('r2', 0))
-        if isinstance(r2, dict):
-            r2 = r2.get(mode_key, 0)
         rms = reg_data.get('residuals_rms', 0)
 
-        # Només mostrar punts si el mode de la regressió coincideix amb el mode actual
-        # (els punts són àrees reals d'un mode; la recta usa RF del mode actual)
+        # R² i punts: intentar mode exacte, sinó buscar altra calibració del mateix senyal
         reg_mode = (reg_data.get('mode', '') or '').lower()
         mode_matches = (reg_mode == mode_key) or not reg_mode
+
+        r2 = 0
+        if mode_matches:
+            r2 = cal.get('r2', reg_data.get('r2', 0))
+            if isinstance(r2, dict):
+                r2 = r2.get(mode_key, 0)
+
         points = reg_data.get('points', []) if mode_matches else []
+
+        # Fallback: buscar punts en altra calibració del mateix signal_scope amb mode correcte
+        if not points:
+            try:
+                from hpsec_calibrate import load_calibration_reference
+                ref = load_calibration_reference()
+                if ref:
+                    cal_scope = cal.get('signal_scope', 'direct')
+                    for other_cal in ref.get('calibrations', []):
+                        if other_cal.get('signal_scope') != cal_scope:
+                            continue
+                        other_reg = other_cal.get('regression_data', {})
+                        other_mode = (other_reg.get('mode', '') or '').lower()
+                        if other_mode == mode_key and other_reg.get('points'):
+                            points = other_reg['points']
+                            if not r2:
+                                r2 = float(other_reg.get('r2', 0) or 0)
+                            break
+            except Exception:
+                pass
 
         # Separar punts inclosos / exclosos
         x_inc, y_inc = [], []
@@ -472,7 +495,7 @@ class CalibrationLineWidget(QWidget):
                     x_inc.append(ug)
                     y_inc.append(area)
 
-        # Eixos: cobrir tots els punts + punt actual
+        # Eixos: cobrir tots els punts + punt actual + rang raonable de la recta
         all_x = x_inc + x_exc
         all_y = y_inc + y_exc
         if current_point and current_point.get('ug_doc', 0) > 0:
@@ -484,17 +507,18 @@ class CalibrationLineWidget(QWidget):
             x_min = max(0, min(all_x) * (1 - margin))
             x_max = max(all_x) * (1 + margin)
         else:
-            x_min, x_max = 0, 3
+            # Sense punts: rang basat en concentracions típiques KHP (0-2 µg)
+            x_min, x_max = 0, 2.5
 
         x_line = np.linspace(x_min, x_max, 100)
         y_line = rf * x_line + intercept
 
-        # Recta de regressió
+        # Recta de regressió — etiqueta amb RF i intercept (R² NOMÉS si del mateix mode)
         eq_label = f'{signal_label}: RF={rf:.0f}'
         if intercept:
             eq_label += f'{intercept:+.0f}'
         if r2:
-            eq_label += f' (R²={r2:.4f})'
+            eq_label += f' (R\u00b2={r2:.4f})'
         ax.plot(x_line, y_line, color=color_line, linewidth=2.0, label=eq_label)
 
         # Bandes tolerància
@@ -533,13 +557,6 @@ class CalibrationLineWidget(QWidget):
                 ax.annotate(f'{dev_pct:+.1f}%', (cx, cy), fontsize=7,
                            fontweight='bold', color=dev_color,
                            xytext=(5, -10), textcoords='offset points')
-
-        # Nota si no hi ha punts de regressió per aquest mode
-        if not x_inc and not x_exc and not reg_mode:
-            pass  # No hi ha dades de regressió — no dir res
-        elif not mode_matches and reg_mode and not x_inc and not x_exc:
-            # Regressió d'un altre mode — no mostrar punts, nota discreta
-            pass  # La recta RF ja és correcta per aquest mode
 
         # Format
         y_max = max(all_y + [rf * x_max + intercept]) * 1.15 if all_y else rf * x_max * 1.15

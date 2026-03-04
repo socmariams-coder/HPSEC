@@ -47,10 +47,9 @@ def get_samples_index_path() -> Optional[str]:
 
 
 def get_data_folder() -> Optional[str]:
-    """Retorna el path de la carpeta de dades."""
-    from hpsec_config import get_config
-    cfg = get_config()
-    return cfg.get("paths", "data_folder")
+    """Retorna el path de la primera carpeta de dades."""
+    from hpsec_config import get_data_folder as _get_data_folder
+    return _get_data_folder()
 
 
 # =============================================================================
@@ -110,8 +109,10 @@ def save_samples_index(index: Dict) -> bool:
 
 def _create_empty_index() -> Dict:
     """Crea un índex buit."""
+    from hpsec_version import SUITE_VERSION
     return {
-        "version": "1.0",
+        "suite_version": SUITE_VERSION,
+        "samples_db_module": __version__,
         "updated": datetime.now().isoformat(),
         "samples": {},
         "statistics": {

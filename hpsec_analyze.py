@@ -3115,10 +3115,11 @@ def save_analysis_result(analysis_data, output_path=None):
         output_path = os.path.join(data_folder, "analysis_result.json")
 
     # Preparar dades per serialitzar (eliminar arrays grans)
+    from hpsec_version import SUITE_VERSION
     result = {
-        "version": "1.0",
+        "suite_version": SUITE_VERSION,
+        "analyze_module": __version__,
         "timestamp": datetime.now().isoformat(),
-        "date_processed": datetime.now().isoformat(),
         "seq_name": analysis_data.get("seq_name", ""),
         "seq_path": os.path.basename(seq_path),  # Relatiu: només nom SEQ
         "method": analysis_data.get("method", ""),
@@ -3205,6 +3206,8 @@ def save_analysis_result(analysis_data, output_path=None):
             "y_doc_uib_net": sample.get("y_doc_uib_net"),
             "y_doc_direct_net": sample.get("y_doc_direct_net"),
             "df_dad": df_dad_serializable,
+            # --- Path Export3D per RAW export (FAIR) ---
+            "dad_export3d_path": sample.get("dad_export3d_path"),
         }
 
     # Resumir mostres

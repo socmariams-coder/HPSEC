@@ -2393,8 +2393,10 @@ def save_local_calibrations(seq_path, calibrations):
     filepath = os.path.join(data_path, CALIBRATION_FILENAME)
 
     try:
+        from hpsec_version import SUITE_VERSION
         data = {
-            "version": "2.0",
+            "suite_version": SUITE_VERSION,
+            "calibrate_module": __version__,
             "seq_name": os.path.basename(seq_path),
             "updated": datetime.now().isoformat(),
             "calibrations": calibrations
@@ -2591,8 +2593,10 @@ def save_khp_history(seq_path, calibrations):
         return False
 
     try:
+        from hpsec_version import SUITE_VERSION
         data = {
-            "version": "1.0",
+            "suite_version": SUITE_VERSION,
+            "calibrate_module": __version__,
             "updated": datetime.now().isoformat(),
             "calibrations": calibrations
         }
@@ -3708,15 +3712,15 @@ def register_calibration(seq_path, khp_data, khp_source, mode="COLUMN"):
     # 2. GUARDAR A GLOBAL (KHP_History.json)
     global_cals = load_khp_history(seq_path)
 
-    # Actualitzar o afegir entrada al global (una per seq+condition_key)
+    # Actualitzar o afegir entrada al global (una per seq+mode+conc, ignorant volum)
+    # Això assegura que un canvi de volum (reimportació) sobrescriu l'entrada antiga
     updated = False
+    entry_mode = entry.get("mode", "")
+    entry_conc = entry.get("conc_ppm", 0)
     for i, cal in enumerate(global_cals):
-        cal_condition_key = get_condition_key(
-            cal.get("mode", ""),
-            cal.get("volume_uL", 0),
-            cal.get("conc_ppm", 0)
-        )
-        if cal.get("seq_name") == seq_name and cal_condition_key == new_condition_key:
+        if (cal.get("seq_name") == seq_name
+                and cal.get("mode", "") == entry_mode
+                and abs(cal.get("conc_ppm", 0) - entry_conc) < max(0.01, entry_conc * 0.1)):
             global_cals[i] = entry
             updated = True
             break
@@ -4132,7 +4136,35 @@ def detect_seq_cal_data(calib_result, seq_path, method=None, uib_sensitivity=Non
 
     cals_direct = calib_result.get('calibrations_direct', [])
     cals_uib = calib_result.get('calibrations_uib', [])
-    cals = cals_direct or cals_uib or calib_result.get('calibrations', [])
+    cals_unified = calib_result.get('calibrations', [])
+
+    logger.info(f"detect_seq_cal_data: cals_direct={len(cals_direct)}, "
+                f"cals_uib={len(cals_uib)}, cals_unified={len(cals_unified)}")
+
+    # Verificar doc_source de les rèpliques per diagnòstic
+    if cals_direct:
+        reps = cals_direct[0].get('replicas', [])
+        src = reps[0].get('doc_source', '?') if reps else 'NO_REPS'
+        logger.info(f"  cals_direct[0] primer replica doc_source={src}")
+    if cals_uib:
+        reps = cals_uib[0].get('replicas', [])
+        src = reps[0].get('doc_source', '?') if reps else 'NO_REPS'
+        logger.info(f"  cals_uib[0] primer replica doc_source={src}")
+
+    # Fallback: si no hi ha llistes per senyal, construir-les des de la unificada
+    if not cals_direct and not cals_uib and cals_unified:
+        logger.info("  FALLBACK: construint llistes per senyal des de la unificada")
+        cals_direct = cals_unified
+        has_uib_data = any(
+            (c.get('area_uib') or c.get('area_u', 0)) > 0 for c in cals_unified
+        )
+        if has_uib_data:
+            cals_uib = cals_unified
+            # ATENCIÓ: les rèpliques de cals_unified són DIRECT!
+            # Cal buscar rèpliques UIB a _uib_match_for_replicas
+            logger.warning("  cals_uib = cals_unified → rèpliques seran DIRECT, no UIB!")
+
+    cals = cals_direct or cals_uib or cals_unified
 
     if not cals or len(cals) < 3:
         return None
@@ -4162,18 +4194,43 @@ def detect_seq_cal_data(calib_result, seq_path, method=None, uib_sensitivity=Non
     seq_basename = os.path.basename(seq_path) if seq_path else ''
 
     def _build_entries(cal_list, signal_name):
-        """Construeix llista d'entrades de calibració per un senyal."""
+        """Construeix llista d'entrades de calibració per un senyal.
+
+        Quan signal_name=='uib' i les entrades venen de la llista unificada,
+        usa area_uib/area_u com a àrea principal (en lloc de area que és Direct).
+        """
         entries = []
         for cal in cal_list:
             conc = cal.get('conc_ppm', 0)
             vol = cal.get('volume_uL', 0)
-            area = cal.get('area', 0)
+
+            # Àrea i RF: per UIB, preferir camps UIB-específics de la llista unificada
+            if signal_name == 'uib':
+                area = (cal.get('area_uib') or cal.get('area_u', 0)
+                        or cal.get('area', 0))
+                rf_mass_raw = (cal.get('rf_mass_uib') or cal.get('rf_mass_u', 0)
+                               or cal.get('rf_mass', 0))
+            else:
+                area = cal.get('area', 0)
+                rf_mass_raw = cal.get('rf_mass', 0)
+
             if conc <= 0 or vol <= 0 or area <= 0:
                 continue
 
             # Saturació UIB: només aplica quan el senyal és UIB
             uib_saturated = cal.get('uib_saturated', False)
             sat_invalidates = uib_saturated and signal_name == 'uib'
+
+            # Rèpliques: per UIB, si l'entrada ve de la llista unificada (Direct),
+            # les rèpliques pròpies són Direct. Cal buscar les UIB a _uib_match_for_replicas.
+            if signal_name == 'uib':
+                uib_match = cal.get('_uib_match_for_replicas')
+                if uib_match and uib_match.get('replicas'):
+                    replicas = uib_match['replicas']
+                else:
+                    replicas = cal.get('replicas', [])
+            else:
+                replicas = cal.get('replicas', [])
 
             entry = {
                 'seq_name': seq_basename,
@@ -4184,17 +4241,17 @@ def detect_seq_cal_data(calib_result, seq_path, method=None, uib_sensitivity=Non
                 'is_outlier': False,
                 'valid_for_calibration': not sat_invalidates,
                 'condition_key': cal.get('condition_key', f"KHP{conc:g}@{vol}µL"),
-                'rf_mass': cal.get('rf_mass', 0),
+                'rf_mass': rf_mass_raw,
                 'calibration_anomalies': cal.get('calibration_anomalies', []),
                 'name_full': cal.get('name_full', ''),
                 'a254_area': cal.get('a254_area', 0),
                 'a254_doc_ratio': cal.get('a254_doc_ratio', 0),
                 'has_irregular_top': cal.get('has_irregular_top', False),
                 'irregular_top_repaired': cal.get('irregular_top_repaired', False),
-                'area_uib': cal.get('area_uib', 0),
+                'area_uib': cal.get('area_uib', cal.get('area_u', 0)),
                 'area_original': cal.get('area_original', 0),
                 'area_repaired': cal.get('area_repaired', 0),
-                'rf_mass_uib': cal.get('rf_mass_uib', 0),
+                'rf_mass_uib': cal.get('rf_mass_uib', cal.get('rf_mass_u', 0)),
                 'has_timeout': cal.get('has_timeout', False),
                 'timeout_severity': cal.get('timeout_severity', 'OK'),
                 'uib_sensitivity': cal.get('uib_sensitivity'),
@@ -4212,10 +4269,10 @@ def detect_seq_cal_data(calib_result, seq_path, method=None, uib_sensitivity=Non
                 'bigaussian_254': cal.get('bigaussian_254'),
                 'replica_comparison': cal.get('replica_comparison', {}),
                 # Replicas per chromatogram preview
-                'replicas': cal.get('replicas', []),
+                'replicas': replicas,
+                # Referència UIB match (per accés a dades UIB des del popup)
+                '_uib_match_for_replicas': cal.get('_uib_match_for_replicas'),
             }
-            if signal_name == 'uib':
-                entry['area_u'] = area
             entries.append(entry)
         return entries
 

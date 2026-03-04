@@ -14,11 +14,14 @@ REQUEREIX:
 Usat per HPSEC_Suite.py
 """
 
-__version__ = "2.0.0"
-__version_date__ = "2026-02-10"
+__version__ = "2.2.0"
+__version_date__ = "2026-03-03"
 
 import os
+import json
 import logging
+import zipfile
+import hashlib
 import numpy as np
 import pandas as pd
 from pathlib import Path
@@ -26,6 +29,27 @@ from datetime import datetime
 from scipy.integrate import trapezoid
 
 logger = logging.getLogger(__name__)
+
+
+def _make_unique_filename(base_name, ext, used_filenames):
+    """Genera un nom de fitxer únic, afegint _2, _3... si cal."""
+    candidate = f"{base_name}{ext}"
+    if candidate not in used_filenames:
+        used_filenames.add(candidate)
+        return candidate
+    n = 2
+    while True:
+        candidate = f"{base_name}_{n}{ext}"
+        if candidate not in used_filenames:
+            used_filenames.add(candidate)
+            return candidate
+        n += 1
+
+
+def _sample_filename_base(sample_name, mode):
+    """Retorna el nom base del fitxer: {sample}_HPSEC_{C|B}."""
+    mode_suffix = "C" if mode.upper() == "COLUMN" else "B"
+    return f"{sample_name}_HPSEC_{mode_suffix}"
 
 
 def _get_max_severity(anomalies):
@@ -181,48 +205,65 @@ def write_final_excel(
 
 
 def _build_id_sheet(sample_name, sample_data, calibration_data, mode, is_dual):
-    """Construeix les files del full ID (traçabilitat)."""
-    rows = [
-        ("Export_Version", f"hpsec_export v{__version__}"),
-        ("Export_Date", datetime.now().strftime("%Y-%m-%d %H:%M")),
-        ("---", "---"),
-        # Identificació mostra
-        ("Sample", sample_name),
-        ("Replica_DOC", sample_data.get("replica", "?")),
-        ("Replica_DAD", sample_data.get("replica_dad", sample_data.get("replica", "?"))),
-        ("SEQ", sample_data.get("seq_name", "")),
-        ("Method", mode),
-        ("Sample_Type", sample_data.get("sample_type", "SAMPLE")),
-        ("---", "---"),
-    ]
+    """Construeix les files del full ID (traçabilitat) amb seccions organitzades."""
+    rows = []
 
-    # Fitxers origen
+    # --- 1. EXPORT ---
+    from hpsec_version import SUITE_VERSION
+    rows.append(("=== EXPORT ===", ""))
+    rows.append(("Suite_Version", f"HPSEC Suite v{SUITE_VERSION}"))
+    rows.append(("Export_Module", f"hpsec_export v{__version__}"))
+    rows.append(("Export_Date", datetime.now().strftime("%Y-%m-%d %H:%M")))
+    rows.append(("Encoding", "UTF-8"))
+
+    # --- 2. SAMPLE ---
+    rows.append(("=== SAMPLE ===", ""))
+    rows.append(("Sample", sample_name))
+    rows.append(("Replica_DOC", sample_data.get("replica", "?")))
+    rows.append(("Replica_DAD", sample_data.get("replica_dad", sample_data.get("replica", "?"))))
+    rows.append(("SEQ", sample_data.get("seq_name", "")))
+    rows.append(("Method", mode))
+    rows.append(("Sample_Type", sample_data.get("sample_type", "SAMPLE")))
+
+    # --- 3. SOURCE FILES ---
+    rows.append(("=== SOURCE FILES ===", ""))
     rows.append(("File_DOC_Direct", sample_data.get("file_doc", "")))
     if is_dual:
         rows.append(("File_DOC_UIB", sample_data.get("file_doc_uib", sample_data.get("file_doc", ""))))
     rows.append(("File_DAD", sample_data.get("file_dad", "")))
     rows.append(("File_MasterFile", sample_data.get("master_file", "")))
-    rows.append(("---", "---"))
 
-    # Shifts aplicats
+    # --- 4. PROCESSING ---
+    rows.append(("=== PROCESSING ===", ""))
     shift_direct = sample_data.get("shift_direct")
     shift_uib = sample_data.get("shift_uib")
     if shift_direct is not None:
         rows.append(("Shift_Direct_sec", round(shift_direct * 60, 2)))
     if is_dual and shift_uib is not None:
         rows.append(("Shift_UIB_sec", round(shift_uib * 60, 2)))
-    rows.append(("---", "---"))
-
-    # Baseline
     baseline_direct = sample_data.get("baseline_direct")
     baseline_uib = sample_data.get("baseline_uib")
     if baseline_direct is not None:
         rows.append(("Baseline_Direct_mAU", round(float(baseline_direct), 3)))
     if is_dual and baseline_uib is not None:
         rows.append(("Baseline_UIB_mAU", round(float(baseline_uib), 3)))
-    rows.append(("---", "---"))
+    # Smoothing & integration config
+    try:
+        from hpsec_config import get_config
+        cfg = get_config()
+        rows.append(("Smoothing_Window_SG", cfg.get("smoothing", {}).get("sg_window_points", "")))
+        rows.append(("Baseline_Method", cfg.get("baseline", {}).get("method", "mode")))
+    except Exception:
+        pass
+    rows.append(("DOC_Target_DT_min", 0.0667))
+    # Integration limits
+    peak_limits = sample_data.get("peak_limits", {})
+    if peak_limits:
+        rows.append(("Integration_T_Start_min", peak_limits.get("t_start", "")))
+        rows.append(("Integration_T_End_min", peak_limits.get("t_end", "")))
 
-    # SNR info
+    # --- 5. SIGNAL QUALITY ---
+    rows.append(("=== SIGNAL QUALITY ===", ""))
     snr_info = sample_data.get("snr_info", {})
     if snr_info:
         if snr_info.get("snr_direct") is not None:
@@ -236,24 +277,24 @@ def _build_id_sheet(sample_name, sample_data, calibration_data, mode, is_dual):
                 rows.append(("SNR_UIB", round(snr_info["snr_uib"], 1)))
             if snr_info.get("lod_uib") is not None:
                 rows.append(("LOD_UIB_mAU", round(snr_info["lod_uib"], 3)))
-        rows.append(("---", "---"))
 
-    # Injecció i mode
-    inj_volume = sample_data.get("inj_volume")
-    data_mode = sample_data.get("data_mode", "")
+    # --- 6. INJECTION ---
+    rows.append(("=== INJECTION ===", ""))
     seq_date = sample_data.get("seq_date", "")
     if seq_date:
         rows.append(("Date", seq_date))
+    inj_volume = sample_data.get("inj_volume")
     if inj_volume:
         rows.append(("INJ_Volume_uL", inj_volume))
     inj_idx = sample_data.get("injection_index")
     if inj_idx is not None:
         rows.append(("Injection_Index", inj_idx))
+    data_mode = sample_data.get("data_mode", "")
     if data_mode:
         rows.append(("Data_Mode", data_mode))
-    rows.append(("---", "---"))
 
-    # Quantificació (si hi ha calibració)
+    # --- 7. QUANTIFICATION ---
+    rows.append(("=== QUANTIFICATION ===", ""))
     quantification = sample_data.get("quantification", {})
     if quantification:
         conc = quantification.get("concentration_ppm")
@@ -271,15 +312,15 @@ def _build_id_sheet(sample_name, sample_data, calibration_data, mode, is_dual):
         area_total = quantification.get("area_total")
         if area_total is not None:
             rows.append(("Area_DOC_total", round(area_total, 2)))
-        rows.append(("---", "---"))
+    rows.append(("Quantification_Formula", "ppm = (Area - intercept) * 1000 / (RF * V_uL)"))
 
-    # Info calibració
+    # --- 8. CALIBRATION ---
+    rows.append(("=== CALIBRATION ===", ""))
     if calibration_data:
         cal_date = calibration_data.get("date", "")
         cal_khp = calibration_data.get("khp_conc_ppm", "")
         rows.append(("Calibration_Date", cal_date))
         rows.append(("Calibration_KHP_ppm", cal_khp))
-        # RF i Intercept usats
         rf_obj = calibration_data.get("rf_mass_cal", {})
         if isinstance(rf_obj, dict):
             for sig_type in ("direct", "uib"):
@@ -301,9 +342,15 @@ def _build_id_sheet(sample_name, sample_data, calibration_data, mode, is_dual):
         cal_seq = calibration_data.get("seq_name", "")
         if cal_seq:
             rows.append(("Calibration_SEQ", cal_seq))
-        rows.append(("---", "---"))
+    try:
+        from hpsec_calibrate import compute_calibration_fingerprint
+        cal_fp = compute_calibration_fingerprint()
+        rows.append(("Calibration_Fingerprint", cal_fp))
+    except Exception:
+        pass
 
-    # Anomalies detectades
+    # --- 9. ANOMALIES ---
+    rows.append(("=== ANOMALIES ===", ""))
     anomalies = sample_data.get("anomalies", [])
     if anomalies:
         for a in anomalies:
@@ -314,6 +361,8 @@ def _build_id_sheet(sample_name, sample_data, calibration_data, mode, is_dual):
                 rows.append((f"Anomaly_{code}", f"{sev}{rep}"))
             else:
                 rows.append(("Anomaly", str(a)))
+    else:
+        rows.append(("Anomalies", "Cap"))
 
     # Bi-Gaussian info (BP mode)
     bigaussian = sample_data.get("bigaussian_doc")
@@ -334,9 +383,9 @@ def _build_id_sheet(sample_name, sample_data, calibration_data, mode, is_dual):
             zones_str = "; ".join(f"{zone}: {count}" for zone, count in zone_summary.items())
             rows.append(("Timeout_Zones", zones_str))
     if timeout_info.get("toc_minute_precision"):
-        rows.append(("TOC_Timestamp_Repair", "YES — cadencia 4s reconstruida (timestamps originals arrodonits al minut)"))
+        rows.append(("TOC_Timestamp_Repair", "YES"))
 
-    # Irregular top repair info (jagged/batman artifact)
+    # Irregular top repair info
     irregular_top_repaired = sample_data.get("irregular_top_direct_repaired",
                                               sample_data.get("batman_direct_repaired"))
     if irregular_top_repaired:
@@ -346,6 +395,16 @@ def _build_id_sheet(sample_name, sample_data, calibration_data, mode, is_dual):
         if repair_info:
             rows.append(("Irregular_Top_Y_Max_Original", repair_info.get("y_max_original", "")))
             rows.append(("Irregular_Top_Y_Max_Theoretical", repair_info.get("y_max_theoretical", "")))
+
+    # --- 10. CONFIG ---
+    rows.append(("=== CONFIG ===", ""))
+    rows.append(("Integration_Method", "tangent_projection"))
+    try:
+        from hpsec_config import Config
+        cfg_obj = Config()
+        rows.append(("Config_Fingerprint", cfg_obj.compute_fingerprint()))
+    except Exception:
+        pass
 
     return rows
 
@@ -362,7 +421,7 @@ def _build_bp_id_sheet(sample_name, bp_data, calibration_data):
         list de tuples (Field, Value)
     """
     rows = [
-        ("Export_Version", f"hpsec_export v{__version__}"),
+        ("Export_Module", f"hpsec_export v{__version__}"),
         ("Export_Date", datetime.now().strftime("%Y-%m-%d %H:%M")),
         ("---", "---"),
         # Identificació
@@ -700,7 +759,7 @@ def write_light_excel(
     """
     # === FULL ID: Traçabilitat ===
     id_rows = [
-        ("Export_Version", f"hpsec_export v{__version__}"),
+        ("Export_Module", f"hpsec_export v{__version__}"),
         ("Export_Date", datetime.now().strftime("%Y-%m-%d %H:%M")),
         ("---", "---"),
         ("Sample", sample_name),
@@ -754,19 +813,25 @@ def export_sequence(
     progress_callback=None,
     seq_path: str = None,
     bp_resolved: dict = None,
+    export_raw: bool = False,
+    export_processed: bool = False,
+    csv_separator: str = ";",
 ):
     """
     Exporta totes les mostres d'una seqüència.
 
     Args:
         samples_grouped: Dict amb mostres agrupades
-        output_dir: Directori de sortida
+        output_dir: Directori de sortida (RESULTATS/)
         calibration_data: Dades de calibració
         mode: "BP" o "COLUMN"
         config: Configuració
         progress_callback: Funció per reportar progrés (pct, msg)
         seq_path: Path de la seqüència (per cercar BP automàticament)
         bp_resolved: Dades BP pre-resoltes des del wizard (evita re-descobriment)
+        export_raw: Exportar CSVs RAW (DOC cru + DAD 101λ) a RAW/
+        export_processed: Exportar CSVs PROCESSED (DOC net + fraccions) a PROCESSED/
+        csv_separator: Separador pels CSVs (";", ",", "\t")
 
     Returns:
         dict amb resultats d'exportació
@@ -782,7 +847,18 @@ def export_sequence(
         "files": [],
         "errors": [],
         "bp_info": None,
+        "raw_files": [],
+        "processed_files": [],
     }
+
+    # Tracking de noms per evitar col·lisions (separats per carpeta)
+    used_filenames = set()
+    used_raw = set()
+    used_proc = set()
+
+    # Subcarpetes RAW/ i PROCESSED/
+    raw_dir = str(output_path / "RAW")
+    proc_dir = str(output_path / "PROCESSED")
 
     # Cercar i carregar dades BP si mode COLUMN
     bp_all = {}
@@ -828,7 +904,8 @@ def export_sequence(
                 doc_data = replicas.get(doc_replica, {})
 
                 sample_type = sample_info.get("sample_type", "BLANK")
-                filename = f"{sample_name}_R{doc_replica}.xlsx"
+                base = _sample_filename_base(sample_name, mode)
+                filename = _make_unique_filename(base, ".xlsx", used_filenames)
                 filepath = output_path / filename
 
                 result = write_light_excel(
@@ -837,6 +914,24 @@ def export_sequence(
                     doc_data,
                     config,
                 )
+
+                # CSV RAW per light samples
+                if export_raw:
+                    try:
+                        rf = write_csv_raw(raw_dir, sample_name, doc_data,
+                                           mode, csv_separator, used_raw)
+                        results["raw_files"].extend(rf)
+                    except Exception as e_csv:
+                        logger.warning(f"CSV RAW light {sample_name}: {e_csv}")
+
+                # CSV PROCESSED per light samples
+                if export_processed:
+                    try:
+                        pf = write_csv_processed(proc_dir, sample_name, doc_data,
+                                                 mode, config, csv_separator, used_proc)
+                        results["processed_files"].extend(pf)
+                    except Exception as e_csv:
+                        logger.warning(f"CSV PROC light {sample_name}: {e_csv}")
 
                 results["files"].append({
                     "sample": sample_name,
@@ -868,6 +963,9 @@ def export_sequence(
             # Si DAD ve d'altra rèplica, substituir
             if dad_replica != doc_replica and "df_dad" in dad_data:
                 export_data["df_dad"] = dad_data["df_dad"]
+                # Propagar dad_export3d_path de la rèplica DAD
+                if dad_data.get("dad_export3d_path"):
+                    export_data["dad_export3d_path"] = dad_data["dad_export3d_path"]
 
             # Afegir quantificació si existeix
             if "quantification" in sample_info:
@@ -880,14 +978,13 @@ def export_sequence(
             if bp_data:
                 sample_info["bp_linked"] = bp_data
 
-            # Nom del fitxer
-            filename = f"{sample_name}_R{doc_replica}.xlsx"
-            if dad_replica != doc_replica:
-                filename = f"{sample_name}_DOC-R{doc_replica}_DAD-R{dad_replica}.xlsx"
+            # Nom del fitxer (sense rèplica al nom — la rèplica consta al full ID)
+            base = _sample_filename_base(sample_name, mode)
+            filename = _make_unique_filename(base, ".xlsx", used_filenames)
 
             filepath = output_path / filename
 
-            # Exportar
+            # Exportar Excel
             result = write_final_excel(
                 str(filepath),
                 sample_name,
@@ -897,6 +994,46 @@ def export_sequence(
                 config,
                 bp_data=bp_data,
             )
+
+            # Exportar CSV RAW (DOC cru + DAD 101λ)
+            if export_raw:
+                try:
+                    rf = write_csv_raw(raw_dir, sample_name, export_data,
+                                       mode, csv_separator, used_raw)
+                    results["raw_files"].extend(rf)
+                except Exception as e_csv:
+                    logger.warning(f"CSV RAW {sample_name}: {e_csv}")
+
+                # BP RAW (si COLUMN amb BP vinculat)
+                if bp_data and mode == "COLUMN":
+                    try:
+                        bp_export = dict(bp_data)
+                        bp_export["is_bp"] = True
+                        rf_bp = write_csv_raw(raw_dir, sample_name, bp_export,
+                                              "BP", csv_separator, used_raw)
+                        results["raw_files"].extend(rf_bp)
+                    except Exception as e_csv:
+                        logger.warning(f"CSV RAW BP {sample_name}: {e_csv}")
+
+            # Exportar CSV PROCESSED (DOC net + fraccions)
+            if export_processed:
+                try:
+                    pf = write_csv_processed(proc_dir, sample_name, export_data,
+                                             mode, config, csv_separator, used_proc)
+                    results["processed_files"].extend(pf)
+                except Exception as e_csv:
+                    logger.warning(f"CSV PROC {sample_name}: {e_csv}")
+
+                # BP PROCESSED
+                if bp_data and mode == "COLUMN":
+                    try:
+                        bp_export = dict(bp_data)
+                        bp_export["is_bp"] = True
+                        pf_bp = write_csv_processed(proc_dir, sample_name, bp_export,
+                                                    "BP", config, csv_separator, used_proc)
+                        results["processed_files"].extend(pf_bp)
+                    except Exception as e_csv:
+                        logger.warning(f"CSV PROC BP {sample_name}: {e_csv}")
 
             results["files"].append({
                 "sample": sample_name,
@@ -1208,6 +1345,666 @@ def patch_excel_calibration(excel_path, new_rf, new_intercept, mode="COLUMN",
 
 
 # =============================================================================
+# EXPORTACIÓ CSV (FAIR — format obert)
+# =============================================================================
+
+# Cadència de downsampling DAD RAW (0.04 min = 2.4s)
+DAD_RAW_TARGET_DT_MIN = 0.04
+
+
+def _csv_metadata_header(fields, comment_char="#"):
+    """Genera línies de capçalera amb metadades per CSV.
+
+    Args:
+        fields: llista de tuples (nom, valor)
+        comment_char: caràcter de comentari
+
+    Returns:
+        str amb les línies de metadades
+    """
+    lines = []
+    for name, value in fields:
+        lines.append(f"{comment_char} {name}: {value}")
+    return "\n".join(lines)
+
+
+def _downsample_2d(t, data_2d, target_dt):
+    """Downsample matriu 2D (temps × columnes) per bin-average.
+
+    Args:
+        t: array temps (n_points,)
+        data_2d: array 2D (n_points, n_cols) o DataFrame
+        target_dt: cadència objectiu (min)
+
+    Returns:
+        (t_new, data_new) arrays downsampled
+    """
+    t = np.asarray(t, dtype=float)
+    if hasattr(data_2d, 'values'):
+        data_2d = data_2d.values
+    data_2d = np.asarray(data_2d, dtype=float)
+
+    dt_median = np.median(np.diff(t))
+    if dt_median >= target_dt * 0.8:
+        return t, data_2d  # ja prou espaiats
+
+    t_min, t_max = t[0], t[-1]
+    bins = np.arange(t_min, t_max + target_dt, target_dt)
+    n_bins = len(bins) - 1
+    if n_bins < 2:
+        return t, data_2d
+
+    t_new = np.zeros(n_bins)
+    data_new = np.zeros((n_bins, data_2d.shape[1] if data_2d.ndim > 1 else 1))
+    if data_2d.ndim == 1:
+        data_2d = data_2d.reshape(-1, 1)
+
+    indices = np.digitize(t, bins) - 1
+    indices = np.clip(indices, 0, n_bins - 1)
+
+    for b in range(n_bins):
+        mask = indices == b
+        if mask.any():
+            t_new[b] = np.mean(t[mask])
+            data_new[b] = np.mean(data_2d[mask], axis=0)
+        else:
+            t_new[b] = (bins[b] + bins[b + 1]) / 2
+            # Interpolar des del punt més proper
+            nearest = np.argmin(np.abs(t - t_new[b]))
+            data_new[b] = data_2d[nearest]
+
+    return t_new, data_new
+
+
+def write_csv_raw(
+    out_dir: str,
+    sample_name: str,
+    sample_data: dict,
+    mode: str = "COLUMN",
+    separator: str = ";",
+    used_filenames: set = None,
+):
+    """
+    Exporta dades RAW (sense processar) per una mostra a subcarpeta RAW/.
+
+    Genera:
+    - {sample}_HPSEC_{C|B}_DOC_RAW.csv: DOC Direct RAW + UIB RAW
+    - {sample}_HPSEC_{C|B}_DAD_RAW.csv: Export3D complet (101λ, downsampled dt=0.04 min)
+      Per BP: 1 sola fila a t_max amb totes les λ
+
+    Args:
+        out_dir: Directori RAW/ de sortida
+        sample_name: Nom de la mostra
+        sample_data: Dict amb dades de la rèplica seleccionada
+        mode: "BP" o "COLUMN"
+        separator: Separador CSV
+        used_filenames: Set per evitar col·lisions
+
+    Returns:
+        list de fitxers generats
+    """
+    if used_filenames is None:
+        used_filenames = set()
+
+    raw_path = Path(out_dir)
+    raw_path.mkdir(parents=True, exist_ok=True)
+    files_created = []
+    base = _sample_filename_base(sample_name, mode)
+
+    # --- DOC RAW ---
+    t_doc = sample_data.get("t_doc")
+    if t_doc is not None:
+        t_doc = np.asarray(t_doc)
+        data = {"time_min": t_doc}
+
+        # DOC Direct RAW (senyal cru, sense shift/baseline/smoothing)
+        y_doc_raw = sample_data.get("y_doc_raw")
+        if y_doc_raw is not None and len(y_doc_raw) == len(t_doc):
+            data["DOC_Direct_RAW_mAU"] = np.asarray(y_doc_raw)
+
+        # DOC UIB RAW
+        y_uib_raw = sample_data.get("y_doc_uib_raw")
+        if y_uib_raw is not None and len(y_uib_raw) == len(t_doc):
+            data["DOC_UIB_RAW_mAU"] = np.asarray(y_uib_raw)
+
+        # Si no tenim RAW, usar el senyal disponible
+        if "DOC_Direct_RAW_mAU" not in data and "DOC_UIB_RAW_mAU" not in data:
+            y_doc = sample_data.get("y_doc")
+            if y_doc is not None and len(y_doc) == len(t_doc):
+                data["DOC_Direct_RAW_mAU"] = np.asarray(y_doc)
+
+        if len(data) > 1:  # hi ha dades a part del temps
+            meta = [
+                ("Sample", sample_name),
+                ("Method", mode),
+                ("Data_Type", "RAW"),
+                ("Signal", "DOC"),
+                ("Export_Date", datetime.now().strftime("%Y-%m-%d %H:%M")),
+                ("Export_Module", f"hpsec_export v{__version__}"),
+            ]
+            fname = _make_unique_filename(f"{base}_DOC_RAW", ".csv", used_filenames)
+            fpath = raw_path / fname
+            header = _csv_metadata_header(meta)
+            df = pd.DataFrame(data)
+            with open(fpath, 'w', encoding='utf-8', newline='') as f:
+                f.write(header + "\n")
+                df.to_csv(f, sep=separator, index=False, float_format="%.6g")
+            files_created.append(str(fpath))
+            logger.info(f"CSV RAW DOC: {fpath}")
+
+    # --- DAD RAW (101λ, downsampled) ---
+    dad_export3d_path = sample_data.get("dad_export3d_path")
+    if dad_export3d_path and os.path.exists(dad_export3d_path):
+        try:
+            from hpsec_import import llegir_dad_export3d
+            df_dad_full, status = llegir_dad_export3d(dad_export3d_path, wavelengths_to_keep=None)
+            if df_dad_full is not None and status.startswith("OK"):
+                # Trobar columna temps
+                t_col = None
+                for candidate in ["time (min)", "Time"]:
+                    if candidate in df_dad_full.columns:
+                        t_col = candidate
+                        break
+                if t_col is None:
+                    t_col = df_dad_full.columns[0]
+
+                t_dad = df_dad_full[t_col].values
+                wl_cols = [c for c in df_dad_full.columns if c != t_col]
+
+                is_bp = mode == "BP" or sample_data.get("is_bp", False)
+
+                if is_bp:
+                    # BP: 1 sola fila a t_max (espectre complet)
+                    peak_info = sample_data.get("peak_info", {})
+                    t_max = peak_info.get("t_max")
+                    if t_max is None:
+                        # Estimar t_max des del pic DOC
+                        if t_doc is not None:
+                            y_net = sample_data.get("y_doc_net")
+                            if y_net is not None:
+                                t_max = t_doc[np.argmax(y_net)]
+                    if t_max is not None:
+                        idx = np.argmin(np.abs(t_dad - t_max))
+                        row_data = {"wavelength_nm": [float(c) for c in wl_cols
+                                                       if _is_numeric(c)]}
+                        row_vals = [float(df_dad_full[c].iloc[idx]) for c in wl_cols
+                                    if _is_numeric(c)]
+                        row_data["absorbance_mAU"] = row_vals
+                        meta = [
+                            ("Sample", sample_name),
+                            ("Method", "BP"),
+                            ("Data_Type", "RAW"),
+                            ("Signal", "DAD_spectrum_at_tmax"),
+                            ("t_max_min", f"{t_max:.4f}"),
+                            ("N_wavelengths", len(row_data["wavelength_nm"])),
+                            ("Export_Date", datetime.now().strftime("%Y-%m-%d %H:%M")),
+                            ("Export_Module", f"hpsec_export v{__version__}"),
+                        ]
+                        fname = _make_unique_filename(f"{base}_DAD_RAW", ".csv", used_filenames)
+                        fpath = raw_path / fname
+                        header = _csv_metadata_header(meta)
+                        df_out = pd.DataFrame(row_data)
+                        with open(fpath, 'w', encoding='utf-8', newline='') as f:
+                            f.write(header + "\n")
+                            df_out.to_csv(f, sep=separator, index=False, float_format="%.6g")
+                        files_created.append(str(fpath))
+                        logger.info(f"CSV RAW DAD BP spectrum: {fpath}")
+                else:
+                    # COLUMN: totes les λ, downsample temps a dt=0.04 min
+                    wl_numeric = [c for c in wl_cols if _is_numeric(c)]
+                    dad_matrix = df_dad_full[wl_numeric].values
+                    t_ds, data_ds = _downsample_2d(t_dad, dad_matrix, DAD_RAW_TARGET_DT_MIN)
+
+                    meta = [
+                        ("Sample", sample_name),
+                        ("Method", mode),
+                        ("Data_Type", "RAW"),
+                        ("Signal", "DAD_Export3D"),
+                        ("N_wavelengths", len(wl_numeric)),
+                        ("N_timepoints_original", len(t_dad)),
+                        ("N_timepoints_downsampled", len(t_ds)),
+                        ("Downsample_dt_min", DAD_RAW_TARGET_DT_MIN),
+                        ("Export_Date", datetime.now().strftime("%Y-%m-%d %H:%M")),
+                        ("Export_Module", f"hpsec_export v{__version__}"),
+                    ]
+                    fname = _make_unique_filename(f"{base}_DAD_RAW", ".csv", used_filenames)
+                    fpath = raw_path / fname
+
+                    header = _csv_metadata_header(meta)
+                    # Construir DataFrame amb temps + λ
+                    out_data = {"time_min": t_ds}
+                    for j, wl in enumerate(wl_numeric):
+                        out_data[wl] = data_ds[:, j]
+                    df_out = pd.DataFrame(out_data)
+
+                    with open(fpath, 'w', encoding='utf-8', newline='') as f:
+                        f.write(header + "\n")
+                        df_out.to_csv(f, sep=separator, index=False, float_format="%.6g")
+                    files_created.append(str(fpath))
+                    logger.info(f"CSV RAW DAD ({len(wl_numeric)}λ, {len(t_ds)} pts): {fpath}")
+        except Exception as e:
+            logger.warning(f"CSV RAW DAD {sample_name}: {e}")
+
+    return files_created
+
+
+def _is_numeric(s):
+    """Comprova si un string és numèric (per columnes λ del DAD)."""
+    try:
+        float(s)
+        return True
+    except (ValueError, TypeError):
+        return False
+
+
+def write_csv_processed(
+    out_dir: str,
+    sample_name: str,
+    sample_data: dict,
+    mode: str = "COLUMN",
+    config: dict = None,
+    separator: str = ";",
+    used_filenames: set = None,
+):
+    """
+    Exporta dades PROCESSED per una mostra a subcarpeta PROCESSED/.
+
+    Genera:
+    - {sample}_HPSEC_{C|B}_DOC.csv: DOC net (shift+baseline+smoothing+repair) + 6λ DAD
+    - {sample}_HPSEC_{C|B}_FRACTIONS.csv: fraccions integrades + ppm
+
+    Args:
+        out_dir: Directori PROCESSED/ de sortida
+        sample_name: Nom de la mostra
+        sample_data: Dict amb dades de la rèplica seleccionada
+        mode: "BP" o "COLUMN"
+        config: Configuració (opcional)
+        separator: Separador CSV
+        used_filenames: Set per evitar col·lisions
+
+    Returns:
+        list de fitxers generats
+    """
+    if used_filenames is None:
+        used_filenames = set()
+    config = config or DEFAULT_EXPORT_CONFIG
+    target_wls = config.get("target_wavelengths", [220, 252, 254, 272, 290, 362])
+
+    proc_path = Path(out_dir)
+    proc_path.mkdir(parents=True, exist_ok=True)
+    files_created = []
+    base = _sample_filename_base(sample_name, mode)
+
+    t_doc = sample_data.get("t_doc")
+    if t_doc is None:
+        return files_created
+
+    t_doc = np.asarray(t_doc)
+
+    # --- DOC processat + DAD 6λ ---
+    data = {"time_min": t_doc}
+
+    y_doc_net = sample_data.get("y_doc_net")
+    if y_doc_net is not None:
+        data["DOC_net_mAU"] = np.asarray(y_doc_net)
+
+    y_uib_net = sample_data.get("y_doc_uib_net")
+    if y_uib_net is not None and len(y_uib_net) == len(t_doc):
+        data["DOC_UIB_net_mAU"] = np.asarray(y_uib_net)
+
+    y_direct_net = sample_data.get("y_doc_direct_net")
+    if y_direct_net is not None and len(y_direct_net) == len(t_doc):
+        data["DOC_Direct_net_mAU"] = np.asarray(y_direct_net)
+
+    # DAD 6λ processat
+    df_dad = sample_data.get("df_dad")
+    if df_dad is not None and not df_dad.empty:
+        t_dad = None
+        for cand in ["time (min)", "Time"]:
+            if cand in df_dad.columns:
+                t_dad = df_dad[cand].values
+                break
+
+        if t_dad is not None:
+            for wl in target_wls:
+                dad_vals = _get_dad_column(df_dad, wl)
+                if dad_vals is not None:
+                    if len(t_dad) != len(t_doc):
+                        data[f"A{wl}_mAU"] = np.interp(t_doc, t_dad, dad_vals)
+                    else:
+                        data[f"A{wl}_mAU"] = dad_vals
+
+    meta = [
+        ("Sample", sample_name),
+        ("Method", mode),
+        ("Data_Type", "PROCESSED"),
+        ("Signal", "DOC+DAD"),
+        ("Replica_DOC", sample_data.get("replica", "?")),
+        ("Replica_DAD", sample_data.get("replica_dad", sample_data.get("replica", "?"))),
+        ("Export_Date", datetime.now().strftime("%Y-%m-%d %H:%M")),
+        ("Export_Module", f"hpsec_export v{__version__}"),
+    ]
+    quantification = sample_data.get("quantification", {})
+    if quantification:
+        conc = quantification.get("concentration_ppm")
+        if conc is not None:
+            meta.append(("Concentration_ppm", round(conc, 3)))
+
+    fname = _make_unique_filename(f"{base}_DOC", ".csv", used_filenames)
+    fpath = proc_path / fname
+    header = _csv_metadata_header(meta)
+    df = pd.DataFrame(data)
+    with open(fpath, 'w', encoding='utf-8', newline='') as f:
+        f.write(header + "\n")
+        df.to_csv(f, sep=separator, index=False, float_format="%.6g")
+    files_created.append(str(fpath))
+    logger.info(f"CSV PROCESSED DOC: {fpath}")
+
+    # --- Fraccions integrades (només COLUMN, BP no té fraccions) ---
+    if mode == "BP":
+        return files_created
+
+    fractions = config.get("time_fractions", {})
+    fraction_names = list(fractions.keys())
+
+    if y_doc_net is not None:
+        rows = []
+        y_doc_net_arr = np.asarray(y_doc_net)
+        for frac_name in fraction_names:
+            t_start, t_end = fractions[frac_name]
+            t_range = f"{t_start}-{t_end}"
+            row = {"Fraction": frac_name, "Range_min": t_range}
+
+            mask = (t_doc >= t_start) & (t_doc <= t_end)
+            row["DOC"] = round(float(trapezoid(y_doc_net_arr[mask], t_doc[mask])), 3) if mask.any() else 0
+
+            # DAD fraccions
+            if df_dad is not None and not df_dad.empty and t_dad is not None:
+                for wl in target_wls:
+                    dad_vals = _get_dad_column(df_dad, wl)
+                    if dad_vals is not None:
+                        m = (t_dad >= t_start) & (t_dad <= t_end)
+                        row[f"A{wl}"] = round(float(trapezoid(dad_vals[m], t_dad[m])), 3) if m.any() else 0
+            rows.append(row)
+
+        # Afegir quantificació
+        if quantification and not sample_data.get("skip_quantification"):
+            for row in rows:
+                frac = row["Fraction"]
+                frac_q = quantification.get("fractions", {}).get(frac, {})
+                if frac_q:
+                    row["ppm"] = round(frac_q.get("ppm", 0), 4)
+
+        meta_frac = [
+            ("Sample", sample_name),
+            ("Method", mode),
+            ("Data_Type", "PROCESSED"),
+            ("Signal", "FRACTIONS"),
+            ("Export_Date", datetime.now().strftime("%Y-%m-%d %H:%M")),
+        ]
+        fname_f = _make_unique_filename(f"{base}_FRACTIONS", ".csv", used_filenames)
+        fpath_f = proc_path / fname_f
+        header_f = _csv_metadata_header(meta_frac)
+        df_f = pd.DataFrame(rows)
+        with open(fpath_f, 'w', encoding='utf-8', newline='') as f:
+            f.write(header_f + "\n")
+            df_f.to_csv(f, sep=separator, index=False, float_format="%.6g")
+        files_created.append(str(fpath_f))
+        logger.info(f"CSV PROCESSED FRACTIONS: {fpath_f}")
+
+    return files_created
+
+
+def _get_dad_column(df_dad, wl):
+    """Obté valors d'una longitud d'ona del DataFrame DAD."""
+    for col_name in [str(wl), f"A{wl}", str(int(wl))]:
+        if col_name in df_dad.columns:
+            return df_dad[col_name].values
+    for col in df_dad.columns:
+        try:
+            if abs(float(col) - wl) < 1:
+                return df_dad[col].values
+        except (ValueError, TypeError):
+            pass
+    return None
+
+
+def generate_summary_csv(
+    samples_grouped: dict,
+    output_path: str,
+    calibration_data: dict = None,
+    mode: str = "COLUMN",
+    config: dict = None,
+    separator: str = ";",
+):
+    """
+    Genera CSV resum amb totes les mostres (equivalent a SUMMARY.xlsx).
+
+    Args:
+        samples_grouped: Dict amb mostres agrupades
+        output_path: Camí del fitxer CSV
+        calibration_data: Dades de calibració
+        mode: "BP" o "COLUMN"
+        config: Configuració (opcional)
+        separator: Separador CSV (";", ",", o "\t")
+    """
+    config = config or DEFAULT_EXPORT_CONFIG
+
+    # Metadades
+    from hpsec_version import SUITE_VERSION
+    meta_fields = [
+        ("Suite_Version", f"HPSEC Suite v{SUITE_VERSION}"),
+        ("Method", mode),
+        ("N_Samples", len(samples_grouped)),
+        ("Export_Date", datetime.now().strftime("%Y-%m-%d %H:%M")),
+        ("Export_Module", f"hpsec_export v{__version__}"),
+    ]
+    try:
+        from hpsec_config import Config
+        cfg_obj = Config()
+        meta_fields.append(("Config_Fingerprint", cfg_obj.compute_fingerprint()))
+    except Exception:
+        pass
+    try:
+        from hpsec_calibrate import compute_calibration_fingerprint
+        meta_fields.append(("Calibration_Fingerprint", compute_calibration_fingerprint()))
+    except Exception:
+        pass
+    meta_fields.append(("Separator", repr(separator)))
+
+    header_text = _csv_metadata_header(meta_fields)
+
+    # Construir les mateixes files que generate_summary_excel
+    summary_rows = []
+    for sample_name in sorted(samples_grouped.keys()):
+        sample_info = samples_grouped[sample_name]
+
+        if sample_info.get("analysis_type") == "light":
+            selected = sample_info.get("selected", {})
+            doc_replica = selected.get("doc", "1")
+            replicas = sample_info.get("replicas", {})
+            doc_data = replicas.get(doc_replica, {})
+            sample_type = sample_info.get("sample_type", "BLANK")
+            row = {
+                "Sample": sample_name,
+                "Type": sample_type,
+                "Conc_ppm": "",
+                "Area_total": doc_data.get("area_total", ""),
+                "SNR_Direct": doc_data.get("snr", ""),
+            }
+            summary_rows.append(row)
+            continue
+
+        selected = sample_info.get("selected", {})
+        quantification = sample_info.get("quantification", {})
+        comparison = sample_info.get("comparison", {})
+        doc_replica = selected.get("doc", "1")
+        dad_replica = selected.get("dad", "1")
+        is_invalid = (doc_replica == "none"
+                      or sample_info.get("sample_valid") is False
+                      or sample_info.get("skip_quantification", False))
+        doc_data = sample_info.get("replicas", {}).get(doc_replica, {})
+        snr_info = doc_data.get("snr_info", {})
+        sample_type = doc_data.get("sample_type", "SAMPLE")
+        anomalies = doc_data.get("anomalies", [])
+
+        dad_data = sample_info.get("replicas", {}).get(dad_replica, {}) if dad_replica != "none" else {}
+        dad_areas = (dad_data.get("areas") or {})
+        area_254 = dad_areas.get("A254", {}).get("total", 0)
+
+        r2_doc = comparison.get("doc", {}).get("pearson", 0) if comparison else 0
+        r2_dad = comparison.get("dad", {}).get("pearson_min", 0) if comparison else 0
+        areas_uib = doc_data.get("areas_uib") or {}
+        area_uib = areas_uib.get("total", 0)
+        ppm_uib = quantification.get("concentration_ppm_uib")
+
+        row = {
+            "Sample": sample_name,
+            "Type": sample_type,
+            "Conc_ppm": "NO VALIDA" if is_invalid else quantification.get("concentration_ppm", ""),
+            "Area_total": quantification.get("area_total", ""),
+            "A_UIB": area_uib if area_uib else "",
+            "ppm_UIB": ppm_uib if ppm_uib else "",
+            "A_254": area_254 if area_254 else "",
+            "SNR_Direct": snr_info.get("snr_direct", ""),
+            "R2_DOC": round(r2_doc, 4) if r2_doc > 0 else "",
+            "R2_DAD": round(r2_dad, 4) if r2_dad > 0 else "",
+            "Anomalies": "; ".join(
+                (a.get("code", "") + ("[R]" if a.get("repaired") else "")) if isinstance(a, dict)
+                else str(a) for a in anomalies
+            ) if anomalies else "",
+            "HCI": quantification.get("hci", ""),
+            "HCI_Character": quantification.get("hci_character", ""),
+        }
+
+        bp_info = sample_info.get("bp_linked", {})
+        if bp_info:
+            row["BP_SEQ"] = bp_info.get("bp_seq", bp_info.get("seq_name", ""))
+            row["BP_ppm"] = bp_info.get("concentration_ppm", "")
+
+        summary_rows.append(row)
+
+    df = pd.DataFrame(summary_rows)
+
+    with open(output_path, 'w', encoding='utf-8', newline='') as f:
+        f.write(header_text + "\n")
+        df.to_csv(f, sep=separator, index=False, float_format="%.6g")
+
+    logger.info(f"CSV summary: {output_path}")
+    return {"success": True, "path": output_path, "n_samples": len(summary_rows)}
+
+
+# =============================================================================
+# METADATA.JSON (FAIR)
+# =============================================================================
+
+def write_metadata_json(
+    output_path: str,
+    samples_grouped: dict,
+    mode: str = "COLUMN",
+    calibration_data: dict = None,
+    config: dict = None,
+    seq_path: str = None,
+    export_options: dict = None,
+):
+    """
+    Genera metadata.json amb informació FAIR de traçabilitat.
+
+    Args:
+        output_path: Camí del fitxer metadata.json
+        samples_grouped: Dict amb mostres agrupades
+        mode: "BP" o "COLUMN"
+        calibration_data: Dades de calibració
+        config: Configuració
+        seq_path: Path de la seqüència
+        export_options: Opcions d'exportació seleccionades
+    """
+    from hpsec_version import SUITE_VERSION
+    metadata = {
+        "suite_version": SUITE_VERSION,
+        "export_module": __version__,
+        "export_date": datetime.now().isoformat(),
+        "encoding": "UTF-8",
+        "decimal_separator": ".",
+        "method": mode,
+        "seq_name": Path(seq_path).name if seq_path else "",
+        "n_samples": len(samples_grouped),
+    }
+
+    # Llista de mostres
+    sample_list = []
+    for name, info in samples_grouped.items():
+        s = {"name": name}
+        s["type"] = info.get("sample_type", info.get("replicas", {}).get(
+            info.get("selected", {}).get("doc", "1"), {}
+        ).get("sample_type", "SAMPLE"))
+        if info.get("quantification"):
+            s["concentration_ppm"] = info["quantification"].get("concentration_ppm")
+        sample_list.append(s)
+    metadata["samples"] = sample_list
+
+    # Fingerprints
+    try:
+        from hpsec_config import Config
+        cfg_obj = Config()
+        metadata["config_fingerprint"] = cfg_obj.compute_fingerprint()
+    except Exception:
+        pass
+    try:
+        from hpsec_calibrate import compute_calibration_fingerprint
+        metadata["calibration_fingerprint"] = compute_calibration_fingerprint()
+    except Exception:
+        pass
+
+    # Calibració activa
+    if calibration_data:
+        cal_info = {}
+        for key in ["rf_mass_cal", "intercept", "r2", "n_points", "calibration_date"]:
+            if key in calibration_data:
+                cal_info[key] = calibration_data[key]
+        if cal_info:
+            metadata["calibration"] = cal_info
+
+    # Opcions d'exportació
+    if export_options:
+        metadata["export_options"] = export_options
+
+    with open(output_path, 'w', encoding='utf-8') as f:
+        json.dump(metadata, f, indent=2, ensure_ascii=False, default=str)
+
+    logger.info(f"metadata.json: {output_path}")
+
+
+# =============================================================================
+# ZIP PACKAGING
+# =============================================================================
+
+def create_export_zip(source_dir: str, zip_path: str = None):
+    """
+    Empaqueta tot el contingut d'exportació en un ZIP.
+
+    Args:
+        source_dir: Directori arrel a empaquetar (conté RAW/, PROCESSED/, SUMMARY, metadata)
+        zip_path: Camí del ZIP. Si None, usa {source_dir}.zip
+
+    Returns:
+        str path del ZIP creat
+    """
+    source = Path(source_dir)
+    if zip_path is None:
+        zip_path = str(source) + ".zip"
+
+    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+        for fpath in sorted(source.rglob("*")):
+            if fpath.is_file():
+                arcname = fpath.relative_to(source)
+                zf.write(fpath, arcname)
+
+    logger.info(f"ZIP creat: {zip_path} ({os.path.getsize(zip_path) / 1024 / 1024:.1f} MB)")
+    return zip_path
+
+
+# =============================================================================
 # EXPORTS
 # =============================================================================
 __all__ = [
@@ -1215,6 +2012,11 @@ __all__ = [
     "write_light_excel",
     "export_sequence",
     "generate_summary_excel",
+    "generate_summary_csv",
+    "write_csv_raw",
+    "write_csv_processed",
+    "write_metadata_json",
+    "create_export_zip",
     "patch_excel_calibration",
     "DEFAULT_EXPORT_CONFIG",
     "_find_and_load_bp_data",

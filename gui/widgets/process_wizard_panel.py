@@ -364,7 +364,7 @@ class ProcessWizardPanel(QWidget):
         # === SECCIÓ CONTEXT ===
         self.back_btn = QPushButton("\u2190")
         self.back_btn.setFixedSize(32, 32)
-        self.back_btn.setToolTip("Tornar al Dashboard")
+        self.back_btn.setToolTip("Tornar a la llista")
         self.back_btn.setStyleSheet("""
             QPushButton {
                 background-color: #e9ecef; border: none; border-radius: 4px;
@@ -1513,8 +1513,8 @@ class ProcessWizardPanel(QWidget):
         self.export_panel.export_completed.connect(self._on_export_completed)
 
     def _go_to_dashboard(self):
-        """Torna al Dashboard."""
-        self.main_window.tab_widget.setCurrentIndex(0)
+        """Torna a la llista de seqüències."""
+        self.main_window.show_dashboard()
 
     def _load_sequence(self, seq_path: str):
         """Carrega una seqüència i detecta etapes completades."""

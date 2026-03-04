@@ -46,8 +46,8 @@ IMMEDIATE_SECTIONS = frozenset(["paths", "ui"])
 DEFAULT_CONFIG = {
     # --- PATHS ---
     "paths": {
-        "data_folder": "",  # Carpeta base amb les SEQs (configurat a hpsec_config.json)
-        "registry_folder": "",  # Carpeta global JSONs — derivat de data_folder/REGISTRY
+        "data_folders": [],       # Llista de carpetes amb SEQs
+        "registry_folder": "",    # Carpeta REGISTRY compartit (explícit o derivat de 1a carpeta)
     },
 
     # --- FRACCIONS TEMPORALS (min) ---
@@ -232,6 +232,14 @@ class ConfigManager:
 
     def _migrate_config(self, config):
         """Migra claus obsoletes a les noves."""
+        # data_folder (string) → data_folders (list)
+        paths = config.get("paths", {})
+        if "data_folder" in paths:
+            old_folder = paths.pop("data_folder")
+            if old_folder and not paths.get("data_folders"):
+                paths["data_folders"] = [old_folder]
+            config["paths"] = paths
+
         det = config.get("detection", {})
         # batman_max_sep → batman_max_sep_min → irregular_top_max_sep_min
         if "batman_max_sep" in det:
@@ -423,20 +431,37 @@ def get_config():
 # FUNCIONS HELPER
 # =============================================================================
 
-def get_data_folder():
-    """Obté la carpeta base de dades."""
+def get_data_folders():
+    """Retorna llista de carpetes de dades configurades."""
     cfg = get_config()
-    return cfg.get("paths", "data_folder")
+    folders = cfg.get("paths", "data_folders") or []
+    # Backward compat: si data_folder existeix (string antic), convertir
+    if not folders:
+        single = cfg.get("paths", "data_folder")
+        if single:
+            folders = [single]
+    return [f for f in folders if f]
+
+
+def get_data_folder():
+    """Retorna la primera carpeta de dades (per REGISTRY si no configurat explícitament)."""
+    folders = get_data_folders()
+    return folders[0] if folders else ""
 
 def get_registry_path():
     """
     Obté la carpeta REGISTRY per JSONs globals (KHP_History, Samples_History).
-    Relatiu a data_folder: DATA_FOLDER/REGISTRY/
+    Si registry_folder configurat explícitament, usar-lo.
+    Si no, derivar de la primera carpeta de dades + /REGISTRY.
     La crea si no existeix.
     """
-    data_folder = get_data_folder()
-    if data_folder:
-        registry = os.path.join(data_folder, "REGISTRY")
+    cfg = get_config()
+    registry = cfg.get("paths", "registry_folder")
+    if not registry:
+        data_folder = get_data_folder()
+        if data_folder:
+            registry = os.path.join(data_folder, "REGISTRY")
+    if registry:
         os.makedirs(registry, exist_ok=True)
         return registry
     return None

@@ -748,12 +748,12 @@ class AnalyzePanel(QWidget):
             st = sd.get("sample_type", "SAMPLE")
             if sd.get("analysis_type") == "khp":
                 khp_names.append(name)
+            elif st == "BLANK":
+                blank_names.append(name)
             elif sd.get("analysis_type") == "light" or st == "CONTROL":
                 light_names.append(name)
             elif st.startswith("PR"):
                 pr_names.append(name)
-            elif st == "BLANK":
-                blank_names.append(name)
             else:
                 sample_names.append(name)
 

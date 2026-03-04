@@ -2277,5 +2277,3 @@ i determina el time shift necessari per a la quantificaci\u00f3.</p>
             f"RF: {rf:.0f}"
         )
 
-    def _go_next(self):
-        self.main_window.go_to_tab(2)

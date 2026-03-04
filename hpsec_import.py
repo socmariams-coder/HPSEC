@@ -3950,10 +3950,11 @@ def generate_import_manifest(imported_data, include_injection_details=True):
     Returns:
         dict JSON-serializable amb tota la metadata
     """
+    from hpsec_version import SUITE_VERSION
     manifest = {
-        "manifest_version": "1.0",
+        "suite_version": SUITE_VERSION,
         "generated_at": datetime.now().isoformat(),
-        "generator": f"hpsec_import v{__version__}",
+        "import_module": __version__,
 
         # Info seqüència (path relatiu: només nom SEQ, es reconstrueix amb data_folder del config)
         "sequence": {

@@ -294,7 +294,19 @@ class SeqCalRegressionWidget(QWidget):
         # Extreure calibracions per senyal
         cals_direct = calib_result.get('calibrations_direct', [])
         cals_uib = calib_result.get('calibrations_uib', [])
-        cals = cals_direct or cals_uib or calib_result.get('calibrations', [])
+        cals_unified = calib_result.get('calibrations', [])
+
+        # Fallback: si no hi ha llistes per senyal, construir-les des de la unificada
+        if not cals_direct and not cals_uib and cals_unified:
+            cals_direct = cals_unified  # area = Direct area (correcte)
+            # UIB: si les entrades tenen area_uib o area_u, hi ha dades UIB
+            has_uib_data = any(
+                (c.get('area_uib') or c.get('area_u', 0)) > 0 for c in cals_unified
+            )
+            if has_uib_data:
+                cals_uib = cals_unified  # _build_entries amb signal='uib' llegirà area_uib/area_u
+
+        cals = cals_direct or cals_uib or cals_unified
 
         if not cals or len(cals) < 2:
             self._main_group.setVisible(False)
@@ -411,12 +423,24 @@ class SeqCalRegressionWidget(QWidget):
         """Construeix llista d'entrades de calibració per un senyal.
 
         Adaptat de l'antic _detect_seq_cal() de calibrate_panel.
+        Quan signal_name=='uib' i les entrades venen de la llista unificada,
+        usa area_uib/area_u com a àrea principal (en lloc de area que és Direct).
         """
         entries = []
         for cal in cal_list:
             conc = cal.get('conc_ppm', 0)
             vol = cal.get('volume_uL', 0)
-            area = cal.get('area', 0)
+
+            # Àrea i RF: per UIB, preferir camps UIB-específics de la llista unificada
+            if signal_name == 'uib':
+                area = (cal.get('area_uib') or cal.get('area_u', 0)
+                        or cal.get('area', 0))
+                rf_mass_raw = (cal.get('rf_mass_uib') or cal.get('rf_mass_u', 0)
+                               or cal.get('rf_mass', 0))
+            else:
+                area = cal.get('area', 0)
+                rf_mass_raw = cal.get('rf_mass', 0)
+
             if conc <= 0 or vol <= 0 or area <= 0:
                 continue
 
@@ -433,27 +457,39 @@ class SeqCalRegressionWidget(QWidget):
                 'is_outlier': False,
                 'valid_for_calibration': not sat_invalidates,
                 'condition_key': cal.get('condition_key', f"KHP{conc:g}@{vol}µL"),
-                'rf_mass': cal.get('rf_mass', 0),
+                'rf_mass': rf_mass_raw,
                 'calibration_anomalies': cal.get('calibration_anomalies', []),
                 'name_full': cal.get('name_full', ''),
                 'a254_area': cal.get('a254_area', 0),
                 'a254_doc_ratio': cal.get('a254_doc_ratio', 0),
                 'has_irregular_top': cal.get('has_irregular_top', False),
                 'irregular_top_repaired': cal.get('irregular_top_repaired', False),
-                'area_uib': cal.get('area_uib', 0),
+                'area_uib': cal.get('area_uib', cal.get('area_u', 0)),
                 'area_original': cal.get('area_original', 0),
                 'area_repaired': cal.get('area_repaired', 0),
-                'rf_mass_uib': cal.get('rf_mass_uib', 0),
+                'rf_mass_uib': cal.get('rf_mass_uib', cal.get('rf_mass_u', 0)),
                 'has_timeout': cal.get('has_timeout', False),
                 'timeout_severity': cal.get('timeout_severity', 'OK'),
                 'uib_sensitivity': cal.get('uib_sensitivity'),
                 'uib_saturated': uib_saturated,
-                'replicas': cal.get('replicas', []),
+                'replicas': self._get_replicas_for_signal(cal, signal_name),
+                '_uib_match_for_replicas': cal.get('_uib_match_for_replicas'),
             }
-            if signal_name == 'uib':
-                entry['area_u'] = area
             entries.append(entry)
         return entries
+
+    @staticmethod
+    def _get_replicas_for_signal(cal, signal_name):
+        """Retorna les rèpliques correctes segons el senyal.
+
+        Per UIB, les rèpliques de la llista unificada són Direct.
+        Cal buscar les UIB a _uib_match_for_replicas.
+        """
+        if signal_name == 'uib':
+            uib_match = cal.get('_uib_match_for_replicas')
+            if uib_match and uib_match.get('replicas'):
+                return uib_match['replicas']
+        return cal.get('replicas', [])
 
     # =====================================================================
     # UIB SENSITIVITY MIXING CHECK
@@ -620,9 +656,9 @@ class SeqCalRegressionWidget(QWidget):
             ratio = entry.get('a254_doc_ratio', 0)
             if not ratio and a254 and area:
                 ratio = area / a254
-            ratio_item = QTableWidgetItem(f"{ratio:.2f}" if ratio else "-")
+            ratio_item = QTableWidgetItem(f"{ratio:.1f}" if ratio else "-")
             ratio_item.setFlags(ratio_item.flags() & ~Qt.ItemIsEditable)
-            if ratio and (ratio < 0.5 or ratio > 10):
+            if ratio and (ratio < 5 or ratio > 200):
                 ratio_item.setForeground(QBrush(QColor("#E67E22")))
             self._points_table.setItem(i, 8, ratio_item)
 

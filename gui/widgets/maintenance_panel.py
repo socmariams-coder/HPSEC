@@ -2,21 +2,47 @@
 HPSEC Suite - Maintenance Panel
 ================================
 
-Panel per visualitzar events de manteniment des de l'Excel centralitzat.
-Llegeix directament del fitxer configurat a hpsec_config.json.
+Panel per visualitzar:
+1. Events de manteniment des de l'Excel centralitzat del tècnic
+2. Canvis metodològics (protocol, volum, sensibilitat...) que el tècnic no registra
 """
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QGroupBox,
     QTableWidget, QTableWidgetItem, QHeaderView, QComboBox, QMessageBox,
-    QFileDialog, QSizePolicy
+    QFileDialog, QSizePolicy, QDialog, QFormLayout, QLineEdit, QTextEdit,
+    QDateEdit, QSplitter,
 )
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, QDate
 from PySide6.QtGui import QFont, QColor
 
 from pathlib import Path
 from datetime import datetime
+import json as _json
 import os
+
+# Path per defecte del registre metodològic
+METHOD_LOG_PATH = Path(os.environ.get(
+    "HPSEC_REGISTRY", Path(__file__).resolve().parent.parent.parent / "REGISTRY"
+)) / "method_log.json"
+
+METHOD_CATEGORIES = [
+    "Canvi protocol preparació",
+    "Canvi volum injecció",
+    "Canvi sensibilitat UIB",
+    "Canvi mètode processament",
+    "Canvi reactiu/consumible",
+    "Observació",
+]
+
+METHOD_COLORS = {
+    "Canvi protocol preparació": "#8E44AD",
+    "Canvi volum injecció": "#2980B9",
+    "Canvi sensibilitat UIB": "#16A085",
+    "Canvi mètode processament": "#D35400",
+    "Canvi reactiu/consumible": "#C0392B",
+    "Observació": "#7F8C8D",
+}
 
 # Intentar importar pandas
 try:
@@ -46,27 +72,37 @@ class MaintenancePanel(QWidget):
         super().__init__()
         self.main_window = main_window
         self.events = []
+        self.method_changes = []
         self.excel_path = None
         self._setup_ui()
 
         # Carregar dades despres de mostrar UI
-        QTimer.singleShot(100, self._load_from_config)
+        QTimer.singleShot(100, self._load_all)
 
     def _setup_ui(self):
-        """Configura la interficie."""
+        """Configura la interfície amb dues seccions: equip + canvis metodològics."""
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(8)
 
-        # === Capçalera compacta: Titol + Info + Botons ===
+        splitter = QSplitter(Qt.Vertical)
+
+        # =================================================================
+        # SECCIÓ 1: MANTENIMENT EQUIP (des d'Excel tècnic)
+        # =================================================================
+        equip_widget = QWidget()
+        equip_layout = QVBoxLayout(equip_widget)
+        equip_layout.setContentsMargins(0, 0, 0, 0)
+        equip_layout.setSpacing(6)
+
+        # Capçalera
         header_layout = QHBoxLayout()
         header_layout.setSpacing(16)
 
-        # Titol i info
         title_layout = QVBoxLayout()
         title_layout.setSpacing(2)
         title = QLabel("Manteniment de l'Equip")
-        title.setFont(QFont("Segoe UI", 14, QFont.Bold))
+        title.setFont(QFont("Segoe UI", 13, QFont.Bold))
         title_layout.addWidget(title)
 
         self.info_label = QLabel("Carregant...")
@@ -75,7 +111,6 @@ class MaintenancePanel(QWidget):
 
         header_layout.addLayout(title_layout, 1)
 
-        # Botons compactes
         self.reload_btn = QPushButton("Recarregar")
         self.reload_btn.setFixedWidth(80)
         self.reload_btn.clicked.connect(self._reload_data)
@@ -86,14 +121,14 @@ class MaintenancePanel(QWidget):
         self.change_btn.clicked.connect(self._change_file)
         header_layout.addWidget(self.change_btn)
 
-        layout.addLayout(header_layout)
+        equip_layout.addLayout(header_layout)
 
-        # Path (una linia)
+        # Path
         self.path_label = QLabel("No configurat")
         self.path_label.setStyleSheet("color: #888; font-family: monospace; font-size: 10px;")
-        layout.addWidget(self.path_label)
+        equip_layout.addWidget(self.path_label)
 
-        # === Resum compacte en una linia ===
+        # Resum compacte
         summary_layout = QHBoxLayout()
         summary_layout.setSpacing(24)
 
@@ -116,9 +151,9 @@ class MaintenancePanel(QWidget):
             self.summary_labels[cat_name] = count_label
 
         summary_layout.addStretch()
-        layout.addLayout(summary_layout)
+        equip_layout.addLayout(summary_layout)
 
-        # === Filtres en linia ===
+        # Filtres
         filter_layout = QHBoxLayout()
         filter_layout.setSpacing(8)
 
@@ -142,9 +177,9 @@ class MaintenancePanel(QWidget):
         self.count_label.setStyleSheet("color: #666; font-size: 11px;")
         filter_layout.addWidget(self.count_label)
 
-        layout.addLayout(filter_layout)
+        equip_layout.addLayout(filter_layout)
 
-        # === Taula (ocupa tot l'espai) ===
+        # Taula manteniment
         self.events_table = QTableWidget()
         self.events_table.setColumnCount(5)
         self.events_table.setHorizontalHeaderLabels(["Data", "Tipus", "Hores", "Usuari", "Detalls"])
@@ -153,57 +188,133 @@ class MaintenancePanel(QWidget):
         self.events_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Fixed)
         self.events_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Fixed)
         self.events_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.Stretch)
-        self.events_table.setColumnWidth(0, 85)   # Data
-        self.events_table.setColumnWidth(1, 140)  # Tipus
-        self.events_table.setColumnWidth(2, 50)   # Hores
-        self.events_table.setColumnWidth(3, 100)  # Usuari
+        self.events_table.setColumnWidth(0, 85)
+        self.events_table.setColumnWidth(1, 140)
+        self.events_table.setColumnWidth(2, 50)
+        self.events_table.setColumnWidth(3, 100)
         self.events_table.setAlternatingRowColors(True)
         self.events_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.events_table.setEditTriggers(QTableWidget.NoEditTriggers)
-        self.events_table.verticalHeader().setDefaultSectionSize(24)  # Files mes compactes
-        layout.addWidget(self.events_table, 1)  # stretch=1 per ocupar tot
+        self.events_table.verticalHeader().setDefaultSectionSize(24)
+        equip_layout.addWidget(self.events_table, 1)
+
+        splitter.addWidget(equip_widget)
+
+        # =================================================================
+        # SECCIÓ 2: CANVIS METODOLÒGICS (JSON intern)
+        # =================================================================
+        method_widget = QWidget()
+        method_layout = QVBoxLayout(method_widget)
+        method_layout.setContentsMargins(0, 8, 0, 0)
+        method_layout.setSpacing(6)
+
+        # Capçalera
+        method_header = QHBoxLayout()
+        method_title = QLabel("Canvis Metodològics")
+        method_title.setFont(QFont("Segoe UI", 13, QFont.Bold))
+        method_header.addWidget(method_title)
+
+        self.method_info = QLabel("")
+        self.method_info.setStyleSheet("color: #666; font-size: 11px;")
+        method_header.addWidget(self.method_info, 1)
+
+        self.method_add_btn = QPushButton("+ Afegir")
+        self.method_add_btn.setFixedWidth(80)
+        self.method_add_btn.setStyleSheet(
+            "font-weight: bold; color: #2980B9; border: 1px solid #2980B9;"
+            "border-radius: 4px; padding: 3px 8px;"
+        )
+        self.method_add_btn.clicked.connect(self._add_method_change)
+        method_header.addWidget(self.method_add_btn)
+
+        self.method_del_btn = QPushButton("Eliminar")
+        self.method_del_btn.setFixedWidth(70)
+        self.method_del_btn.setEnabled(False)
+        self.method_del_btn.clicked.connect(self._delete_method_change)
+        method_header.addWidget(self.method_del_btn)
+
+        method_layout.addLayout(method_header)
+
+        # Taula canvis metodològics
+        self.method_table = QTableWidget()
+        self.method_table.setColumnCount(4)
+        self.method_table.setHorizontalHeaderLabels(["Data", "Categoria", "Descripció", "SEQ ref."])
+        self.method_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Fixed)
+        self.method_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Fixed)
+        self.method_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        self.method_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Fixed)
+        self.method_table.setColumnWidth(0, 85)
+        self.method_table.setColumnWidth(1, 180)
+        self.method_table.setColumnWidth(3, 100)
+        self.method_table.setAlternatingRowColors(True)
+        self.method_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.method_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.method_table.verticalHeader().setDefaultSectionSize(24)
+        self.method_table.itemSelectionChanged.connect(
+            lambda: self.method_del_btn.setEnabled(
+                len(self.method_table.selectedItems()) > 0
+            )
+        )
+        method_layout.addWidget(self.method_table, 1)
+
+        splitter.addWidget(method_widget)
+
+        # Proporcions splitter: 60% equip, 40% metodològic
+        splitter.setStretchFactor(0, 3)
+        splitter.setStretchFactor(1, 2)
+
+        layout.addWidget(splitter, 1)
 
     def _load_from_config(self):
         """Carrega el path des de la configuracio."""
         try:
             from hpsec_config import get_config
             config = get_config()
-            self.excel_path = config.get("paths", {}).get("maintenance_excel", "")
+            self.excel_path = config.get("paths", "maintenance_excel", default="")
 
             if self.excel_path and os.path.exists(self.excel_path):
                 self.path_label.setText(self.excel_path)
+                self.path_label.setStyleSheet("color: #888; font-family: monospace; font-size: 10px;")
                 self._load_excel()
             else:
                 self.info_label.setText(
-                    "Fitxer Excel de manteniment no configurat o no trobat.\n"
-                    "Configura el path a hpsec_config.json > paths > maintenance_excel"
+                    "Fitxer no trobat. Clica 'Canviar...' per seleccionar-lo."
                 )
                 self.path_label.setText("No trobat: " + (self.excel_path or "(buit)"))
-                self.path_label.setStyleSheet("color: #E74C3C; font-family: monospace;")
+                self.path_label.setStyleSheet("color: #E74C3C; font-family: monospace; font-size: 10px;")
         except Exception as e:
-            self.info_label.setText(f"Error carregant configuracio: {e}")
+            self.info_label.setText(f"Error carregant configuració: {e}")
 
     def _change_file(self):
-        """Permet canviar el fitxer Excel."""
+        """Permet canviar el fitxer Excel i guarda el path a config."""
+        start_dir = str(Path(self.excel_path).parent) if self.excel_path else ""
         file_path, _ = QFileDialog.getOpenFileName(
             self,
             "Selecciona fitxer Excel de manteniment",
-            "",
+            start_dir,
             "Excel Files (*.xlsx *.xls);;All Files (*)"
         )
 
         if file_path:
             self.excel_path = file_path
             self.path_label.setText(file_path)
-            self.path_label.setStyleSheet("color: #666; font-family: monospace;")
+            self.path_label.setStyleSheet("color: #666; font-family: monospace; font-size: 10px;")
             self._load_excel()
 
-            # Suggerir guardar a config
-            QMessageBox.information(
-                self, "Nota",
-                f"Per fer permanent aquest canvi, actualitza hpsec_config.json:\n\n"
-                f'"maintenance_excel": "{file_path.replace(chr(92), "/")}"'
-            )
+            # Guardar a config automàticament
+            try:
+                from hpsec_config import get_config
+                config = get_config()
+                config.set("paths", "maintenance_excel", file_path.replace("\\", "/"))
+                config.save()
+                self.info_label.setText(
+                    f"Carregats {len(self.events)} events. Path guardat a config."
+                )
+            except Exception as e:
+                QMessageBox.warning(
+                    self, "Avís",
+                    f"Dades carregades però no s'ha pogut guardar el path a config:\n{e}"
+                )
 
     def _reload_data(self):
         """Recarrega les dades."""
@@ -423,3 +534,179 @@ class MaintenancePanel(QWidget):
         end_date = datetime.now()
         start_date = end_date - timedelta(days=days)
         return self.get_events_in_range(start_date, end_date)
+
+    # ------------------------------------------------------------------
+    # Canvis metodològics
+    # ------------------------------------------------------------------
+
+    def _load_all(self):
+        """Carrega manteniment (Excel) + canvis metodològics (JSON)."""
+        self._load_from_config()
+        self._load_method_log()
+
+    def _load_method_log(self):
+        """Carrega el registre de canvis metodològics des de JSON."""
+        self.method_changes = []
+        try:
+            if METHOD_LOG_PATH.exists():
+                with open(METHOD_LOG_PATH, 'r', encoding='utf-8') as f:
+                    self.method_changes = _json.load(f)
+                # Ordenar per data desc
+                self.method_changes.sort(
+                    key=lambda x: x.get('date', ''), reverse=True
+                )
+        except Exception as e:
+            self.method_info.setText(f"Error llegint registre: {e}")
+
+        self._refresh_method_table()
+
+    def _save_method_log(self):
+        """Guarda el registre de canvis metodològics a JSON."""
+        try:
+            METHOD_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+            # Ordenar per data desc abans de guardar
+            self.method_changes.sort(
+                key=lambda x: x.get('date', ''), reverse=True
+            )
+            with open(METHOD_LOG_PATH, 'w', encoding='utf-8') as f:
+                _json.dump(self.method_changes, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"No s'ha pogut guardar:\n{e}")
+
+    def _refresh_method_table(self):
+        """Actualitza la taula de canvis metodològics."""
+        self.method_table.setRowCount(0)
+
+        for entry in self.method_changes:
+            row = self.method_table.rowCount()
+            self.method_table.insertRow(row)
+
+            # Data
+            date_str = entry.get('date', '')
+            try:
+                date_obj = datetime.strptime(date_str, "%Y-%m-%d")
+                date_display = date_obj.strftime("%d/%m/%Y")
+            except Exception:
+                date_display = date_str
+            self.method_table.setItem(row, 0, QTableWidgetItem(date_display))
+
+            # Categoria amb color
+            cat = entry.get('category', '')
+            cat_item = QTableWidgetItem(cat)
+            color = METHOD_COLORS.get(cat, "#7F8C8D")
+            cat_item.setForeground(QColor(color))
+            cat_item.setFont(QFont("Segoe UI", 9, QFont.Bold))
+            self.method_table.setItem(row, 1, cat_item)
+
+            # Descripció
+            desc = entry.get('description', '')
+            desc_item = QTableWidgetItem(desc)
+            desc_item.setToolTip(desc)
+            self.method_table.setItem(row, 2, desc_item)
+
+            # SEQ referència
+            seq_ref = entry.get('seq_ref', '')
+            self.method_table.setItem(row, 3, QTableWidgetItem(seq_ref))
+
+        n = len(self.method_changes)
+        self.method_info.setText(f"{n} canvi{'s' if n != 1 else ''} registrat{'s' if n != 1 else ''}")
+
+    def _add_method_change(self):
+        """Diàleg per afegir un canvi metodològic."""
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Afegir canvi metodològic")
+        dlg.setMinimumWidth(450)
+
+        form = QFormLayout(dlg)
+        form.setSpacing(10)
+
+        date_edit = QDateEdit()
+        date_edit.setDate(QDate.currentDate())
+        date_edit.setCalendarPopup(True)
+        date_edit.setDisplayFormat("dd/MM/yyyy")
+        form.addRow("Data:", date_edit)
+
+        cat_combo = QComboBox()
+        for cat in METHOD_CATEGORIES:
+            cat_combo.addItem(cat)
+        form.addRow("Categoria:", cat_combo)
+
+        desc_edit = QTextEdit()
+        desc_edit.setMaximumHeight(80)
+        desc_edit.setPlaceholderText(
+            "Ex: KHP amb pipetes Pasteur en lloc de micropipeta"
+        )
+        form.addRow("Descripció:", desc_edit)
+
+        seq_edit = QLineEdit()
+        seq_edit.setPlaceholderText("Ex: 111_SEQ (opcional)")
+        form.addRow("SEQ referència:", seq_edit)
+
+        # Botons
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+        cancel_btn = QPushButton("Cancel·lar")
+        cancel_btn.clicked.connect(dlg.reject)
+        btn_layout.addWidget(cancel_btn)
+        save_btn = QPushButton("Guardar")
+        save_btn.setStyleSheet(
+            "background-color: #2980B9; color: white; border: none;"
+            "border-radius: 4px; padding: 6px 16px; font-weight: bold;"
+        )
+        save_btn.clicked.connect(dlg.accept)
+        btn_layout.addWidget(save_btn)
+        form.addRow("", btn_layout)
+
+        if dlg.exec() == QDialog.Accepted:
+            desc = desc_edit.toPlainText().strip()
+            if not desc:
+                QMessageBox.warning(self, "Avís", "Cal una descripció.")
+                return
+
+            entry = {
+                "date": date_edit.date().toString("yyyy-MM-dd"),
+                "category": cat_combo.currentText(),
+                "description": desc,
+                "seq_ref": seq_edit.text().strip(),
+                "added_at": datetime.now().isoformat(),
+            }
+            self.method_changes.append(entry)
+            self._save_method_log()
+            self._refresh_method_table()
+
+    def _delete_method_change(self):
+        """Elimina el canvi metodològic seleccionat."""
+        rows = set(item.row() for item in self.method_table.selectedItems())
+        if not rows:
+            return
+
+        resp = QMessageBox.question(
+            self, "Confirmar",
+            f"Eliminar {len(rows)} entrada{'es' if len(rows) > 1 else ''}?",
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        if resp != QMessageBox.Yes:
+            return
+
+        # Eliminar en ordre invers per no desplaçar índexs
+        for row in sorted(rows, reverse=True):
+            if 0 <= row < len(self.method_changes):
+                self.method_changes.pop(row)
+
+        self._save_method_log()
+        self._refresh_method_table()
+
+    def get_method_changes_in_range(self, start_date, end_date):
+        """Retorna canvis metodològics dins un rang de dates.
+
+        Útil per mostrar marcadors als gràfics d'Històric KHP.
+        """
+        if isinstance(start_date, datetime):
+            start_date = start_date.strftime("%Y-%m-%d")
+        if isinstance(end_date, datetime):
+            end_date = end_date.strftime("%Y-%m-%d")
+
+        return [
+            e for e in self.method_changes
+            if start_date <= e.get('date', '') <= end_date
+        ]

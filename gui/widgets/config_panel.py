@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
     QGridLayout, QFrame, QSpinBox, QDoubleSpinBox, QComboBox,
     QCheckBox, QLineEdit, QMessageBox, QScrollArea, QTabWidget,
     QFileDialog, QTableWidget, QTableWidgetItem, QHeaderView,
-    QStyledItemDelegate, QSizePolicy, QInputDialog
+    QStyledItemDelegate, QSizePolicy, QInputDialog, QListWidget
 )
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
@@ -519,25 +519,34 @@ class ConfigPanel(QWidget):
         layout = QVBoxLayout(widget)
         layout.setSpacing(16)
 
-        # --- Secció: Directoris ---
-        sec_paths = ConfigSection("Directoris")
+        # --- Secció: Directoris de dades ---
+        sec_paths = ConfigSection("Directoris de Dades")
         g = sec_paths.content_layout
 
-        # Directori dades
-        g.addWidget(QLabel("Directori dades:"), 0, 0)
-        self.data_dir_edit = QLineEdit()
-        self.data_dir_edit.setPlaceholderText("Carpeta amb les SEQs")
-        self._widgets["paths.data_folder"] = self.data_dir_edit
-        g.addWidget(self.data_dir_edit, 0, 1)
-        data_browse = QPushButton("...")
-        data_browse.setMaximumWidth(30)
-        data_browse.clicked.connect(lambda: self._browse_dir(self.data_dir_edit))
-        g.addWidget(data_browse, 0, 2)
+        # Llista de carpetes de dades
+        g.addWidget(QLabel("Carpetes amb SEQs:"), 0, 0, Qt.AlignTop)
+        self.data_folders_list = QListWidget()
+        self.data_folders_list.setMaximumHeight(100)
+        self.data_folders_list.setToolTip("Llista de carpetes amb seqüències HPSEC")
+        # Registrar com a widget especial (NO amb clau puntejada)
+        self._widgets["__data_folders_list__"] = self.data_folders_list
+        g.addWidget(self.data_folders_list, 0, 1)
+
+        # Botons afegir/eliminar
+        btn_layout = QVBoxLayout()
+        self.btn_add_folder = QPushButton("+ Afegir")
+        self.btn_add_folder.clicked.connect(self._add_data_folder)
+        btn_layout.addWidget(self.btn_add_folder)
+        self.btn_remove_folder = QPushButton("- Eliminar")
+        self.btn_remove_folder.clicked.connect(self._remove_data_folder)
+        btn_layout.addWidget(self.btn_remove_folder)
+        btn_layout.addStretch()
+        g.addLayout(btn_layout, 0, 2)
 
         # Directori registry
         g.addWidget(QLabel("Directori REGISTRY:"), 1, 0)
         self.registry_dir_edit = QLineEdit()
-        self.registry_dir_edit.setPlaceholderText("Carpeta REGISTRY (KHP_History, etc.)")
+        self.registry_dir_edit.setPlaceholderText("Carpeta REGISTRY (KHP_History, etc.) — buit = derivat de 1a carpeta")
         self._widgets["paths.registry_folder"] = self.registry_dir_edit
         g.addWidget(self.registry_dir_edit, 1, 1)
         registry_browse = QPushButton("...")
@@ -560,7 +569,7 @@ class ConfigPanel(QWidget):
 
         # Info
         info = QLabel(
-            "Nota: Canviar el directori de dades i clicar 'Guardar'.\n"
+            "Nota: Afegir/eliminar carpetes de dades i clicar 'Guardar'.\n"
             "Després clicar 'Actualitzar' al Dashboard per veure les noves seqüències."
         )
         info.setStyleSheet("color: #666; font-style: italic;")
@@ -638,6 +647,62 @@ class ConfigPanel(QWidget):
         if path:
             line_edit.setText(path)
 
+    def _add_data_folder(self):
+        """Afegeix una carpeta de dades amb validació anti-duplicats."""
+        import os, glob
+        path = QFileDialog.getExistingDirectory(self, "Selecciona Carpeta de Dades")
+        if not path:
+            return
+
+        # Comprovar si ja existeix a la llista
+        existing_paths = [self.data_folders_list.item(i).text()
+                          for i in range(self.data_folders_list.count())]
+        norm_path = os.path.normpath(path)
+        for ep in existing_paths:
+            if os.path.normpath(ep) == norm_path:
+                QMessageBox.warning(self, "Duplicat",
+                    f"La carpeta ja està a la llista:\n{path}")
+                return
+
+        # Validar SEQs duplicades entre carpetes
+        new_seqs = set()
+        for item in os.listdir(path):
+            if os.path.isdir(os.path.join(path, item)) and "_SEQ" in item.upper():
+                new_seqs.add(item.upper())
+
+        if new_seqs and existing_paths:
+            duplicates = []
+            for ep in existing_paths:
+                if not os.path.isdir(ep):
+                    continue
+                for item in os.listdir(ep):
+                    if os.path.isdir(os.path.join(ep, item)) and item.upper() in new_seqs:
+                        duplicates.append(f"  {item} (a {os.path.basename(ep)})")
+            if duplicates:
+                dup_text = "\n".join(duplicates[:10])
+                if len(duplicates) > 10:
+                    dup_text += f"\n  ... i {len(duplicates) - 10} més"
+                QMessageBox.warning(self, "SEQs duplicades",
+                    f"Hi ha SEQs amb el mateix nom a carpetes existents:\n\n{dup_text}\n\n"
+                    "Cal renombrar o moure les duplicades abans d'afegir la carpeta.")
+                return
+
+        self.data_folders_list.addItem(path)
+
+    def _remove_data_folder(self):
+        """Elimina la carpeta seleccionada de la llista."""
+        row = self.data_folders_list.currentRow()
+        if row < 0:
+            QMessageBox.information(self, "Selecció", "Selecciona una carpeta per eliminar.")
+            return
+        if self.data_folders_list.count() <= 1:
+            reply = QMessageBox.question(self, "Confirmar",
+                "Vols eliminar l'última carpeta de dades?",
+                QMessageBox.Yes | QMessageBox.No)
+            if reply != QMessageBox.Yes:
+                return
+        self.data_folders_list.takeItem(row)
+
     # =========================================================================
     # LOAD / APPLY CONFIG
     # =========================================================================
@@ -653,6 +718,8 @@ class ConfigPanel(QWidget):
         """Aplica la configuració als widgets."""
         # Spin boxes i combos (clau puntejada → cfg.get(*keys))
         for key, widget in self._widgets.items():
+            if key.startswith("__"):
+                continue  # Skip special widgets
             keys = key.split(".")
 
             if isinstance(widget, QDoubleSpinBox):
@@ -676,6 +743,13 @@ class ConfigPanel(QWidget):
             elif isinstance(widget, QLineEdit):
                 val = cfg.get(*keys)
                 widget.setText(str(val) if val else "")
+
+        # Llista de carpetes de dades
+        self.data_folders_list.clear()
+        from hpsec_config import get_data_folders
+        folders = get_data_folders()
+        for f in folders:
+            self.data_folders_list.addItem(f)
 
         # Widgets especials
         fractions = cfg.get("time_fractions", default={})
@@ -718,6 +792,9 @@ class ConfigPanel(QWidget):
                 values[key] = widget.isChecked()
             elif isinstance(widget, QLineEdit):
                 values[key] = widget.text()
+            elif isinstance(widget, QListWidget):
+                items = [widget.item(i).text() for i in range(widget.count())]
+                values[key] = str(items)
             elif isinstance(widget, TimeFractionsEditor):
                 values[key] = str(widget.save())
             elif isinstance(widget, TimeoutZonesEditor):
@@ -825,6 +902,8 @@ class ConfigPanel(QWidget):
 
         # Escriure tots els widgets simples
         for key, widget in self._widgets.items():
+            if key.startswith("__"):
+                continue  # Skip special widgets
             keys = key.split(".")
 
             if isinstance(widget, QDoubleSpinBox):
@@ -839,6 +918,11 @@ class ConfigPanel(QWidget):
                 text = widget.text().strip()
                 if text:
                     cfg.set(*keys, text)
+
+        # Llista de carpetes de dades
+        folders = [self.data_folders_list.item(i).text()
+                   for i in range(self.data_folders_list.count())]
+        cfg.set("paths", "data_folders", folders)
 
         # Widgets especials
         cfg.set_section("time_fractions", self.fractions_editor.save())

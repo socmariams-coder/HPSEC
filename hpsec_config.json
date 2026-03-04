@@ -1,6 +1,8 @@
 {
   "paths": {
-    "data_folder": "C:/Users/Lequia/Desktop/Dades3",
+    "data_folders": [
+      "C:/Users/Lequia/Desktop/Dades3"
+    ],
     "registry_folder": "C:/Users/Lequia/Desktop/Dades3/REGISTRY",
     "maintenance_excel": "C:/Users/Lequia/Desktop/Manteniment/Registre manteniment HPLC-DAD-TOC.xlsx"
   },
@@ -73,6 +75,14 @@
     "doc_correlation_warning": 0.95
   },
   "wavelengths": {
+    "selected": [
+      220,
+      252,
+      254,
+      272,
+      290,
+      362
+    ],
     "available": [
       210,
       220,
@@ -89,14 +99,6 @@
       350,
       362,
       400
-    ],
-    "selected": [
-      220,
-      252,
-      254,
-      272,
-      290,
-      362
     ],
     "primary": 254
   },
@@ -129,6 +131,7 @@
     "symmetry_min": 0.5,
     "symmetry_max": 2.0,
     "snr_min_khp": 50.0,
+    "guided_search_window_min": 2.5,
     "deviation_threshold_column": 20.0,
     "deviation_threshold_bp": 100.0,
     "qc_thresholds": {

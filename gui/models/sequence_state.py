@@ -99,6 +99,10 @@ class SequenceState:
     # Config fingerprint (per detectar obsolescència)
     config_fingerprint: str = ""
 
+    # Origen (multi-folder)
+    source_folder: str = ""    # Nom curt de la carpeta d'origen (per filtre)
+    source_path: str = ""      # Path complet de la carpeta d'origen
+
     # Siblings (carpetes germanes com 282B_SEQ, 282C_SEQ)
     siblings: List[str] = field(default_factory=list)  # Paths de siblings
     is_sibling: bool = False  # True si és sibling secundari (282B, 282C...)
@@ -870,17 +874,16 @@ def _extract_seq_num_and_suffix(seq_name: str) -> tuple:
     return (0, '', is_bp)
 
 
-def get_all_sequences(data_folder: str, group_siblings: bool = True) -> List[SequenceState]:
+def _scan_single_folder(data_folder: str, group_siblings: bool = True) -> List[SequenceState]:
     """
-    Obté l'estat de totes les seqüències d'una carpeta.
+    Escaneja UNA carpeta i retorna les SequenceState trobades.
 
     Args:
         data_folder: Carpeta amb les SEQs (ex: Dades3)
-        group_siblings: Si True, agrupa siblings (282_SEQ + 282B_SEQ) i només
-                       retorna el principal amb la llista de siblings
+        group_siblings: Si True, agrupa siblings (282_SEQ + 282B_SEQ)
 
     Returns:
-        Llista de SequenceState ordenada per nom
+        Llista de SequenceState (sense source_folder assignat)
     """
     sequences = []
 
@@ -929,9 +932,44 @@ def get_all_sequences(data_folder: str, group_siblings: bool = True) -> List[Seq
                         logger.debug("Could not load sibling %s: %s", sibling_path, e)
 
         except Exception as e:
-            logger.debug("Skipping problematic folder %s: %s", entry.name if hasattr(entry, 'name') else '?', e)
+            logger.debug("Skipping problematic folder %s: %s", primary_path, e)
 
     return sequences
+
+
+def get_all_sequences(data_folders, group_siblings: bool = True) -> List[SequenceState]:
+    """
+    Obté l'estat de totes les seqüències d'una o múltiples carpetes.
+
+    Args:
+        data_folders: Carpeta (str) o llista de carpetes (list) amb SEQs
+        group_siblings: Si True, agrupa siblings (282_SEQ + 282B_SEQ)
+
+    Returns:
+        Llista de SequenceState ordenada per número de SEQ
+    """
+    # Backward compat: string → llista
+    if isinstance(data_folders, str):
+        data_folders = [data_folders]
+
+    all_seqs = []
+    for folder in data_folders:
+        if not folder:
+            continue
+        folder_name = os.path.basename(folder)
+        seqs = _scan_single_folder(folder, group_siblings)
+        for seq in seqs:
+            seq.source_folder = folder_name
+            seq.source_path = folder
+        all_seqs.extend(seqs)
+
+    # Ordenar globalment per (seq_num, is_bp)
+    def _sort_key(s):
+        seq_num, suffix, is_bp = _extract_seq_num_and_suffix(s.seq_name)
+        return (seq_num, is_bp, suffix)
+
+    all_seqs.sort(key=_sort_key)
+    return all_seqs
 
 
 if __name__ == "__main__":
@@ -939,14 +977,14 @@ if __name__ == "__main__":
     import sys
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-    from hpsec_config import get_config
+    from hpsec_config import get_config, get_data_folders
     cfg = get_config()
-    data_folder = cfg.get("paths", "data_folder")
+    data_folders = get_data_folders()
 
-    print(f"Analitzant: {data_folder}")
+    print(f"Analitzant: {data_folders}")
     print("=" * 60)
 
-    sequences = get_all_sequences(data_folder)
+    sequences = get_all_sequences(data_folders)
 
     print(f"{'SEQ':<15} {'ESTAT':<8} {'PROGRES':<8} {'ACCIO':<12}")
     print("-" * 60)
