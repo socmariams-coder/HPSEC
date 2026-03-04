@@ -400,7 +400,7 @@ def _build_id_sheet(sample_name, sample_data, calibration_data, mode, is_dual):
     rows.append(("=== CONFIG ===", ""))
     rows.append(("Integration_Method", "tangent_projection"))
     try:
-        from hpsec_config import Config
+        from hpsec_config import ConfigManager as Config
         cfg_obj = Config()
         rows.append(("Config_Fingerprint", cfg_obj.compute_fingerprint()))
     except Exception:
@@ -1800,7 +1800,7 @@ def generate_summary_csv(
         ("Export_Module", f"hpsec_export v{__version__}"),
     ]
     try:
-        from hpsec_config import Config
+        from hpsec_config import ConfigManager as Config
         cfg_obj = Config()
         meta_fields.append(("Config_Fingerprint", cfg_obj.compute_fingerprint()))
     except Exception:
@@ -1945,7 +1945,7 @@ def write_metadata_json(
 
     # Fingerprints
     try:
-        from hpsec_config import Config
+        from hpsec_config import ConfigManager as Config
         cfg_obj = Config()
         metadata["config_fingerprint"] = cfg_obj.compute_fingerprint()
     except Exception:

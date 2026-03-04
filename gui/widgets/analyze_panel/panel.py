@@ -1924,8 +1924,8 @@ class AnalyzePanel(QWidget):
             ]
             x_max = 12
         else:
-            from hpsec_config import Config
-            cfg = Config()
+            from hpsec_config import ConfigManager
+            cfg = ConfigManager()
             fractions = cfg.get_all_fractions(mode="COLUMN")
             max_dur = cfg.get("chromatogram", "max_duration_min", default=78.65)
             zones = []

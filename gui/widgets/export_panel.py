@@ -745,7 +745,7 @@ class ExportPanel(QWidget):
 
         # Fingerprints
         try:
-            from hpsec_config import Config
+            from hpsec_config import ConfigManager as Config
             cfg = Config()
             fp = cfg.compute_fingerprint()
             parts.append(f"Config fingerprint: <code>{fp}</code>")
