@@ -347,6 +347,27 @@ class ImportPanel(QWidget):
         self.info_frame.setVisible(False)
         self.placeholder.setVisible(True)
 
+    def _load_saved_manifest(self, result):
+        """Llegeix el manifest JSON guardat al disc (per dades preloaded sense arrays raw)."""
+        import json as _json
+        seq_path = result.get("seq_path") or self.seq_path
+        manifest_path = os.path.join(seq_path, "CHECK", "data", "import_manifest.json")
+        try:
+            with open(manifest_path, 'r', encoding='utf-8') as f:
+                return _json.load(f)
+        except Exception as e:
+            logger.warning(f"No s'ha pogut llegir manifest: {e}")
+            # Fallback: construir manifest mínim des del result
+            return {
+                "sequence": {
+                    "name": result.get("seq_name", ""),
+                    "method": result.get("method", "COLUMN"),
+                    "data_mode": result.get("data_mode", "DUAL"),
+                },
+                "samples": [],
+                "warnings": result.get("warnings", []),
+            }
+
     def _auto_load_from_manifest(self):
         """Carrega automàticament des del manifest existent (sense llegir MasterFile)."""
         self._loaded_from_manifest = True
@@ -1029,7 +1050,12 @@ class ImportPanel(QWidget):
         self._import_warnings = [w for w in result.get("warnings", []) if "⚠️" in w]
 
         # Processar manifest
-        manifest = generate_import_manifest(result)
+        # Si les dades són preloaded (data_deferred), llegir manifest del disc
+        # perquè el result no té arrays raw (t, y) i generate_import_manifest crasheja
+        if result.get("data_deferred"):
+            manifest = self._load_saved_manifest(result)
+        else:
+            manifest = generate_import_manifest(result)
         samples = manifest.get("samples", [])
         seq_info = manifest.get("sequence", {})
         self._data_mode = seq_info.get("data_mode", "DUAL")
