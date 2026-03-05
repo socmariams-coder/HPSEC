@@ -1256,7 +1256,7 @@ class ImportPanel(QWidget):
         # Configurar mides
         header = self.samples_table.horizontalHeader()
         for col in range(self.samples_table.columnCount()):
-            if col == COL_MOSTRA:
+            if col == self.COL_MOSTRA:
                 header.setSectionResizeMode(col, QHeaderView.Stretch)
             else:
                 header.setSectionResizeMode(col, QHeaderView.ResizeToContents)
