@@ -503,6 +503,29 @@ class CalibrationLineView(QWidget):
 
         self._main_layout.addWidget(self._summary_group)
 
+    def _find_conc_range_for_mode(self, ref, signal_scope, mode, n_pts, source_desc):
+        """Busca el rang de concentracions per un mode heretat a les calibracions inactives."""
+        try:
+            for other_cal in ref.get('calibrations', []):
+                if other_cal.get('signal_scope') != signal_scope:
+                    continue
+                other_reg = other_cal.get('regression_data', {})
+                other_mode = (other_reg.get('mode', '') or '').lower()
+                if other_mode != mode:
+                    continue
+                pts = other_reg.get('points', [])
+                inc = [p for p in pts if not p.get('excluded')]
+                if inc:
+                    ugs = [p.get('ug_doc', 0) for p in inc]
+                    ug_min, ug_max = min(ugs), max(ugs)
+                    rang_str = f"{ug_min:.2f} – {ug_max:.1f}"
+                    rang_tip = f"{len(inc)} punts: {ug_min:.3f} – {ug_max:.3f} µg\nFont: {source_desc}"
+                    return rang_str, rang_tip
+        except Exception:
+            pass
+        rang_str = f"n={n_pts}" if n_pts and n_pts != '?' else "—"
+        return rang_str, f"Font: {source_desc}"
+
     def show_summary(self):
         """Mostra el resum de calibracions vigents (sense SEQ_CAL carregada)."""
         from hpsec_calibrate import (
@@ -593,8 +616,9 @@ class CalibrationLineView(QWidget):
                         n_pts = cal.get('n_points', '?')
                         if isinstance(n_pts, dict):
                             n_pts = n_pts.get(mode, '?')
-                        rang_str = f"n={n_pts}"
-                        rang_tip = None
+                        # Buscar rang a calibracions inactives
+                        rang_str, rang_tip = self._find_conc_range_for_mode(
+                            ref, cal.get('signal_scope', 'direct'), mode, n_pts, source_desc)
                 elif mode in per_mode and per_mode[mode].get('description'):
                     # Mode heretat però amb traçabilitat (source_per_mode)
                     pm = per_mode[mode]
@@ -602,8 +626,9 @@ class CalibrationLineView(QWidget):
                     source_desc = pm.get('description', '?')
                     source_short = source_desc[:35] + "..." if len(source_desc) > 35 else source_desc
                     n_pts = pm.get('n_points', '?')
-                    rang_str = f"n={n_pts}" if n_pts and n_pts != '?' else "—"
-                    rang_tip = f"Font: {source_desc}"
+                    # Buscar rang concentracions a la calibració font (inactiva)
+                    rang_str, rang_tip = self._find_conc_range_for_mode(
+                        ref, cal.get('signal_scope', 'direct'), mode, n_pts, source_desc)
                 else:
                     # Mode heretat sense traçabilitat (cals antigues)
                     r2 = 0
