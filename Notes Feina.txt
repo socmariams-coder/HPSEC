@@ -1,0 +1,29 @@
+REVISAR AVISOS:
+- No mostra els avisos adients
+
+DASHBOARD:
+- Mostra totes les sequencies que hi ha, en un fitxer especific
+- Notes: Cada fase es generen errors o warnings en diferents nivell
+
+FEINA:
+- Notes a Dashboard donen errors que o no son correctes o no es mostren a importació. Descobrir si els errors són falsos o si a Importació no funcionen
+- Barra Wizard: 
+-- Revisat dona revisat quant encara no s'ha revisat
+-- Boto refer no avisa d'errors a l'etapa d'importar quant carrega d'un JSON existent. Diu que està revisat quan no ho està
+-- Al donar a refer amb errors, surt alerta al titol del fitxer però no mostra quins problemes hi ha, surt que el boto està revisat pero canvia a errors quan el cliques i mostra més errors
+-- Deixar seleccionar/filtrar per fitxers orfes o amb warnings per poder trobar més fàcilment els avisos o problemes
+
+PROBLEMES:
+No tinc REGISTRY al meu Dades3
+No tinc el registre de manteniment
+No guarda be el hpsec_config.json quan intentes eliminar o afegir una carpeta de sequencies
+
+Verificació:
+- A verificar dona Verificar tots X pero diu que són correctes
+- Verificar un dona error tot i que diu que és correcte
+- Analitzar multiples dona errors
+- Analitzar 1 dona error
+- Durant analitzar dona 'Error desconegut'
+
+Pipeline complet:
+- 
