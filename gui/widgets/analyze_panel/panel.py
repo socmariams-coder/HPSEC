@@ -78,7 +78,8 @@ class AnalyzePanel(QWidget):
         self._status_initialized = False  # B3: avoid redundant showEvent work
         # Chart data
         self._chart_regular = {}
-        self._chart_light = {}
+        self._chart_blank = {}
+        self._chart_control = {}
         self._chart_khp = {}
         self._chart_is_bp = False
 
@@ -109,39 +110,16 @@ class AnalyzePanel(QWidget):
         layout = QVBoxLayout(scroll_content)
         apply_panel_layout(layout)
 
-        # === INFO PANEL ===
+        # === INFO PANEL (amagat — info ja visible a la taula) ===
         self.info_frame = QFrame()
-        self.info_frame.setStyleSheet("""
-            QFrame {
-                background-color: #f8f9fa;
-                border: 1px solid #e9ecef;
-                border-radius: 6px;
-            }
-        """)
+        self.info_frame.setVisible(False)
         info_layout = QHBoxLayout(self.info_frame)
-        info_layout.setContentsMargins(16, 12, 16, 12)
-        info_layout.setSpacing(24)
-
         self.import_info = QLabel()
-        self.import_info.setStyleSheet("border: none;")
         info_layout.addWidget(self.import_info)
-
-        sep1 = QFrame()
-        sep1.setFrameShape(QFrame.VLine)
-        sep1.setStyleSheet("background-color: #dee2e6; border: none; max-width: 1px;")
-        info_layout.addWidget(sep1)
-
         self.cal_info = QLabel()
-        self.cal_info.setStyleSheet("border: none;")
         info_layout.addWidget(self.cal_info)
-
-        info_layout.addStretch()
-
         self.status_indicator = QLabel()
-        self.status_indicator.setStyleSheet("border: none;")
         info_layout.addWidget(self.status_indicator)
-
-        layout.addWidget(self.info_frame)
 
         # Empty state
         self.empty_state = create_empty_state_widget(
@@ -151,15 +129,12 @@ class AnalyzePanel(QWidget):
         self.empty_state.setVisible(False)
         layout.addWidget(self.empty_state)
 
-        # Status frame (error messages)
+        # Status frame (mantingut per backward compat, sempre amagat)
         self.status_frame = QFrame()
         self.status_frame.setVisible(False)
         status_layout = QVBoxLayout(self.status_frame)
-        status_layout.setContentsMargins(12, 8, 12, 8)
         self.status_label = QLabel()
-        self.status_label.setWordWrap(True)
         status_layout.addWidget(self.status_label)
-        layout.addWidget(self.status_frame)
 
         # === PROGRESS ===
         self.progress_frame = QFrame()
@@ -179,20 +154,38 @@ class AnalyzePanel(QWidget):
         results_layout.setContentsMargins(0, 0, 0, 0)
         results_layout.setSpacing(8)
 
-        # === LEGEND BAR ===
-        legend_frame = QFrame()
-        legend_frame.setStyleSheet("QFrame { background-color: #f8f9fa; border-radius: 4px; }")
-        legend_layout = QHBoxLayout(legend_frame)
-        legend_layout.setContentsMargins(12, 6, 12, 6)
-        legend = QLabel(
-            "<span style='color:#27AE60'>●</span> OK &nbsp;"
-            "<span style='color:#F39C12'>●</span> Warning &nbsp;"
-            "<span style='color:#E74C3C'>●</span> Error &nbsp;&nbsp;|&nbsp;&nbsp;"
-            "<span style='color:#666; font-size:10px;'>Doble-clic = detall complet</span>"
+        # === F0: SELECTOR BAR (primer element — filtra taula + gràfics) ===
+        sel_frame = QFrame()
+        sel_frame.setStyleSheet(
+            "QFrame { background: #fff; border: 1px solid #e0e0e0;"
+            " border-radius: 6px; }"
         )
-        legend.setStyleSheet("color: #666;")
-        legend_layout.addWidget(legend)
-        legend_layout.addStretch()
+        sel_layout = QHBoxLayout(sel_frame)
+        sel_layout.setContentsMargins(10, 6, 10, 6)
+        sel_layout.setSpacing(6)
+
+        self._cat_buttons = {}
+        self._cat_counts = {}
+        self._sample_checkboxes = []
+
+        for cat_key, label, color, checked in [
+            ("sample", "Mostres", "#2E86AB", True),
+            ("blank", "Blancs", "#95a5a6", False),
+            ("control", "Control", "#888", False),
+            ("khp", "KHP", "#1565C0", False),
+        ]:
+            btn = QPushButton(label)
+            btn.setCheckable(True)
+            btn.setChecked(checked)
+            btn.clicked.connect(self._on_cat_toggle)
+            self._cat_buttons[cat_key] = btn
+            sel_layout.addWidget(btn)
+
+        self._update_cat_btn_styles()
+
+        sel_layout.addWidget(QLabel(
+            "<span style='color:#ccc'>|</span>"
+        ))
 
         # Botons agrupació (toggle)
         self._group_mode = 0  # 0=injecció, 1=tipus
@@ -203,20 +196,28 @@ class AnalyzePanel(QWidget):
             btn.setChecked(i == 0)
             btn.clicked.connect(lambda _checked, idx=i: self._on_group_btn(idx))
             self._group_btns.append(btn)
-            legend_layout.addWidget(btn)
+            sel_layout.addWidget(btn)
         self._style_group_btns()
 
-        # Botó Generar Report PDF (amagat per SEQ_CAL)
-        self.report_btn = QPushButton("Generar Report PDF")
-        self.report_btn.setStyleSheet(
-            "QPushButton { background-color: #2E86AB; color: white; "
-            "font-weight: bold; padding: 4px 14px; border-radius: 4px; }"
-            "QPushButton:hover { background-color: #1A5276; }"
-        )
-        self.report_btn.clicked.connect(self._generate_report)
-        legend_layout.addWidget(self.report_btn)
+        sel_layout.addWidget(QLabel(
+            "<span style='color:#ccc'>|</span>"
+        ))
 
-        results_layout.addWidget(legend_frame)
+        sel_layout.addWidget(QLabel(
+            "<b style='font-size:11px;color:#555'>DAD:</b>"
+        ))
+        self._wl_combo = QComboBox()
+        self._wl_combo.setStyleSheet(
+            "QComboBox { font-size: 11px; padding: 2px 6px;"
+            " border: 1px solid #ccc; border-radius: 3px; }"
+        )
+        for wl in ["254", "220", "252", "272", "290", "362"]:
+            self._wl_combo.addItem(f"A{wl}", wl)
+        self._wl_combo.currentIndexChanged.connect(self._on_wl_changed)
+        sel_layout.addWidget(self._wl_combo)
+
+        sel_layout.addStretch()
+        results_layout.addWidget(sel_frame)
 
         # === UNIFIED TABLE ===
         self.results_table = QTableWidget()
@@ -226,6 +227,7 @@ class AnalyzePanel(QWidget):
             "A_UIB", "ppm_U", "SNR", "A_254", "SNR_254",
             "R²_DOC", "R²_DAD", "HCI", "Estat"
         ])
+        self.results_table.setMinimumHeight(180)
         configure_table_style(self.results_table)
         self._configure_unified_columns()
         results_layout.addWidget(self.results_table)
@@ -236,8 +238,8 @@ class AnalyzePanel(QWidget):
 
         layout.addWidget(self.results_frame, 1)
 
-        # === CHARTS SECTION (collapsible) ===
-        self._charts_visible = False
+        # === CHARTS SECTION (sempre visible, sense collapsible) ===
+        self._charts_visible = True
         self._charts_initialized = False
         self.charts_section = QFrame()
         self.charts_section.setVisible(False)
@@ -245,126 +247,62 @@ class AnalyzePanel(QWidget):
         charts_outer.setContentsMargins(0, 8, 0, 0)
         charts_outer.setSpacing(4)
 
-        # Toggle header
-        charts_header = QFrame()
-        charts_header.setStyleSheet(
-            "QFrame { background: #EBF5FB; border: 1px solid #AED6F1;"
-            " border-radius: 4px; }"
-        )
-        charts_header_layout = QHBoxLayout(charts_header)
-        charts_header_layout.setContentsMargins(12, 6, 12, 6)
-
-        self._charts_toggle_btn = QPushButton("Resum Visual")
-        self._charts_toggle_btn.setCheckable(True)
-        self._charts_toggle_btn.setChecked(False)
-        self._charts_toggle_btn.setStyleSheet(
-            "QPushButton { background: transparent; border: none;"
-            " font-weight: bold; font-size: 11px; color: #2E86AB;"
-            " text-align: left; padding: 2px 0; }"
-        )
-        self._charts_toggle_btn.clicked.connect(self._on_charts_toggle)
-        charts_header_layout.addWidget(self._charts_toggle_btn)
-        charts_header_layout.addStretch()
-
-        charts_outer.addWidget(charts_header)
-
-        # Charts content (toggled)
+        # Charts content (sempre visible)
         self._charts_content = QWidget()
-        self._charts_content.setVisible(False)
+        self._charts_content.setVisible(True)
         self._charts_content_layout = QVBoxLayout(self._charts_content)
         self._charts_content_layout.setContentsMargins(0, 4, 0, 0)
         self._charts_content_layout.setSpacing(4)
 
         if HAS_MATPLOTLIB:
-            # Category toggle buttons
-            sel_frame = QFrame()
-            sel_frame.setStyleSheet(
-                "QFrame { background: #fff; border: 1px solid #e0e0e0;"
-                " border-radius: 6px; }"
+            # F1+F2: DOC stacked + DOC overlay (costat)
+            doc_row = QHBoxLayout()
+            doc_row.setSpacing(4)
+
+            self.doc_figure = Figure(figsize=(5, 3), dpi=100)
+            self.doc_figure.set_facecolor("#FAFAFA")
+            self.doc_canvas = FigureCanvas(self.doc_figure)
+            self.doc_canvas.setMinimumHeight(180)
+            doc_row.addWidget(self.doc_canvas)
+
+            self.doc_overlay_figure = Figure(figsize=(5, 3), dpi=100)
+            self.doc_overlay_figure.set_facecolor("#FAFAFA")
+            self.doc_overlay_canvas = FigureCanvas(self.doc_overlay_figure)
+            self.doc_overlay_canvas.setMinimumHeight(200)
+            doc_row.addWidget(self.doc_overlay_canvas)
+
+            self._charts_content_layout.addLayout(doc_row)
+
+            # F3+F4: DAD stacked + DAD overlay (costat)
+            dad_row = QHBoxLayout()
+            dad_row.setSpacing(4)
+
+            self.dad_figure = Figure(figsize=(5, 2.5), dpi=100)
+            self.dad_figure.set_facecolor("#FAFAFA")
+            self.dad_canvas = FigureCanvas(self.dad_figure)
+            self.dad_canvas.setMinimumHeight(150)
+            dad_row.addWidget(self.dad_canvas)
+
+            self.dad_overlay_figure = Figure(figsize=(5, 3), dpi=100)
+            self.dad_overlay_figure.set_facecolor("#FAFAFA")
+            self.dad_overlay_canvas = FigureCanvas(self.dad_overlay_figure)
+            self.dad_overlay_canvas.setMinimumHeight(200)
+            dad_row.addWidget(self.dad_overlay_canvas)
+
+            self._charts_content_layout.addLayout(dad_row)
+
+            # F5: Timeout timeline (full width, al final)
+            timeout_label = QLabel(
+                "<b style='color:#555; font-size:11px;'>"
+                "Distribució de timeouts TOC per mostra</b>"
             )
-            sel_layout = QHBoxLayout(sel_frame)
-            sel_layout.setContentsMargins(10, 6, 10, 6)
-            sel_layout.setSpacing(6)
-
-            sel_layout.addWidget(QLabel(
-                "<b style='font-size:11px;color:#555'>Visualitzar:</b>"
-            ))
-
-            self._cat_buttons = {}
-            self._cat_counts = {}
-            self._sample_checkboxes = []
-
-            for cat_key, label, color, checked in [
-                ("sample", "Mostres", "#2E86AB", True),
-                ("light", "Blancs/Control", "#888", False),
-                ("khp", "KHP", "#1565C0", False),
-            ]:
-                btn = QPushButton(label)
-                btn.setCheckable(True)
-                btn.setChecked(checked)
-                btn.clicked.connect(self._on_cat_toggle)
-                self._cat_buttons[cat_key] = btn
-                sel_layout.addWidget(btn)
-
-            self._update_cat_btn_styles()
-
-            # Separator
-            sel_layout.addWidget(QLabel(
-                "<span style='color:#ccc'>|</span>"
-            ))
-
-            # Wavelength selector for DAD charts
-            sel_layout.addWidget(QLabel(
-                "<b style='font-size:11px;color:#555'>DAD:</b>"
-            ))
-            self._wl_combo = QComboBox()
-            self._wl_combo.setStyleSheet(
-                "QComboBox { font-size: 11px; padding: 2px 6px;"
-                " border: 1px solid #ccc; border-radius: 3px; }"
-            )
-            for wl in ["254", "220", "252", "272", "290", "362"]:
-                self._wl_combo.addItem(f"A{wl}", wl)
-            self._wl_combo.currentIndexChanged.connect(self._on_wl_changed)
-            sel_layout.addWidget(self._wl_combo)
-
-            sel_layout.addStretch()
-            self._charts_content_layout.addWidget(sel_frame)
-
-            # Timeout timeline
+            self._charts_content_layout.addWidget(timeout_label)
             self.timeout_figure = Figure(figsize=(10, 1.2), dpi=100)
             self.timeout_figure.set_facecolor("#FAFAFA")
             self.timeout_canvas = FigureCanvas(self.timeout_figure)
             self.timeout_canvas.setMinimumHeight(80)
             self.timeout_canvas.setMaximumHeight(100)
             self._charts_content_layout.addWidget(self.timeout_canvas)
-
-            # DOC stacked bar
-            self.doc_figure = Figure(figsize=(10, 3.5), dpi=100)
-            self.doc_figure.set_facecolor("#FAFAFA")
-            self.doc_canvas = FigureCanvas(self.doc_figure)
-            self.doc_canvas.setMinimumHeight(220)
-            self._charts_content_layout.addWidget(self.doc_canvas)
-
-            # DOC overlay (chromatograms)
-            self.doc_overlay_figure = Figure(figsize=(10, 4), dpi=100)
-            self.doc_overlay_figure.set_facecolor("#FAFAFA")
-            self.doc_overlay_canvas = FigureCanvas(self.doc_overlay_figure)
-            self.doc_overlay_canvas.setMinimumHeight(250)
-            self._charts_content_layout.addWidget(self.doc_overlay_canvas)
-
-            # A254 bar
-            self.dad_figure = Figure(figsize=(10, 2.5), dpi=100)
-            self.dad_figure.set_facecolor("#FAFAFA")
-            self.dad_canvas = FigureCanvas(self.dad_figure)
-            self.dad_canvas.setMinimumHeight(180)
-            self._charts_content_layout.addWidget(self.dad_canvas)
-
-            # DAD overlay (254nm chromatograms)
-            self.dad_overlay_figure = Figure(figsize=(10, 4), dpi=100)
-            self.dad_overlay_figure.set_facecolor("#FAFAFA")
-            self.dad_overlay_canvas = FigureCanvas(self.dad_overlay_figure)
-            self.dad_overlay_canvas.setMinimumHeight(250)
-            self._charts_content_layout.addWidget(self.dad_overlay_canvas)
 
         charts_outer.addWidget(self._charts_content)
         layout.addWidget(self.charts_section)
@@ -403,7 +341,8 @@ class AnalyzePanel(QWidget):
         self._sample_row_map = {}
         self._status_initialized = False
         self._chart_regular = {}
-        self._chart_light = {}
+        self._chart_blank = {}
+        self._chart_control = {}
         self._chart_khp = {}
         self._chart_is_bp = False
         self._charts_initialized = False
@@ -417,8 +356,7 @@ class AnalyzePanel(QWidget):
         self.progress_bar.setValue(0)
         self.results_frame.setVisible(False)
         self.charts_section.setVisible(False)
-        self._charts_content.setVisible(False)
-        self._charts_toggle_btn.setChecked(False)
+        self._charts_content.setVisible(True)
         self.analyze_btn.setEnabled(True)
         self.status_indicator.setText("")
 
@@ -464,7 +402,7 @@ class AnalyzePanel(QWidget):
             return
 
         self.empty_state.setVisible(False)
-        self.info_frame.setVisible(True)
+        self.info_frame.setVisible(False)
         self.status_frame.setVisible(False)
 
         # Use analyzed sample count if available, else imported injections
@@ -731,10 +669,28 @@ class AnalyzePanel(QWidget):
     # ------------------------------------------------------------------
 
     def _populate_table(self):
-        """Omple la taula unificada amb els resultats (13 cols, selectors DOC/DAD independents)."""
+        """Omple la taula unificada amb els resultats (13 cols, selectors DOC/DAD independents).
+
+        Filtra per F0 toggles:
+        - Mostres (SAMPLE, PR): sempre visibles
+        - Control (BLANK, CONTROL): segueix toggle "Control"
+        - KHP: segueix toggle "KHP" (amagat per SEQ_CAL)
+        """
         self.results_table.setRowCount(0)
         self._sample_row_map = {}
         n_ok, n_warning, n_error, n_light, n_khp, n_blank = 0, 0, 0, 0, 0, 0
+
+        # F0 toggle state
+        show_blank = (hasattr(self, '_cat_buttons')
+                      and self._cat_buttons.get("blank")
+                      and self._cat_buttons["blank"].isChecked())
+        show_control = (hasattr(self, '_cat_buttons')
+                        and self._cat_buttons.get("control")
+                        and self._cat_buttons["control"].isChecked())
+        show_khp = (hasattr(self, '_cat_buttons')
+                    and self._cat_buttons.get("khp")
+                    and self._cat_buttons["khp"].isChecked())
+        is_seq_cal = getattr(self.main_window, '_is_seq_cal', False)
 
         # Separar mostres per tipologia
         sample_names = []   # SAMPLE (mostres reals)
@@ -778,13 +734,11 @@ class AnalyzePanel(QWidget):
                 self._type_groups.append(("MOSTRES", sample_names))
             if pr_names:
                 self._type_groups.append(("PATRONS REFERÈNCIA", pr_names))
-            if blank_names:
-                self._type_groups.append(("BLANCS / MQ", blank_names))
             for _, names in self._type_groups:
                 regular_names.extend(names)
         else:
             # "Ordre injecció": tot barrejat per injection_index
-            regular_names = sample_names + pr_names + blank_names
+            regular_names = sample_names + pr_names
             self._type_groups = None
 
         # --- Regular samples ---
@@ -1009,12 +963,8 @@ class AnalyzePanel(QWidget):
             else:
                 n_ok += 1
 
-        # --- Separator + KHP STANDARDS ---
-        # Per SEQ_CAL, la taula de regressió superior ja mostra tota la info KHP
-        cal_data = self.main_window.calibration_data or {}
-        is_seq_cal = cal_data.get('is_seq_cal', False)
-
-        if khp_names and not is_seq_cal:
+        # --- Separator + KHP STANDARDS (only if toggle active and not SEQ_CAL) ---
+        if khp_names and show_khp and not is_seq_cal:
             n_cols = self.results_table.columnCount()
 
             # Títol separator
@@ -1122,8 +1072,100 @@ class AnalyzePanel(QWidget):
 
                 n_khp += 1
 
-        # --- Separator + Light samples (CONTROL) ---
-        if light_names:
+        # --- Separator + BLANCS (MQ, H2O...) — only if toggle active ---
+        if blank_names and show_blank:
+            n_cols = self.results_table.columnCount()
+
+            sep_row = self.results_table.rowCount()
+            self.results_table.insertRow(sep_row)
+            sep_item = QTableWidgetItem("--- BLANCS / MQ ---")
+            sep_item.setFlags(Qt.ItemIsEnabled)
+            sep_font = QFont()
+            sep_font.setBold(True)
+            sep_item.setFont(sep_font)
+            sep_item.setForeground(QBrush(QColor("#7f8c8d")))
+            self.results_table.setItem(sep_row, 0, sep_item)
+            self.results_table.setSpan(sep_row, 0, 1, n_cols)
+            sep_bg = QBrush(QColor("#EAECEE"))
+            for c in range(n_cols):
+                item = self.results_table.item(sep_row, c)
+                if item is None:
+                    item = QTableWidgetItem("")
+                    self.results_table.setItem(sep_row, c, item)
+                item.setBackground(sep_bg)
+
+            for sample_name in blank_names:
+                sample_data = self.samples_grouped[sample_name]
+                row = self.results_table.rowCount()
+                self.results_table.insertRow(row)
+                self._sample_row_map[sample_name] = row
+
+                replicas = sample_data.get("replicas") or {}
+                comparison = sample_data.get("comparison") or {}
+                recommendation = sample_data.get("recommendation") or {}
+                selected = sample_data.get("selected") or {"doc": "1", "dad": "1"}
+                quantification = sample_data.get("quantification") or {}
+
+                doc_sel = selected.get("doc", sorted(replicas.keys())[0] if replicas else "1")
+                dad_sel = selected.get("dad", doc_sel)
+                doc_rep = replicas.get(doc_sel, {})
+                dad_rep = replicas.get(dad_sel, {})
+
+                # Col 0: Sample name
+                item_name = QTableWidgetItem(sample_name)
+                item_name.setData(Qt.UserRole, sample_name)
+                self.results_table.setItem(row, 0, item_name)
+
+                # Col 1-2: No selectors for blancs
+                self.results_table.setItem(row, 1, QTableWidgetItem("-"))
+                self.results_table.setItem(row, 2, QTableWidgetItem("-"))
+
+                # Col 3: A_DOC
+                areas = doc_rep.get("areas") or {}
+                doc_areas = areas.get("DOC") or {}
+                area_direct = doc_areas.get("total", 0) or doc_rep.get("area_total", 0)
+                self.results_table.setItem(row, 3, QTableWidgetItem(
+                    f"{area_direct:.0f}" if area_direct else "-"))
+
+                # Col 4: ppm
+                ppm = quantification.get("concentration_ppm")
+                self.results_table.setItem(row, 4, QTableWidgetItem(
+                    f"{ppm:.2f}" if ppm else "-"))
+
+                # Col 5-6: UIB
+                for c in (5, 6):
+                    self.results_table.setItem(row, c, QTableWidgetItem("-"))
+
+                # Col 7: SNR
+                snr_info = doc_rep.get("snr_info") or {}
+                snr = snr_info.get("snr_direct", 0) or doc_rep.get("snr", 0)
+                snr_item = QTableWidgetItem(f"{snr:.0f}" if snr else "-")
+                if snr and snr < 10:
+                    snr_item.setForeground(QBrush(QColor(COLOR_ERROR)))
+                elif snr and snr < 50:
+                    snr_item.setForeground(QBrush(QColor(COLOR_WARNING)))
+                self.results_table.setItem(row, 7, snr_item)
+
+                # Col 8-12: No DAD, no R², no HCI
+                for c in (8, 9, 10, 11, 12):
+                    self.results_table.setItem(row, c, QTableWidgetItem("-"))
+
+                # Col 13: Tipus
+                type_item = QTableWidgetItem("Blanc")
+                type_item.setForeground(QBrush(QColor("#7f8c8d")))
+                self.results_table.setItem(row, 13, type_item)
+
+                # Light grey background
+                blank_bg = QBrush(QColor("#F4F6F6"))
+                for c in range(n_cols):
+                    item = self.results_table.item(row, c)
+                    if item:
+                        item.setBackground(blank_bg)
+
+                n_blank += 1
+
+        # --- Separator + Light samples (CONTROL) — only if toggle active ---
+        if light_names and show_control:
             n_cols = self.results_table.columnCount()
             sep_row = self.results_table.rowCount()
             self.results_table.insertRow(sep_row)
@@ -1297,11 +1339,19 @@ class AnalyzePanel(QWidget):
         # Repairable indicator
         can_repair = (sample_data and sample_data.get("repairable")
                       and not sample_data.get("repaired"))
-        repair_icon = " \u21bb" if can_repair else ""
+        repair_icon = " 🔧" if can_repair else ""
 
         if has_blocker:
             status_color = COLOR_ERROR
-            status_text = (f"{n_blocker} crític" if n_blocker == 1 else f"{n_blocker} crítics") + repair_icon
+            # Mostrar motiu concret del primer blocker
+            first_blocker = classified["blocker"][0]
+            b_code = first_blocker.get("code") if isinstance(first_blocker, dict) else str(first_blocker)
+            b_entry = ANOMALY_CATALOG.get(b_code, {})
+            b_label = b_entry.get("label", b_code)
+            if n_blocker == 1:
+                status_text = b_label + repair_icon
+            else:
+                status_text = f"{b_label} +{n_blocker - 1}" + repair_icon
         elif has_warn or n_repaired:
             status_color = COLOR_WARNING
             parts = []
@@ -1695,7 +1745,7 @@ class AnalyzePanel(QWidget):
     # ------------------------------------------------------------------
 
     def _generate_report(self):
-        """Genera el report PDF d'anàlisi."""
+        """Genera el report PDF d'anàlisi (cridat des del wizard header)."""
         processed_data = self.main_window.processed_data
         if not processed_data:
             QMessageBox.warning(self, "Avís", "No hi ha dades processades.")
@@ -1707,9 +1757,6 @@ class AnalyzePanel(QWidget):
             return
 
         try:
-            self.report_btn.setEnabled(False)
-            self.report_btn.setText("Generant...")
-
             from generate_analysis_report import generate_analysis_report
 
             # Passar dades en memòria (inclou seleccions actuals de l'usuari)
@@ -1719,9 +1766,6 @@ class AnalyzePanel(QWidget):
             result = generate_analysis_report(
                 seq_path, analysis_data=report_data
             )
-
-            self.report_btn.setEnabled(True)
-            self.report_btn.setText("Generar Report PDF")
 
             if result:
                 QMessageBox.information(
@@ -1739,8 +1783,6 @@ class AnalyzePanel(QWidget):
         except Exception as e:
             import traceback
             traceback.print_exc()
-            self.report_btn.setEnabled(True)
-            self.report_btn.setText("Generar Report PDF")
             QMessageBox.critical(
                 self, "Error",
                 f"Error generant el report:\n{str(e)}"
@@ -1749,16 +1791,6 @@ class AnalyzePanel(QWidget):
     # ------------------------------------------------------------------
     # Charts section (migrated from ReviewSummaryPanel)
     # ------------------------------------------------------------------
-
-    def _on_charts_toggle(self):
-        """Toggle de la secció de gràfics."""
-        show = self._charts_toggle_btn.isChecked()
-        self._charts_content.setVisible(show)
-        arrow = "\u25bc" if show else "\u25b6"
-        self._charts_toggle_btn.setText(f"{arrow} Resum Visual")
-        if show and not self._charts_initialized:
-            self._charts_initialized = True
-            self._redraw_charts()
 
     def _populate_charts(self, processed_data):
         """Prepara dades pels gràfics i mostra la secció."""
@@ -1770,19 +1802,23 @@ class AnalyzePanel(QWidget):
         is_bp = method.upper() == "BP"
 
         regular = {}
-        light = {}
+        blank = {}
+        control = {}
         khp = {}
         for name, data in samples_grouped.items():
             if data.get("analysis_type") == "khp":
                 khp[name] = data
-            elif (data.get("analysis_type") == "light"
-                  or data.get("sample_type") in ("BLANK", "CONTROL")):
-                light[name] = data
+            elif data.get("sample_type") == "BLANK":
+                blank[name] = data
+            elif (data.get("sample_type") == "CONTROL"
+                  or data.get("analysis_type") == "light"):
+                control[name] = data
             else:
                 regular[name] = data
 
         self._chart_regular = regular
-        self._chart_light = light
+        self._chart_blank = blank
+        self._chart_control = control
         self._chart_khp = khp
         self._chart_is_bp = is_bp
 
@@ -1791,27 +1827,29 @@ class AnalyzePanel(QWidget):
         except Exception as e:
             logger.error(f"Error plotting timeout chart: {e}")
 
-        self._build_sample_checkboxes(regular, light, khp)
+        self._build_sample_checkboxes(regular, blank, control, khp)
         self.charts_section.setVisible(True)
-        self._charts_toggle_btn.setText("\u25b6 Resum Visual")
 
-        if self._charts_toggle_btn.isChecked():
-            self._charts_initialized = True
-            self._redraw_charts()
+        # Charts sempre visibles — dibuixar directament
+        self._charts_initialized = True
+        self._redraw_charts()
 
-    def _build_sample_checkboxes(self, regular, light, khp):
+    def _build_sample_checkboxes(self, regular, blank, control, khp):
         """Registra mostres per categoria (sense checkboxes individuals)."""
         self._sample_checkboxes = []
         for name in sorted(regular.keys()):
             self._sample_checkboxes.append((None, name, "sample"))
-        for name in sorted(light.keys()):
-            self._sample_checkboxes.append((None, name, "light"))
+        for name in sorted(blank.keys()):
+            self._sample_checkboxes.append((None, name, "blank"))
+        for name in sorted(control.keys()):
+            self._sample_checkboxes.append((None, name, "control"))
         for name in sorted(khp.keys()):
             self._sample_checkboxes.append((None, name, "khp"))
 
         self._cat_counts = {
             "sample": len(regular),
-            "light": len(light),
+            "blank": len(blank),
+            "control": len(control),
             "khp": len(khp),
         }
         self._update_cat_btn_styles()
@@ -1822,7 +1860,8 @@ class AnalyzePanel(QWidget):
             return
         STYLES = {
             "sample":  ("#2E86AB", "#fff"),
-            "light":   ("#888",    "#fff"),
+            "blank":   ("#95a5a6", "#fff"),
+            "control": ("#888",    "#fff"),
             "khp":     ("#1565C0", "#fff"),
         }
         for cat_key, btn in self._cat_buttons.items():
@@ -1846,8 +1885,10 @@ class AnalyzePanel(QWidget):
                 )
 
     def _on_cat_toggle(self):
-        """Un botó de categoria ha canviat."""
+        """Un botó de categoria ha canviat — actualitza taula i gràfics."""
         self._update_cat_btn_styles()
+        if self.samples_grouped:
+            self._populate_table()
         self._redraw_charts()
 
     def _on_wl_changed(self):
@@ -1855,11 +1896,11 @@ class AnalyzePanel(QWidget):
         if self._charts_initialized:
             checked = self._get_checked_samples()
             reg = {k: v for k, v in checked.items()
-                   if v.get("analysis_type") not in ("light",)
-                   and v.get("sample_type") not in ("BLANK", "CONTROL")}
+                   if v.get("sample_type") not in ("BLANK", "CONTROL")
+                   and v.get("analysis_type") not in ("light",)}
             light = {k: v for k, v in checked.items()
-                     if v.get("analysis_type") == "light"
-                     or v.get("sample_type") in ("BLANK", "CONTROL")}
+                     if v.get("sample_type") in ("BLANK", "CONTROL")
+                     or v.get("analysis_type") == "light"}
             try:
                 self._plot_dad_chart(reg, light)
                 self._plot_dad_overlay(reg, light)
@@ -1876,7 +1917,8 @@ class AnalyzePanel(QWidget):
         """Retorna dict {name: data} de mostres de categories actives."""
         all_data = {}
         all_data.update(self._chart_regular)
-        all_data.update(self._chart_light)
+        all_data.update(self._chart_blank)
+        all_data.update(self._chart_control)
         all_data.update(getattr(self, '_chart_khp', {}))
 
         active_cats = {cat for cat, btn in self._cat_buttons.items() if btn.isChecked()}
@@ -1892,11 +1934,11 @@ class AnalyzePanel(QWidget):
             return
         checked = self._get_checked_samples()
         reg = {k: v for k, v in checked.items()
-               if v.get("analysis_type") not in ("light",)
-               and v.get("sample_type") not in ("BLANK", "CONTROL")}
+               if v.get("sample_type") not in ("BLANK", "CONTROL")
+               and v.get("analysis_type") not in ("light",)}
         light = {k: v for k, v in checked.items()
-                 if v.get("analysis_type") == "light"
-                 or v.get("sample_type") in ("BLANK", "CONTROL")}
+                 if v.get("sample_type") in ("BLANK", "CONTROL")
+                 or v.get("analysis_type") == "light"}
         is_bp = getattr(self, '_chart_is_bp', False)
         try:
             self._plot_doc_chart(reg, light, is_bp)
@@ -2116,6 +2158,19 @@ class AnalyzePanel(QWidget):
         self.dad_figure.tight_layout()
         self.dad_canvas.draw()
 
+    @staticmethod
+    def _get_line_style(data):
+        """Retorna l'estil de línia segons el tipus de mostra."""
+        st = data.get("sample_type", "SAMPLE")
+        at = data.get("analysis_type", "")
+        if at == "khp":
+            return '--'  # KHP: discontínua
+        elif st == "BLANK" or at == "light":
+            return ':'   # Blanc/Control: punts
+        elif st.startswith("PR") or st == "CONTROL":
+            return '-.'  # PR/Control: punt-ratlla
+        return '-'       # Mostres: sòlida
+
     def _plot_doc_overlay(self, regular, light, is_bp):
         """Cromatogrames DOC superposats."""
         self.doc_overlay_figure.clear()
@@ -2140,9 +2195,12 @@ class AnalyzePanel(QWidget):
             rep = (data.get("replicas") or {}).get(sel, {})
             t = rep.get("t_doc")
             y = rep.get("y_doc_net")
+            ls = self._get_line_style(data)
             if t is not None and y is not None and len(t) > 0:
-                ax.plot(t, y, label=name, linewidth=0.8, alpha=0.7, color=cmap(i))
+                ax.plot(t, y, label=name, linewidth=1.4, alpha=0.7,
+                        color=cmap(i), linestyle=ls)
 
+        ax.set_xlim(0, 12 if is_bp else 70)
         ax.set_xlabel("Temps (min)", fontsize=9)
         ax.set_ylabel("DOC (ppb)", fontsize=9)
         ax.set_title("Cromatogrames DOC superposats", fontsize=10, fontweight='bold')
@@ -2182,6 +2240,8 @@ class AnalyzePanel(QWidget):
         n = len(all_samples)
         cmap = cm.get_cmap('tab20', max(n, 1))
 
+        is_bp = getattr(self, '_chart_is_bp', False)
+
         for i, (name, data) in enumerate(sorted(all_samples.items())):
             selected = data.get("selected") or {}
             sel = selected.get("dad", selected.get("doc", "1"))
@@ -2206,10 +2266,12 @@ class AnalyzePanel(QWidget):
                     wl_col = c
                     break
 
+            ls = self._get_line_style(data)
             if t_col is not None and wl_col is not None:
                 ax.plot(df_dad[t_col], df_dad[wl_col], label=name,
-                        linewidth=0.8, alpha=0.7, color=cmap(i))
+                        linewidth=1.4, alpha=0.7, color=cmap(i), linestyle=ls)
 
+        ax.set_xlim(0, 12 if is_bp else 70)
         ax.set_xlabel("Temps (min)", fontsize=9)
         ax.set_ylabel(f"A{wl} (mAU)", fontsize=9)
         ax.set_title(f"Cromatogrames A{wl} superposats", fontsize=10, fontweight='bold')

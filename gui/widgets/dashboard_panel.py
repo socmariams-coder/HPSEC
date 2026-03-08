@@ -1157,91 +1157,106 @@ class DashboardPanel(QWidget):
         self._open_in_wizard(seq)
 
     def _edit_notes_popup(self, row, seq: SequenceState):
-        """Obre un diàleg per editar les notes i veure observacions dels JSON."""
-        from PySide6.QtWidgets import (
-            QDialog, QVBoxLayout, QHBoxLayout, QTextEdit, QDialogButtonBox,
-            QLabel, QGroupBox, QScrollArea
-        )
+        """Obre un diàleg per editar les notes (observacions JSON + notes manuals)."""
+        import json as _json
+        from PySide6.QtWidgets import QDialog, QTextEdit
+
+        seq_path = seq.source_path
+        if not seq_path:
+            QMessageBox.warning(self, "Error", "No s'ha pogut trobar el path de la seqüència.")
+            return
+
+        data_path = Path(seq_path) / "CHECK" / "data"
+
+        # Carregar observacions dels JSONs
+        obs_lines = []
+        json_files = {
+            "Importar": "import_manifest.json",
+            "Verificar": "calibration_result.json",
+            "Analitzar": "analysis_result.json",
+        }
+        for stage_label, filename in json_files.items():
+            json_file = data_path / filename
+            if json_file.exists():
+                try:
+                    with open(json_file, 'r', encoding='utf-8') as f:
+                        data = _json.load(f)
+                    for n in data.get("user_notes", []):
+                        ts = n.get("timestamp", "")[:16].replace("T", " ")
+                        reviewer = n.get("reviewer", "?")
+                        text = n.get("note", "")
+                        obs_lines.append(f"[{stage_label}] {ts} ({reviewer}): {text}")
+                except Exception:
+                    pass
+
+        # Carregar notes generals
+        notes_file = data_path / "user_notes.json"
+        existing_notes_text = ""
+        if notes_file.exists():
+            try:
+                with open(notes_file, 'r', encoding='utf-8') as f:
+                    notes_data = _json.load(f)
+                for n in notes_data.get("notes", []):
+                    ts = n.get("timestamp", "")[:16].replace("T", " ")
+                    reviewer = n.get("reviewer", "?")
+                    text = n.get("note", "")
+                    existing_notes_text += f"[{ts}] ({reviewer}) {text}\n"
+            except Exception:
+                pass
 
         dialog = QDialog(self)
-        dialog.setWindowTitle(f"Notes i Observacions - {seq.seq_name}")
-        dialog.setMinimumSize(550, 400)
+        dialog.setWindowTitle(f"Notes — {seq.seq_name}")
+        dialog.setMinimumWidth(500)
+        dialog.setMinimumHeight(400)
+        dialog.setModal(True)
+        dl = QVBoxLayout(dialog)
 
-        layout = QVBoxLayout(dialog)
+        if obs_lines:
+            dl.addWidget(QLabel("<b>Observacions (dels JSON):</b>"))
+            obs_text = QTextEdit()
+            obs_text.setReadOnly(True)
+            obs_text.setPlainText("\n".join(obs_lines))
+            obs_text.setMaximumHeight(150)
+            dl.addWidget(obs_text)
 
-        # === SECCIÓ 1: Notes dels JSON (warnings, anomalies, etc.) ===
-        json_notes = seq.dashboard_notes
+        dl.addWidget(QLabel("<b>Notes manuals:</b>"))
+        notes_edit = QTextEdit()
+        notes_edit.setPlainText(existing_notes_text)
+        notes_edit.setPlaceholderText("Escriu notes aquí...")
+        dl.addWidget(notes_edit, 1)
 
-        if json_notes:
-            obs_group = QGroupBox("Observacions de processament")
-            obs_layout = QVBoxLayout(obs_group)
-            obs_layout.setSpacing(4)
+        btn_layout = QHBoxLayout()
+        btn_cancel = QPushButton("Tancar")
+        btn_cancel.clicked.connect(dialog.reject)
+        btn_layout.addWidget(btn_cancel)
+        btn_layout.addStretch()
+        btn_save = QPushButton("Guardar")
+        btn_save.setStyleSheet(
+            "QPushButton { background: #3498DB; color: white; border: none; "
+            "border-radius: 4px; padding: 6px 16px; font-weight: bold; }"
+        )
+        btn_layout.addWidget(btn_save)
+        dl.addLayout(btn_layout)
 
-            for note in json_notes:
-                note_frame = QLabel()
-                stage = note.get("stage", "?")
-                reviewer = note.get("reviewer", "")
-                content = note.get("content", "")
-                date = note.get("date", "")[:10] if note.get("date") else ""
+        def _save():
+            text = notes_edit.toPlainText().strip()
+            data_path.mkdir(parents=True, exist_ok=True)
+            notes_data = {"notes": []}
+            if text:
+                from datetime import datetime
+                notes_data["notes"].append({
+                    "timestamp": datetime.now().isoformat(),
+                    "reviewer": "dashboard",
+                    "note": text,
+                    "stage": "import",
+                })
+            with open(notes_file, 'w', encoding='utf-8') as f:
+                _json.dump(notes_data, f, indent=2, ensure_ascii=False, default=str)
+            self.main_window.set_status(f"Notes actualitzades: {seq.seq_name}", 3000)
+            dialog.accept()
 
-                html = f"<b>[{stage}]</b> "
-                if reviewer:
-                    html += f"<span style='color:#666;'>({reviewer} {date})</span><br>"
-                html += f"<span style='color:#333;'>{content}</span>"
-                note_frame.setText(html)
-                note_frame.setWordWrap(True)
-                note_frame.setStyleSheet("""
-                    background-color: #FFF8E1;
-                    border: 1px solid #FFE082;
-                    border-radius: 4px;
-                    padding: 8px;
-                    margin: 2px;
-                """)
-                obs_layout.addWidget(note_frame)
-
-            layout.addWidget(obs_group)
-        else:
-            no_obs = QLabel("<i style='color:#888;'>Sense observacions de processament</i>")
-            layout.addWidget(no_obs)
-
-        # === SECCIÓ 2: Notes manuals (editables) ===
-        notes_group = QGroupBox("Notes manuals")
-        notes_layout = QVBoxLayout(notes_group)
-
-        text_edit = QTextEdit()
-        text_edit.setPlaceholderText("Escriu notes sobre aquesta seqüència...")
-        text_edit.setText(seq.notes if seq.notes else "")
-        text_edit.setMinimumHeight(100)
-        notes_layout.addWidget(text_edit)
-
-        layout.addWidget(notes_group)
-
-        # Botons
-        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(dialog.accept)
-        buttons.rejected.connect(dialog.reject)
-        layout.addWidget(buttons)
-
-        if dialog.exec() == QDialog.Accepted:
-            new_notes = text_edit.toPlainText().strip()
-            if seq.save_notes(new_notes):
-                # Actualitzar la cel·la de la taula
-                self.table.blockSignals(True)
-                item_notes = self.table.item(row, COL_NOTES)
-                if item_notes:
-                    # Mostrar només primera línia o resum
-                    preview = new_notes.split('\n')[0][:50]
-                    if len(new_notes) > 50 or '\n' in new_notes:
-                        preview += "..."
-                    item_notes.setText(preview)
-                self.table.blockSignals(False)
-                self.main_window.set_status(f"Notes guardades: {seq.seq_name}", 3000)
-            else:
-                QMessageBox.warning(
-                    self, "Error",
-                    "No s'han pogut guardar les notes.\n"
-                    "Cal importar la seqüència primer."
-                )
+        btn_save.clicked.connect(_save)
+        dialog.exec()
 
     def _open_in_wizard(self, seq: SequenceState):
         """Obre la seqüència al wizard per processar/revisar."""

@@ -411,6 +411,21 @@ class ProcessWizardPanel(QWidget):
         self.note_btn.clicked.connect(self._on_add_note)
         layout.addWidget(self.note_btn)
 
+        # === BOTÓ PDF (visible quan anàlisi completada) ===
+        self.pdf_btn = QPushButton("PDF")
+        self.pdf_btn.setFixedWidth(50)
+        self.pdf_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #2E86AB; color: white; border: none;
+                border-radius: 4px; padding: 6px; font-weight: bold;
+            }
+            QPushButton:hover { background-color: #1A5276; }
+        """)
+        self.pdf_btn.setToolTip("Generar report PDF d'anàlisi")
+        self.pdf_btn.setVisible(False)
+        self.pdf_btn.clicked.connect(self._on_wizard_pdf)
+        layout.addWidget(self.pdf_btn)
+
         layout.addSpacing(8)
 
         # === SECCIÓ NAVEGACIÓ ===
@@ -1412,8 +1427,15 @@ class ProcessWizardPanel(QWidget):
             return []
 
     def _update_warning_bar(self):
-        """Actualitza la barra d'avisos amb la fase activa."""
+        """Actualitza la barra d'avisos amb la fase activa.
+
+        Amaga la barra al tab Analitzar (els avisos d'anàlisi es mostren
+        directament a la taula de resultats).
+        """
         current_idx = self.tab_widget.currentIndex()
+        if current_idx == 2:  # Analitzar
+            self._warning_bar.setVisible(False)
+            return
         warnings = self._get_warnings_list(current_idx)
         self._warning_bar.update_warnings(warnings)
 
@@ -1543,6 +1565,10 @@ class ProcessWizardPanel(QWidget):
         # Pre-carregar dades des de JSON si etapes anteriors ja estan completades
         self._preload_completed_stages(seq_path)
 
+        # Mostrar PDF btn si anàlisi ja completada
+        if self.tab_states[2] in ("ok", "warning"):
+            self.pdf_btn.setVisible(True)
+
         # Anar a primera etapa que necessita atenció (warning o pending)
         # Si tot és "ok", anar a l'última etapa (Exportar)
         first_needs_attention = next(
@@ -1590,6 +1616,7 @@ class ProcessWizardPanel(QWidget):
         self.main_window.processed_data = None
         self.main_window.review_data = None
         self.main_window.review_completed = False
+        self.pdf_btn.setVisible(False)
 
 
 
@@ -1985,11 +2012,17 @@ class ProcessWizardPanel(QWidget):
             if self.tab_states[3] not in ("ok", "warning"):
                 self._set_tab_state(3, "pending")
             self._update_header_for_tab(self.tab_widget.currentIndex())
+            self.pdf_btn.setVisible(True)
         else:
             self._set_tab_state(2, "error")
             self._update_header_for_tab(self.tab_widget.currentIndex())
 
         self._update_warning_bar()
+
+    def _on_wizard_pdf(self):
+        """Delega generació PDF al panell d'anàlisi."""
+        if hasattr(self.analyze_panel, '_generate_report'):
+            self.analyze_panel._generate_report()
 
     def _on_export_completed(self, data):
         """Callback quan l'exportació completa."""

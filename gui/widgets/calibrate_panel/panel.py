@@ -89,6 +89,7 @@ class CalibratePanel(QWidget):
             self.placeholder.setVisible(True)
         if hasattr(self, 'compact_header'):
             self.compact_header.setVisible(False)
+        pass  # Notes gestionades pel wizard header
         if hasattr(self, 'khp_graph'):
             self.khp_graph.clear()
         if hasattr(self, 'replica_graphs'):
@@ -516,6 +517,7 @@ class CalibratePanel(QWidget):
         content_layout.addWidget(self.placeholder)
 
         # === COMPACT HEADER (substitueix summary_group) ===
+        header_row = QHBoxLayout()
         self.compact_header = QLabel()
         self.compact_header.setVisible(False)
         self.compact_header.setWordWrap(True)
@@ -524,12 +526,29 @@ class CalibratePanel(QWidget):
             "QLabel { background-color: #EBF5FB; border: 1px solid #AED6F1; "
             "border-radius: 6px; padding: 10px 14px; font-size: 12px; }"
         )
-        content_layout.addWidget(self.compact_header)
+        header_row.addWidget(self.compact_header, 1)
+
+        # (Notes gestionades pel wizard header — botó 📝)
+
+        content_layout.addLayout(header_row)
 
         # === DELAY DIAGNOSTIC ===
         self._build_delay_diagnostic_section(content_layout)
 
-        # === CHROMATOGRAMS (pujar — era després de recta) ===
+        # === CALIBRATION LINE (primer — referència visual principal) ===
+        self.cal_line_group = QGroupBox("Recta de calibració")
+        self.cal_line_group.setVisible(False)
+        self.cal_line_group.setStyleSheet(
+            "QGroupBox { font-weight: bold; color: #1A5276; border: 2px solid #2E86AB; "
+            "border-radius: 6px; margin-top: 8px; padding-top: 12px; }"
+            "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; }"
+        )
+        cal_line_layout = QVBoxLayout(self.cal_line_group)
+        self.prominent_cal_line_graph = CalibrationLineWidget()
+        cal_line_layout.addWidget(self.prominent_cal_line_graph)
+        content_layout.addWidget(self.cal_line_group)
+
+        # === CHROMATOGRAMS ===
         self.graphs_group = QGroupBox("Cromatogrames KHP")
         self.graphs_group.setVisible(False)
         graphs_layout = QVBoxLayout(self.graphs_group)
@@ -568,25 +587,6 @@ class CalibratePanel(QWidget):
         metrics_layout.addWidget(self.metrics_table)
 
         content_layout.addWidget(self.metrics_group)
-
-        # === CALIBRATION LINE (baixar — era a dalt) ===
-        self.cal_line_group = QGroupBox("Recta de calibració")
-        self.cal_line_group.setVisible(False)
-        self.cal_line_group.setStyleSheet(
-            "QGroupBox { font-weight: bold; color: #1A5276; border: 2px solid #2E86AB; "
-            "border-radius: 6px; margin-top: 8px; padding-top: 12px; }"
-            "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; }"
-        )
-        cal_line_layout = QVBoxLayout(self.cal_line_group)
-        self.prominent_cal_line_graph = CalibrationLineWidget()
-        cal_line_layout.addWidget(self.prominent_cal_line_graph)
-        self.cal_line_seqs_label = QLabel()
-        self.cal_line_seqs_label.setStyleSheet(
-            "color: #555; font-size: 10px; font-style: italic; padding: 2px 4px;"
-        )
-        self.cal_line_seqs_label.setWordWrap(True)
-        cal_line_layout.addWidget(self.cal_line_seqs_label)
-        content_layout.addWidget(self.cal_line_group)
 
         # Alias per backward compat
         self.calibration_line_graph = self.prominent_cal_line_graph
@@ -846,6 +846,7 @@ class CalibratePanel(QWidget):
 
         self.placeholder.setVisible(False)
         self.compact_header.setVisible(True)
+        # (Notes gestionades pel wizard header)
         self.compact_header.setText(
             '<span style="color: #922B21; font-weight: bold;">'
             'Sense KHP v\u00e0lid \u2014 Mode: Defaults'
@@ -957,6 +958,7 @@ class CalibratePanel(QWidget):
 
         self.placeholder.setVisible(False)
         self.compact_header.setVisible(True)
+        # (Notes gestionades pel wizard header)
 
         seq_path = self.main_window.seq_path or ""
         seq_name = os.path.basename(seq_path) if seq_path else "-"
@@ -1714,26 +1716,6 @@ class CalibratePanel(QWidget):
                         fail_pct=config.get('calibration', 'qc_thresholds', 'fail_pct', default=10.0),
                     )
 
-                    # Etiquetes SEQs visibles a la recta
-                    seq_names = []
-                    for cal in filtered_history:
-                        sn = cal.get('seq_name', '')
-                        m = re.search(r'(\d+)', sn)
-                        short = m.group(1) if m else sn
-                        if short and short not in seq_names:
-                            seq_names.append(short)
-                    if seq_names:
-                        current_short = re.search(r'(\d+)', current_seq or '')
-                        current_short = current_short.group(1) if current_short else ''
-                        parts = []
-                        for s in seq_names:
-                            if s == current_short:
-                                parts.append(f"<b>\u25b8{s}\u25c2</b>")
-                            else:
-                                parts.append(s)
-                        self.cal_line_seqs_label.setText(f"SEQs: {', '.join(parts)}")
-                    else:
-                        self.cal_line_seqs_label.setText("")
             except Exception as e:
                 logger.error(f"Error plotant gr\u00e0fic calibraci\u00f3: {e}")
                 import traceback; traceback.print_exc()

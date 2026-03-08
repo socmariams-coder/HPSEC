@@ -119,13 +119,10 @@ class SampleDetailDialog(QDialog):
         if len(self.sample_data.get("replicas", {})) > 1:
             stats_layout.addWidget(self._create_comparison_group())
 
-        # Signal summary (tmax + àrea + SNR)
-        stats_layout.addWidget(self._create_signal_summary_group())
-
-        # Timeouts info
-        timeout_group = self._create_timeout_group()
-        if timeout_group:
-            stats_layout.addWidget(timeout_group)
+        # Timeouts info (línia compacta)
+        timeout_label = self._create_timeout_summary()
+        if timeout_label:
+            stats_layout.addWidget(timeout_label)
 
         # Fractions table (complete, all wavelengths)
         stats_layout.addWidget(self._create_fractions_group())
@@ -522,7 +519,8 @@ class SampleDetailDialog(QDialog):
     # Timeout group
     # ------------------------------------------------------------------
 
-    def _create_timeout_group(self):
+    def _create_timeout_summary(self):
+        """Crea un label compacte de resum de timeouts (sense GroupBox)."""
         selected = self.sample_data.get("selected", {})
         rep_sel = selected.get("doc", "1")
         rep_data = (self.sample_data.get("replicas") or {}).get(rep_sel, {})
@@ -532,50 +530,31 @@ class SampleDetailDialog(QDialog):
         if n_timeouts == 0:
             return None
 
-        group = QGroupBox(f"Timeouts ({n_timeouts})")
-        layout = QVBoxLayout(group)
-
         severity = timeout_info.get("severity", "INFO")
         zones = timeout_info.get("zones", [])
-        durations = timeout_info.get("durations", [])
-
         color = "#E65100" if severity in ("WARNING", "CRITICAL") else "#1565C0"
-        info_label = QLabel(
-            f"<span style='color:{color}'><b>Severitat: {severity}</b></span><br>"
-            f"Zones afectades: {', '.join(zones) if zones else 'N/A'}"
-        )
-        info_label.setWordWrap(True)
-        layout.addWidget(info_label)
+        zones_str = ", ".join(zones) if zones else "N/A"
 
-        if durations:
-            for i, dur in enumerate(durations[:5]):
-                dur_label = QLabel(f"  Timeout {i+1}: {dur}")
-                dur_label.setStyleSheet("color: #666; font-size: 11px;")
-                layout.addWidget(dur_label)
-
-        # UIB timeout info (si disponible)
+        # UIB
         uib_timeout = rep_data.get("timeout_info_uib") or {}
         uib_n = uib_timeout.get("n_timeouts", 0)
+        uib_part = ""
         if uib_n > 0:
-            uib_zones = uib_timeout.get("zones", [])
-            timeout_in_uib = rep_data.get("timeout_in_peak_uib", False)
-            uib_color = "#E74C3C" if timeout_in_uib else "#F39C12"
-            uib_label = QLabel(
-                f"<span style='color:{uib_color}'><b>UIB afectat: {uib_n} timeout(s)</b></span>"
-                f"{' — dins del pic UIB!' if timeout_in_uib else ''}<br>"
-                f"Zones UIB: {', '.join(uib_zones) if uib_zones else 'N/A'}"
-            )
-            uib_label.setWordWrap(True)
-            layout.addWidget(uib_label)
-        else:
-            note = QLabel(
-                "<i style='color:#888;'>Nota: Timeouts DOC Direct també afecten UIB "
-                "(mateix detector, senyal simultani).</i>"
-            )
-            note.setWordWrap(True)
-            layout.addWidget(note)
+            uib_in_peak = rep_data.get("timeout_in_peak_uib", False)
+            uib_part = f" · UIB: {uib_n}"
+            if uib_in_peak:
+                uib_part += " <b>(dins pic!)</b>"
 
-        return group
+        label = QLabel(
+            f"<span style='color:{color}'>⏱ <b>{n_timeouts} timeout(s)</b> "
+            f"[{severity}] — Zones: {zones_str}{uib_part}</span>"
+        )
+        label.setWordWrap(True)
+        label.setStyleSheet(
+            f"background: {'#FFF3E0' if severity != 'INFO' else '#E3F2FD'}; "
+            "border-radius: 4px; padding: 6px 10px;"
+        )
+        return label
 
     # ------------------------------------------------------------------
     # Fractions group (complete, all wavelengths)
