@@ -250,6 +250,13 @@ All exploratory scripts and results live in `research/` — NOT part of the prod
 - [ ] BB fingerprint integration — BLOCKED (temporal alignment not verified, no reference standards for BB)
 - [ ] BB organic/inorganic metrics as single-sample report — PENDING (needs alignment verification first)
 
+## TODO (millores menors)
+
+- [ ] **CalibratePanel.showEvent() guard**: afegir `_initialized` flag per evitar re-executar
+  `_check_existing_calibration()` cada cop que es mostra el tab (funciona, pero redundant)
+- [ ] **HistoryPanel.showEvent() guard**: afegir flag per evitar recarregar tot l'historial
+  cada cop que es canvia de tab (dades globals, no per-SEQ)
+
 ## Known bugs (pendents de fix)
 
 - **Import re-llegeix masterfile quan ja existeix manifest JSON**: FIXED — `import_from_manifest(load_data=False)`

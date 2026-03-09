@@ -721,6 +721,96 @@ class AnalyzePanel(QWidget):
                 continue
 
             sample_data = self.samples_grouped[sample_name]
+
+            # BLANK: una fila per injecció, sense selectors, amb fraccions
+            if is_blank:
+                replicas = sample_data.get("replicas") or {}
+                for rep_key in sorted(replicas.keys()):
+                    rep_data = replicas[rep_key]
+                    row = self.results_table.rowCount()
+                    self.results_table.insertRow(row)
+
+                    # Col 0: Nom amb R si >1 rèplica
+                    display_name = f"{sample_name} R{rep_key}" if len(replicas) > 1 else sample_name
+                    item_name = QTableWidgetItem(display_name)
+                    item_name.setData(Qt.UserRole, sample_name)
+                    self.results_table.setItem(row, 0, item_name)
+
+                    # Col 1: Inj
+                    idx = rep_data.get("injection_index")
+                    inj_item = QTableWidgetItem(str(idx) if idx is not None else "-")
+                    inj_item.setForeground(QBrush(QColor("#888")))
+                    self.results_table.setItem(row, 1, inj_item)
+
+                    # Col 2-3: Sense selectors
+                    self.results_table.setItem(row, 2, QTableWidgetItem("-"))
+                    self.results_table.setItem(row, 3, QTableWidgetItem("-"))
+
+                    # Col 4: A_DOC total amb tooltip fraccions
+                    areas = rep_data.get("areas") or {}
+                    doc_areas = areas.get("DOC") or {}
+                    total = doc_areas.get("total", 0)
+                    a_doc_item = QTableWidgetItem(f"{total:.0f}" if total else "-")
+                    frac_tip = []
+                    for frac in FRACTION_ORDER:
+                        fa = doc_areas.get(frac, 0)
+                        if fa:
+                            pct = (fa / total * 100) if total > 0 else 0
+                            frac_tip.append(f"{frac}: {fa:.0f} ({pct:.0f}%)")
+                    if frac_tip:
+                        a_doc_item.setToolTip("Fraccions DOC:\n" + "\n".join(frac_tip))
+                    self.results_table.setItem(row, 4, a_doc_item)
+
+                    # Col 5-7: No ppm/UIB per blancs
+                    for c in (5, 6, 7):
+                        self.results_table.setItem(row, c, QTableWidgetItem("-"))
+
+                    # Col 8: SNR
+                    snr_info = rep_data.get("snr_info") or {}
+                    snr = snr_info.get("snr_direct", 0)
+                    snr_item = QTableWidgetItem(f"{snr:.0f}" if snr else "-")
+                    if snr and snr < 10:
+                        snr_item.setForeground(QBrush(QColor(COLOR_ERROR)))
+                    elif snr and snr < 50:
+                        snr_item.setForeground(QBrush(QColor(COLOR_WARNING)))
+                    self.results_table.setItem(row, 8, snr_item)
+
+                    # Col 9: A_254
+                    area_254 = (areas.get("A254") or {}).get("total", 0)
+                    self.results_table.setItem(row, 9, QTableWidgetItem(
+                        f"{area_254:.1f}" if area_254 else "-"))
+
+                    # Col 10-13: No R2/HCI per blancs
+                    for c in (10, 11, 12, 13):
+                        self.results_table.setItem(row, c, QTableWidgetItem("-"))
+
+                    # Col 14: Resum fraccions (detecció arrossegament)
+                    frac_parts = []
+                    for frac in FRACTION_ORDER:
+                        fa = doc_areas.get(frac, 0)
+                        if fa and fa > 0:
+                            frac_parts.append(f"{frac}:{fa:.0f}")
+                    if frac_parts:
+                        estat_text = " ".join(frac_parts)
+                        estat_item = QTableWidgetItem(estat_text)
+                        estat_item.setForeground(QBrush(QColor(COLOR_WARNING)))
+                        estat_item.setToolTip("Fraccions amb area > 0 — possible arrossegament")
+                    else:
+                        estat_item = QTableWidgetItem("Net")
+                        estat_item.setForeground(QBrush(QColor(COLOR_SUCCESS)))
+                    self.results_table.setItem(row, 14, estat_item)
+
+                    # Fons gris
+                    blank_bg = QBrush(QColor("#F4F6F6"))
+                    for c in range(self.results_table.columnCount()):
+                        item = self.results_table.item(row, c)
+                        if item:
+                            item.setBackground(blank_bg)
+
+                n_blank += 1
+                continue
+
+            # --- Regular sample rendering ---
             row = self.results_table.rowCount()
             self.results_table.insertRow(row)
             self._sample_row_map[sample_name] = row
@@ -731,7 +821,6 @@ class AnalyzePanel(QWidget):
             selected = sample_data.get("selected") or {"doc": "1", "dad": "1"}
             quantification = sample_data.get("quantification") or {}
 
-            # Recommended replicas (may differ for DOC vs DAD)
             doc_rec = (recommendation.get("doc") or {}).get("replica", "1")
             dad_rec = (recommendation.get("dad") or {}).get("replica", "1")
             doc_sel = selected.get("doc", doc_rec)
@@ -909,22 +998,13 @@ class AnalyzePanel(QWidget):
             status_item.setToolTip(tooltip)
             self.results_table.setItem(row, 14, status_item)
 
-            # Apply background for blanks
-            if is_blank:
-                blank_bg = QBrush(QColor("#F4F6F6"))
-                for c in range(self.results_table.columnCount()):
-                    item = self.results_table.item(row, c)
-                    if item:
-                        item.setBackground(blank_bg)
-                n_blank += 1
+            # Count stats for regular samples
+            if status_color == COLOR_ERROR:
+                n_error += 1
+            elif status_color == COLOR_WARNING:
+                n_warning += 1
             else:
-                # Count stats for regular samples
-                if status_color == COLOR_ERROR:
-                    n_error += 1
-                elif status_color == COLOR_WARNING:
-                    n_warning += 1
-                else:
-                    n_ok += 1
+                n_ok += 1
 
         # --- CONTROL (light analysis) separator + simplified rows ---
         if control_names and show_control:
