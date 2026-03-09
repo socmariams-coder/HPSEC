@@ -95,21 +95,32 @@ CALCULS_PER_SENYAL.md
 docs/
 research/
 
-# ── Dades3: only MasterFiles and RAWDATA xlsx ──
-# Exclude all generated/metadata files
+# ── Dades3: only MasterFiles (no backups, no RAWDATA) ──
+# Exclude everything first
 Dades3/**/*.json
 Dades3/**/CHECK/
 Dades3/**/CALDATA/
 Dades3/**/Export3d/
+Dades3/**/CSV/
+Dades3/**/RESULTATS/
 Dades3/REGISTRY/
 Dades3/_UNMAPPED_MERITXELL/
-Dades3/**/*_backup_*
 Dades3/**/*v11*.xlsx
 Dades3/**/*v12*.xlsx
 Dades3/**/*.bak
 Dades3/*.py
 Dades3/*.vbs
 Dades3/*.txt
+Dades3/**/__pycache__/
+Dades3/**/nul
 
 # Keep MasterFile xlsx (override the general *.xlsx exclusion)
 !Dades3/**/*MasterFile*.xlsx
+
+# Re-exclude MasterFile backups and RAWDATA (AFTER the whitelist above)
+Dades3/**/*MasterFile*backup*
+Dades3/**/*RAWDATA*
+Dades3/**/*_backup_*
+
+# Binary artifacts without extension
+Dades3/**/[0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F]
