@@ -1323,12 +1323,28 @@ def repair_irregular_top_in_replica(sample_result, signal="direct"):
     repair_result["original_y"] = y_original.copy().tolist()
     repair_result["original_areas"] = sample_result.get(areas_key, {}).copy()
 
-    # Aplicar reparació
-    y_repaired, repair_info, was_repaired = repair_with_parabola(t, y_original)
+    # Extreure segment al voltant del pic (com detect_main_peak)
+    # find_tangents_and_anchors està dissenyat per segments, no cromatogrames complets
+    is_bp = sample_result.get("is_bp", False)
+    peak_idx = int(np.argmax(y_original))
+    t_peak = float(t[peak_idx])
+    half_window = 3.0 if is_bp else 5.0
+    seg_mask = (t >= t_peak - half_window) & (t <= t_peak + half_window)
+    t_seg = t[seg_mask]
+    y_seg = y_original[seg_mask]
+
+    # Aplicar reparació sobre segment (force=True: l'anomalia ja ha estat detectada)
+    y_seg_repaired, repair_info, was_repaired = repair_with_parabola(
+        t_seg, y_seg, force=True
+    )
 
     if not was_repaired:
         return {"repaired": False, "reason": "repair_with_parabola failed",
                 "repair_info": repair_info}
+
+    # Mapejar reparació del segment al cromatograma complet
+    y_repaired = y_original.copy()
+    y_repaired[seg_mask] = y_seg_repaired
 
     # Actualitzar senyal reparat
     sample_result[y_key] = y_repaired.tolist()
@@ -1376,6 +1392,71 @@ def repair_irregular_top_in_replica(sample_result, signal="direct"):
 
 # Backwards compatibility alias
 repair_batman_in_replica = repair_irregular_top_in_replica
+
+
+def undo_repair_in_replica(sample_result, signal="direct"):
+    """
+    Desfà la reparació de cim irregular: restaura y_doc_net_original i recalcula fraccions.
+
+    Args:
+        sample_result: Dict retornat per analyze_sample() (modificat in-place)
+        signal: "direct" o "uib"
+
+    Returns:
+        dict amb info de l'undo: {"undone": True/False, "reason": ...}
+    """
+    from hpsec_warnings import mark_repaired
+
+    if signal == "direct":
+        y_key = "y_doc_net"
+        orig_key = "y_doc_net_original"
+        anom_key = "IRREGULAR_TOP_DIRECT"
+        irr_key = "irregular_top_direct"
+        areas_key = "areas"
+    else:
+        y_key = "y_doc_uib_net"
+        orig_key = "y_doc_uib_net_original"
+        anom_key = "IRREGULAR_TOP_UIB"
+        irr_key = "irregular_top_uib"
+        areas_key = "areas_uib"
+
+    y_original = sample_result.get(orig_key)
+    if y_original is None:
+        return {"undone": False, "reason": "No hi ha backup de senyal original"}
+
+    t = np.asarray(sample_result.get("t_doc", []))
+    y_orig = np.asarray(y_original)
+
+    # Restaurar senyal original
+    sample_result[y_key] = y_orig.tolist()
+    sample_result.pop(orig_key, None)
+
+    # Desmarcar anomalia com a reparada
+    anomalies = sample_result.get("anomalies", [])
+    for a in anomalies:
+        if isinstance(a, dict) and a.get("code") == anom_key and a.get("repaired"):
+            a.pop("repaired", None)
+            a.pop("repair_info", None)
+            break
+
+    # Restaurar flags
+    sample_result[irr_key] = True
+    sample_result.pop(f"{irr_key}_repaired", None)
+    sample_result.pop(f"{irr_key}_repair_info", None)
+
+    # Recalcular fraccions amb senyal original
+    try:
+        new_areas = calcular_fraccions_temps(t, y_orig)
+        if signal == "direct":
+            if "areas" not in sample_result:
+                sample_result["areas"] = {}
+            sample_result["areas"]["DOC"] = new_areas
+        else:
+            sample_result["areas_uib"] = new_areas
+    except Exception as e:
+        return {"undone": True, "areas_recalc_error": str(e)}
+
+    return {"undone": True, "signal": signal}
 
 
 def quantify_sample(sample_result, calibration_data, mode="COLUMN", seq_date=None):

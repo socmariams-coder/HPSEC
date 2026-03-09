@@ -873,6 +873,9 @@ def repair_with_parabola(t, y, factor=REPAIR_FACTOR, force=False):
     y_repaired = y.copy()
     y_repaired[repair_mask] = np.maximum(y[repair_mask], y_parabola)
 
+    # Check if the repair actually changed anything
+    actually_changed = not np.allclose(y_repaired, y, atol=1e-10)
+
     repair_info = {
         "irregular_top": irr_top,
         "tangent": tangent,
@@ -886,7 +889,10 @@ def repair_with_parabola(t, y, factor=REPAIR_FACTOR, force=False):
         "y_anchor_right": y3,
     }
 
-    return y_repaired, repair_info, True
+    if not actually_changed:
+        repair_info["reason"] = "parabola_below_signal"
+
+    return y_repaired, repair_info, actually_changed
 
 
 # =============================================================================
@@ -1657,15 +1663,14 @@ def detect_main_peak(t, y, min_prominence_pct=5.0, is_bp=None):
         smoothness_info = calc_top_smoothness(t_seg, y_seg)
         smoothness_val = smoothness_info.get("smoothness", 100.0)
 
-        # Reparar si IRREGULAR_TOP (valls pic-vall-pic) O ROUGH_TOP (smoothness < 70%)
-        needs_repair = (irregular_top_info.get("is_irregular_top", False)
-                        or smoothness_val < 70.0)
+        # Reparar NOMÉS si IRREGULAR_TOP (valls pic-vall-pic reals)
+        # smoothness < 70% NO és criteri suficient — genera 95% falsos positius
+        # (pics BP naturalment aplanats, pics bimodals, etc.)
+        needs_repair = irregular_top_info.get("is_irregular_top", False)
 
         if needs_repair:
-            # Intentar reparar amb paràbola (force=True si ROUGH_TOP sense valls profundes)
-            force_repair = not irregular_top_info.get("is_irregular_top", False)
             y_seg_repaired, repair_info, was_repaired = repair_with_parabola(
-                t_seg, y_seg, force=force_repair
+                t_seg, y_seg
             )
             if was_repaired:
                 irregular_top_repaired = True

@@ -38,6 +38,7 @@ from gui.widgets.styles import (
 )
 from .worker import AnalyzeWorker
 from .dialogs import SampleDetailDialog
+from .repair_dialog import JaggedPeakRepairDialog
 from ._constants import (
     CRITICAL_ANOMALIES, WARNING_ANOMALIES,
     DAD_WL_MAIN, SIGNAL_KEYS_MAIN,
@@ -232,8 +233,9 @@ class AnalyzePanel(QWidget):
         self._configure_unified_columns()
         results_layout.addWidget(self.results_table)
 
-        # Connect table signals — clic obre detall directament
+        # Connect table signals
         self.results_table.doubleClicked.connect(self._on_table_double_click)
+        self.results_table.cellClicked.connect(self._on_table_cell_click)
         self.results_table.setToolTip("Doble-clic per detall complet")
 
         layout.addWidget(self.results_frame, 1)
@@ -1408,7 +1410,9 @@ class AnalyzePanel(QWidget):
 
         # Repairable hint
         if sample_data and sample_data.get("repairable") and not sample_data.get("repaired"):
-            tooltip_parts.append("Pic amb cim irregular reparable — Doble-clic per opcions de reparació")
+            tooltip_parts.append("Pic amb cim irregular reparable — Clic a Estat per obrir diàleg de reparació")
+        elif sample_data and sample_data.get("repaired"):
+            tooltip_parts.append("Clic a Estat per desfer o veure detalls de la reparació")
 
         tooltip = "\n".join(tooltip_parts) if tooltip_parts else "OK"
         return status_color, status_text, tooltip
@@ -1689,6 +1693,90 @@ class AnalyzePanel(QWidget):
     # ------------------------------------------------------------------
     # Table interaction
     # ------------------------------------------------------------------
+
+    def _on_table_cell_click(self, row, col):
+        """Handler per clic a cel·la — col 13 (Estat) obre diàleg reparació si aplicable."""
+        if col != 13:
+            return
+        item = self.results_table.item(row, 0)
+        if not item:
+            return
+        sample_name = item.data(Qt.UserRole)
+        if not sample_name:
+            return
+        sample_data = self.samples_grouped.get(sample_name)
+        if not sample_data:
+            return
+
+        targets = self._find_repair_targets(sample_name)
+        if not targets:
+            return
+
+        if len(targets) == 1:
+            rep_key, signal_type = targets[0]
+            self._open_repair_dialog(sample_name, rep_key, signal_type)
+        else:
+            # Multiple targets — show context menu
+            from PySide6.QtWidgets import QMenu
+            from PySide6.QtGui import QCursor
+            menu = QMenu(self)
+            for rep_key, signal_type in targets:
+                label = f"R{rep_key} {signal_type.upper()}"
+                action = menu.addAction(label)
+                action.triggered.connect(
+                    lambda _checked, rk=rep_key, st=signal_type:
+                    self._open_repair_dialog(sample_name, rk, st)
+                )
+            menu.exec(QCursor.pos())
+
+    def _find_repair_targets(self, sample_name):
+        """Busca rèpliques/senyals amb anomalies de cim irregular (pendents, reparades o dismissed)."""
+        sample_data = self.samples_grouped.get(sample_name, {})
+        replicas = sample_data.get("replicas", {})
+        targets = []
+
+        for rep_key, rep_data in replicas.items():
+            anomalies = rep_data.get("anomalies", [])
+            for signal_type, anom_key in [
+                ("direct", "IRREGULAR_TOP_DIRECT"),
+                ("uib", "IRREGULAR_TOP_UIB"),
+            ]:
+                for a in anomalies:
+                    if isinstance(a, dict) and a.get("code") == anom_key:
+                        targets.append((rep_key, signal_type))
+                        break
+                    elif isinstance(a, str) and anom_key in a:
+                        targets.append((rep_key, signal_type))
+                        break
+
+        return targets
+
+    def _open_repair_dialog(self, sample_name, rep_key, signal_type):
+        """Obre el diàleg de reparació de pic irregular."""
+        sample_data = self.samples_grouped.get(sample_name)
+        if not sample_data:
+            return
+
+        method = "COLUMN"
+        if self.main_window.processed_data:
+            method = self.main_window.processed_data.get("method", "COLUMN")
+
+        dialog = JaggedPeakRepairDialog(
+            sample_name, sample_data, rep_key, signal_type, method, parent=self
+        )
+        dialog.repair_applied.connect(self._on_repair_action)
+        dialog.repair_undone.connect(self._on_repair_action)
+        dialog.dismissed.connect(self._on_repair_action)
+        dialog.reactivated.connect(self._on_repair_action)
+        dialog.exec()
+
+    def _on_repair_action(self, sample_name, rep_key, signal_type):
+        """Actualitza la taula després d'una acció de reparació."""
+        row = self._sample_row_map.get(sample_name)
+        if row is not None:
+            self._update_quantification(sample_name)
+            self._update_doc_columns(row, sample_name)
+            self._update_estat_column(row, sample_name)
 
     def _on_table_double_click(self, index):
         """Handler per doble clic — obre SampleDetailDialog per totes les tipologies."""

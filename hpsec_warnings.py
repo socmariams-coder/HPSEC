@@ -432,15 +432,20 @@ def has_anomaly(anomalies: list, code: str) -> bool:
 
 
 def classify_anomalies(anomalies: list) -> dict:
-    """Classifica per severitat: {blocker: [...], warning: [...], info: [...], repaired: [...]}."""
-    result = {"blocker": [], "warning": [], "info": [], "repaired": []}
+    """Classifica per severitat: {blocker: [...], warning: [...], info: [...], repaired: [...], dismissed: [...]}."""
+    result = {"blocker": [], "warning": [], "info": [], "repaired": [], "dismissed": []}
     for a in anomalies:
         if isinstance(a, dict):
             code = a.get("code", "")
             repaired = a.get("repaired", False)
+            dismissed = a.get("dismissed", False)
         else:
             repaired = "_REPAIRED" in str(a)
+            dismissed = False
             code = str(a).replace("_REPAIRED", "")
+        if dismissed:
+            result["dismissed"].append(a)
+            continue
         if repaired:
             result["repaired"].append(a)
             continue
@@ -477,6 +482,24 @@ def mark_repaired(anomalies: list, code: str, repair_info: dict = None) -> bool:
         if isinstance(a, dict) and a.get("code") == code and not a.get("repaired"):
             a["repaired"] = True
             a["repair_info"] = repair_info
+            return True
+    return False
+
+
+def mark_dismissed(anomalies: list, code: str) -> bool:
+    """Marca anomalia com a fals positiu (dismissed). Retorna True si trobada."""
+    for a in anomalies:
+        if isinstance(a, dict) and a.get("code") == code and not a.get("dismissed"):
+            a["dismissed"] = True
+            return True
+    return False
+
+
+def unmark_dismissed(anomalies: list, code: str) -> bool:
+    """Reactiva anomalia dismissed. Retorna True si trobada."""
+    for a in anomalies:
+        if isinstance(a, dict) and a.get("code") == code and a.get("dismissed"):
+            a.pop("dismissed", None)
             return True
     return False
 

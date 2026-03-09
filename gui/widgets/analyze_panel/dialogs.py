@@ -8,7 +8,7 @@ SampleDetailDialog amb gràfics, taula fraccions completa i resum senyals.
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTableWidget, QDialog, QGroupBox, QGridLayout, QSplitter,
-    QScrollArea, QMessageBox
+    QScrollArea
 )
 from PySide6.QtCore import Qt
 
@@ -18,7 +18,7 @@ from ._constants import DAD_WL_ALL, SIGNAL_KEYS_ALL
 from ._helpers import (
     configure_table_style, populate_signal_summary, populate_fractions_table
 )
-from hpsec_warnings import has_anomaly, get_anomaly_codes
+from hpsec_warnings import classify_anomalies
 
 # Matplotlib
 try:
@@ -109,11 +109,6 @@ class SampleDetailDialog(QDialog):
         anomalies_group = self._create_anomalies_group()
         if anomalies_group:
             stats_layout.addWidget(anomalies_group)
-
-        # Irregular top repair button (si la mostra té cim irregular reparable)
-        repair_group = self._create_repair_group()
-        if repair_group:
-            stats_layout.addWidget(repair_group)
 
         # Comparació rèpliques
         if len(self.sample_data.get("replicas", {})) > 1:
@@ -286,154 +281,6 @@ class SampleDetailDialog(QDialog):
                 layout.addWidget(lbl)
 
         return group
-
-    # ------------------------------------------------------------------
-    # Irregular top repair group
-    # ------------------------------------------------------------------
-
-    def _create_repair_group(self):
-        """Crea grup amb botó de reparació cim irregular si la mostra té anomalies reparables."""
-        replicas = self.sample_data.get("replicas", {})
-        # Comprovar si alguna rèplica té cim irregular (jagged/batman)
-        has_irregular = False
-        irregular_signals = []
-        for rep_key, rep_data in replicas.items():
-            anomalies = rep_data.get("anomalies", [])
-            if has_anomaly(anomalies, "IRREGULAR_TOP_DIRECT"):
-                has_irregular = True
-                irregular_signals.append(f"R{rep_key} Direct")
-            if has_anomaly(anomalies, "IRREGULAR_TOP_UIB"):
-                has_irregular = True
-                irregular_signals.append(f"R{rep_key} UIB")
-            # Ja reparats?
-            if any((a.get("repaired") if isinstance(a, dict) else "_REPAIRED" in str(a))
-                   for a in anomalies):
-                has_irregular = True
-                irregular_signals.append(f"R{rep_key} (ja reparat)")
-
-        if not has_irregular:
-            return None
-
-        group = QGroupBox("Reparació Cim Irregular")
-        layout = QVBoxLayout(group)
-        group.setStyleSheet("""
-            QGroupBox {
-                border: 2px solid #F39C12;
-                border-radius: 6px;
-                padding-top: 10px;
-            }
-            QGroupBox::title {
-                color: #F39C12;
-                font-weight: bold;
-            }
-        """)
-
-        info = QLabel(f"Cim irregular detectat a: {', '.join(irregular_signals)}")
-        info.setWordWrap(True)
-        info.setStyleSheet("color: #E65100; font-size: 11px;")
-        layout.addWidget(info)
-
-        already_repaired = self.sample_data.get("repaired", False)
-        if already_repaired:
-            repaired_label = QLabel("Reparació aplicada — Àrees recalculades")
-            repaired_label.setStyleSheet("color: #27AE60; font-weight: bold;")
-            layout.addWidget(repaired_label)
-        else:
-            desc = QLabel(
-                "La reparació aplica interpolació parabòlica sobre la zona\n"
-                "deformada del pic. Es guarda l'original per traçabilitat."
-            )
-            desc.setStyleSheet("color: #666; font-size: 10px;")
-            desc.setWordWrap(True)
-            layout.addWidget(desc)
-
-            btn_layout = QHBoxLayout()
-            # Botó per cada rèplica amb cim irregular
-            for rep_key, rep_data in replicas.items():
-                anomalies = rep_data.get("anomalies", [])
-                for signal_type, anom_key in [("direct", "IRREGULAR_TOP_DIRECT"), ("uib", "IRREGULAR_TOP_UIB")]:
-                    if has_anomaly(anomalies, anom_key):
-                        btn = QPushButton(f"Reparar R{rep_key} {signal_type.upper()}")
-                        btn.setStyleSheet(
-                            "QPushButton { background-color: #F39C12; color: white; "
-                            "font-weight: bold; padding: 6px 16px; border-radius: 4px; }"
-                            "QPushButton:hover { background-color: #E67E22; }"
-                        )
-                        btn.clicked.connect(
-                            lambda checked, rk=rep_key, st=signal_type:
-                            self._repair_irregular_top(rk, st)
-                        )
-                        btn_layout.addWidget(btn)
-
-            btn_layout.addStretch()
-            layout.addLayout(btn_layout)
-
-        return group
-
-    def _repair_irregular_top(self, replica_key, signal_type):
-        """Executa reparació cim irregular per una rèplica/senyal específic."""
-        try:
-            from hpsec_analyze import repair_irregular_top_in_replica
-
-            replicas = self.sample_data.get("replicas", {})
-            replica_data = replicas.get(replica_key)
-            if not replica_data:
-                QMessageBox.warning(self, "Error", f"No s'ha trobat la rèplica R{replica_key}")
-                return
-
-            result = repair_irregular_top_in_replica(replica_data, signal=signal_type)
-
-            if result.get("repaired"):
-                # Marcar com reparat
-                self.sample_data["repaired"] = True
-                if "repair_history" not in self.sample_data:
-                    self.sample_data["repair_history"] = []
-                self.sample_data["repair_history"].append({
-                    "replica": replica_key,
-                    "signal": signal_type,
-                    "repair_info": result.get("repair_info", {}),
-                    "original_areas": result.get("original_areas", {}),
-                })
-
-                # Comprovar si la mostra és vàlida després de la reparació
-                # (pot quedar no vàlida si l'altre senyal té anomalies no reparables)
-                remaining_anomalies = replica_data.get("anomalies", [])
-                remaining_codes = get_anomaly_codes(remaining_anomalies)
-                still_has_irreparable = bool(remaining_codes & {"NO_PEAK", "TIMEOUT_IN_PEAK"})
-                # Comprovar també cim irregular no reparat (actiu, no marcat com repaired)
-                still_has_irregular_top = any(
-                    (isinstance(a, dict) and a.get("code") in ("IRREGULAR_TOP_DIRECT", "IRREGULAR_TOP_UIB") and not a.get("repaired"))
-                    or (isinstance(a, str) and a in ("IRREGULAR_TOP_DIRECT", "IRREGULAR_TOP_UIB"))
-                    for a in remaining_anomalies
-                )
-                if not still_has_irreparable and not still_has_irregular_top:
-                    self.sample_data["sample_valid"] = True
-                    # Actualitzar recomanació
-                    rec = self.sample_data.get("recommendation", {})
-                    if rec.get("doc"):
-                        rec["doc"]["valid"] = True
-                        rec["doc"]["reason"] = "Cim irregular reparat amb paràbola"
-
-                QMessageBox.information(
-                    self, "Reparació completada",
-                    f"Cim irregular reparat a R{replica_key} {signal_type.upper()}\n\n"
-                    f"Les àrees s'han recalculat.\n"
-                    f"L'original es conserva per traçabilitat."
-                )
-
-                # Re-dibuixar gràfics
-                if HAS_MATPLOTLIB:
-                    self._plot_signals()
-                    self.canvas.draw()
-            else:
-                reason = result.get("reason", "Error desconegut")
-                QMessageBox.warning(
-                    self, "Reparació no possible",
-                    f"No s'ha pogut reparar: {reason}"
-                )
-
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Error durant la reparació:\n{str(e)}")
 
     # ------------------------------------------------------------------
     # Comparison group
