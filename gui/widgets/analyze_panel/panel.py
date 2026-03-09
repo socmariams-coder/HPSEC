@@ -173,7 +173,6 @@ class AnalyzePanel(QWidget):
             ("sample", "Mostres", "#2E86AB", True),
             ("blank", "Blancs", "#95a5a6", False),
             ("control", "Control", "#888", False),
-            ("khp", "KHP", "#1565C0", False),
         ]:
             btn = QPushButton(label)
             btn.setCheckable(True)
@@ -183,22 +182,6 @@ class AnalyzePanel(QWidget):
             sel_layout.addWidget(btn)
 
         self._update_cat_btn_styles()
-
-        sel_layout.addWidget(QLabel(
-            "<span style='color:#ccc'>|</span>"
-        ))
-
-        # Botons agrupació (toggle)
-        self._group_mode = 0  # 0=injecció, 1=tipus
-        self._group_btns = []
-        for i, label in enumerate(["Injecció", "Tipus"]):
-            btn = QPushButton(label)
-            btn.setCheckable(True)
-            btn.setChecked(i == 0)
-            btn.clicked.connect(lambda _checked, idx=i: self._on_group_btn(idx))
-            self._group_btns.append(btn)
-            sel_layout.addWidget(btn)
-        self._style_group_btns()
 
         sel_layout.addWidget(QLabel(
             "<span style='color:#ccc'>|</span>"
@@ -222,9 +205,9 @@ class AnalyzePanel(QWidget):
 
         # === UNIFIED TABLE ===
         self.results_table = QTableWidget()
-        self.results_table.setColumnCount(14)
+        self.results_table.setColumnCount(15)
         self.results_table.setHorizontalHeaderLabels([
-            "Mostra", "Sel DOC", "Sel DAD", "A_DOC", "ppm",
+            "Mostra", "Inj", "Sel DOC", "Sel DAD", "A_DOC", "ppm",
             "A_UIB", "ppm_U", "SNR", "A_254", "SNR_254",
             "R²_DOC", "R²_DAD", "HCI", "Estat"
         ])
@@ -317,7 +300,7 @@ class AnalyzePanel(QWidget):
         """Configura columnes de la taula unificada."""
         header = self.results_table.horizontalHeader()
         for i in range(self.results_table.columnCount()):
-            if i == 13:  # Estat — much wider
+            if i == 14:  # Estat — stretch
                 header.setSectionResizeMode(i, QHeaderView.Stretch)
             else:
                 header.setSectionResizeMode(i, QHeaderView.ResizeToContents)
@@ -671,47 +654,30 @@ class AnalyzePanel(QWidget):
     # ------------------------------------------------------------------
 
     def _populate_table(self):
-        """Omple la taula unificada amb els resultats (13 cols, selectors DOC/DAD independents).
-
-        Filtra per F0 toggles:
-        - Mostres (SAMPLE, PR): sempre visibles
-        - Control (BLANK, CONTROL): segueix toggle "Control"
-        - KHP: segueix toggle "KHP" (amagat per SEQ_CAL)
-        """
+        """Omple la taula unificada amb els resultats (15 cols, selectors DOC/DAD independents)."""
         self.results_table.setRowCount(0)
         self._sample_row_map = {}
-        n_ok, n_warning, n_error, n_light, n_khp, n_blank = 0, 0, 0, 0, 0, 0
+        n_ok, n_warning, n_error, n_blank, n_control = 0, 0, 0, 0, 0
 
         # F0 toggle state
-        show_blank = (hasattr(self, '_cat_buttons')
-                      and self._cat_buttons.get("blank")
+        show_blank = (self._cat_buttons.get("blank")
                       and self._cat_buttons["blank"].isChecked())
-        show_control = (hasattr(self, '_cat_buttons')
-                        and self._cat_buttons.get("control")
+        show_control = (self._cat_buttons.get("control")
                         and self._cat_buttons["control"].isChecked())
-        show_khp = (hasattr(self, '_cat_buttons')
-                    and self._cat_buttons.get("khp")
-                    and self._cat_buttons["khp"].isChecked())
-        is_seq_cal = getattr(self.main_window, '_is_seq_cal', False)
 
-        # Separar mostres per tipologia
-        sample_names = []   # SAMPLE (mostres reals)
-        pr_names = []       # Patrons (PR_*)
-        khp_names = []      # KHP (calibració)
-        light_names = []    # CONTROL / Neteja (anàlisi lleugera)
+        # Separar mostres per tipologia (KHP exclòs — ja analitzat a Verificar)
+        sample_names = []   # SAMPLE + PR (mostres reals + patrons)
         blank_names = []    # BLANK / MQ
+        control_names = []  # CONTROL / Neteja (anàlisi lleugera)
 
-        for name in self.samples_grouped.keys():
-            sd = self.samples_grouped[name]
+        for name, sd in self.samples_grouped.items():
             st = sd.get("sample_type", "SAMPLE")
-            if sd.get("analysis_type") == "khp":
-                khp_names.append(name)
+            if st == "KHP":
+                continue
             elif st == "BLANK":
                 blank_names.append(name)
-            elif sd.get("analysis_type") == "light" or st == "CONTROL":
-                light_names.append(name)
-            elif st.startswith("PR"):
-                pr_names.append(name)
+            elif st == "CONTROL":
+                control_names.append(name)
             else:
                 sample_names.append(name)
 
@@ -722,59 +688,38 @@ class AnalyzePanel(QWidget):
                        if r.get("injection_index") is not None]
             return min(indices) if indices else 999
 
-        for lst in (sample_names, pr_names, blank_names, khp_names, light_names):
+        for lst in (sample_names, blank_names, control_names):
             lst.sort(key=_min_inj_index)
 
-        # Decidir ordre segons botons agrupació
-        by_type = getattr(self, '_group_mode', 0) == 1
+        # --- Regular samples + Blancs (full rendering) ---
+        full_render_list = [(name, False) for name in sample_names]
+        if blank_names and show_blank:
+            full_render_list.append((None, True))  # Separator marker
+            full_render_list.extend([(name, True) for name in blank_names])
 
-        if by_type:
-            # "Per tipus": separadors entre grups
-            regular_names = []
-            self._type_groups = []  # [(label, names)]
-            if sample_names:
-                self._type_groups.append(("MOSTRES", sample_names))
-            if pr_names:
-                self._type_groups.append(("PATRONS REFERÈNCIA", pr_names))
-            for _, names in self._type_groups:
-                regular_names.extend(names)
-        else:
-            # "Ordre injecció": tot barrejat per injection_index
-            regular_names = sample_names + pr_names
-            self._type_groups = None
+        for sample_name, is_blank in full_render_list:
+            if sample_name is None:
+                # Insert BLANCS separator
+                n_cols = self.results_table.columnCount()
+                sep_row = self.results_table.rowCount()
+                self.results_table.insertRow(sep_row)
+                sep_item = QTableWidgetItem("--- BLANCS / MQ ---")
+                sep_item.setFlags(Qt.ItemIsEnabled)
+                sep_font = QFont()
+                sep_font.setBold(True)
+                sep_item.setFont(sep_font)
+                sep_item.setForeground(QBrush(QColor("#7f8c8d")))
+                self.results_table.setItem(sep_row, 0, sep_item)
+                self.results_table.setSpan(sep_row, 0, 1, n_cols)
+                sep_bg = QBrush(QColor("#EAECEE"))
+                for c in range(n_cols):
+                    item = self.results_table.item(sep_row, c)
+                    if item is None:
+                        item = QTableWidgetItem("")
+                        self.results_table.setItem(sep_row, c, item)
+                    item.setBackground(sep_bg)
+                continue
 
-        # --- Regular samples ---
-        _type_group_idx = 0  # Tracking per separadors "Per tipus"
-        _type_group_offset = 0
-        for sample_name in regular_names:
-            # Inserir separador si mode "Per tipus"
-            if by_type and self._type_groups:
-                while (_type_group_idx < len(self._type_groups) and
-                       _type_group_offset >= len(self._type_groups[_type_group_idx][1])):
-                    _type_group_idx += 1
-                    _type_group_offset = 0
-                if (_type_group_idx < len(self._type_groups) and
-                        _type_group_offset == 0):
-                    label = self._type_groups[_type_group_idx][0]
-                    n_cols = self.results_table.columnCount()
-                    sep_row = self.results_table.rowCount()
-                    self.results_table.insertRow(sep_row)
-                    sep_item = QTableWidgetItem(f"--- {label} ---")
-                    sep_item.setFlags(Qt.ItemIsEnabled)
-                    sep_font = QFont()
-                    sep_font.setBold(True)
-                    sep_item.setFont(sep_font)
-                    sep_item.setForeground(QBrush(QColor("#2E86AB")))
-                    self.results_table.setItem(sep_row, 0, sep_item)
-                    self.results_table.setSpan(sep_row, 0, 1, n_cols)
-                    sep_bg = QBrush(QColor("#EBF5FB"))
-                    for c in range(n_cols):
-                        item = self.results_table.item(sep_row, c)
-                        if item is None:
-                            item = QTableWidgetItem("")
-                            self.results_table.setItem(sep_row, c, item)
-                        item.setBackground(sep_bg)
-                _type_group_offset += 1
             sample_data = self.samples_grouped[sample_name]
             row = self.results_table.rowCount()
             self.results_table.insertRow(row)
@@ -797,16 +742,27 @@ class AnalyzePanel(QWidget):
             # Col 0: Sample name
             item_name = QTableWidgetItem(sample_name)
             item_name.setData(Qt.UserRole, sample_name)
+            self.results_table.setItem(row, 0, item_name)
+
+            # Col 1: Inj (injection indices)
             inj_indices = []
             for rk, rd in sorted(replicas.items()):
                 idx = rd.get("injection_index")
                 if idx is not None:
-                    inj_indices.append(f"R{rk}: inj #{idx}")
+                    inj_indices.append(str(idx))
+            inj_text = ", ".join(inj_indices) if inj_indices else "-"
+            inj_item = QTableWidgetItem(inj_text)
+            inj_item.setForeground(QBrush(QColor("#888")))
             if inj_indices:
-                item_name.setToolTip("Ordre injecció: " + ", ".join(inj_indices))
-            self.results_table.setItem(row, 0, item_name)
+                tip_parts = []
+                for rk, rd in sorted(replicas.items()):
+                    idx = rd.get("injection_index")
+                    if idx is not None:
+                        tip_parts.append(f"R{rk}: inj #{idx}")
+                inj_item.setToolTip("\n".join(tip_parts))
+            self.results_table.setItem(row, 1, inj_item)
 
-            # Col 1: Sel DOC — replica selector with (s) for suggested + "Cap" option
+            # Col 2: Sel DOC — replica selector with (s) for suggested + "Cap" option
             doc_combo = QComboBox()
             doc_combo.setStyleSheet("QComboBox { border: none; background: transparent; padding: 2px; }")
             for rep_num in sorted(replicas.keys()):
@@ -820,9 +776,9 @@ class AnalyzePanel(QWidget):
             doc_combo.currentIndexChanged.connect(
                 lambda idx, name=sample_name: self._on_doc_replica_changed(name)
             )
-            self.results_table.setCellWidget(row, 1, doc_combo)
+            self.results_table.setCellWidget(row, 2, doc_combo)
 
-            # Col 2: Sel DAD — replica selector with (s) for suggested + "Cap" option
+            # Col 3: Sel DAD — replica selector with (s) for suggested + "Cap" option
             dad_combo = QComboBox()
             dad_combo.setStyleSheet("QComboBox { border: none; background: transparent; padding: 2px; }")
             for rep_num in sorted(replicas.keys()):
@@ -836,34 +792,34 @@ class AnalyzePanel(QWidget):
             dad_combo.currentIndexChanged.connect(
                 lambda idx, name=sample_name: self._on_dad_replica_changed(name)
             )
-            self.results_table.setCellWidget(row, 2, dad_combo)
+            self.results_table.setCellWidget(row, 3, dad_combo)
 
             # --- DOC columns (from DOC replica) ---
 
-            # Col 3: A_DOC
+            # Col 4: A_DOC
             areas = doc_rep.get("areas") or {}
             doc_areas = areas.get("DOC") or {}
             area_direct = doc_areas.get("total", 0)
-            self.results_table.setItem(row, 3, QTableWidgetItem(
+            self.results_table.setItem(row, 4, QTableWidgetItem(
                 f"{area_direct:.0f}" if area_direct else "-"))
 
-            # Col 4: ppm
+            # Col 5: ppm
             ppm_direct = quantification.get("concentration_ppm_direct") or quantification.get("concentration_ppm")
-            self.results_table.setItem(row, 4, QTableWidgetItem(
+            self.results_table.setItem(row, 5, QTableWidgetItem(
                 f"{ppm_direct:.2f}" if ppm_direct else "-"))
 
-            # Col 5: A_UIB
+            # Col 6: A_UIB
             areas_uib = doc_rep.get("areas_uib") or {}
             area_uib = areas_uib.get("total", 0)
-            self.results_table.setItem(row, 5, QTableWidgetItem(
+            self.results_table.setItem(row, 6, QTableWidgetItem(
                 f"{area_uib:.0f}" if area_uib else "-"))
 
-            # Col 6: ppm_U
+            # Col 7: ppm_U
             ppm_uib = quantification.get("concentration_ppm_uib")
-            self.results_table.setItem(row, 6, QTableWidgetItem(
+            self.results_table.setItem(row, 7, QTableWidgetItem(
                 f"{ppm_uib:.2f}" if ppm_uib else "-"))
 
-            # Col 7: SNR (DOC Direct)
+            # Col 8: SNR (DOC Direct)
             snr_info = doc_rep.get("snr_info") or {}
             snr_direct = snr_info.get("snr_direct", 0)
             snr_item = QTableWidgetItem(f"{snr_direct:.0f}" if snr_direct else "-")
@@ -874,17 +830,17 @@ class AnalyzePanel(QWidget):
             snr_uib = snr_info.get("snr_uib", 0)
             if snr_uib:
                 snr_item.setToolTip(f"SNR UIB: {snr_uib:.0f}")
-            self.results_table.setItem(row, 7, snr_item)
+            self.results_table.setItem(row, 8, snr_item)
 
             # --- DAD columns (from DAD replica) ---
 
-            # Col 8: A_254
+            # Col 9: A_254
             dad_areas = (dad_rep.get("areas") or {})
             area_254 = (dad_areas.get("A254") or {}).get("total", 0)
-            self.results_table.setItem(row, 8, QTableWidgetItem(
+            self.results_table.setItem(row, 9, QTableWidgetItem(
                 f"{area_254:.1f}" if area_254 else "-"))
 
-            # Col 9: SNR_254
+            # Col 10: SNR_254
             snr_info_dad = dad_rep.get("snr_info_dad") or {}
             snr_254 = (snr_info_dad.get("A254") or {}).get("snr", 0)
             snr_254_item = QTableWidgetItem(f"{snr_254:.0f}" if snr_254 else "-")
@@ -892,18 +848,18 @@ class AnalyzePanel(QWidget):
                 snr_254_item.setForeground(QBrush(QColor(COLOR_ERROR)))
             elif snr_254 and snr_254 < 50:
                 snr_254_item.setForeground(QBrush(QColor(COLOR_WARNING)))
-            self.results_table.setItem(row, 9, snr_254_item)
+            self.results_table.setItem(row, 10, snr_254_item)
 
             # --- Correlation columns (sample-level, not replica-specific) ---
 
-            # Col 10: R²_DOC
+            # Col 11: R2_DOC
             r2_doc = comparison.get("doc", {}).get("pearson", 0) if comparison else 0
             r2_doc_item = QTableWidgetItem(f"{r2_doc:.4f}" if r2_doc > 0 else "-")
             if 0 < r2_doc < 0.990:
                 r2_doc_item.setForeground(QBrush(QColor(COLOR_WARNING)))
-            self.results_table.setItem(row, 10, r2_doc_item)
+            self.results_table.setItem(row, 11, r2_doc_item)
 
-            # Col 11: R²_DAD (min across wavelengths)
+            # Col 12: R2_DAD (min across wavelengths)
             dad_comp = comparison.get("dad", {}) if comparison else {}
             r2_dad_min = dad_comp.get("pearson_min", 0)
             wl_min = dad_comp.get("wavelength_min", "")
@@ -920,19 +876,18 @@ class AnalyzePanel(QWidget):
             if pearson_per_wl:
                 tip_lines = []
                 for wl, val in sorted(pearson_per_wl.items()):
-                    marker = " ← min" if str(wl) == str(wl_min) else ""
-                    warn = " ⚠" if val < 0.990 else ""
+                    marker = " <- min" if str(wl) == str(wl_min) else ""
+                    warn = " !" if val < 0.990 else ""
                     tip_lines.append(f"A{wl}: {val:.4f}{warn}{marker}")
                 r2_dad_item.setToolTip("\n".join(tip_lines))
-            self.results_table.setItem(row, 11, r2_dad_item)
+            self.results_table.setItem(row, 12, r2_dad_item)
 
-            # Col 12: HCI (Humic Character Index)
+            # Col 13: HCI (Humic Character Index)
             hci_val = quantification.get("hci")
             if hci_val is not None:
                 hci_char = quantification.get("hci_character", "")
                 abbrev = "HA" if "HA" in hci_char else "FA" if "FA" in hci_char else "Mix"
                 hci_item = QTableWidgetItem(f"{hci_val:.1f} {abbrev}")
-                # Color de fons segons caràcter
                 if hci_val > 60:
                     hci_item.setBackground(QBrush(QColor("#FADBD8")))
                 elif hci_val < 40:
@@ -944,235 +899,40 @@ class AnalyzePanel(QWidget):
                     f"Model PCA+LDA v2.0")
             else:
                 hci_item = QTableWidgetItem("-")
-            self.results_table.setItem(row, 12, hci_item)
+            self.results_table.setItem(row, 13, hci_item)
 
-            # Col 13: Estat (considers both DOC and DAD replicas)
+            # Col 14: Estat (considers both DOC and DAD replicas)
             status_color, status_text, tooltip = self._classify_sample_status(
                 doc_rep, dad_rep, comparison, sample_data=sample_data)
             status_item = QTableWidgetItem(status_text)
             status_item.setForeground(QBrush(QColor(status_color)))
             status_item.setToolTip(tooltip)
-            self.results_table.setItem(row, 13, status_item)
+            self.results_table.setItem(row, 14, status_item)
 
-            # Count stats (blancs apart)
-            sample_data_st = sample_data.get("sample_type", "SAMPLE")
-            if sample_data_st == "BLANK":
-                n_blank += 1
-            elif status_color == COLOR_ERROR:
-                n_error += 1
-            elif status_color == COLOR_WARNING:
-                n_warning += 1
-            else:
-                n_ok += 1
-
-        # --- Separator + KHP STANDARDS (only if toggle active and not SEQ_CAL) ---
-        if khp_names and show_khp and not is_seq_cal:
-            n_cols = self.results_table.columnCount()
-
-            # Títol separator
-            sep_title = "--- KHP STANDARDS ---"
-            sep_row = self.results_table.rowCount()
-            self.results_table.insertRow(sep_row)
-            sep_item = QTableWidgetItem(sep_title)
-            sep_item.setFlags(Qt.ItemIsEnabled)
-            sep_font = QFont()
-            sep_font.setBold(True)
-            sep_item.setFont(sep_font)
-            sep_item.setForeground(QBrush(QColor("#1565C0")))
-            self.results_table.setItem(sep_row, 0, sep_item)
-            self.results_table.setSpan(sep_row, 0, 1, n_cols)
-            sep_bg = QBrush(QColor("#E3F2FD"))
-            for c in range(n_cols):
-                item = self.results_table.item(sep_row, c)
-                if item is None:
-                    item = QTableWidgetItem("")
-                    self.results_table.setItem(sep_row, c, item)
-                item.setBackground(sep_bg)
-
-            for sample_name in khp_names:
-                sample_data = self.samples_grouped[sample_name]
-                row = self.results_table.rowCount()
-                self.results_table.insertRow(row)
-                self._sample_row_map[sample_name] = row
-
-                replicas = sample_data.get("replicas") or {}
-                selected = sample_data.get("selected") or {}
-                doc_sel = selected.get("doc", sorted(replicas.keys())[0] if replicas else "1")
-                doc_rep = replicas.get(doc_sel, {})
-
-                # Col 0: Sample name
-                item_name = QTableWidgetItem(sample_name)
-                item_name.setData(Qt.UserRole, sample_name)
-                inj_indices = []
-                for rk, rd in sorted(replicas.items()):
-                    idx = rd.get("injection_index")
-                    if idx is not None:
-                        inj_indices.append(f"R{rk}: inj #{idx}")
-                if inj_indices:
-                    item_name.setToolTip("Ordre injecció: " + ", ".join(inj_indices))
-                self.results_table.setItem(row, 0, item_name)
-
-                # Col 1-2: No selectors for KHP
-                self.results_table.setItem(row, 1, QTableWidgetItem("-"))
-                self.results_table.setItem(row, 2, QTableWidgetItem("-"))
-
-                # Col 3: A_DOC
-                areas = doc_rep.get("areas", {})
-                area_doc = (areas.get("DOC") or {}).get("total", 0) if areas else 0
-                area_item = QTableWidgetItem(f"{area_doc:.0f}" if area_doc else "-")
-                self.results_table.setItem(row, 3, area_item)
-
-                # Col 4-6: no aplica per KHP en mode normal
-                for c in (4, 5, 6):
-                    self.results_table.setItem(row, c, QTableWidgetItem("-"))
-
-                # Col 7: SNR
-                snr_info = doc_rep.get("snr_info", {})
-                snr = snr_info.get("snr_direct", 0) if snr_info else 0
-                snr_item = QTableWidgetItem(f"{snr:.0f}" if snr else "-")
-                if snr and snr < 10:
-                    snr_item.setForeground(QBrush(QColor(COLOR_ERROR)))
-                elif snr and snr < 50:
-                    snr_item.setForeground(QBrush(QColor(COLOR_WARNING)))
-                self.results_table.setItem(row, 7, snr_item)
-
-                # Col 8: A_254
-                a254 = 0
-                if areas:
-                    a254 = ((areas.get("254nm") or {}).get("total", 0) or
-                            (areas.get("A254") or {}).get("total", 0))
-                a254_item = QTableWidgetItem(f"{a254:.0f}" if a254 else "-")
-                self.results_table.setItem(row, 8, a254_item)
-
-                # Col 9: SNR_254
-                snr_254 = snr_info.get("snr_254", 0) if snr_info else 0
-                snr254_item = QTableWidgetItem(f"{snr_254:.0f}" if snr_254 else "-")
-                if snr_254 and snr_254 < 10:
-                    snr254_item.setForeground(QBrush(QColor(COLOR_ERROR)))
-                elif snr_254 and snr_254 < 50:
-                    snr254_item.setForeground(QBrush(QColor(COLOR_WARNING)))
-                self.results_table.setItem(row, 9, snr254_item)
-
-                # Col 10-11: No R² comparison
-                self.results_table.setItem(row, 10, QTableWidgetItem("-"))
-                self.results_table.setItem(row, 11, QTableWidgetItem("-"))
-
-                # Col 12: HCI (not applicable for KHP)
-                self.results_table.setItem(row, 12, QTableWidgetItem("-"))
-
-                # Col 13: KHP type
-                type_item = QTableWidgetItem("KHP")
-                type_item.setForeground(QBrush(QColor("#1565C0")))
-                self.results_table.setItem(row, 13, type_item)
-
-                # Blue-tinted background
-                khp_bg = QBrush(QColor("#E8F4FD"))
-                for c in range(n_cols):
-                    item = self.results_table.item(row, c)
-                    if item:
-                        item.setBackground(khp_bg)
-
-                n_khp += 1
-
-        # --- Separator + BLANCS (MQ, H2O...) — only if toggle active ---
-        if blank_names and show_blank:
-            n_cols = self.results_table.columnCount()
-
-            sep_row = self.results_table.rowCount()
-            self.results_table.insertRow(sep_row)
-            sep_item = QTableWidgetItem("--- BLANCS / MQ ---")
-            sep_item.setFlags(Qt.ItemIsEnabled)
-            sep_font = QFont()
-            sep_font.setBold(True)
-            sep_item.setFont(sep_font)
-            sep_item.setForeground(QBrush(QColor("#7f8c8d")))
-            self.results_table.setItem(sep_row, 0, sep_item)
-            self.results_table.setSpan(sep_row, 0, 1, n_cols)
-            sep_bg = QBrush(QColor("#EAECEE"))
-            for c in range(n_cols):
-                item = self.results_table.item(sep_row, c)
-                if item is None:
-                    item = QTableWidgetItem("")
-                    self.results_table.setItem(sep_row, c, item)
-                item.setBackground(sep_bg)
-
-            for sample_name in blank_names:
-                sample_data = self.samples_grouped[sample_name]
-                row = self.results_table.rowCount()
-                self.results_table.insertRow(row)
-                self._sample_row_map[sample_name] = row
-
-                replicas = sample_data.get("replicas") or {}
-                comparison = sample_data.get("comparison") or {}
-                recommendation = sample_data.get("recommendation") or {}
-                selected = sample_data.get("selected") or {"doc": "1", "dad": "1"}
-                quantification = sample_data.get("quantification") or {}
-
-                doc_sel = selected.get("doc", sorted(replicas.keys())[0] if replicas else "1")
-                dad_sel = selected.get("dad", doc_sel)
-                doc_rep = replicas.get(doc_sel, {})
-                dad_rep = replicas.get(dad_sel, {})
-
-                # Col 0: Sample name
-                item_name = QTableWidgetItem(sample_name)
-                item_name.setData(Qt.UserRole, sample_name)
-                self.results_table.setItem(row, 0, item_name)
-
-                # Col 1-2: No selectors for blancs
-                self.results_table.setItem(row, 1, QTableWidgetItem("-"))
-                self.results_table.setItem(row, 2, QTableWidgetItem("-"))
-
-                # Col 3: A_DOC
-                areas = doc_rep.get("areas") or {}
-                doc_areas = areas.get("DOC") or {}
-                area_direct = doc_areas.get("total", 0) or doc_rep.get("area_total", 0)
-                self.results_table.setItem(row, 3, QTableWidgetItem(
-                    f"{area_direct:.0f}" if area_direct else "-"))
-
-                # Col 4: ppm
-                ppm = quantification.get("concentration_ppm")
-                self.results_table.setItem(row, 4, QTableWidgetItem(
-                    f"{ppm:.2f}" if ppm else "-"))
-
-                # Col 5-6: UIB
-                for c in (5, 6):
-                    self.results_table.setItem(row, c, QTableWidgetItem("-"))
-
-                # Col 7: SNR
-                snr_info = doc_rep.get("snr_info") or {}
-                snr = snr_info.get("snr_direct", 0) or doc_rep.get("snr", 0)
-                snr_item = QTableWidgetItem(f"{snr:.0f}" if snr else "-")
-                if snr and snr < 10:
-                    snr_item.setForeground(QBrush(QColor(COLOR_ERROR)))
-                elif snr and snr < 50:
-                    snr_item.setForeground(QBrush(QColor(COLOR_WARNING)))
-                self.results_table.setItem(row, 7, snr_item)
-
-                # Col 8-12: No DAD, no R², no HCI
-                for c in (8, 9, 10, 11, 12):
-                    self.results_table.setItem(row, c, QTableWidgetItem("-"))
-
-                # Col 13: Tipus
-                type_item = QTableWidgetItem("Blanc")
-                type_item.setForeground(QBrush(QColor("#7f8c8d")))
-                self.results_table.setItem(row, 13, type_item)
-
-                # Light grey background
+            # Apply background for blanks
+            if is_blank:
                 blank_bg = QBrush(QColor("#F4F6F6"))
-                for c in range(n_cols):
+                for c in range(self.results_table.columnCount()):
                     item = self.results_table.item(row, c)
                     if item:
                         item.setBackground(blank_bg)
-
                 n_blank += 1
+            else:
+                # Count stats for regular samples
+                if status_color == COLOR_ERROR:
+                    n_error += 1
+                elif status_color == COLOR_WARNING:
+                    n_warning += 1
+                else:
+                    n_ok += 1
 
-        # --- Separator + Light samples (CONTROL) — only if toggle active ---
-        if light_names and show_control:
+        # --- CONTROL (light analysis) separator + simplified rows ---
+        if control_names and show_control:
             n_cols = self.results_table.columnCount()
             sep_row = self.results_table.rowCount()
             self.results_table.insertRow(sep_row)
             sep_item = QTableWidgetItem("--- NETEJA ---")
-            sep_item.setFlags(Qt.ItemIsEnabled)  # Non-selectable
+            sep_item.setFlags(Qt.ItemIsEnabled)
             sep_font = QFont()
             sep_font.setBold(True)
             sep_item.setFont(sep_font)
@@ -1187,7 +947,7 @@ class AnalyzePanel(QWidget):
                     self.results_table.setItem(sep_row, c, item)
                 item.setBackground(sep_bg)
 
-            for sample_name in light_names:
+            for sample_name in control_names:
                 sample_data = self.samples_grouped[sample_name]
                 row = self.results_table.rowCount()
                 self.results_table.insertRow(row)
@@ -1197,53 +957,52 @@ class AnalyzePanel(QWidget):
                 selected = sample_data.get("selected") or {}
                 doc_sel = selected.get("doc", sorted(replicas.keys())[0] if replicas else "1")
                 doc_rep = replicas.get(doc_sel, {})
-                sample_type = sample_data.get("sample_type", "BLANK")
 
                 # Col 0: Sample name
                 item_name = QTableWidgetItem(sample_name)
                 item_name.setData(Qt.UserRole, sample_name)
+                self.results_table.setItem(row, 0, item_name)
+
+                # Col 1: Inj
                 inj_indices = []
                 for rk, rd in sorted(replicas.items()):
                     idx = rd.get("injection_index")
                     if idx is not None:
-                        inj_indices.append(f"R{rk}: inj #{idx}")
-                if inj_indices:
-                    item_name.setToolTip("Ordre injecció: " + ", ".join(inj_indices))
-                self.results_table.setItem(row, 0, item_name)
+                        inj_indices.append(str(idx))
+                inj_item = QTableWidgetItem(", ".join(inj_indices) if inj_indices else "-")
+                inj_item.setForeground(QBrush(QColor("#888")))
+                self.results_table.setItem(row, 1, inj_item)
 
-                # Col 1-2: No selectors for light samples
-                self.results_table.setItem(row, 1, QTableWidgetItem("-"))
+                # Col 2-3: No selectors for control
                 self.results_table.setItem(row, 2, QTableWidgetItem("-"))
+                self.results_table.setItem(row, 3, QTableWidgetItem("-"))
 
-                # Col 3: A_DOC (area_total from light analysis)
+                # Col 4: A_DOC (area_total from light analysis)
                 area_total = doc_rep.get("area_total", 0)
-                self.results_table.setItem(row, 3, QTableWidgetItem(
+                self.results_table.setItem(row, 4, QTableWidgetItem(
                     f"{area_total:.0f}" if area_total else "-"))
 
-                # Col 4-6: No ppm, no UIB
-                for c in (4, 5, 6):
+                # Col 5-7: No ppm, no UIB
+                for c in (5, 6, 7):
                     self.results_table.setItem(row, c, QTableWidgetItem("-"))
 
-                # Col 7: SNR (color-coded same as regular)
+                # Col 8: SNR
                 snr = doc_rep.get("snr", 0)
                 snr_item = QTableWidgetItem(f"{snr:.0f}" if snr else "-")
                 if snr and snr < 10:
                     snr_item.setForeground(QBrush(QColor(COLOR_ERROR)))
                 elif snr and snr < 50:
                     snr_item.setForeground(QBrush(QColor(COLOR_WARNING)))
-                self.results_table.setItem(row, 7, snr_item)
+                self.results_table.setItem(row, 8, snr_item)
 
-                # Col 8-11: No DAD, no R²
-                for c in (8, 9, 10, 11):
+                # Col 9-13: No DAD, no R2, no HCI
+                for c in (9, 10, 11, 12, 13):
                     self.results_table.setItem(row, c, QTableWidgetItem("-"))
 
-                # Col 12: HCI (not applicable for light samples)
-                self.results_table.setItem(row, 12, QTableWidgetItem("-"))
-
-                # Col 13: Neteja
+                # Col 14: Neteja
                 type_item = QTableWidgetItem("Neteja")
                 type_item.setForeground(QBrush(QColor("#888888")))
-                self.results_table.setItem(row, 13, type_item)
+                self.results_table.setItem(row, 14, type_item)
 
                 # Light grey background
                 light_bg = QBrush(QColor("#F0F0F0"))
@@ -1252,25 +1011,23 @@ class AnalyzePanel(QWidget):
                     if item:
                         item.setBackground(light_bg)
 
-                n_light += 1
+                n_control += 1
 
-        # Update stats (unified at top, in status_indicator)
+        # Update stats
         total = n_ok + n_warning + n_error
         parts = [f"<b>{total}</b> mostres"]
         if n_blank > 0:
             parts.append(f"{n_blank} blancs")
-        if n_khp > 0:
-            parts.append(f"{n_khp} KHP")
-        if n_light > 0:
-            parts.append(f"{n_light} neteja")
+        if n_control > 0:
+            parts.append(f"{n_control} neteja")
         counts = " &middot; ".join(parts)
 
         status_parts = []
-        status_parts.append(f"<span style='color:#27AE60'>\u25cf</span>&nbsp;{n_ok}")
+        status_parts.append(f"<span style='color:#27AE60'>*</span>&nbsp;{n_ok}")
         if n_warning > 0:
-            status_parts.append(f"<span style='color:#F39C12'>\u25cf</span>&nbsp;{n_warning}")
+            status_parts.append(f"<span style='color:#F39C12'>*</span>&nbsp;{n_warning}")
         if n_error > 0:
-            status_parts.append(f"<span style='color:#E74C3C'>\u25cf</span>&nbsp;{n_error}")
+            status_parts.append(f"<span style='color:#E74C3C'>*</span>&nbsp;{n_error}")
         status_str = " &nbsp;".join(status_parts)
 
         self.status_indicator.setText(
@@ -1418,36 +1175,6 @@ class AnalyzePanel(QWidget):
         return status_color, status_text, tooltip
 
     # ------------------------------------------------------------------
-    # Group mode change
-    # ------------------------------------------------------------------
-
-    def _style_group_btns(self):
-        """Aplica estil als botons toggle d'agrupació."""
-        for i, btn in enumerate(self._group_btns):
-            if i == self._group_mode:
-                btn.setStyleSheet(
-                    "QPushButton { background-color: #2E86AB; color: white; "
-                    "font-weight: bold; padding: 3px 12px; border-radius: 3px; "
-                    "border: none; font-size: 10px; }"
-                )
-            else:
-                btn.setStyleSheet(
-                    "QPushButton { background-color: #e9ecef; color: #495057; "
-                    "padding: 3px 12px; border-radius: 3px; "
-                    "border: 1px solid #ced4da; font-size: 10px; }"
-                    "QPushButton:hover { background-color: #dee2e6; }"
-                )
-
-    def _on_group_btn(self, idx):
-        """Canvia el mode d'agrupació i reomple la taula."""
-        self._group_mode = idx
-        for i, btn in enumerate(self._group_btns):
-            btn.setChecked(i == idx)
-        self._style_group_btns()
-        if self.samples_grouped:
-            self._populate_table()
-
-    # ------------------------------------------------------------------
     # Replica change (separate DOC / DAD handlers)
     # ------------------------------------------------------------------
 
@@ -1458,7 +1185,7 @@ class AnalyzePanel(QWidget):
         row = self._sample_row_map.get(sample_name)
         if row is None:
             return
-        combo = self.results_table.cellWidget(row, 1)
+        combo = self.results_table.cellWidget(row, 2)
         if combo:
             new_replica = combo.currentData()
             self.samples_grouped[sample_name]["selected"]["doc"] = new_replica
@@ -1487,7 +1214,7 @@ class AnalyzePanel(QWidget):
         row = self._sample_row_map.get(sample_name)
         if row is None:
             return
-        combo = self.results_table.cellWidget(row, 2)
+        combo = self.results_table.cellWidget(row, 3)
         if combo:
             new_replica = combo.currentData()
             self.samples_grouped[sample_name]["selected"]["dad"] = new_replica
@@ -1495,7 +1222,7 @@ class AnalyzePanel(QWidget):
             self._update_estat_column(row, sample_name)
 
     def _update_doc_columns(self, row, sample_name):
-        """Actualitza columnes DOC (3-7) quan canvia la r\u00e8plica DOC."""
+        """Actualitza columnes DOC (4-8) quan canvia la r\u00e8plica DOC."""
         sample_data = self.samples_grouped[sample_name]
         selected = sample_data.get("selected", {})
         doc_sel = selected.get("doc", "1")
@@ -1503,11 +1230,11 @@ class AnalyzePanel(QWidget):
 
         # "Cap" seleccionat → buidar columnes
         if doc_sel == "none":
-            for col in (3, 4, 5, 6, 7, 12):
+            for col in (4, 5, 6, 7, 8, 13):
                 item = self.results_table.item(row, col)
                 if item:
                     item.setText("-")
-                    if col == 12:
+                    if col == 13:
                         item.setBackground(QBrush(QColor("#FFFFFF")))
                         item.setToolTip("")
             return
@@ -1519,26 +1246,26 @@ class AnalyzePanel(QWidget):
         doc_areas = areas.get("DOC") or {}
         areas_uib = doc_rep.get("areas_uib") or {}
 
-        # Col 3: A_DOC
+        # Col 4: A_DOC
         area_direct = doc_areas.get("total", 0)
-        self.results_table.item(row, 3).setText(f"{area_direct:.0f}" if area_direct else "-")
+        self.results_table.item(row, 4).setText(f"{area_direct:.0f}" if area_direct else "-")
 
-        # Col 4: ppm
+        # Col 5: ppm
         ppm_direct = quantification.get("concentration_ppm_direct") or quantification.get("concentration_ppm")
-        self.results_table.item(row, 4).setText(f"{ppm_direct:.2f}" if ppm_direct else "-")
+        self.results_table.item(row, 5).setText(f"{ppm_direct:.2f}" if ppm_direct else "-")
 
-        # Col 5: A_UIB
+        # Col 6: A_UIB
         area_uib = areas_uib.get("total", 0)
-        self.results_table.item(row, 5).setText(f"{area_uib:.0f}" if area_uib else "-")
+        self.results_table.item(row, 6).setText(f"{area_uib:.0f}" if area_uib else "-")
 
-        # Col 6: ppm_U
+        # Col 7: ppm_U
         ppm_uib = quantification.get("concentration_ppm_uib")
-        self.results_table.item(row, 6).setText(f"{ppm_uib:.2f}" if ppm_uib else "-")
+        self.results_table.item(row, 7).setText(f"{ppm_uib:.2f}" if ppm_uib else "-")
 
-        # Col 7: SNR (DOC Direct)
+        # Col 8: SNR (DOC Direct)
         snr_info = doc_rep.get("snr_info") or {}
         snr_direct = snr_info.get("snr_direct", 0)
-        snr_item = self.results_table.item(row, 7)
+        snr_item = self.results_table.item(row, 8)
         if snr_item:
             snr_item.setText(f"{snr_direct:.0f}" if snr_direct else "-")
             if snr_direct and snr_direct < 10:
@@ -1550,8 +1277,8 @@ class AnalyzePanel(QWidget):
             snr_uib = snr_info.get("snr_uib", 0)
             snr_item.setToolTip(f"SNR UIB: {snr_uib:.0f}" if snr_uib else "")
 
-        # Col 12: HCI (update from new quantification)
-        hci_item = self.results_table.item(row, 12)
+        # Col 13: HCI (update from new quantification)
+        hci_item = self.results_table.item(row, 13)
         if hci_item:
             hci_val = quantification.get("hci")
             if hci_val is not None:
@@ -1573,24 +1300,24 @@ class AnalyzePanel(QWidget):
                 hci_item.setToolTip("")
 
     def _update_dad_columns(self, row, sample_name):
-        """Actualitza columnes DAD (8-9) quan canvia la rèplica DAD."""
+        """Actualitza columnes DAD (9-10) quan canvia la rèplica DAD."""
         sample_data = self.samples_grouped[sample_name]
         selected = sample_data.get("selected", {})
         dad_sel = selected.get("dad", "1")
         replicas = sample_data.get("replicas", {})
         dad_rep = replicas.get(dad_sel, {})
 
-        # Col 8: A_254
+        # Col 9: A_254
         dad_areas = (dad_rep.get("areas") or {})
         area_254 = (dad_areas.get("A254") or {}).get("total", 0)
-        item_8 = self.results_table.item(row, 8)
-        if item_8:
-            item_8.setText(f"{area_254:.1f}" if area_254 else "-")
+        item_9 = self.results_table.item(row, 9)
+        if item_9:
+            item_9.setText(f"{area_254:.1f}" if area_254 else "-")
 
-        # Col 9: SNR_254
+        # Col 10: SNR_254
         snr_info_dad = dad_rep.get("snr_info_dad") or {}
         snr_254 = (snr_info_dad.get("A254") or {}).get("snr", 0)
-        snr_254_item = self.results_table.item(row, 9)
+        snr_254_item = self.results_table.item(row, 10)
         if snr_254_item:
             snr_254_item.setText(f"{snr_254:.0f}" if snr_254 else "-")
             if snr_254 and snr_254 < 10:
@@ -1601,7 +1328,7 @@ class AnalyzePanel(QWidget):
                 snr_254_item.setForeground(QBrush(QColor("#000000")))
 
     def _update_estat_column(self, row, sample_name):
-        """Actualitza la columna Estat (col 13) considerant ambdues rèpliques."""
+        """Actualitza la columna Estat (col 14) considerant ambdues rèpliques."""
         sample_data = self.samples_grouped[sample_name]
         selected = sample_data.get("selected", {})
         replicas = sample_data.get("replicas", {})
@@ -1611,7 +1338,7 @@ class AnalyzePanel(QWidget):
 
         status_color, status_text, tooltip = self._classify_sample_status(
             doc_rep, dad_rep, comparison, sample_data=sample_data)
-        status_item = self.results_table.item(row, 13)
+        status_item = self.results_table.item(row, 14)
         if status_item:
             status_item.setText(status_text)
             status_item.setForeground(QBrush(QColor(status_color)))
@@ -1695,8 +1422,8 @@ class AnalyzePanel(QWidget):
     # ------------------------------------------------------------------
 
     def _on_table_cell_click(self, row, col):
-        """Handler per clic a cel·la — col 13 (Estat) obre diàleg reparació si aplicable."""
-        if col != 13:
+        """Handler per clic a cel·la — col 14 (Estat) obre diàleg reparació si aplicable."""
+        if col != 14:
             return
         item = self.results_table.item(row, 0)
         if not item:
@@ -1894,12 +1621,12 @@ class AnalyzePanel(QWidget):
         control = {}
         khp = {}
         for name, data in samples_grouped.items():
-            if data.get("analysis_type") == "khp":
+            st = data.get("sample_type", "SAMPLE")
+            if st == "KHP":
                 khp[name] = data
-            elif data.get("sample_type") == "BLANK":
+            elif st == "BLANK":
                 blank[name] = data
-            elif (data.get("sample_type") == "CONTROL"
-                  or data.get("analysis_type") == "light"):
+            elif st == "CONTROL":
                 control[name] = data
             else:
                 regular[name] = data
@@ -1984,11 +1711,9 @@ class AnalyzePanel(QWidget):
         if self._charts_initialized:
             checked = self._get_checked_samples()
             reg = {k: v for k, v in checked.items()
-                   if v.get("sample_type") not in ("BLANK", "CONTROL")
-                   and v.get("analysis_type") not in ("light",)}
+                   if v.get("sample_type") not in ("BLANK", "CONTROL")}
             light = {k: v for k, v in checked.items()
-                     if v.get("sample_type") in ("BLANK", "CONTROL")
-                     or v.get("analysis_type") == "light"}
+                     if v.get("sample_type") in ("BLANK", "CONTROL")}
             try:
                 self._plot_dad_chart(reg, light)
                 self._plot_dad_overlay(reg, light)
@@ -2022,11 +1747,9 @@ class AnalyzePanel(QWidget):
             return
         checked = self._get_checked_samples()
         reg = {k: v for k, v in checked.items()
-               if v.get("sample_type") not in ("BLANK", "CONTROL")
-               and v.get("analysis_type") not in ("light",)}
+               if v.get("sample_type") not in ("BLANK", "CONTROL")}
         light = {k: v for k, v in checked.items()
-                 if v.get("sample_type") in ("BLANK", "CONTROL")
-                 or v.get("analysis_type") == "light"}
+                 if v.get("sample_type") in ("BLANK", "CONTROL")}
         is_bp = getattr(self, '_chart_is_bp', False)
         try:
             self._plot_doc_chart(reg, light, is_bp)
@@ -2250,13 +1973,12 @@ class AnalyzePanel(QWidget):
     def _get_line_style(data):
         """Retorna l'estil de línia segons el tipus de mostra."""
         st = data.get("sample_type", "SAMPLE")
-        at = data.get("analysis_type", "")
-        if at == "khp":
+        if st == "KHP":
             return '--'  # KHP: discontínua
-        elif st == "BLANK" or at == "light":
+        elif st in ("BLANK", "CONTROL"):
             return ':'   # Blanc/Control: punts
-        elif st.startswith("PR") or st == "CONTROL":
-            return '-.'  # PR/Control: punt-ratlla
+        elif st.startswith("PR"):
+            return '-.'  # PR: punt-ratlla
         return '-'       # Mostres: sòlida
 
     def _plot_doc_overlay(self, regular, light, is_bp):

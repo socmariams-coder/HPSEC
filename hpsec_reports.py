@@ -4254,10 +4254,6 @@ def _ana_restore_arrays(data):
 
     for sample in data.get("samples", []):
         _restore_sample(sample)
-    for sample in data.get("khp_samples", []):
-        _restore_sample(sample)
-    for sample in data.get("control_samples", []):
-        _restore_sample(sample)
     for sample_data in data.get("samples_grouped", {}).values():
         for rep_data in sample_data.get("replicas", {}).values():
             _restore_sample(rep_data)

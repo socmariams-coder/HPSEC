@@ -1683,8 +1683,9 @@ def analyze_sample(sample_data, calibration_data=None, config=None):
     result = {
         "name": sample_name,
         "replica": sample_data.get("replica", "1"),
-        "inj_volume": sample_data.get("inj_volume"),  # Preservar per quantificació
-        "injection_index": sample_data.get("injection_index"),  # Ordre d'injecció
+        "sample_type": sample_data.get("sample_type", "SAMPLE"),
+        "inj_volume": sample_data.get("inj_volume"),
+        "injection_index": sample_data.get("injection_index"),
         "processed": False,
         "anomalies": [],
     }
@@ -2257,23 +2258,10 @@ def _flatten_samples_for_processing(imported_data, data_mode="DUAL"):
         data_mode: "DUAL", "UIB" o "DIRECT"
 
     Returns:
-        tuple de 4 llistes: (samples, khp_samples, control_samples, light_samples)
-        Cada element és un dict amb:
-            - name: Nom de la mostra
-            - replica: Número de rèplica
-            - t_doc: Array de temps
-            - y_doc_direct / y_doc_uib / y_doc: Arrays de senyal RAW segons mode
-            - y_doc_net / y_doc_uib_net: Arrays amb baseline restada (si disponible)
-            - baseline_uib: Valor de baseline aplicat (si disponible)
-            - df_dad: DataFrame DAD (si disponible)
-
-    Nota: En mode DUAL, si direct no està disponible (encara no extret del master),
-          s'usa UIB com a senyal principal per permetre processar igualment.
+        Llista única de flat_samples, cadascun amb sample_type per decidir
+        analyze_sample (SAMPLE/BLANK/KHP/PR_*) o _analyze_light_sample (CONTROL).
     """
-    samples = []
-    khp_samples = []
-    control_samples = []  # Kept empty for backward compat (result dict still has the key)
-    light_samples = []    # CONTROL → lightweight analysis (BLANK ara va a samples regulars)
+    all_flat = []
 
     # Sensibilitat UIB (700 o 1000 ppb) — per detectar saturació
     uib_sensitivity = imported_data.get("uib_sensitivity")
@@ -2385,15 +2373,9 @@ def _flatten_samples_for_processing(imported_data, data_mode="DUAL"):
             if dad.get("path"):
                 flat_sample["dad_export3d_path"] = dad["path"]
 
-            # Classificar segons tipus
-            if sample_type == "KHP":
-                khp_samples.append(flat_sample)
-            elif sample_type == "CONTROL":
-                light_samples.append(flat_sample)
-            else:
-                samples.append(flat_sample)
+            all_flat.append(flat_sample)
 
-    return samples, khp_samples, control_samples, light_samples
+    return all_flat
 
 
 # =============================================================================
@@ -2628,7 +2610,7 @@ def _estimate_uib_timeouts_from_sequence(result, is_bp=False):
     """
     from hpsec_core import estimate_timeout_for_uib
 
-    all_samples = result.get("samples", []) + result.get("khp_samples", [])
+    all_samples = result.get("samples", [])
     if not all_samples:
         return
 
@@ -2779,9 +2761,6 @@ def analyze_sequence(imported_data, calibration_data=None, config=None, progress
         "method": imported_data.get("method", "UNKNOWN"),
         "data_mode": imported_data.get("data_mode", "UNKNOWN"),
         "samples": [],
-        "khp_samples": [],
-        "control_samples": [],
-        "light_samples": [],
         "errors": [],
         "warnings": [],
     }
@@ -2793,12 +2772,9 @@ def analyze_sequence(imported_data, calibration_data=None, config=None, progress
 
     # Aplanar l'estructura de mostres
     data_mode = imported_data.get("data_mode", "UIB")
-    all_samples, khp_samples, control_samples, light_samples = _flatten_samples_for_processing(
-        imported_data, data_mode=data_mode
-    )
+    all_flat = _flatten_samples_for_processing(imported_data, data_mode=data_mode)
 
-    total_samples = len(all_samples) + len(khp_samples) + len(control_samples) + len(light_samples)
-    if total_samples == 0:
+    if len(all_flat) == 0:
         result["errors"].append("No samples to process")
         return result
 
@@ -2836,65 +2812,26 @@ def analyze_sequence(imported_data, calibration_data=None, config=None, progress
         # Fallback: usar calibration_data passat (compatibilitat)
         return calibration_data
 
-    # Processar mostres regulars
-    processed_count = 0
-    for i, sample in enumerate(all_samples):
+    # Processar totes les mostres — un sol bucle
+    total_samples = len(all_flat)
+    for i, sample in enumerate(all_flat):
         if progress_callback:
-            progress_callback(f"Processing {sample.get('name', 'sample')}...", (i + 1) / total_samples * 100)
+            progress_callback(f"Processing {sample.get('name', 'sample')}...",
+                              (i + 1) / total_samples * 100)
 
+        sample_type = sample.get("sample_type", "SAMPLE")
         try:
-            # Seleccionar calibració segons volum d'injecció de la mostra
-            sample_cal = get_sample_calibration(sample)
-            processed = analyze_sample(sample, sample_cal, config)
+            if sample_type == "CONTROL":
+                processed = _analyze_light_sample(sample)
+            else:
+                sample_cal = get_sample_calibration(sample)
+                processed = analyze_sample(sample, sample_cal, config)
+                if not processed.get("processed"):
+                    result["warnings"].append(
+                        f"{sample.get('name')}: {processed.get('error', 'Processing failed')}")
             result["samples"].append(processed)
-
-            if not processed.get("processed"):
-                result["warnings"].append(f"{sample.get('name')}: {processed.get('error', 'Processing failed')}")
-
         except Exception as e:
             result["errors"].append(f"{sample.get('name')}: {str(e)}")
-
-        processed_count += 1
-
-    # Processar KHP
-    for i, khp in enumerate(khp_samples):
-        if progress_callback:
-            progress_callback(f"Processing KHP {khp.get('name', '')}...", (processed_count + i + 1) / total_samples * 100)
-
-        try:
-            sample_cal = get_sample_calibration(khp)
-            processed = analyze_sample(khp, sample_cal, config)
-            result["khp_samples"].append(processed)
-        except Exception as e:
-            result["errors"].append(f"KHP {khp.get('name')}: {str(e)}")
-
-        processed_count += 1
-
-    # Processar controls (backward compat — control_samples queda buit, van a light)
-    for i, ctrl in enumerate(control_samples):
-        if progress_callback:
-            progress_callback(f"Processing {ctrl.get('name', '')}...", (processed_count + i + 1) / total_samples * 100)
-
-        try:
-            sample_cal = get_sample_calibration(ctrl)
-            processed = analyze_sample(ctrl, sample_cal, config)
-            result["control_samples"].append(processed)
-        except Exception as e:
-            result["errors"].append(f"Control {ctrl.get('name')}: {str(e)}")
-
-    # Processar light samples (CONTROL) — anàlisi lleugera
-    for i, light in enumerate(light_samples):
-        if progress_callback:
-            progress_callback(
-                f"Processing {light.get('name', '')} (light)...",
-                (processed_count + len(control_samples) + i + 1) / total_samples * 100
-            )
-
-        try:
-            processed = _analyze_light_sample(light)
-            result["light_samples"].append(processed)
-        except Exception as e:
-            result["errors"].append(f"Light {light.get('name')}: {str(e)}")
 
     # =========================================================================
     # AGRUPAR RÈPLIQUES, COMPARAR, RECOMANAR I QUANTIFICAR
@@ -2902,7 +2839,6 @@ def analyze_sequence(imported_data, calibration_data=None, config=None, progress
     if progress_callback:
         progress_callback("Comparing replicas...", 90)
 
-    # is_bp ja definit a dalt (mode, method extrets per multi-calibració)
     is_bp = mode == "BP"
 
     # Agrupar mostres per nom
@@ -2914,15 +2850,35 @@ def analyze_sequence(imported_data, calibration_data=None, config=None, progress
             samples_by_name[name] = {}
         samples_by_name[name][replica] = sample
 
-    # Per cada mostra amb múltiples rèpliques, comparar i recomanar
     result["samples_grouped"] = {}
 
     for sample_name, replicas in samples_by_name.items():
-        # Determinar sample_type des de les rèpliques
         first_rep = next(iter(replicas.values()), {})
         sample_type = first_rep.get("sample_type", "SAMPLE")
+        analysis_type = first_rep.get("analysis_type")  # "light" per CONTROL, "khp" si KHP
 
-        # Saltar quantificació si el sample_type té quantify=false al config
+        # KHP i CONTROL: group simple sense comparació ni quantificació
+        if sample_type == "KHP" or analysis_type == "khp":
+            result["samples_grouped"][sample_name] = {
+                "analysis_type": "khp",
+                "sample_type": "KHP",
+                "replicas": replicas,
+                "selected": {"doc": sorted(replicas.keys())[0]},
+                "sample_valid": True,
+            }
+            continue
+
+        if sample_type == "CONTROL" or analysis_type == "light":
+            result["samples_grouped"][sample_name] = {
+                "analysis_type": "light",
+                "sample_type": sample_type,
+                "replicas": replicas,
+                "selected": {"doc": sorted(replicas.keys())[0]},
+                "sample_valid": True,
+            }
+            continue
+
+        # Resta (SAMPLE, BLANK, PR_*): grouping complet
         skip_quant = _should_skip_quantification(sample_name, config, sample_type=sample_type)
 
         sample_group = {
@@ -3028,49 +2984,6 @@ def analyze_sequence(imported_data, calibration_data=None, config=None, progress
         result["samples_grouped"][sample_name] = sample_group
 
     # =========================================================================
-    # AGRUPAR LIGHT SAMPLES (CONTROL) — després de regulars
-    # =========================================================================
-    light_by_name = {}
-    for ls in result["light_samples"]:
-        name = ls.get("name", "UNKNOWN")
-        replica = ls.get("replica", "1")
-        if name not in light_by_name:
-            light_by_name[name] = {}
-        light_by_name[name][replica] = ls
-
-    for sample_name in sorted(light_by_name.keys()):
-        replicas = light_by_name[sample_name]
-        first_rep = next(iter(replicas.values()))
-        result["samples_grouped"][sample_name] = {
-            "analysis_type": "light",
-            "sample_type": first_rep.get("sample_type", "BLANK"),
-            "replicas": replicas,
-            "selected": {"doc": sorted(replicas.keys())[0]},
-            "sample_valid": True,
-        }
-
-    # =========================================================================
-    # AGRUPAR KHP SAMPLES — després de light
-    # =========================================================================
-    khp_by_name = {}
-    for khp in result["khp_samples"]:
-        name = khp.get("name", "UNKNOWN")
-        replica = khp.get("replica", "1")
-        if name not in khp_by_name:
-            khp_by_name[name] = {}
-        khp_by_name[name][replica] = khp
-
-    for sample_name in sorted(khp_by_name.keys()):
-        replicas = khp_by_name[sample_name]
-        result["samples_grouped"][sample_name] = {
-            "analysis_type": "khp",
-            "sample_type": "KHP",
-            "replicas": replicas,
-            "selected": {"doc": sorted(replicas.keys())[0]},
-            "sample_valid": True,
-        }
-
-    # =========================================================================
     # ESTIMAR TIMEOUTS UIB (post-processat de seqüència)
     # =========================================================================
     # Per les injeccions sense DOC Direct (timeout_info buit), estimar la
@@ -3099,9 +3012,9 @@ def analyze_sequence(imported_data, calibration_data=None, config=None, progress
         "with_anomalies": n_with_anomalies,
         "with_timeouts": n_timeouts,
         "with_replica_warnings": n_with_warnings,
-        "n_khp": len(result["khp_samples"]),
-        "n_controls": len(result["control_samples"]),
-        "n_light": len(result["light_samples"]),
+        "n_khp": sum(1 for s in result["samples"] if s.get("sample_type") == "KHP"),
+        "n_controls": sum(1 for s in result["samples"] if s.get("sample_type") == "CONTROL"),
+        "n_blank": sum(1 for s in result["samples"] if s.get("sample_type") == "BLANK"),
     }
 
     result["success"] = len(result["errors"]) == 0
@@ -3212,11 +3125,7 @@ def save_analysis_result(analysis_data, output_path=None):
         "config_fingerprint": analysis_data.get("config_fingerprint", ""),
         "calibration_fingerprint": analysis_data.get("calibration_fingerprint", ""),
         "summary": analysis_data.get("summary", {}),
-        # Llista de mostres amb info resumida (sense arrays de dades)
         "samples": [],
-        "khp_samples": [],
-        "control_samples": [],
-        "light_samples": [],
         # Mostres agrupades per nom (per GUI)
         "samples_grouped": {},
     }
@@ -3293,16 +3202,10 @@ def save_analysis_result(analysis_data, output_path=None):
 
     # Resumir mostres
     for sample in analysis_data.get("samples", []):
-        result["samples"].append(summarize_sample(sample))
-
-    for khp in analysis_data.get("khp_samples", []):
-        result["khp_samples"].append(summarize_sample(khp))
-
-    for ctrl in analysis_data.get("control_samples", []):
-        result["control_samples"].append(summarize_sample(ctrl))
-
-    for light in analysis_data.get("light_samples", []):
-        result["light_samples"].append(summarize_light_sample(light))
+        if sample.get("analysis_type") == "light":
+            result["samples"].append(summarize_light_sample(sample))
+        else:
+            result["samples"].append(summarize_sample(sample))
 
     # Guardar samples_grouped (estructura agrupada per GUI)
     samples_grouped = analysis_data.get("samples_grouped", {})
@@ -3367,12 +3270,6 @@ def _restore_dataframes(data):
                 sample[key] = np.array(val)
 
     for sample in data.get("samples", []):
-        _restore_sample(sample)
-    for sample in data.get("khp_samples", []):
-        _restore_sample(sample)
-    for sample in data.get("control_samples", []):
-        _restore_sample(sample)
-    for sample in data.get("light_samples", []):
         _restore_sample(sample)
     for sample_data in data.get("samples_grouped", {}).values():
         for rep_data in sample_data.get("replicas", {}).values():
