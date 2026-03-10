@@ -256,6 +256,8 @@ All exploratory scripts and results live in `research/` — NOT part of the prod
   `_check_existing_calibration()` cada cop que es mostra el tab (funciona, pero redundant)
 - [ ] **HistoryPanel.showEvent() guard**: afegir flag per evitar recarregar tot l'historial
   cada cop que es canvia de tab (dades globals, no per-SEQ)
+- [ ] **Repair review**: revisar sistema de reparació (batman/irregular_top) amb 288_SEQ com a cas de test
+- [ ] **UIB saturació vs timeout**: verificar amb la tècnica si clipping a 5ppm és real (veure `_verify_uib_saturation.py`)
 
 ## Known bugs (pendents de fix)
 

@@ -99,6 +99,9 @@ class SequenceState:
     # Config fingerprint (per detectar obsolescència)
     config_fingerprint: str = ""
 
+    # Versió de la Suite amb la qual es va processar
+    suite_version: str = ""
+
     # Origen (multi-folder)
     source_folder: str = ""    # Nom curt de la carpeta d'origen (per filtre)
     source_path: str = ""      # Path complet de la carpeta d'origen
@@ -236,6 +239,7 @@ class SequenceState:
             # Notes de l'usuari
             self.notes = self.import_status.data.get('notes', '')
             data = self.import_status.data
+            self.suite_version = data.get('suite_version', '')
             self.method = data.get('sequence', {}).get('method', '')
             self.data_mode = data.get('sequence', {}).get('data_mode', '')
             # Warnings d'importació (masterfile, assignació fitxers, etc.)

@@ -623,6 +623,8 @@ class ProcessWizardPanel(QWidget):
             # Reset UI del panel analitzar
             if hasattr(self.analyze_panel, 'results_frame'):
                 self.analyze_panel.results_frame.setVisible(False)
+            if hasattr(self.analyze_panel, '_tab_widget'):
+                self.analyze_panel._tab_widget.setVisible(False)
             if hasattr(self.analyze_panel, 'status_frame'):
                 self.analyze_panel.status_frame.setVisible(True)
             if hasattr(self.analyze_panel, 'next_btn'):
@@ -755,13 +757,16 @@ class ProcessWizardPanel(QWidget):
 
     def _execute_stage(self, stage_idx: int):
         """Executa l'operaci\u00f3 de l'etapa indicada."""
-        stage_names = {1: "Calibrant", 2: "Analitzant", 3: "Exportant"}
+        stage_names = {0: "Importar", 1: "Calibrant", 2: "Analitzant", 3: "Exportant"}
         stage_name = stage_names.get(stage_idx, "Executant")
 
         self._show_executing_state(stage_name)
 
         try:
-            if stage_idx == 1:  # Calibrar
+            if stage_idx == 0:  # Importar
+                if hasattr(self.import_panel, '_run_import'):
+                    self.import_panel._run_import()
+            elif stage_idx == 1:  # Calibrar
                 if hasattr(self.calibrate_panel, '_run_calibrate'):
                     self.calibrate_panel._run_calibrate()
             elif stage_idx == 2:  # Analitzar

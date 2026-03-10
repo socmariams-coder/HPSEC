@@ -56,7 +56,6 @@ from scipy.stats import pearsonr
 
 # Import funcions de detecció des de hpsec_core (Single Source of Truth)
 from hpsec_core import (
-    detect_timeout,
     format_timeout_status,
     TIMEOUT_CONFIG,
     calc_snr,
@@ -1100,11 +1099,12 @@ def compare_replicas(r1_result, r2_result, mode="COLUMN", config=None):
                     result["dad"]["pearson_min"] = pearson_per_wl[min_wl]
                     result["dad"]["wavelength_min"] = min_wl
 
-                    # Warning si mínim és baix
+                    # Warning si mínim és baix (indicant la λ afectada)
                     if pearson_per_wl[min_wl] < REPLICA_PEARSON_THRESHOLD:
-                        result["dad"]["warnings"].append(create_anomaly("LOW_CORRELATION_254",
+                        result["dad"]["warnings"].append(create_anomaly("LOW_CORRELATION_DAD",
                             details={"wavelength": min_wl, "pearson": pearson_per_wl[min_wl],
-                                     "threshold": REPLICA_PEARSON_THRESHOLD}))
+                                     "threshold": REPLICA_PEARSON_THRESHOLD},
+                            override_label=f"Correlació baixa A{min_wl} (r={pearson_per_wl[min_wl]:.3f})"))
 
                 # Mantenir pearson_254 per compatibilitat
                 if '254' in pearson_per_wl:
@@ -1120,8 +1120,10 @@ def compare_replicas(r1_result, r2_result, mode="COLUMN", config=None):
                     diff_254 = abs(a1_254 - a2_254) / max(a1_254, a2_254) * 100
                     result["dad"]["area_diff_pct"] = diff_254
                     if diff_254 > REPLICA_AREA_DIFF_THRESHOLD:
-                        result["dad"]["warnings"].append(create_anomaly("AREA_DIFF_HIGH_254",
-                            details={"diff_pct": diff_254, "threshold": REPLICA_AREA_DIFF_THRESHOLD}))
+                        result["dad"]["warnings"].append(create_anomaly("AREA_DIFF_HIGH_DAD",
+                            details={"wavelength": "254", "diff_pct": diff_254,
+                                     "threshold": REPLICA_AREA_DIFF_THRESHOLD},
+                            override_label=f"Diferència àrea alta A254 ({diff_254:.0f}%)"))
 
             except Exception as e:
                 logger.warning("DAD replica comparison failed: %s", e)
@@ -1828,24 +1830,25 @@ def analyze_sample(sample_data, calibration_data=None, config=None):
             result["error_message"] = "Dades sense correcció de baseline. Cal tornar a importar la seqüència."
             return result
 
-    # Detectar timeouts
-    timeout_info = detect_timeout(t_doc, is_bp=is_bp)
+    # Timeout info: ve d'import (detect_sequence_timeouts → map_timeouts_to_injection)
+    timeout_info = sample_data.get("timeout_info", {})
     timeout_positions = timeout_info.get("t_positions", [])
 
-    # Propagar flag reparació timestamps TOC (de la importació)
+    # Timeout al límit d'injecció
+    if timeout_info.get("timeout_at_boundary"):
+        result["timeout_at_boundary"] = True
+        result["anomalies"].append(create_anomaly("TIMEOUT_AT_BOUNDARY"))
+
+    # Propagar flag reparació timestamps TOC
     if sample_data.get("toc_minute_precision"):
         timeout_info["toc_minute_precision"] = True
 
-    if timeout_info.get("n_timeouts", 0) > 0 or timeout_info.get("toc_minute_precision"):
+    if timeout_info.get("n_timeouts", 0) > 0 or timeout_info.get("toc_minute_precision") or timeout_info.get("timeout_at_boundary"):
         result["timeout_info"] = timeout_info
 
-    # Estimar timeout per UIB (si DUAL)
+    # Timeout UIB: propagat des de Direct a import (single source of truth)
     if is_dual:
-        from hpsec_core import estimate_timeout_for_uib
-        uib_timeout = estimate_timeout_for_uib(
-            direct_timeout_info=timeout_info if timeout_info.get("n_timeouts", 0) > 0 else None,
-            is_bp=is_bp,
-        )
+        uib_timeout = sample_data.get("timeout_info_uib", {})
         if uib_timeout and uib_timeout.get("n_timeouts", 0) > 0:
             result["timeout_info_uib"] = uib_timeout
 
@@ -1867,7 +1870,7 @@ def analyze_sample(sample_data, calibration_data=None, config=None):
         else:
             result["irregular_top_direct"] = False
 
-    # Detectar cim irregular UIB (si DUAL)
+    # Detectar cim irregular UIB (si DUAL) — auto-repair consistent amb Direct
     if is_dual and y_doc_uib_net is not None and len(y_doc_uib_net) > 0:
         y_uib_smooth = apply_smoothing(y_doc_uib_net)
         irr_uib_result = detect_irregular_top(t_doc, y_uib_smooth)
@@ -1876,6 +1879,35 @@ def analyze_sample(sample_data, calibration_data=None, config=None):
             result["irregular_top_uib"] = True
             result["irregular_top_uib_info"] = irr_uib_result
             _log_detection_issue(seq_name, sample_name, "irregular_top", "uib", irr_uib_result)
+
+            # Auto-repair UIB (com Direct a detect_main_peak)
+            from hpsec_core import repair_with_parabola
+            uib_peak_idx = int(np.argmax(y_uib_smooth))
+            t_uib_peak = float(t_doc[uib_peak_idx])
+            uib_hw = 3.0 if is_bp else 5.0
+            uib_seg_mask = (t_doc >= t_uib_peak - uib_hw) & (t_doc <= t_uib_peak + uib_hw)
+            t_uib_seg = t_doc[uib_seg_mask]
+            y_uib_seg = y_doc_uib_net[uib_seg_mask]
+
+            if len(y_uib_seg) > 20:
+                y_uib_seg_rep, uib_repair_info, uib_was_repaired = repair_with_parabola(
+                    t_uib_seg, y_uib_seg
+                )
+                if uib_was_repaired:
+                    result["y_doc_uib_net_original"] = y_doc_uib_net.tolist()
+                    y_doc_uib_net = y_doc_uib_net.copy()
+                    y_doc_uib_net[uib_seg_mask] = y_uib_seg_rep
+                    result["irregular_top_uib_repaired"] = True
+                    result["irregular_top_uib_repair_info"] = {
+                        "t_max": uib_repair_info.get("t_max"),
+                        "y_max_original": uib_repair_info.get("y_max_original"),
+                        "y_max_theoretical": uib_repair_info.get("y_max_theoretical"),
+                    }
+                    logger.info(f"{seq_name}/{sample_name}: UIB irregular_top auto-repaired")
+                else:
+                    result["irregular_top_uib_repaired"] = False
+            else:
+                result["irregular_top_uib_repaired"] = False
         else:
             result["irregular_top_uib"] = False
 
@@ -2285,12 +2317,16 @@ def _flatten_samples_for_processing(imported_data, data_mode="DUAL"):
                 "uib_sensitivity": uib_sensitivity,  # ppb (700/1000) per detecció saturació
             }
 
-            # Propagar flag reparació timestamps TOC
+            # Propagar timeout_info complet (font única: import → map_timeouts_to_injection)
             direct = rep_data.get("direct", {})
             if isinstance(direct, dict):
                 ti = direct.get("timeout_info", {})
-                if isinstance(ti, dict) and ti.get("toc_minute_precision"):
-                    flat_sample["toc_minute_precision"] = True
+                if isinstance(ti, dict):
+                    flat_sample["timeout_info"] = ti
+                    if ti.get("toc_minute_precision"):
+                        flat_sample["toc_minute_precision"] = True
+                    if ti.get("timeout_at_boundary"):
+                        flat_sample["timeout_at_boundary"] = True
 
             # Extreure dades segons data_mode (DUAL, DIRECT, UIB)
             uib = rep_data.get("uib", {})
@@ -2318,6 +2354,10 @@ def _flatten_samples_for_processing(imported_data, data_mode="DUAL"):
                         flat_sample["y_doc_uib_net"] = uib["y_net"]
                     if "baseline" in uib:
                         flat_sample["baseline_uib"] = uib["baseline"]
+                    # Propagar timeout_info UIB (propagat des de Direct a import)
+                    uib_ti = uib.get("timeout_info", {})
+                    if isinstance(uib_ti, dict) and uib_ti:
+                        flat_sample["timeout_info_uib"] = uib_ti
 
                 # Fallback DUAL: si nomes hi ha un senyal, convertir a mode simple
                 if has_uib and not has_direct:
@@ -2986,10 +3026,8 @@ def analyze_sequence(imported_data, calibration_data=None, config=None, progress
     # =========================================================================
     # ESTIMAR TIMEOUTS UIB (post-processat de seqüència)
     # =========================================================================
-    # Per les injeccions sense DOC Direct (timeout_info buit), estimar la
-    # posició del timeout UIB a partir del patró observat a les injeccions
-    # amb DOC Direct. El cicle de recàrrega TOC és predictible (~77.2 min).
-    _estimate_uib_timeouts_from_sequence(result, is_bp)
+    # Timeout UIB: ja propagat des de Direct a import (single source of truth).
+    # _estimate_uib_timeouts_from_sequence ja no és necessària.
 
     # =========================================================================
     # GENERAR RESUM
@@ -2997,6 +3035,7 @@ def analyze_sequence(imported_data, calibration_data=None, config=None, progress
     n_valid = sum(1 for s in result["samples"] if s.get("processed") and s.get("peak_info", {}).get("valid"))
     n_with_anomalies = sum(1 for s in result["samples"] if s.get("anomalies"))
     n_timeouts = sum(1 for s in result["samples"] if s.get("timeout_info", {}).get("n_timeouts", 0) > 0)
+    n_boundary_timeouts = sum(1 for s in result["samples"] if s.get("timeout_at_boundary"))
     n_with_warnings = sum(
         1 for sg in result["samples_grouped"].values()
         if sg.get("analysis_type") not in ("light", "khp") and sg.get("comparison") and (
@@ -3011,6 +3050,7 @@ def analyze_sequence(imported_data, calibration_data=None, config=None, progress
         "valid_peaks": n_valid,
         "with_anomalies": n_with_anomalies,
         "with_timeouts": n_timeouts,
+        "with_boundary_timeouts": n_boundary_timeouts,
         "with_replica_warnings": n_with_warnings,
         "n_khp": sum(1 for s in result["samples"] if s.get("sample_type") == "KHP"),
         "n_controls": sum(1 for s in result["samples"] if s.get("sample_type") == "CONTROL"),
@@ -3144,6 +3184,7 @@ def save_analysis_result(analysis_data, output_path=None):
             "snr": sample.get("snr", 0),
             "area_254": sample.get("area_254", 0),
             "inj_volume": sample.get("inj_volume"),
+            "injection_index": sample.get("injection_index"),
             "t_doc": t_doc,
             "y_doc_net": y_doc_net,
         }
@@ -3190,6 +3231,7 @@ def save_analysis_result(analysis_data, output_path=None):
             "fwhm_doc": sample.get("fwhm_doc"),
             "symmetry_doc": sample.get("symmetry_doc"),
             "inj_volume": sample.get("inj_volume"),
+            "injection_index": sample.get("injection_index"),
             # --- Camps cromatograma (arrays) ---
             "t_doc": sample.get("t_doc"),
             "y_doc_net": sample.get("y_doc_net"),

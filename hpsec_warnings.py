@@ -235,6 +235,16 @@ ANOMALY_CATALOG = {
         "invalidates": True,
         "action": "Mostra invàlida — repetir injecció si possible",
     },
+    "TIMEOUT_AT_BOUNDARY": {
+        "severity": WarningLevel.BLOCKER,
+        "label": "Timeout al límit d'injecció",
+        "icon": "T↕",
+        "description": "Timeout del detector just abans de la injecció — pre-margin reduït",
+        "stage": "import",
+        "repairable": False,
+        "invalidates": True,
+        "action": "Pre-margin insuficient per absorbir shift DOC — triar l'altra rèplica",
+    },
     "LOW_SNR": {
         "severity": WarningLevel.WARNING,
         "label": "SNR baix",
@@ -327,21 +337,43 @@ ANOMALY_CATALOG = {
         "invalidates": False,
         "action": "Tornar a executar l'anàlisi",
     },
-    "LOW_CORRELATION_254": {
+    "LOW_CORRELATION_DAD": {
         "severity": WarningLevel.WARNING,
-        "label": "Correlació baixa A254",
+        "label": "Correlació baixa DAD",
         "icon": "r↓",
-        "description": "Pearson entre rèpliques a 254nm per sota del llindar",
+        "description": "Pearson entre rèpliques DAD per sota del llindar",
         "stage": "analyze",
         "repairable": False,
         "invalidates": False,
         "action": "Revisar perfils DAD de les rèpliques",
     },
+    # Backward compat alias
+    "LOW_CORRELATION_254": {
+        "severity": WarningLevel.WARNING,
+        "label": "Correlació baixa DAD",
+        "icon": "r↓",
+        "description": "Pearson entre rèpliques DAD per sota del llindar",
+        "stage": "analyze",
+        "repairable": False,
+        "invalidates": False,
+        "action": "Revisar perfils DAD de les rèpliques",
+    },
+    "AREA_DIFF_HIGH_DAD": {
+        "severity": WarningLevel.WARNING,
+        "label": "Diferència àrea alta DAD",
+        "icon": "ΔA",
+        "description": "Diferència d'àrea DAD entre rèpliques supera el llindar",
+        "stage": "analyze",
+        "repairable": False,
+        "invalidates": False,
+        "action": "Revisar perfils DAD — possible interferència",
+    },
+    # Backward compat alias
     "AREA_DIFF_HIGH_254": {
         "severity": WarningLevel.WARNING,
-        "label": "Diferència àrea alta A254",
+        "label": "Diferència àrea alta DAD",
         "icon": "ΔA",
-        "description": "Diferència d'àrea a 254nm entre rèpliques supera el llindar",
+        "description": "Diferència d'àrea DAD entre rèpliques supera el llindar",
         "stage": "analyze",
         "repairable": False,
         "invalidates": False,
@@ -396,13 +428,19 @@ WARNING_ANOMALIES = {code for code, e in ANOMALY_CATALOG.items()
                      if e.get("severity") == WarningLevel.WARNING}
 
 
-def create_anomaly(code: str, details: dict = None, replica: str = None, sample: str = None) -> dict:
-    """Crea un dict d'anomalia estructurat des del catàleg."""
+def create_anomaly(code: str, details: dict = None, replica: str = None,
+                   sample: str = None, override_label: str = None) -> dict:
+    """Crea un dict d'anomalia estructurat des del catàleg.
+
+    Args:
+        override_label: Si donat, substitueix el label del catàleg
+            (útil per anomalies dinàmiques com "Correlació baixa A220").
+    """
     entry = ANOMALY_CATALOG.get(code, {})
     return {
         "code": code,
         "severity": entry.get("severity", WarningLevel.INFO).value,
-        "label": entry.get("label", code),
+        "label": override_label or entry.get("label", code),
         "icon": entry.get("icon", ""),
         "message": entry.get("description", code),
         "action": entry.get("action", ""),

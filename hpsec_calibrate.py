@@ -41,7 +41,6 @@ logger = logging.getLogger(__name__)
 
 # Import funcions de detecció des de hpsec_core (Single Source of Truth)
 from hpsec_core import (
-    detect_timeout,
     detect_irregular_top,
     detect_peak_anomaly,
     calc_top_smoothness,
@@ -1542,7 +1541,7 @@ def timeout_affects_peak(timeout_info, t_doc, left_idx, right_idx):
     NO la nomenclatura de zones (HS, BioP, etc.) que és per mostres.
 
     Args:
-        timeout_info: Dict retornat per detect_timeout()
+        timeout_info: Dict de timeout (de map_timeouts_to_injection o import)
         t_doc: Array de temps DOC
         left_idx, right_idx: Índexs d'integració del pic
 
@@ -1808,9 +1807,8 @@ def validate_integration_baseline(t, y, left_idx, right_idx, peak_idx, baseline_
         return {"valid": True, "message": f"Error validació: {e}"}
 
 
-# NOTA: detect_irregular_top i detect_timeout ara estan a hpsec_core.py
-# (Single Source of Truth per evitar duplicació)
-# Usar: from hpsec_core import detect_irregular_top, detect_timeout, detect_peak_anomaly
+# NOTA: detect_irregular_top i detect_peak_anomaly estan a hpsec_core.py
+# Timeout detection: ve d'import via metadata["timeout_info"] (single source of truth)
 
 
 # =============================================================================
@@ -2053,7 +2051,8 @@ def compare_khp_historical(current_area, current_concentration_ratio, seq_path, 
 def validate_khp_for_alignment(t_doc, y_doc, t_dad, y_a254, t_uib=None, y_uib=None,
                                method="COLUMN", repair_irregular_top=True,
                                seq_path=None, conc_ppm=None, volume_uL=None,
-                               doc_mode=None, uib_sensitivity=None):
+                               doc_mode=None, uib_sensitivity=None,
+                               timeout_info=None):
     """
     Valida si el KHP és adequat per calcular shifts d'alineament.
 
@@ -2225,13 +2224,13 @@ def validate_khp_for_alignment(t_doc, y_doc, t_dad, y_a254, t_uib=None, y_uib=No
 
     # === 3. DETECTAR TIMEOUT A ZONA HS (només COLUMN) ===
     if method == "COLUMN":
-        timeout_info = detect_timeout(t_doc)
+        _ti = timeout_info or {}
         result["metrics"]["timeout_info"] = {
-            "has_timeout": timeout_info.get("has_timeout", False),
-            "count": timeout_info.get("count", 0),
+            "has_timeout": _ti.get("n_timeouts", 0) > 0,
+            "count": _ti.get("n_timeouts", 0),
         }
 
-        for to in timeout_info.get("timeouts", []):
+        for to in _ti.get("timeouts", []):
             t_start_to = to.get("t_start_min", 0)
             t_end_to = to.get("t_end_min", 0)
             if t_start_to <= 23 and t_end_to >= 18:
@@ -3049,16 +3048,23 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
     noise = max(baseline_std, min_std)
     snr = float((y_doc_net[peak_idx] - bl_stats["mean"]) / noise)
 
-    # Timeout detection
-    # has_timeout only for WARNING/CRITICAL — INFO (safe zones like SB) is not relevant
-    timeout_info = detect_timeout(t_doc, is_bp=is_bp_chromato)
+    # Timeout detection — des d'import (single source of truth, no re-detecció)
+    timeout_info = metadata.get("timeout_info", {})
     timeout_severity = timeout_info.get('severity', 'OK')
-    has_timeout = timeout_info['n_timeouts'] > 0 and timeout_severity in ('WARNING', 'CRITICAL')
+    n_timeouts = timeout_info.get('n_timeouts', 0)
+    has_timeout = n_timeouts > 0 and timeout_severity in ('WARNING', 'CRITICAL')
 
     # Cim irregular (jagged/batman) / Anomalies
-    t_peak_seg = t_doc[left_idx:right_idx+1]
-    y_peak_seg = y_doc_net[left_idx:right_idx+1]
-    anomaly_info = detect_peak_anomaly(t_peak_seg, y_peak_seg)
+    # Detecció sobre finestra AMPLA (±half_w) per no perdre el patró pic-vall-pic
+    # quan els límits d'integració tallen el segon pic del patró.
+    _half_w_detect = 3.0 if is_bp_chromato else 5.0
+    _wide_mask = (t_doc >= t_doc[peak_idx] - _half_w_detect) & (t_doc <= t_doc[peak_idx] + _half_w_detect)
+    if np.sum(_wide_mask) > 20:
+        anomaly_info = detect_peak_anomaly(t_doc[_wide_mask], y_doc_net[_wide_mask])
+    else:
+        t_peak_seg = t_doc[left_idx:right_idx+1]
+        y_peak_seg = y_doc_net[left_idx:right_idx+1]
+        anomaly_info = detect_peak_anomaly(t_peak_seg, y_peak_seg)
     has_irregular_top = anomaly_info.get('is_irregular_top', False)
     has_irregular = anomaly_info.get('is_irregular', False)
     smoothness = anomaly_info.get('smoothness', 100.0)
@@ -3070,31 +3076,49 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
     area_original = peak_info['area']
     if has_irregular_top:
         try:
-            y_repaired_seg, repair_info, was_repaired = repair_with_parabola(
-                t_peak_seg, y_peak_seg
+            # Reparar sobre finestra ampla (no el segment estret dels límits actuals)
+            t_wide_seg = t_doc[_wide_mask]
+            y_wide_seg = y_doc_net[_wide_mask]
+            y_repaired_wide, repair_info, was_repaired = repair_with_parabola(
+                t_wide_seg, y_wide_seg
             )
             if was_repaired:
                 irregular_top_repaired = True
-                # Recalcular àrea amb senyal reparat
-                area_repaired = float(trapezoid(y_repaired_seg, t_peak_seg))
+                # Actualitzar senyal complet amb el segment reparat
+                y_doc_net_repaired = y_doc_net.copy()
+                y_doc_net_repaired[_wide_mask] = y_repaired_wide
+                # Re-calcular límits sobre senyal reparat → límits correctes (no estrets)
+                bl_val_rep = float(np.median(y_doc_net_repaired[:20])) if len(y_doc_net_repaired) > 20 else 0.0
+                new_left, new_right = find_peak_boundaries(
+                    t_doc, y_doc_net_repaired, peak_idx, bl_val_rep, is_bp=is_bp_chromato)
+                # Usar els límits més amples (reparat vs original)
+                if (new_right - new_left) >= (right_idx - left_idx):
+                    left_idx = new_left
+                    right_idx = new_right
+                    peak_info['left_idx'] = left_idx
+                    peak_info['right_idx'] = right_idx
+                    peak_info['t_start'] = float(t_doc[left_idx])
+                    peak_info['t_end'] = float(t_doc[right_idx])
+                # Recalcular àrea amb senyal reparat i límits correctes
+                area_repaired = float(trapezoid(
+                    y_doc_net_repaired[left_idx:right_idx+1],
+                    t_doc[left_idx:right_idx+1]))
                 peak_info['area_original'] = area_original
                 peak_info['area'] = area_repaired
                 peak_info['area_repaired'] = area_repaired
-                # Actualitzar senyal al segment
-                y_doc_net_repaired = y_doc_net.copy()
-                y_doc_net_repaired[left_idx:right_idx+1] = y_repaired_seg
         except Exception:
             irregular_top_repaired = False
 
     # DAD 254nm: ratio DOC/254
     a254_doc_ratio = peak_info['area'] / a254_area if a254_area > 0 else 0.0
 
-    # Àrees amb integració sobre baseline
+    # Àrees amb integració sobre baseline (usar senyal reparat si disponible)
     baseline_mean = bl_stats.get('mean', 0)
     baseline_std = bl_stats.get('std', 0.1)
+    y_for_integration = y_doc_net_repaired if irregular_top_repaired else y_doc_net
 
     t_peak = t_doc[left_idx:right_idx+1]
-    y_peak = y_doc_net[left_idx:right_idx+1]
+    y_peak = y_for_integration[left_idx:right_idx+1]
     peak_integration = integrate_above_baseline(
         t_peak, y_peak,
         baseline_mean=baseline_mean,
@@ -3104,7 +3128,7 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
     area_main_peak = peak_integration['area']
 
     total_integration = integrate_above_baseline(
-        t_doc, y_doc_net,
+        t_doc, y_for_integration,
         baseline_mean=baseline_mean,
         baseline_std=baseline_std,
         threshold_sigma=3.0
@@ -3144,6 +3168,14 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
         calibration_anomalies.append(create_anomaly(
             "UIB_SATURATED",
             details=_sat_details,
+            sample=sample_label,
+        ))
+
+    # Timeout al límit d'injecció (pre-margin reduït) — NOMÉS Direct
+    # UIB ve de CSV independent, no pateix el shift per pre-margin reduït
+    if metadata.get("timeout_at_boundary") and metadata.get("doc_source") != "uib":
+        calibration_anomalies.append(create_anomaly(
+            "TIMEOUT_AT_BOUNDARY",
             sample=sample_label,
         ))
 
@@ -4457,6 +4489,11 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
                 y_net_direct = direct.get("y_net")
 
                 metadata_direct = {**base_metadata, "doc_source": "direct"}
+                # Propagar timeout_info complet des d'import (single source of truth)
+                if direct.get("timeout_info"):
+                    metadata_direct["timeout_info"] = direct["timeout_info"]
+                if direct.get("timeout_at_boundary"):
+                    metadata_direct["timeout_at_boundary"] = True
                 khp_result_direct = analizar_khp_data(t_direct, y_net_direct, metadata_direct, df_dad, config)
 
                 if khp_result_direct:
@@ -4469,6 +4506,11 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
                 y_net_uib = uib.get("y_net")
 
                 metadata_uib = {**base_metadata, "doc_source": "uib"}
+                # Propagar timeout_info complet des d'import (single source of truth)
+                if uib.get("timeout_info"):
+                    metadata_uib["timeout_info"] = uib["timeout_info"]
+                if uib.get("timeout_at_boundary"):
+                    metadata_uib["timeout_at_boundary"] = True
                 # Passar uib_sensitivity + baseline perquè analizar_khp_data detecti saturació
                 _uib_sens = imported_data.get("uib_sensitivity")
                 if _uib_sens is not None:

@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTableWidget, QTableWidgetItem, QHeaderView, QComboBox,
     QFrame, QAbstractItemView, QProgressBar, QMessageBox, QDialog,
-    QGroupBox, QGridLayout, QCheckBox, QScrollArea
+    QGroupBox, QGridLayout, QCheckBox, QScrollArea, QTabWidget
 )
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QBrush, QFont
@@ -26,10 +26,19 @@ logger = logging.getLogger(__name__)
 
 try:
     from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+    from matplotlib.backends.backend_qtagg import NavigationToolbar2QT
     from matplotlib.figure import Figure
+    import matplotlib.cm as cm
     HAS_MATPLOTLIB = True
 except ImportError:
     HAS_MATPLOTLIB = False
+
+# --- Estil global gràfics ---
+_CHART_FONT = "Segoe UI"
+_CHART_BG = "#FAFAFA"
+_CHART_TITLE_SIZE = 9
+_CHART_LABEL_SIZE = 8
+_CHART_TICK_SIZE = 7
 
 from hpsec_analyze import analyze_sequence, save_analysis_result, load_analysis_result
 from gui.widgets.styles import (
@@ -50,6 +59,8 @@ from hpsec_warnings import (
 from ._helpers import (
     configure_table_style, populate_signal_summary, populate_fractions_table
 )
+from .sequence_qc_tab import SequenceQCTab
+from .comparison_tab import ComparisonTab
 
 # Fraction colors (consistent palette)
 FRACTION_COLORS = {
@@ -60,6 +71,107 @@ FRACTION_COLORS = {
     "LMW":  "#9B59B6",  # Purple
 }
 FRACTION_ORDER = ["BioP", "HS", "BB", "SB", "LMW"]
+
+
+if HAS_MATPLOTLIB:
+    class _ClickableCanvas(FigureCanvas):
+        """FigureCanvas amb suport de doble-clic (Qt level, no matplotlib)."""
+
+        def __init__(self, figure, on_dblclick=None):
+            super().__init__(figure)
+            self._on_dblclick = on_dblclick
+            self.setCursor(Qt.PointingHandCursor)
+
+        def mouseDoubleClickEvent(self, event):
+            if self._on_dblclick:
+                self._on_dblclick()
+            super().mouseDoubleClickEvent(event)
+
+    class OverlayPopupDialog(QDialog):
+        """Pop-up interactiu per cromatogrames superposats (DOC o DAD)."""
+
+        def __init__(self, parent, title, plot_fn):
+            super().__init__(parent)
+            self.setWindowTitle(title)
+            self.resize(1000, 600)
+            self.setMinimumSize(700, 400)
+
+            layout = QVBoxLayout(self)
+            layout.setContentsMargins(4, 4, 4, 4)
+            layout.setSpacing(2)
+
+            self._figure = Figure(figsize=(10, 5.5), dpi=100)
+            self._figure.set_facecolor(_CHART_BG)
+            self._canvas = FigureCanvas(self._figure)
+            self._toolbar = NavigationToolbar2QT(self._canvas, self)
+            self._toolbar.setStyleSheet(
+                "QToolBar { border: none; spacing: 4px; background: #f8f8f8; }"
+            )
+
+            layout.addWidget(self._toolbar)
+            layout.addWidget(self._canvas, 1)
+
+            # Barra d'instruccions
+            hint = QLabel(
+                "<span style='color:#777; font-size:10px'>"
+                "\u2139\ufe0f Clic a la llegenda per mostrar/amagar traces"
+                " &nbsp;|&nbsp; "
+                "Usa la barra d'eines per zoom, pan i guardar PNG</span>"
+            )
+            hint.setAlignment(Qt.AlignCenter)
+            hint.setStyleSheet(
+                "QLabel { background: #f8f8f8; padding: 4px;"
+                " border-top: 1px solid #eee; }")
+            layout.addWidget(hint)
+
+            # Dibuixar
+            ax = self._figure.add_subplot(111)
+            plot_fn(ax)
+            self._style_ax(ax)
+            self._setup_interactive_legend(ax)
+            self._figure.tight_layout()
+            self._canvas.draw()
+
+        @staticmethod
+        def _style_ax(ax):
+            ax.spines['top'].set_visible(False)
+            ax.spines['right'].set_visible(False)
+            ax.tick_params(axis='both', labelsize=_CHART_TICK_SIZE)
+            for item in ([ax.title, ax.xaxis.label, ax.yaxis.label]):
+                item.set_fontfamily(_CHART_FONT)
+
+        def _setup_interactive_legend(self, ax):
+            """Llegenda clicable: toggle visibilitat de cada traça."""
+            handles, labels = ax.get_legend_handles_labels()
+            if not handles:
+                return
+            ncols = max(1, len(handles) // 15 + 1)
+            legend = ax.legend(
+                handles, labels, loc='upper left',
+                bbox_to_anchor=(1.01, 1),
+                fontsize=7, framealpha=0.95, ncol=ncols,
+                handlelength=1.5, borderaxespad=0,
+                prop={'family': _CHART_FONT},
+            )
+
+            # Map legend lines -> plot lines
+            self._legend_map = {}
+            for leg_line, orig_handle in zip(legend.get_lines(), handles):
+                leg_line.set_picker(5)
+                self._legend_map[leg_line] = orig_handle
+
+            self._figure.canvas.mpl_connect(
+                'pick_event', self._on_legend_pick)
+
+        def _on_legend_pick(self, event):
+            leg_line = event.artist
+            orig = self._legend_map.get(leg_line)
+            if orig is None:
+                return
+            vis = not orig.get_visible()
+            orig.set_visible(vis)
+            leg_line.set_alpha(1.0 if vis else 0.25)
+            self._canvas.draw_idle()
 
 
 class AnalyzePanel(QWidget):
@@ -221,7 +333,7 @@ class AnalyzePanel(QWidget):
         self.results_table.cellClicked.connect(self._on_table_cell_click)
         self.results_table.setToolTip("Doble-clic per detall complet")
 
-        layout.addWidget(self.results_frame, 1)
+        # (results_frame s'afegirà al tab "Resultats" més avall)
 
         # === CHARTS SECTION (sempre visible, sense collapsible) ===
         self._charts_visible = True
@@ -240,57 +352,119 @@ class AnalyzePanel(QWidget):
         self._charts_content_layout.setSpacing(4)
 
         if HAS_MATPLOTLIB:
-            # F1+F2: DOC stacked + DOC overlay (costat)
+            # F1+F2: DOC barres + DOC overlay miniatura (costat)
             doc_row = QHBoxLayout()
             doc_row.setSpacing(4)
 
-            self.doc_figure = Figure(figsize=(5, 3), dpi=100)
-            self.doc_figure.set_facecolor("#FAFAFA")
+            self.doc_figure = Figure(figsize=(5, 2.8), dpi=100)
+            self.doc_figure.set_facecolor(_CHART_BG)
             self.doc_canvas = FigureCanvas(self.doc_figure)
-            self.doc_canvas.setMinimumHeight(180)
-            doc_row.addWidget(self.doc_canvas)
+            self.doc_canvas.setMinimumHeight(170)
+            doc_row.addWidget(self.doc_canvas, 3)
 
-            self.doc_overlay_figure = Figure(figsize=(5, 3), dpi=100)
-            self.doc_overlay_figure.set_facecolor("#FAFAFA")
-            self.doc_overlay_canvas = FigureCanvas(self.doc_overlay_figure)
-            self.doc_overlay_canvas.setMinimumHeight(200)
-            doc_row.addWidget(self.doc_overlay_canvas)
+            # DOC overlay miniatura + botó ampliar
+            doc_overlay_frame = QFrame()
+            doc_overlay_lay = QVBoxLayout(doc_overlay_frame)
+            doc_overlay_lay.setContentsMargins(0, 0, 0, 0)
+            doc_overlay_lay.setSpacing(0)
+
+            self.doc_overlay_figure = Figure(figsize=(3, 2.8), dpi=100)
+            self.doc_overlay_figure.set_facecolor(_CHART_BG)
+            self.doc_overlay_canvas = _ClickableCanvas(
+                self.doc_overlay_figure,
+                on_dblclick=lambda: self._open_overlay_popup("doc"))
+            self.doc_overlay_canvas.setMinimumHeight(160)
+            doc_overlay_lay.addWidget(self.doc_overlay_canvas, 1)
+
+            doc_zoom_btn = QPushButton("\U0001f50d  Ampliar DOC overlay")
+            doc_zoom_btn.setCursor(Qt.PointingHandCursor)
+            doc_zoom_btn.setStyleSheet(
+                "QPushButton { background: #e3ecf5; color: #446; border: none;"
+                " font-size: 10px; font-weight: bold; padding: 5px; }"
+                "QPushButton:hover { background: #c9daf0; color: #224; }"
+            )
+            doc_zoom_btn.clicked.connect(lambda _=None: self._open_overlay_popup("doc"))
+            doc_overlay_lay.addWidget(doc_zoom_btn)
+
+            doc_row.addWidget(doc_overlay_frame, 2)
 
             self._charts_content_layout.addLayout(doc_row)
 
-            # F3+F4: DAD stacked + DAD overlay (costat)
+            # F3+F4: DAD barres + DAD overlay miniatura (costat)
             dad_row = QHBoxLayout()
             dad_row.setSpacing(4)
 
-            self.dad_figure = Figure(figsize=(5, 2.5), dpi=100)
-            self.dad_figure.set_facecolor("#FAFAFA")
+            self.dad_figure = Figure(figsize=(5, 2.8), dpi=100)
+            self.dad_figure.set_facecolor(_CHART_BG)
             self.dad_canvas = FigureCanvas(self.dad_figure)
-            self.dad_canvas.setMinimumHeight(150)
-            dad_row.addWidget(self.dad_canvas)
+            self.dad_canvas.setMinimumHeight(170)
+            dad_row.addWidget(self.dad_canvas, 3)
 
-            self.dad_overlay_figure = Figure(figsize=(5, 3), dpi=100)
-            self.dad_overlay_figure.set_facecolor("#FAFAFA")
-            self.dad_overlay_canvas = FigureCanvas(self.dad_overlay_figure)
-            self.dad_overlay_canvas.setMinimumHeight(200)
-            dad_row.addWidget(self.dad_overlay_canvas)
+            # DAD overlay miniatura + botó ampliar
+            dad_overlay_frame = QFrame()
+            dad_overlay_lay = QVBoxLayout(dad_overlay_frame)
+            dad_overlay_lay.setContentsMargins(0, 0, 0, 0)
+            dad_overlay_lay.setSpacing(0)
+
+            self.dad_overlay_figure = Figure(figsize=(3, 2.8), dpi=100)
+            self.dad_overlay_figure.set_facecolor(_CHART_BG)
+            self.dad_overlay_canvas = _ClickableCanvas(
+                self.dad_overlay_figure,
+                on_dblclick=lambda: self._open_overlay_popup("dad"))
+            self.dad_overlay_canvas.setMinimumHeight(160)
+            dad_overlay_lay.addWidget(self.dad_overlay_canvas, 1)
+
+            dad_zoom_btn = QPushButton("\U0001f50d  Ampliar DAD overlay")
+            dad_zoom_btn.setCursor(Qt.PointingHandCursor)
+            dad_zoom_btn.setStyleSheet(
+                "QPushButton { background: #e3ecf5; color: #446; border: none;"
+                " font-size: 10px; font-weight: bold; padding: 5px; }"
+                "QPushButton:hover { background: #c9daf0; color: #224; }"
+            )
+            dad_zoom_btn.clicked.connect(lambda _=None: self._open_overlay_popup("dad"))
+            dad_overlay_lay.addWidget(dad_zoom_btn)
+
+            dad_row.addWidget(dad_overlay_frame, 2)
 
             self._charts_content_layout.addLayout(dad_row)
 
-            # F5: Timeout timeline (full width, al final)
-            timeout_label = QLabel(
-                "<b style='color:#555; font-size:11px;'>"
-                "Distribució de timeouts TOC per mostra</b>"
-            )
-            self._charts_content_layout.addWidget(timeout_label)
-            self.timeout_figure = Figure(figsize=(10, 1.2), dpi=100)
-            self.timeout_figure.set_facecolor("#FAFAFA")
+            # F5: Timeout timeline (full width, compact)
+            self.timeout_figure = Figure(figsize=(10, 1.5), dpi=100)
+            self.timeout_figure.set_facecolor(_CHART_BG)
             self.timeout_canvas = FigureCanvas(self.timeout_figure)
-            self.timeout_canvas.setMinimumHeight(80)
-            self.timeout_canvas.setMaximumHeight(100)
+            self.timeout_canvas.setMinimumHeight(100)
+            self.timeout_canvas.setMaximumHeight(130)
             self._charts_content_layout.addWidget(self.timeout_canvas)
 
         charts_outer.addWidget(self._charts_content)
-        layout.addWidget(self.charts_section)
+
+        # === TAB WIDGET (Resultats + QC + Comparació) ===
+        self._tab_widget = QTabWidget()
+        self._tab_widget.setVisible(False)
+        self._tab_widget.setStyleSheet(
+            "QTabWidget::pane { border: none; }"
+            "QTabBar::tab { font-size: 11px; padding: 6px 16px; }"
+            "QTabBar::tab:selected { font-weight: bold; }"
+        )
+
+        # Tab 0: Resultats (taula + gràfics existents)
+        results_tab_container = QWidget()
+        results_tab_layout = QVBoxLayout(results_tab_container)
+        results_tab_layout.setContentsMargins(0, 4, 0, 0)
+        results_tab_layout.setSpacing(4)
+        results_tab_layout.addWidget(self.results_frame)
+        results_tab_layout.addWidget(self.charts_section)
+        self._tab_widget.addTab(results_tab_container, "Resultats")
+
+        # Tab 1: QC Seqüència
+        self._qc_tab = SequenceQCTab(main_window=self.main_window)
+        self._tab_widget.addTab(self._qc_tab, "QC Seqüència")
+
+        # Tab 2: Comparació COL↔BP
+        self._comparison_tab = ComparisonTab(main_window=self.main_window)
+        self._tab_widget.addTab(self._comparison_tab, "Comparació COL↔BP")
+
+        layout.addWidget(self._tab_widget, 1)
 
         # Completar scroll area
         scroll_area.setWidget(scroll_content)
@@ -341,6 +515,10 @@ class AnalyzePanel(QWidget):
         self.progress_bar.setValue(0)
         self.results_frame.setVisible(False)
         self.charts_section.setVisible(False)
+        self._tab_widget.setVisible(False)
+        self._tab_widget.setCurrentIndex(0)
+        self._qc_tab.reset()
+        self._comparison_tab.reset()
         self._charts_content.setVisible(True)
         self.analyze_btn.setEnabled(True)
         self.status_indicator.setText("")
@@ -367,12 +545,25 @@ class AnalyzePanel(QWidget):
             self.main_window.processed_data = result  # B1: needed for method/seq_path
             self._populate_table()
             self._populate_charts(result)
+            self._populate_sub_tabs(result)
             self.empty_state.setVisible(False)
             self.info_frame.setVisible(False)
             self.status_frame.setVisible(False)
             self.results_frame.setVisible(True)
+            self._tab_widget.setVisible(True)
             self.main_window.set_status("Anàlisi carregada des de fitxer existent", 3000)
             self.analyze_completed.emit(result)
+
+    def _populate_sub_tabs(self, result):
+        """Propaga dades d'anàlisi als sub-tabs QC i Comparació."""
+        try:
+            self._qc_tab.populate(result)
+        except Exception as e:
+            logger.warning(f"Error populating QC tab: {e}")
+        try:
+            self._comparison_tab.populate(result)
+        except Exception as e:
+            logger.warning(f"Error populating Comparison tab: {e}")
 
     def _update_status(self):
         """Actualitza l'indicador d'estat amb format professional."""
@@ -566,6 +757,7 @@ class AnalyzePanel(QWidget):
         self.progress_frame.setVisible(True)
         self.progress_bar.setValue(0)
         self.results_frame.setVisible(False)
+        self._tab_widget.setVisible(False)
 
         if self.worker is not None:
             self.worker.wait()
@@ -599,10 +791,26 @@ class AnalyzePanel(QWidget):
 
         save_analysis_result(result)
 
+        # Feedback visual mentre es preparen taula + gràfics (pot trigar 3-10s)
+        n_samples = len(self.samples_grouped)
+        self.progress_label.setText(f"Preparant taula ({n_samples} mostres)...")
+        self.progress_bar.setValue(95)
+        self.progress_frame.setVisible(True)
+        from PySide6.QtWidgets import QApplication
+        QApplication.processEvents()
+
         self._populate_table()
         self.results_frame.setVisible(True)
-        self._populate_charts(result)
 
+        self.progress_label.setText("Generant gràfics...")
+        self.progress_bar.setValue(97)
+        QApplication.processEvents()
+
+        self._populate_charts(result)
+        self._populate_sub_tabs(result)
+        self._tab_widget.setVisible(True)
+
+        self.progress_frame.setVisible(False)
         self.status_frame.setVisible(False)
         self.analyze_completed.emit(result)
 
@@ -722,9 +930,12 @@ class AnalyzePanel(QWidget):
 
             sample_data = self.samples_grouped[sample_name]
 
-            # BLANK: una fila per injecció, sense selectors, amb fraccions
+            # BLANK: una fila per injecció (no agrupat per rèplica)
+            # Rendering idèntic a mostres regulars, però cada injecció per separat
             if is_blank:
                 replicas = sample_data.get("replicas") or {}
+                quantification = sample_data.get("quantification") or {}
+                comparison = sample_data.get("comparison") or {}
                 for rep_key in sorted(replicas.keys()):
                     rep_data = replicas[rep_key]
                     row = self.results_table.rowCount()
@@ -742,37 +953,52 @@ class AnalyzePanel(QWidget):
                     inj_item.setForeground(QBrush(QColor("#888")))
                     self.results_table.setItem(row, 1, inj_item)
 
-                    # Col 2-3: Sense selectors
-                    self.results_table.setItem(row, 2, QTableWidgetItem("-"))
-                    self.results_table.setItem(row, 3, QTableWidgetItem("-"))
+                    # Col 2-3: Sense selectors (cada injecció es mostra directament)
+                    self.results_table.setItem(row, 2, QTableWidgetItem(f"R{rep_key}"))
+                    self.results_table.setItem(row, 3, QTableWidgetItem(f"R{rep_key}"))
 
-                    # Col 4: A_DOC total amb tooltip fraccions
+                    # Col 4: A_DOC amb tooltip fraccions
                     areas = rep_data.get("areas") or {}
                     doc_areas = areas.get("DOC") or {}
-                    total = doc_areas.get("total", 0)
-                    a_doc_item = QTableWidgetItem(f"{total:.0f}" if total else "-")
+                    area_direct = doc_areas.get("total", 0)
+                    a_doc_item = QTableWidgetItem(f"{area_direct:.0f}" if area_direct else "-")
                     frac_tip = []
                     for frac in FRACTION_ORDER:
                         fa = doc_areas.get(frac, 0)
                         if fa:
-                            pct = (fa / total * 100) if total > 0 else 0
+                            pct = (fa / area_direct * 100) if area_direct > 0 else 0
                             frac_tip.append(f"{frac}: {fa:.0f} ({pct:.0f}%)")
                     if frac_tip:
                         a_doc_item.setToolTip("Fraccions DOC:\n" + "\n".join(frac_tip))
                     self.results_table.setItem(row, 4, a_doc_item)
 
-                    # Col 5-7: No ppm/UIB per blancs
-                    for c in (5, 6, 7):
-                        self.results_table.setItem(row, c, QTableWidgetItem("-"))
+                    # Col 5: ppm
+                    ppm_direct = quantification.get("concentration_ppm_direct") or quantification.get("concentration_ppm")
+                    self.results_table.setItem(row, 5, QTableWidgetItem(
+                        f"{ppm_direct:.2f}" if ppm_direct else "-"))
+
+                    # Col 6: A_UIB
+                    areas_uib = rep_data.get("areas_uib") or {}
+                    area_uib = areas_uib.get("total", 0)
+                    self.results_table.setItem(row, 6, QTableWidgetItem(
+                        f"{area_uib:.0f}" if area_uib else "-"))
+
+                    # Col 7: ppm_U
+                    ppm_uib = quantification.get("concentration_ppm_uib")
+                    self.results_table.setItem(row, 7, QTableWidgetItem(
+                        f"{ppm_uib:.2f}" if ppm_uib else "-"))
 
                     # Col 8: SNR
                     snr_info = rep_data.get("snr_info") or {}
-                    snr = snr_info.get("snr_direct", 0)
-                    snr_item = QTableWidgetItem(f"{snr:.0f}" if snr else "-")
-                    if snr and snr < 10:
+                    snr_direct = snr_info.get("snr_direct", 0)
+                    snr_item = QTableWidgetItem(f"{snr_direct:.0f}" if snr_direct else "-")
+                    if snr_direct and snr_direct < 10:
                         snr_item.setForeground(QBrush(QColor(COLOR_ERROR)))
-                    elif snr and snr < 50:
+                    elif snr_direct and snr_direct < 50:
                         snr_item.setForeground(QBrush(QColor(COLOR_WARNING)))
+                    snr_uib = snr_info.get("snr_uib", 0)
+                    if snr_uib:
+                        snr_item.setToolTip(f"SNR UIB: {snr_uib:.0f}")
                     self.results_table.setItem(row, 8, snr_item)
 
                     # Col 9: A_254
@@ -780,25 +1006,43 @@ class AnalyzePanel(QWidget):
                     self.results_table.setItem(row, 9, QTableWidgetItem(
                         f"{area_254:.1f}" if area_254 else "-"))
 
-                    # Col 10-13: No R2/HCI per blancs
-                    for c in (10, 11, 12, 13):
-                        self.results_table.setItem(row, c, QTableWidgetItem("-"))
+                    # Col 10: SNR_254
+                    snr_info_dad = rep_data.get("snr_info_dad") or {}
+                    snr_254 = (snr_info_dad.get("A254") or {}).get("snr", 0)
+                    snr_254_item = QTableWidgetItem(f"{snr_254:.0f}" if snr_254 else "-")
+                    if snr_254 and snr_254 < 10:
+                        snr_254_item.setForeground(QBrush(QColor(COLOR_ERROR)))
+                    elif snr_254 and snr_254 < 50:
+                        snr_254_item.setForeground(QBrush(QColor(COLOR_WARNING)))
+                    self.results_table.setItem(row, 10, snr_254_item)
 
-                    # Col 14: Resum fraccions (detecció arrossegament)
-                    frac_parts = []
-                    for frac in FRACTION_ORDER:
-                        fa = doc_areas.get(frac, 0)
-                        if fa and fa > 0:
-                            frac_parts.append(f"{frac}:{fa:.0f}")
-                    if frac_parts:
-                        estat_text = " ".join(frac_parts)
-                        estat_item = QTableWidgetItem(estat_text)
-                        estat_item.setForeground(QBrush(QColor(COLOR_WARNING)))
-                        estat_item.setToolTip("Fraccions amb area > 0 — possible arrossegament")
+                    # Col 11-12: No R2 (sense comparació rèpliques)
+                    self.results_table.setItem(row, 11, QTableWidgetItem("-"))
+                    self.results_table.setItem(row, 12, QTableWidgetItem("-"))
+
+                    # Col 13: HCI
+                    hci_val = quantification.get("hci")
+                    if hci_val is not None:
+                        hci_char = quantification.get("hci_character", "")
+                        abbrev = "HA" if "HA" in hci_char else "FA" if "FA" in hci_char else "Mix"
+                        hci_item = QTableWidgetItem(f"{hci_val:.1f} {abbrev}")
+                        if hci_val > 60:
+                            hci_item.setBackground(QBrush(QColor("#FADBD8")))
+                        elif hci_val < 40:
+                            hci_item.setBackground(QBrush(QColor("#D6EAF8")))
+                        else:
+                            hci_item.setBackground(QBrush(QColor("#D5F5E3")))
                     else:
-                        estat_item = QTableWidgetItem("Net")
-                        estat_item.setForeground(QBrush(QColor(COLOR_SUCCESS)))
-                    self.results_table.setItem(row, 14, estat_item)
+                        hci_item = QTableWidgetItem("-")
+                    self.results_table.setItem(row, 13, hci_item)
+
+                    # Col 14: Estat (anomalies, igual que mostres)
+                    status_color, status_text, tooltip = self._classify_sample_status(
+                        rep_data, rep_data, comparison, sample_data=sample_data)
+                    status_item = QTableWidgetItem(status_text)
+                    status_item.setForeground(QBrush(QColor(status_color)))
+                    status_item.setToolTip(tooltip)
+                    self.results_table.setItem(row, 14, status_item)
 
                     # Fons gris
                     blank_bg = QBrush(QColor("#F4F6F6"))
@@ -1186,7 +1430,9 @@ class AnalyzePanel(QWidget):
             first_blocker = classified["blocker"][0]
             b_code = first_blocker.get("code") if isinstance(first_blocker, dict) else str(first_blocker)
             b_entry = ANOMALY_CATALOG.get(b_code, {})
-            b_label = b_entry.get("label", b_code)
+            # Prioritzar label de l'anomalia (override_label) sobre el catàleg
+            b_label = (first_blocker.get("label") if isinstance(first_blocker, dict) else None
+                       ) or b_entry.get("label", b_code)
             if n_blocker == 1:
                 status_text = b_label + repair_icon
             else:
@@ -1214,7 +1460,8 @@ class AnalyzePanel(QWidget):
                 for a in items:
                     code = a.get("code") if isinstance(a, dict) else str(a).replace("_REPAIRED", "")
                     entry = ANOMALY_CATALOG.get(code, {})
-                    lbl = entry.get("label", code)
+                    lbl = (a.get("label") if isinstance(a, dict) else None
+                           ) or entry.get("label", code)
                     det = a.get("details", {}) if isinstance(a, dict) else {}
                     if det.get("snr"):
                         lbl += f" (SNR={det['snr']:.1f})"
@@ -1705,7 +1952,17 @@ class AnalyzePanel(QWidget):
             if st == "KHP":
                 khp[name] = data
             elif st == "BLANK":
-                blank[name] = data
+                # Expandir BLANK per injecció (una entrada per rèplica)
+                replicas = data.get("replicas") or {}
+                for rep_key in sorted(replicas.keys()):
+                    rep_data = replicas[rep_key]
+                    display = f"{name} R{rep_key}" if len(replicas) > 1 else name
+                    blank[display] = {
+                        **data,
+                        "replicas": {rep_key: rep_data},
+                        "selected": {"doc": rep_key, "dad": rep_key},
+                        "_single_injection": True,
+                    }
             elif st == "CONTROL":
                 control[name] = data
             else:
@@ -1791,9 +2048,9 @@ class AnalyzePanel(QWidget):
         if self._charts_initialized:
             checked = self._get_checked_samples()
             reg = {k: v for k, v in checked.items()
-                   if v.get("sample_type") not in ("BLANK", "CONTROL")}
+                   if v.get("sample_type") != "CONTROL"}
             light = {k: v for k, v in checked.items()
-                     if v.get("sample_type") in ("BLANK", "CONTROL")}
+                     if v.get("sample_type") == "CONTROL"}
             try:
                 self._plot_dad_chart(reg, light)
                 self._plot_dad_overlay(reg, light)
@@ -1826,10 +2083,11 @@ class AnalyzePanel(QWidget):
         if not HAS_MATPLOTLIB:
             return
         checked = self._get_checked_samples()
+        # BLANK va amb regular (fraccions+ppm complets), només CONTROL va a light
         reg = {k: v for k, v in checked.items()
-               if v.get("sample_type") not in ("BLANK", "CONTROL")}
+               if v.get("sample_type") != "CONTROL"}
         light = {k: v for k, v in checked.items()
-                 if v.get("sample_type") in ("BLANK", "CONTROL")}
+                 if v.get("sample_type") == "CONTROL"}
         is_bp = getattr(self, '_chart_is_bp', False)
         try:
             self._plot_doc_chart(reg, light, is_bp)
@@ -1845,10 +2103,15 @@ class AnalyzePanel(QWidget):
         ax = self.timeout_figure.add_subplot(111)
 
         zone_totals = {}
+        zone_injections = {}  # zona → [inj_idx, ...]
         for sample in processed_data.get("samples", []):
             ti = sample.get("timeout_info") or {}
+            inj_idx = sample.get("injection_index")
             for zone, count in (ti.get("zone_summary") or {}).items():
-                zone_totals[zone] = zone_totals.get(zone, 0) + count
+                if count > 0:
+                    zone_totals[zone] = zone_totals.get(zone, 0) + count
+                    if inj_idx is not None:
+                        zone_injections.setdefault(zone, []).append(str(inj_idx))
 
         if is_bp:
             zones = [
@@ -1877,25 +2140,83 @@ class AnalyzePanel(QWidget):
 
         for zone_name, t0, t1, color in zones:
             count = zone_totals.get(zone_name, 0)
+            injs = zone_injections.get(zone_name, [])
             alpha = 0.8 if count > 0 else 0.3
             ax.barh(0, t1 - t0, left=t0, height=0.6, color=color,
                     alpha=alpha, edgecolor='white', linewidth=0.5)
             mid = (t0 + t1) / 2
-            label = f"{zone_name}\n{count}" if count > 0 else zone_name
-            fw = 'bold' if count > 0 else 'normal'
-            fc = '#c0392b' if count > 0 else '#555'
+            if count > 0:
+                inj_str = ",".join(injs[:6])
+                if len(injs) > 6:
+                    inj_str += "..."
+                label = f"{zone_name}\ninj {inj_str}"
+                fw = 'bold'
+                fc = '#c0392b'
+            else:
+                label = zone_name
+                fw = 'normal'
+                fc = '#555'
             ax.text(mid, 0, label, ha='center', va='center',
-                    fontsize=6, fontweight=fw, color=fc)
+                    fontsize=5.5, fontweight=fw, color=fc, fontfamily=_CHART_FONT)
 
         ax.set_xlim(0, x_max)
         ax.set_yticks([])
-        ax.set_xlabel("Temps (min)", fontsize=7)
-        ax.tick_params(axis='x', labelsize=7)
+        ax.set_xlabel("Temps (min)", fontsize=_CHART_TICK_SIZE,
+                       fontfamily=_CHART_FONT)
+        ax.set_title("Timeouts TOC", fontsize=_CHART_TITLE_SIZE,
+                      fontweight='bold', fontfamily=_CHART_FONT)
+        ax.tick_params(axis='x', labelsize=6)
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
         ax.spines['left'].set_visible(False)
         self.timeout_figure.tight_layout(pad=0.3)
         self.timeout_canvas.draw()
+
+    @staticmethod
+    def _chart_short_label(name, data):
+        """Retorna etiqueta curta per eix X: índex injecció o nom truncat."""
+        sel = (data.get("selected") or {}).get("doc", "1")
+        rep = (data.get("replicas") or {}).get(sel, {})
+        idx = rep.get("injection_index")
+        if idx is not None:
+            return str(idx)
+        # Truncar nom si massa llarg
+        return name[:12] + "…" if len(name) > 12 else name
+
+    @staticmethod
+    def _setup_bar_hover(figure, canvas, ax, x_positions, full_names, values_per_bar):
+        """Configura tooltip hover sobre barres del gràfic.
+
+        values_per_bar: list of total values per bar position.
+        """
+        annot = ax.annotate("", xy=(0, 0), xytext=(0, 8),
+                            textcoords="offset points", fontsize=7,
+                            fontfamily=_CHART_FONT,
+                            ha='center', va='bottom',
+                            bbox=dict(boxstyle="round,pad=0.3", fc="white",
+                                      ec="#ccc", alpha=0.95))
+        annot.set_visible(False)
+
+        def on_move(event):
+            if event.inaxes != ax:
+                if annot.get_visible():
+                    annot.set_visible(False)
+                    canvas.draw_idle()
+                return
+            # Trobar la barra més propera
+            for i, xp in enumerate(x_positions):
+                if abs(event.xdata - xp) < 0.4:
+                    val = values_per_bar[i] if i < len(values_per_bar) else 0
+                    annot.xy = (xp, val)
+                    annot.set_text(f"{full_names[i]}\n{val:.0f}")
+                    annot.set_visible(True)
+                    canvas.draw_idle()
+                    return
+            if annot.get_visible():
+                annot.set_visible(False)
+                canvas.draw_idle()
+
+        figure._hover_cid = figure.canvas.mpl_connect('motion_notify_event', on_move)
 
     def _plot_doc_chart(self, regular, light, is_bp):
         """Gràfic DOC: barres stacked per fraccions (COLUMN) o simples (BP)."""
@@ -1903,6 +2224,7 @@ class AnalyzePanel(QWidget):
         ax = self.doc_figure.add_subplot(111)
 
         names = []
+        labels = []
         fractions_data = {f: [] for f in FRACTION_ORDER}
         ppm_values = []
 
@@ -1914,8 +2236,17 @@ class AnalyzePanel(QWidget):
             quant = data.get("quantification") or {}
 
             names.append(name)
-            for frac in FRACTION_ORDER:
-                fractions_data[frac].append(areas.get(frac, 0))
+            labels.append(self._chart_short_label(name, data))
+            # BP no té fraccions — usar total directament
+            area_total = areas.get("total", 0) or 0
+            has_fracs = any(areas.get(f, 0) for f in FRACTION_ORDER)
+            if has_fracs:
+                for frac in FRACTION_ORDER:
+                    fractions_data[frac].append(areas.get(frac, 0) or 0)
+            else:
+                for frac in FRACTION_ORDER:
+                    fractions_data[frac].append(0)
+                fractions_data["BioP"][-1] = area_total
             ppm_values.append(quant.get("concentration_ppm") or 0)
 
         light_start = len(names)
@@ -1926,6 +2257,7 @@ class AnalyzePanel(QWidget):
             area = rep.get("area_total", 0)
 
             names.append(name)
+            labels.append(self._chart_short_label(name, data))
             for frac in FRACTION_ORDER:
                 fractions_data[frac].append(0)
             ppm_values.append(0)
@@ -1938,9 +2270,9 @@ class AnalyzePanel(QWidget):
 
         x = np.arange(len(names))
         bar_width = 0.7
+        totals = [sum(fractions_data[f][i] for f in FRACTION_ORDER) for i in range(len(names))]
 
         if is_bp:
-            totals = [sum(fractions_data[f][i] for f in FRACTION_ORDER) for i in range(len(names))]
             colors = ['#95a5a6' if i >= light_start else '#3498DB' for i in range(len(names))]
             ax.bar(x, totals, bar_width, color=colors, edgecolor='white', linewidth=0.5)
         else:
@@ -1962,15 +2294,23 @@ class AnalyzePanel(QWidget):
                 for f in FRACTION_ORDER
             ]
             ax.legend(handles=handles, labels=FRACTION_ORDER,
-                      loc='upper right', fontsize=8, framealpha=0.8, ncol=len(FRACTION_ORDER))
+                      loc='lower center', bbox_to_anchor=(0.5, 1.01),
+                      fontsize=_CHART_TICK_SIZE, framealpha=0.9,
+                      ncol=len(FRACTION_ORDER), borderaxespad=0,
+                      handlelength=1.2, columnspacing=0.8,
+                      prop={'family': _CHART_FONT})
 
         ax.set_xticks(x)
-        ax.set_xticklabels(names, rotation=45, ha='right', fontsize=8)
-        ax.set_ylabel("Àrea DOC", fontsize=9)
-        ax.set_title("DOC per mostra (fraccions)", fontsize=10, fontweight='bold')
-        ax.tick_params(axis='y', labelsize=8)
+        ax.set_xticklabels(labels, rotation=0, ha='center',
+                           fontsize=_CHART_TICK_SIZE, fontfamily=_CHART_FONT)
+        ax.set_ylabel("DOC", fontsize=_CHART_LABEL_SIZE,
+                       fontfamily=_CHART_FONT)
+        ax.set_title("DOC per mostra", fontsize=_CHART_TITLE_SIZE,
+                      fontweight='bold', fontfamily=_CHART_FONT, pad=16)
+        ax.tick_params(axis='y', labelsize=_CHART_TICK_SIZE)
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
+        self._setup_bar_hover(self.doc_figure, self.doc_canvas, ax, x, names, totals)
         self.doc_figure.tight_layout()
         self.doc_canvas.draw()
 
@@ -1983,6 +2323,7 @@ class AnalyzePanel(QWidget):
         is_bp = getattr(self, '_chart_is_bp', False)
 
         names = []
+        labels = []
         fractions_data = {f: [] for f in FRACTION_ORDER}
 
         for name in sorted(regular.keys()):
@@ -1992,8 +2333,17 @@ class AnalyzePanel(QWidget):
             rep = (data.get("replicas") or {}).get(sel, {})
             areas = (rep.get("areas") or {}).get(wl_key, {})
             names.append(name)
-            for frac in FRACTION_ORDER:
-                fractions_data[frac].append(areas.get(frac, 0))
+            labels.append(self._chart_short_label(name, data))
+            # BP no té fraccions — usar total directament
+            area_total = areas.get("total", 0) or 0
+            has_fracs = any(areas.get(f, 0) for f in FRACTION_ORDER)
+            if has_fracs:
+                for frac in FRACTION_ORDER:
+                    fractions_data[frac].append(areas.get(frac, 0) or 0)
+            else:
+                for frac in FRACTION_ORDER:
+                    fractions_data[frac].append(0)
+                fractions_data["BioP"][-1] = area_total
 
         light_start = len(names)
         for name in sorted(light.keys()):
@@ -2002,6 +2352,7 @@ class AnalyzePanel(QWidget):
             rep = (data.get("replicas") or {}).get(sel, {})
             area = ((rep.get("areas") or {}).get(wl_key) or {}).get("total", 0)
             names.append(name)
+            labels.append(self._chart_short_label(name, data))
             for frac in FRACTION_ORDER:
                 fractions_data[frac].append(0)
             fractions_data["BioP"][-1] = area
@@ -2013,9 +2364,9 @@ class AnalyzePanel(QWidget):
 
         x = np.arange(len(names))
         bar_width = 0.7
+        totals = [sum(fractions_data[f][i] for f in FRACTION_ORDER) for i in range(len(names))]
 
         if is_bp:
-            totals = [sum(fractions_data[f][i] for f in FRACTION_ORDER) for i in range(len(names))]
             colors = ['#95a5a6' if i >= light_start else '#E74C3C' for i in range(len(names))]
             ax.bar(x, totals, bar_width, color=colors, edgecolor='white', linewidth=0.5)
         else:
@@ -2037,15 +2388,23 @@ class AnalyzePanel(QWidget):
                 for f in FRACTION_ORDER
             ]
             ax.legend(handles=handles, labels=FRACTION_ORDER,
-                      loc='upper right', fontsize=8, framealpha=0.8, ncol=len(FRACTION_ORDER))
+                      loc='lower center', bbox_to_anchor=(0.5, 1.01),
+                      fontsize=_CHART_TICK_SIZE, framealpha=0.9,
+                      ncol=len(FRACTION_ORDER), borderaxespad=0,
+                      handlelength=1.2, columnspacing=0.8,
+                      prop={'family': _CHART_FONT})
 
         ax.set_xticks(x)
-        ax.set_xticklabels(names, rotation=45, ha='right', fontsize=8)
-        ax.set_ylabel(f"Àrea {wl_key}", fontsize=9)
-        ax.set_title(f"{wl_key} per mostra (fraccions)", fontsize=10, fontweight='bold')
-        ax.tick_params(axis='y', labelsize=8)
+        ax.set_xticklabels(labels, rotation=0, ha='center',
+                           fontsize=_CHART_TICK_SIZE, fontfamily=_CHART_FONT)
+        ax.set_ylabel(wl_key, fontsize=_CHART_LABEL_SIZE,
+                       fontfamily=_CHART_FONT)
+        ax.set_title(f"{wl_key} per mostra", fontsize=_CHART_TITLE_SIZE,
+                      fontweight='bold', fontfamily=_CHART_FONT, pad=16)
+        ax.tick_params(axis='y', labelsize=_CHART_TICK_SIZE)
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
+        self._setup_bar_hover(self.dad_figure, self.dad_canvas, ax, x, names, totals)
         self.dad_figure.tight_layout()
         self.dad_canvas.draw()
 
@@ -2061,24 +2420,11 @@ class AnalyzePanel(QWidget):
             return '-.'  # PR: punt-ratlla
         return '-'       # Mostres: sòlida
 
-    def _plot_doc_overlay(self, regular, light, is_bp):
-        """Cromatogrames DOC superposats."""
-        self.doc_overlay_figure.clear()
-        ax = self.doc_overlay_figure.add_subplot(111)
-
-        all_samples = {}
-        all_samples.update(regular)
-        all_samples.update(light)
-
-        if not all_samples:
-            ax.text(0.5, 0.5, "Sense dades", ha='center', va='center',
-                    transform=ax.transAxes, color='#999')
-            self.doc_overlay_canvas.draw()
-            return
-
-        import matplotlib.cm as cm
+    def _draw_doc_overlay_on_ax(self, ax, all_samples, is_bp, is_popup=False):
+        """Dibuixa cromatogrames DOC superposats sobre un ax donat."""
         n = len(all_samples)
         cmap = cm.get_cmap('tab20', max(n, 1))
+        lw = 1.2 if is_popup else 0.9
 
         for i, (name, data) in enumerate(sorted(all_samples.items())):
             sel = (data.get("selected") or {}).get("doc", "1")
@@ -2086,51 +2432,26 @@ class AnalyzePanel(QWidget):
             t = rep.get("t_doc")
             y = rep.get("y_doc_net")
             ls = self._get_line_style(data)
+            short = self._chart_short_label(name, data)
             if t is not None and y is not None and len(t) > 0:
-                ax.plot(t, y, label=name, linewidth=1.4, alpha=0.7,
+                ax.plot(t, y, label=short, linewidth=lw, alpha=0.75,
                         color=cmap(i), linestyle=ls)
 
         ax.set_xlim(0, 12 if is_bp else 70)
-        ax.set_xlabel("Temps (min)", fontsize=9)
-        ax.set_ylabel("DOC (ppb)", fontsize=9)
-        ax.set_title("Cromatogrames DOC superposats", fontsize=10, fontweight='bold')
-        ax.tick_params(axis='both', labelsize=8)
-        ax.spines['top'].set_visible(False)
-        ax.spines['right'].set_visible(False)
+        ax.set_xlabel("Temps (min)", fontsize=_CHART_LABEL_SIZE,
+                       fontfamily=_CHART_FONT)
+        ax.set_ylabel("DOC (ppb)", fontsize=_CHART_LABEL_SIZE,
+                       fontfamily=_CHART_FONT)
+        ax.set_title("DOC superposats", fontsize=_CHART_TITLE_SIZE,
+                      fontweight='bold', fontfamily=_CHART_FONT)
 
-        handles, labels = ax.get_legend_handles_labels()
-        if handles:
-            if len(handles) > 12:
-                ax.legend(handles, labels, loc='upper left',
-                          bbox_to_anchor=(1.01, 1), fontsize=6, framealpha=0.8,
-                          ncol=1, handlelength=1.5, borderaxespad=0)
-            else:
-                ax.legend(loc='upper right', fontsize=7, framealpha=0.8)
-
-        self.doc_overlay_figure.tight_layout()
-        self.doc_overlay_canvas.draw()
-
-    def _plot_dad_overlay(self, regular, light):
-        """Cromatogrames DAD superposats (longitud d'ona seleccionada)."""
-        self.dad_overlay_figure.clear()
-        ax = self.dad_overlay_figure.add_subplot(111)
-        wl = self._get_selected_wl()
-
-        all_samples = {}
-        all_samples.update(regular)
-        all_samples.update(light)
-
-        if not all_samples:
-            ax.text(0.5, 0.5, "Sense dades", ha='center', va='center',
-                    transform=ax.transAxes, color='#999')
-            self.dad_overlay_canvas.draw()
-            return
-
-        import matplotlib.cm as cm
+    def _draw_dad_overlay_on_ax(self, ax, all_samples, is_bp, wl,
+                                 is_popup=False):
+        """Dibuixa cromatogrames DAD superposats sobre un ax donat."""
+        wl_key = f"A{wl}"
         n = len(all_samples)
         cmap = cm.get_cmap('tab20', max(n, 1))
-
-        is_bp = getattr(self, '_chart_is_bp', False)
+        lw = 1.2 if is_popup else 0.9
 
         for i, (name, data) in enumerate(sorted(all_samples.items())):
             selected = data.get("selected") or {}
@@ -2157,29 +2478,100 @@ class AnalyzePanel(QWidget):
                     break
 
             ls = self._get_line_style(data)
+            short = self._chart_short_label(name, data)
             if t_col is not None and wl_col is not None:
-                ax.plot(df_dad[t_col], df_dad[wl_col], label=name,
-                        linewidth=1.4, alpha=0.7, color=cmap(i), linestyle=ls)
+                ax.plot(df_dad[t_col], df_dad[wl_col], label=short,
+                        linewidth=lw, alpha=0.75, color=cmap(i), linestyle=ls)
 
         ax.set_xlim(0, 12 if is_bp else 70)
-        ax.set_xlabel("Temps (min)", fontsize=9)
-        ax.set_ylabel(f"A{wl} (mAU)", fontsize=9)
-        ax.set_title(f"Cromatogrames A{wl} superposats", fontsize=10, fontweight='bold')
-        ax.tick_params(axis='both', labelsize=8)
+        ax.set_xlabel("Temps (min)", fontsize=_CHART_LABEL_SIZE,
+                       fontfamily=_CHART_FONT)
+        ax.set_ylabel(f"{wl_key} (mAU)", fontsize=_CHART_LABEL_SIZE,
+                       fontfamily=_CHART_FONT)
+        ax.set_title(f"{wl_key} superposats", fontsize=_CHART_TITLE_SIZE,
+                      fontweight='bold', fontfamily=_CHART_FONT)
+
+    def _plot_doc_overlay(self, regular, light, is_bp):
+        """Miniatura DOC overlay (sense llegenda)."""
+        self.doc_overlay_figure.clear()
+        ax = self.doc_overlay_figure.add_subplot(111)
+        all_samples = {**regular, **light}
+        if not all_samples:
+            ax.text(0.5, 0.5, "Sense dades", ha='center', va='center',
+                    transform=ax.transAxes, color='#bbb',
+                    fontsize=_CHART_LABEL_SIZE)
+            self.doc_overlay_canvas.draw()
+            return
+        self._draw_doc_overlay_on_ax(ax, all_samples, is_bp)
+        ax.tick_params(axis='both', labelsize=_CHART_TICK_SIZE)
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
+        # Miniatura: sense llegenda, hint visual
+        n = len(all_samples)
+        ax.text(0.98, 0.02, f"{n} traces",
+                transform=ax.transAxes, fontsize=7, ha='right', va='bottom',
+                color='#aaa', fontfamily=_CHART_FONT)
+        self.doc_overlay_figure.tight_layout(pad=0.5)
+        self.doc_overlay_canvas.draw()
 
-        handles, labels = ax.get_legend_handles_labels()
-        if handles:
-            if len(handles) > 12:
-                ax.legend(handles, labels, loc='upper left',
-                          bbox_to_anchor=(1.01, 1), fontsize=6, framealpha=0.8,
-                          ncol=1, handlelength=1.5, borderaxespad=0)
-            else:
-                ax.legend(loc='upper right', fontsize=7, framealpha=0.8)
-
-        self.dad_overlay_figure.tight_layout()
+    def _plot_dad_overlay(self, regular, light):
+        """Miniatura DAD overlay (sense llegenda)."""
+        self.dad_overlay_figure.clear()
+        ax = self.dad_overlay_figure.add_subplot(111)
+        wl = self._get_selected_wl()
+        all_samples = {**regular, **light}
+        if not all_samples:
+            ax.text(0.5, 0.5, "Sense dades", ha='center', va='center',
+                    transform=ax.transAxes, color='#bbb',
+                    fontsize=_CHART_LABEL_SIZE)
+            self.dad_overlay_canvas.draw()
+            return
+        is_bp = getattr(self, '_chart_is_bp', False)
+        self._draw_dad_overlay_on_ax(ax, all_samples, is_bp, wl)
+        ax.tick_params(axis='both', labelsize=_CHART_TICK_SIZE)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        n = len(all_samples)
+        ax.text(0.98, 0.02, f"{n} traces",
+                transform=ax.transAxes, fontsize=7, ha='right', va='bottom',
+                color='#aaa', fontfamily=_CHART_FONT)
+        self.dad_overlay_figure.tight_layout(pad=0.5)
         self.dad_overlay_canvas.draw()
+
+    def _open_overlay_popup(self, chart_type):
+        """Obre pop-up interactiu per l'overlay DOC o DAD."""
+        try:
+            if not HAS_MATPLOTLIB:
+                return
+            checked = self._get_checked_samples()
+            reg = {k: v for k, v in checked.items()
+                   if v.get("sample_type") != "CONTROL"}
+            light = {k: v for k, v in checked.items()
+                     if v.get("sample_type") == "CONTROL"}
+            all_samples = {**reg, **light}
+            if not all_samples:
+                return
+            is_bp = getattr(self, '_chart_is_bp', False)
+
+            if chart_type == "doc":
+                title = "Cromatogrames DOC superposats"
+                def plot_fn(ax):
+                    self._draw_doc_overlay_on_ax(ax, all_samples, is_bp,
+                                                  is_popup=True)
+            else:
+                wl = self._get_selected_wl()
+                title = f"Cromatogrames A{wl} superposats"
+                def plot_fn(ax):
+                    self._draw_dad_overlay_on_ax(ax, all_samples, is_bp, wl,
+                                                  is_popup=True)
+
+            dlg = OverlayPopupDialog(self, title, plot_fn)
+            dlg.exec()
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            logger.error(f"Error opening overlay popup: {e}")
+            QMessageBox.critical(self, "Error", f"Error obrint popup:\n{e}")
 
     def save_charts(self, seq_path):
         """Guarda els 5 gràfics a SEQ/CHECK/plots/."""

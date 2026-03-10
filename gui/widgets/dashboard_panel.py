@@ -643,12 +643,22 @@ class DashboardPanel(QWidget):
         self._update_table()
 
     def _build_name_tooltip(self, seq):
-        """Construeix tooltip enriquit pel nom (Tipus + Mode + origen + siblings)."""
+        """Construeix tooltip enriquit pel nom (Tipus + Mode + versió + origen + siblings)."""
+        from hpsec_version import SUITE_VERSION
         parts = []
         # Tipus i mode
         method = seq.method if seq.method else "?"
         data_mode = seq.data_mode if seq.data_mode else "?"
         parts.append(f"{method} · {data_mode}")
+
+        # Versió de processament
+        if seq.suite_version:
+            version_str = f"Processada amb v{seq.suite_version}"
+            if seq.suite_version != SUITE_VERSION:
+                version_str += f"  (actual: v{SUITE_VERSION})"
+            parts.append(version_str)
+        elif seq.import_status.completed:
+            parts.append("Processada amb versió desconeguda")
 
         # Origen (si multi-folder)
         if seq.source_folder:
@@ -1415,14 +1425,21 @@ class DashboardPanel(QWidget):
                 sens, ok = QInputDialog.getText(
                     self,
                     "Sensibilitat UIB",
-                    f"{len(seqs_need_uib)} seqüències DUAL/UIB sense sensibilitat UIB definida.\n"
-                    "Indica la sensibilitat UIB per defecte (ex: 700, 1000):\n\n"
+                    f"{len(seqs_need_uib)} seqüències DUAL/UIB sense sensibilitat UIB al MasterFile.\n"
+                    "Indica la sensibilitat UIB (ex: 700, 1000):\n\n"
                     "Seqüències: " + ", ".join([s.seq_name for s in seqs_need_uib[:5]]) +
                     ("..." if len(seqs_need_uib) > 5 else ""),
-                    text="1000"
                 )
                 if ok and sens.strip():
                     default_uib_sensitivity = sens.strip()
+                else:
+                    QMessageBox.warning(
+                        self, "Avís",
+                        "No s'ha indicat la sensibilitat UIB.\n"
+                        "Les seqüències DUAL/UIB no es processaran correctament "
+                        "sense aquest valor."
+                    )
+                    return
 
         self._set_controls_enabled(False)
 

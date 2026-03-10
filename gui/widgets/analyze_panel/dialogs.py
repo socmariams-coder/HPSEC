@@ -2,23 +2,32 @@
 HPSEC Suite - Analyze Dialogs
 ==============================
 
-SampleDetailDialog amb gràfics, taula fraccions completa i resum senyals.
+SampleDetailDialog — Comparació visual R1 vs R2.
+
+Layout:
+  Header:  nom mostra | mode | ppm | botons selecció
+  Cos:     per cada senyal (DOC, UIB, A254):
+           - Esquerra (65%): cromatograma R1+R2 overlay + diferència ×5
+           - Dreta (35%): barres fraccions R1 vs R2
+  Peu:     anomalies cara a cara (R1 | R2) + timeouts
 """
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTableWidget, QDialog, QGroupBox, QGridLayout, QSplitter,
-    QScrollArea
+    QScrollArea, QFrame, QComboBox, QSizePolicy
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QFont, QColor
 
 import numpy as np
+import logging
 
-from ._constants import DAD_WL_ALL, SIGNAL_KEYS_ALL
-from ._helpers import (
-    configure_table_style, populate_signal_summary, populate_fractions_table
-)
-from hpsec_warnings import classify_anomalies
+from ._constants import DAD_WL_ALL, SIGNAL_KEYS_ALL, FRACTION_NAMES, FRACTION_RANGES
+from ._helpers import configure_table_style, populate_fractions_table
+from hpsec_warnings import classify_anomalies, ANOMALY_CATALOG
+
+logger = logging.getLogger(__name__)
 
 # Matplotlib
 try:
@@ -28,9 +37,29 @@ try:
 except ImportError:
     HAS_MATPLOTLIB = False
 
+# Colors
+_C_R1 = '#1565C0'      # Blau R1
+_C_R2 = '#E65100'      # Taronja R2
+_C_DIFF = '#888888'     # Gris diferència
+_C_UIB_R1 = '#2E7D32'  # Verd fosc UIB R1
+_C_UIB_R2 = '#66BB6A'  # Verd clar UIB R2
+_LW = 0.9
+
+# Fraction colors (consistent with panel.py)
+FRACTION_COLORS = {
+    "BioP": "#3498DB",
+    "HS":   "#E74C3C",
+    "BB":   "#F39C12",
+    "SB":   "#2ECC71",
+    "LMW":  "#9B59B6",
+}
+FRACTION_ORDER = ["BioP", "HS", "BB", "SB", "LMW"]
+
 
 class SampleDetailDialog(QDialog):
-    """Diàleg de detall d'una mostra amb gràfics i estadístiques completes."""
+    """Diàleg de detall — comparació visual R1 vs R2."""
+
+    replica_changed = Signal(str, str, str)  # sample_name, domain (doc/dad), new_replica
 
     def __init__(self, sample_name, sample_data, method, parent=None):
         super().__init__(parent)
@@ -40,376 +69,608 @@ class SampleDetailDialog(QDialog):
         self.is_bp = method.upper() == "BP"
 
         self.setWindowTitle(f"Detall: {sample_name}")
-        self.setMinimumSize(1200, 850)
-        self.resize(1400, 1000)
+        self.setMinimumSize(1200, 800)
+        self.resize(1400, 950)
         self.setModal(True)
 
         self._setup_ui()
 
-    def _count_graph_rows(self):
-        """Compte files de gràfics: DOC/UIB + parells DAD."""
-        replicas = self.sample_data.get("replicas", {})
-        n_wl = 0
-        if replicas:
-            r1 = replicas.get(sorted(replicas.keys())[0], {})
-            df_dad = r1.get("df_dad")
-            if df_dad is not None and hasattr(df_dad, 'columns'):
-                n_wl = sum(1 for c in df_dad.columns if c != 'time (min)')
-        n_dad_rows = max((n_wl + 1) // 2, 1)  # parells de λ
-        return 1 + n_dad_rows  # DOC/UIB row + DAD rows
+    # ------------------------------------------------------------------
+    # UI Setup
+    # ------------------------------------------------------------------
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(12)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
 
-        # Splitter principal
-        splitter = QSplitter(Qt.Horizontal)
+        # === HEADER ===
+        layout.addWidget(self._build_header())
 
-        # === LEFT: GRAPHS (scrollable) ===
+        # === MAIN CONTENT (scrollable) ===
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setStyleSheet("QScrollArea { border: none; }")
+
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(12)
+
+        # Signal blocks
         if HAS_MATPLOTLIB:
-            n_graph_rows = self._count_graph_rows()
-            n_total_rows = n_graph_rows + 1  # + table row
-            fig_h = max(6, n_graph_rows * 1.1 + 2.8)
-            self.figure = Figure(figsize=(7.5, fig_h), dpi=100)
-            self.canvas = FigureCanvas(self.figure)
-            self.canvas.setMinimumHeight(int(fig_h * 100))
-
-            graph_scroll = QScrollArea()
-            graph_scroll.setWidgetResizable(True)
-            graph_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-            graph_scroll.setWidget(self.canvas)
-            splitter.addWidget(graph_scroll)
-            self._plot_signals()
+            self._add_signal_blocks(content_layout)
         else:
-            graph_widget = QWidget()
-            graph_layout = QVBoxLayout(graph_widget)
-            graph_layout.setContentsMargins(0, 0, 0, 0)
-            no_plot = QLabel("Matplotlib no disponible.\nInstal·la matplotlib per veure gràfics.")
-            no_plot.setAlignment(Qt.AlignCenter)
-            no_plot.setStyleSheet("color: #666; font-style: italic;")
-            graph_layout.addWidget(no_plot)
-            splitter.addWidget(graph_widget)
+            lbl = QLabel("Matplotlib no disponible — instal·la matplotlib.")
+            lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            lbl.setStyleSheet("color: #999; font-style: italic; padding: 40px;")
+            content_layout.addWidget(lbl)
 
-        # === RIGHT: STATS ===
-        stats_scroll = QScrollArea()
-        stats_scroll.setWidgetResizable(True)
-        stats_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        stats_scroll.setStyleSheet("QScrollArea { border: none; }")
+        # Anomalies face-to-face
+        anom_widget = self._build_anomalies_section()
+        if anom_widget:
+            content_layout.addWidget(anom_widget)
 
-        stats_widget = QWidget()
-        stats_layout = QVBoxLayout(stats_widget)
-        stats_layout.setContentsMargins(8, 0, 8, 0)
-        stats_layout.setSpacing(12)
+        # Fractions table (compacta)
+        content_layout.addWidget(self._build_fractions_section())
 
-        # Info general
-        stats_layout.addWidget(self._create_info_group())
+        content_layout.addStretch()
+        scroll.setWidget(content)
+        layout.addWidget(scroll, 1)
 
-        # Anomalies (totes les de la rèplica seleccionada)
-        anomalies_group = self._create_anomalies_group()
-        if anomalies_group:
-            stats_layout.addWidget(anomalies_group)
-
-        # Comparació rèpliques
-        if len(self.sample_data.get("replicas", {})) > 1:
-            stats_layout.addWidget(self._create_comparison_group())
-
-        # Timeouts info (línia compacta)
-        timeout_label = self._create_timeout_summary()
-        if timeout_label:
-            stats_layout.addWidget(timeout_label)
-
-        # Fractions table (complete, all wavelengths)
-        stats_layout.addWidget(self._create_fractions_group())
-
-        # Pics HS info (COLUMN)
-        if not self.is_bp:
-            peaks_group = self._create_peaks_hs_group()
-            if peaks_group:
-                stats_layout.addWidget(peaks_group)
-
-        stats_layout.addStretch()
-        stats_scroll.setWidget(stats_widget)
-        splitter.addWidget(stats_scroll)
-
-        splitter.setSizes([600, 500])
-        layout.addWidget(splitter)
-
-        # Close button
+        # === FOOTER ===
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
         close_btn = QPushButton("Tancar")
+        close_btn.setStyleSheet(
+            "QPushButton { padding: 6px 24px; font-size: 12px; }"
+        )
         close_btn.clicked.connect(self.accept)
         btn_layout.addWidget(close_btn)
         layout.addLayout(btn_layout)
 
     # ------------------------------------------------------------------
-    # Info group
+    # Header
     # ------------------------------------------------------------------
 
-    def _create_info_group(self):
-        group = QGroupBox("Informació General")
-        layout = QGridLayout(group)
-        layout.setSpacing(8)
+    def _build_header(self):
+        frame = QFrame()
+        frame.setStyleSheet(
+            "QFrame { background: #f8f9fa; border: 1px solid #dee2e6; "
+            "border-radius: 6px; padding: 8px; }"
+        )
+        h = QHBoxLayout(frame)
+        h.setContentsMargins(12, 6, 12, 6)
+        h.setSpacing(16)
 
-        selected = self.sample_data.get("selected", {})
-        quantification = self.sample_data.get("quantification", {})
+        # Nom
+        name_lbl = QLabel(f"<b style='font-size:14px'>{self.sample_name}</b>")
+        h.addWidget(name_lbl)
 
-        row = 0
-        layout.addWidget(QLabel("<b>Mostra:</b>"), row, 0)
-        layout.addWidget(QLabel(self.sample_name), row, 1)
-        row += 1
+        # Mode
+        mode_lbl = QLabel(f"<span style='color:#666'>{self.method}</span>")
+        h.addWidget(mode_lbl)
 
-        layout.addWidget(QLabel("<b>Rèplica:</b>"), row, 0)
-        layout.addWidget(QLabel(f"R{selected.get('doc', '?')}"), row, 1)
-        row += 1
+        # ppm
+        quant = self.sample_data.get("quantification", {})
+        ppm_d = quant.get("concentration_ppm_direct") or quant.get("concentration_ppm")
+        ppm_u = quant.get("concentration_ppm_uib")
+        ppm_parts = []
+        if ppm_d:
+            ppm_parts.append(f"<b style='color:#1565C0'>{ppm_d:.3f} ppm</b>")
+        if ppm_u:
+            ppm_parts.append(f"<b style='color:#2E7D32'>{ppm_u:.3f} ppm<sub>UIB</sub></b>")
+        if ppm_parts:
+            h.addWidget(QLabel(" | ".join(ppm_parts)))
 
-        layout.addWidget(QLabel("<b>Mode:</b>"), row, 0)
-        layout.addWidget(QLabel(self.method), row, 1)
-        row += 1
-
-        # Concentrations (use pre-calculated values from quantify_sample,
-        # which uses rf_mass_cal global — NOT the old area/rf_direct formula)
-        conc_direct = (quantification.get("concentration_ppm_direct")
-                       or quantification.get("concentration_ppm"))
-        conc_uib = quantification.get("concentration_ppm_uib")
-        area = quantification.get("area_total", 0)
-        cal_source = quantification.get("calibration_source", "")
-
-        layout.addWidget(QLabel("<b>ppm Direct:</b>"), row, 0)
-        conc_d_label = QLabel(f"{conc_direct:.3f} ppm" if conc_direct else "-")
-        conc_d_label.setStyleSheet("font-weight: bold; color: #2E86AB;")
-        layout.addWidget(conc_d_label, row, 1)
-        row += 1
-
-        if conc_uib:
-            layout.addWidget(QLabel("<b>ppm UIB:</b>"), row, 0)
-            conc_u_label = QLabel(f"{conc_uib:.3f} ppm")
-            conc_u_label.setStyleSheet("font-weight: bold; color: #2A9D8F;")
-            layout.addWidget(conc_u_label, row, 1)
-            row += 1
-
-        layout.addWidget(QLabel("<b>Àrea total:</b>"), row, 0)
-        layout.addWidget(QLabel(f"{area:.1f}" if area else "-"), row, 1)
-        row += 1
-
-        if cal_source:
-            layout.addWidget(QLabel("<b>Calibració:</b>"), row, 0)
-            layout.addWidget(QLabel(f"{cal_source}"), row, 1)
-            row += 1
-
-        # HCI (Humic Character Index)
-        hci = quantification.get("hci")
+        # HCI
+        hci = quant.get("hci")
         if hci is not None:
-            char = quantification.get("hci_character", "")
-            hci_label = QLabel(f"{hci:.1f} ({char})")
-            if hci > 60:
-                hci_label.setStyleSheet("color: #E74C3C; font-weight: bold;")
-            elif hci < 40:
-                hci_label.setStyleSheet("color: #3498DB; font-weight: bold;")
-            else:
-                hci_label.setStyleSheet("color: #27AE60; font-weight: bold;")
-            layout.addWidget(QLabel("<b>HCI:</b>"), row, 0)
-            layout.addWidget(hci_label, row, 1)
+            char = quant.get("hci_character", "")
+            colors = {"HA": "#E74C3C", "FA": "#3498DB"}
+            c = colors.get(char[:2], "#27AE60") if char else "#27AE60"
+            h.addWidget(QLabel(f"<b style='color:{c}'>HCI {hci:.1f} ({char})</b>"))
 
-        return group
+        h.addStretch()
+
+        # Selector repliques (info only — real selection in panel.py combos)
+        selected = self.sample_data.get("selected", {})
+        replicas = self.sample_data.get("replicas", {})
+        rep_keys = sorted(replicas.keys())
+        if len(rep_keys) >= 2:
+            sel_lbl = QLabel(
+                f"<span style='color:#888; font-size:11px'>"
+                f"DOC: R{selected.get('doc', '?')} | "
+                f"DAD: R{selected.get('dad', '?')}</span>"
+            )
+            h.addWidget(sel_lbl)
+
+        return frame
 
     # ------------------------------------------------------------------
-    # Anomalies group
+    # Signal blocks (DOC, UIB, A254)
     # ------------------------------------------------------------------
 
-    def _create_anomalies_group(self):
-        """Mostra totes les anomalies de les rèpliques DOC+DAD seleccionades."""
-        from hpsec_warnings import ANOMALY_CATALOG, classify_anomalies
+    def _add_signal_blocks(self, layout):
+        """Afegeix blocs de senyal: cromatograma R1+R2 + barres fraccions."""
+        replicas = self.sample_data.get("replicas", {})
+        rep_keys = sorted(replicas.keys())
+        if not rep_keys:
+            return
 
-        selected = self.sample_data.get("selected") or {}
-        replicas = self.sample_data.get("replicas") or {}
-        doc_sel = selected.get("doc", "1")
-        dad_sel = selected.get("dad", doc_sel)
-        doc_rep = replicas.get(doc_sel, {})
-        dad_rep = replicas.get(dad_sel, {}) if dad_sel != doc_sel else {}
+        r1 = replicas.get(rep_keys[0], {})
+        r2 = replicas.get(rep_keys[1], {}) if len(rep_keys) > 1 else None
+        comparison = self.sample_data.get("comparison", {})
+        selected = self.sample_data.get("selected", {})
+        doc_sel = selected.get("doc", rep_keys[0])
+        dad_sel = selected.get("dad", rep_keys[0])
 
-        # Merge anomalies (deduplicate by code)
-        all_anomalies = list(doc_rep.get("anomalies", []))
-        seen = {(a.get("code") if isinstance(a, dict) else str(a)) for a in all_anomalies}
-        for a in dad_rep.get("anomalies", []):
-            code = a.get("code") if isinstance(a, dict) else str(a)
-            if code not in seen:
-                all_anomalies.append(a)
-                seen.add(code)
+        # Fraccions from config
+        from hpsec_config import get_config
+        cfg = get_config()
+        mode = "BP" if self.is_bp else "COLUMN"
+        fracs = cfg.get_all_fractions(mode)
+        x_min, x_max = (0, 15) if self.is_bp else (0, 70)
 
-        # Also add comparison warnings (both DOC and DAD)
-        comparison = self.sample_data.get("comparison") or {}
+        # --- DOC Direct ---
+        t1 = _as_array(r1.get("t_doc"))
+        y1 = _as_array(r1.get("y_doc_net"))
+        t2 = _as_array(r2.get("t_doc")) if r2 else None
+        y2 = _as_array(r2.get("y_doc_net")) if r2 else None
+
+        doc_comp = comparison.get("doc", {})
+        pearson_doc = doc_comp.get("pearson", 0)
+
+        doc_block = self._build_signal_block(
+            title="DOC Direct",
+            t1=t1, y1=y1, t2=t2, y2=y2,
+            c1=_C_R1, c2=_C_R2,
+            rep_keys=rep_keys,
+            areas_r1=_get_frac_areas(r1, "DOC"),
+            areas_r2=_get_frac_areas(r2, "DOC") if r2 else {},
+            r2_val=pearson_doc,
+            fracs=fracs, x_range=(x_min, x_max),
+            selected_rep=doc_sel,
+        )
+        if doc_block:
+            layout.addWidget(doc_block)
+
+        # --- DOC UIB ---
+        y1_uib = _as_array(r1.get("y_doc_uib_net"))
+        y2_uib = _as_array(r2.get("y_doc_uib_net")) if r2 else None
+
+        has_uib = (y1_uib is not None and t1 is not None
+                   and len(y1_uib) == len(t1))
+        if has_uib:
+            uib_block = self._build_signal_block(
+                title="DOC UIB",
+                t1=t1, y1=y1_uib, t2=t2, y2=y2_uib,
+                c1=_C_UIB_R1, c2=_C_UIB_R2,
+                rep_keys=rep_keys,
+                areas_r1=_get_uib_areas(r1),
+                areas_r2=_get_uib_areas(r2) if r2 else {},
+                fracs=fracs, x_range=(x_min, x_max),
+                selected_rep=doc_sel,
+            )
+            if uib_block:
+                layout.addWidget(uib_block)
+
+        # --- DAD A254 ---
+        df_dad1 = r1.get("df_dad")
+        df_dad2 = r2.get("df_dad") if r2 else None
+        dad_comp = comparison.get("dad", {})
+        pearson_per_wl = dad_comp.get("pearson_per_wavelength", {})
+
+        if df_dad1 is not None and hasattr(df_dad1, 'columns'):
+            t_dad1 = df_dad1['time (min)'].values if 'time (min)' in df_dad1.columns else None
+            t_dad2 = (df_dad2['time (min)'].values
+                      if df_dad2 is not None and 'time (min)' in df_dad2.columns
+                      else None)
+
+            for wl in ['254', '220', '272', '290']:
+                if wl not in df_dad1.columns:
+                    continue
+                y_d1 = df_dad1[wl].values
+                y_d2 = df_dad2[wl].values if (df_dad2 is not None
+                                               and wl in df_dad2.columns) else None
+                r2_wl = (pearson_per_wl.get(f"A{wl}", 0)
+                         or pearson_per_wl.get(wl, 0))
+                areas_key = f"A{wl}"
+
+                dad_block = self._build_signal_block(
+                    title=f"DAD A{wl}",
+                    t1=t_dad1, y1=y_d1, t2=t_dad2, y2=y_d2,
+                    c1=_C_R1, c2=_C_R2,
+                    rep_keys=rep_keys,
+                    areas_r1=_get_frac_areas(r1, areas_key),
+                    areas_r2=_get_frac_areas(r2, areas_key) if r2 else {},
+                    r2_val=r2_wl,
+                    fracs=fracs, x_range=(x_min, x_max),
+                    selected_rep=dad_sel,
+                )
+                if dad_block:
+                    layout.addWidget(dad_block)
+
+    def _build_signal_block(self, title, t1, y1, t2, y2,
+                            c1, c2, rep_keys,
+                            areas_r1, areas_r2,
+                            r2_val=None, fracs=None,
+                            x_range=(0, 70),
+                            selected_rep=None):
+        """Construeix un bloc per un senyal: cromatograma + barres.
+
+        Args:
+            selected_rep: rèplica seleccionada (e.g. "1") — marca amb ★
+        """
+        if t1 is None or y1 is None:
+            return None
+
+        frame = QFrame()
+        frame.setStyleSheet(
+            "QFrame { border: 1px solid #e0e0e0; border-radius: 4px; "
+            "background: white; }"
+        )
+        v_outer = QVBoxLayout(frame)
+        v_outer.setContentsMargins(4, 2, 4, 4)
+        v_outer.setSpacing(2)
+
+        # --- TITLE BAR: senyal + mètriques compactes ---
+        title_parts = [f"<b>{title}</b>"]
+
+        # Àrees totals R1/R2
+        total_r1 = areas_r1.get("total", 0) or 0
+        total_r2 = areas_r2.get("total", 0) or 0
+        if total_r1 > 0:
+            title_parts.append(
+                f"<span style='color:{c1}'>R{rep_keys[0]}: {total_r1:.0f}</span>")
+        if total_r2 > 0 and len(rep_keys) > 1:
+            title_parts.append(
+                f"<span style='color:{c2}'>R{rep_keys[1]}: {total_r2:.0f}</span>")
+
+        # Diff % entre rèpliques
+        if total_r1 > 0 and total_r2 > 0:
+            avg = (total_r1 + total_r2) / 2
+            diff_pct = (total_r1 - total_r2) / avg * 100
+            dc = '#C62828' if abs(diff_pct) > 15 else ('#E67E22' if abs(diff_pct) > 5 else '#27AE60')
+            title_parts.append(f"<span style='color:{dc}'>\u0394{diff_pct:+.1f}%</span>")
+
+        # Pearson R²
+        if r2_val and r2_val > 0:
+            rc = '#C62828' if r2_val < 0.990 else ('#E67E22' if r2_val < 0.998 else '#27AE60')
+            title_parts.append(f"<span style='color:{rc}'>R\u00b2={r2_val:.4f}</span>")
+
+        # Rèplica seleccionada
+        if selected_rep and len(rep_keys) > 1:
+            title_parts.append(
+                f"<span style='color:#1565C0'>\u2605 R{selected_rep}</span>")
+
+        title_lbl = QLabel(" &nbsp;|&nbsp; ".join(title_parts))
+        title_lbl.setStyleSheet(
+            "font-size: 10px; padding: 2px 6px; border: none; "
+            "background: #f8f9fa; border-radius: 3px;"
+        )
+        v_outer.addWidget(title_lbl)
+
+        # --- CONTENT ROW: chromatogram + bars ---
+        h_layout = QHBoxLayout()
+        h_layout.setContentsMargins(0, 0, 0, 0)
+        h_layout.setSpacing(4)
+
+        has_r2 = (t2 is not None and y2 is not None
+                  and len(y2) > 10)
+
+        fig_h = 2.0
+        fig = Figure(figsize=(7, fig_h), dpi=100)
+        fig.set_facecolor('white')
+        canvas = FigureCanvas(fig)
+        canvas.setMinimumHeight(int(fig_h * 95))
+        canvas.setMaximumHeight(int(fig_h * 110))
+
+        ax = fig.add_subplot(111)
+
+        # Rèplica seleccionada amb ★
+        sel_mark_1 = " \u2605" if selected_rep == rep_keys[0] else ""
+        sel_mark_2 = (" \u2605" if len(rep_keys) > 1
+                      and selected_rep == rep_keys[1] else "")
+
+        ax.plot(t1, y1, color=c1, lw=_LW,
+                label=f'R{rep_keys[0]}{sel_mark_1}', zorder=3)
+
+        if has_r2:
+            ax.plot(t2, y2, color=c2, lw=_LW, alpha=0.7,
+                    label=f'R{rep_keys[1]}{sel_mark_2}', zorder=2)
+
+            # Difference trace (×5, interpolated to same grid)
+            try:
+                y2_interp = np.interp(t1, t2, y2)
+                diff = (y1 - y2_interp) * 5
+                ax.plot(t1, diff, color=_C_DIFF, lw=0.5, alpha=0.5,
+                        label='Diff \u00d75', zorder=1)
+                ax.axhline(0, color='#ddd', lw=0.3, zorder=0)
+            except Exception:
+                pass
+
+        ax.set_xlim(*x_range)
+        ax.tick_params(labelsize=6, length=2, pad=1)
+        ax.grid(True, alpha=0.15, lw=0.3)
+        ax.legend(loc='upper right', fontsize=5.5, ncol=3,
+                  framealpha=0.7, handlelength=1.2)
+
+        # Fraction vertical lines
+        if fracs and not self.is_bp:
+            for fname, finfo in fracs:
+                s = finfo['start']
+                if 0 < s <= x_range[1]:
+                    ax.axvline(s, color='#bbb', ls=':', lw=0.4, zorder=0)
+
+        fig.tight_layout(pad=0.3)
+        canvas.draw()
+        h_layout.addWidget(canvas, 65)
+        v_outer.addLayout(h_layout)
+
+        # --- RIGHT: Fraction bars R1 vs R2 (35%) ---
+        if self.is_bp or not fracs:
+            # BP: single total bar
+            bar_widget = self._build_total_bars(
+                areas_r1, areas_r2, rep_keys, has_r2)
+        else:
+            bar_widget = self._build_fraction_bars(
+                areas_r1, areas_r2, rep_keys, has_r2, fracs)
+        h_layout.addWidget(bar_widget, 35)
+
+        return frame
+
+    # ------------------------------------------------------------------
+    # Fraction bars (R1 vs R2)
+    # ------------------------------------------------------------------
+
+    def _build_fraction_bars(self, areas_r1, areas_r2, rep_keys, has_r2, fracs):
+        """Barres fraccions R1 vs R2 (horizontal grouped)."""
+        fig = Figure(figsize=(3.5, 2.2), dpi=100)
+        fig.set_facecolor('white')
+        canvas = FigureCanvas(fig)
+        canvas.setMinimumHeight(200)
+        canvas.setMaximumHeight(250)
+
+        ax = fig.add_subplot(111)
+
+        frac_names = [fn for fn, _ in fracs]
+        n = len(frac_names)
+        y_pos = np.arange(n)
+        bar_h = 0.35
+
+        vals_r1 = [areas_r1.get(fn, 0) or 0 for fn in frac_names]
+        colors = [FRACTION_COLORS.get(fn, '#999') for fn in frac_names]
+
+        ax.barh(y_pos + bar_h/2, vals_r1, bar_h, color=colors,
+                alpha=0.85, label=f'R{rep_keys[0]}', edgecolor='white', lw=0.5)
+
+        if has_r2:
+            vals_r2 = [areas_r2.get(fn, 0) or 0 for fn in frac_names]
+            ax.barh(y_pos - bar_h/2, vals_r2, bar_h, color=colors,
+                    alpha=0.45, label=f'R{rep_keys[1]}', edgecolor='white',
+                    lw=0.5, hatch='///')
+
+            # Diff % labels
+            for i, (v1, v2) in enumerate(zip(vals_r1, vals_r2)):
+                if v1 > 0 and v2 > 0:
+                    pct = (v1 - v2) / ((v1 + v2) / 2) * 100
+                    c = '#C62828' if abs(pct) > 15 else '#888'
+                    ax.text(max(v1, v2) * 1.02, y_pos[i],
+                            f"{pct:+.0f}%", fontsize=5.5, color=c,
+                            va='center', ha='left')
+
+        ax.set_yticks(y_pos)
+        ax.set_yticklabels(frac_names, fontsize=6.5)
+        ax.tick_params(axis='x', labelsize=5.5, length=2)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.invert_yaxis()
+
+        if has_r2:
+            ax.legend(fontsize=5.5, loc='lower right', framealpha=0.7)
+
+        fig.tight_layout(pad=0.4)
+        canvas.draw()
+        return canvas
+
+    def _build_total_bars(self, areas_r1, areas_r2, rep_keys, has_r2):
+        """Barra total per BP (sense fraccions)."""
+        fig = Figure(figsize=(3.5, 2.2), dpi=100)
+        fig.set_facecolor('white')
+        canvas = FigureCanvas(fig)
+        canvas.setMinimumHeight(200)
+        canvas.setMaximumHeight(250)
+
+        ax = fig.add_subplot(111)
+
+        total_r1 = areas_r1.get("total", 0) or 0
+        labels = [f'R{rep_keys[0]}']
+        vals = [total_r1]
+        colors_list = [_C_R1]
+
+        if has_r2:
+            total_r2 = areas_r2.get("total", 0) or 0
+            labels.append(f'R{rep_keys[1]}')
+            vals.append(total_r2)
+            colors_list.append(_C_R2)
+
+            if total_r1 > 0 and total_r2 > 0:
+                pct = (total_r1 - total_r2) / ((total_r1 + total_r2) / 2) * 100
+                c = '#C62828' if abs(pct) > 15 else '#555'
+                ax.text(0.5, 0.95, f"Diff: {pct:+.1f}%",
+                        transform=ax.transAxes, fontsize=8, color=c,
+                        ha='center', va='top', fontweight='bold')
+
+        ax.bar(labels, vals, color=colors_list, alpha=0.8, width=0.5)
+        ax.set_ylabel("Àrea total", fontsize=7)
+        ax.tick_params(labelsize=7)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+
+        fig.tight_layout(pad=0.4)
+        canvas.draw()
+        return canvas
+
+    # ------------------------------------------------------------------
+    # Anomalies face-to-face
+    # ------------------------------------------------------------------
+
+    def _build_anomalies_section(self):
+        """Anomalies R1 | R2 cara a cara."""
+        replicas = self.sample_data.get("replicas", {})
+        rep_keys = sorted(replicas.keys())
+        if len(rep_keys) < 2:
+            # Single replica — simple list
+            r1 = replicas.get(rep_keys[0], {})
+            anoms = r1.get("anomalies", [])
+            comparison = self.sample_data.get("comparison", {})
+            for domain in ("doc", "dad"):
+                for w in (comparison.get(domain) or {}).get("warnings", []):
+                    anoms.append(w)
+            if not anoms:
+                return None
+            return self._build_simple_anomalies(anoms)
+
+        r1 = replicas.get(rep_keys[0], {})
+        r2 = replicas.get(rep_keys[1], {})
+        anoms_r1 = list(r1.get("anomalies", []))
+        anoms_r2 = list(r2.get("anomalies", []))
+
+        # Add comparison warnings
+        comparison = self.sample_data.get("comparison", {})
+        comp_anoms = []
         for domain in ("doc", "dad"):
             for w in (comparison.get(domain) or {}).get("warnings", []):
-                code = w.get("code") if isinstance(w, dict) else str(w)
-                if code not in seen:
-                    all_anomalies.append(w)
-                    seen.add(code)
+                comp_anoms.append(w)
 
-        if not all_anomalies:
+        if not anoms_r1 and not anoms_r2 and not comp_anoms:
             return None
 
-        classified = classify_anomalies(all_anomalies)
+        frame = QFrame()
+        frame.setStyleSheet(
+            "QFrame { border: 1px solid #e0e0e0; border-radius: 4px; "
+            "background: #fafafa; }"
+        )
+        outer = QVBoxLayout(frame)
+        outer.setContentsMargins(8, 6, 8, 6)
+        outer.setSpacing(4)
 
-        group = QGroupBox(f"Anomalies ({len(all_anomalies)})")
-        layout = QVBoxLayout(group)
-        layout.setSpacing(4)
+        title = QLabel("<b>Anomalies</b>")
+        title.setStyleSheet("font-size: 11px; color: #333; border: none;")
+        outer.addWidget(title)
 
+        # Grid: R1 | R2
+        grid = QGridLayout()
+        grid.setSpacing(4)
+
+        # Headers
+        for col, rep_key in enumerate(rep_keys[:2]):
+            hdr = QLabel(f"<b>R{rep_key}</b>")
+            hdr.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            hdr.setStyleSheet(
+                "font-size: 10px; color: #555; border: none; "
+                "padding: 2px; background: #eee; border-radius: 3px;"
+            )
+            grid.addWidget(hdr, 0, col)
+
+        max_rows = max(len(anoms_r1), len(anoms_r2))
+        for i in range(max_rows):
+            for col, anoms in enumerate([anoms_r1, anoms_r2]):
+                if i < len(anoms):
+                    a = anoms[i]
+                    grid.addWidget(self._anomaly_label(a), i + 1, col)
+                else:
+                    spacer = QLabel("")
+                    spacer.setStyleSheet("border: none;")
+                    grid.addWidget(spacer, i + 1, col)
+
+        outer.addLayout(grid)
+
+        # Comparison anomalies (shared)
+        if comp_anoms:
+            comp_lbl = QLabel("<b>Comparació:</b>")
+            comp_lbl.setStyleSheet("font-size: 10px; color: #666; border: none; margin-top: 4px;")
+            outer.addWidget(comp_lbl)
+            for a in comp_anoms:
+                outer.addWidget(self._anomaly_label(a))
+
+        return frame
+
+    def _build_simple_anomalies(self, anoms):
+        """Llista simple d'anomalies (una sola rèplica)."""
+        frame = QFrame()
+        frame.setStyleSheet(
+            "QFrame { border: 1px solid #e0e0e0; border-radius: 4px; "
+            "background: #fafafa; }"
+        )
+        lay = QVBoxLayout(frame)
+        lay.setContentsMargins(8, 6, 8, 6)
+        lay.setSpacing(2)
+
+        title = QLabel("<b>Anomalies</b>")
+        title.setStyleSheet("font-size: 11px; color: #333; border: none;")
+        lay.addWidget(title)
+
+        for a in anoms:
+            lay.addWidget(self._anomaly_label(a))
+        return frame
+
+    def _anomaly_label(self, a):
+        """Crea un QLabel per una anomalia amb icona, severitat i acció."""
         SEVERITY_STYLE = {
-            "blocker": ("✘", "#E74C3C", "CRÍTIC"),
-            "repaired": ("✔", "#27AE60", "REPARAT"),
-            "warning": ("⚠", "#F39C12", "Avís"),
-            "info": ("ℹ", "#3498DB", "Info"),
+            "blocker": ("&#10008;", "#E74C3C"),
+            "critical": ("&#10008;", "#E74C3C"),
+            "repaired": ("&#10004;", "#27AE60"),
+            "warning": ("&#9888;", "#F39C12"),
+            "info": ("&#8505;", "#3498DB"),
         }
 
-        for key in ("blocker", "repaired", "warning", "info"):
-            for a in classified.get(key, []):
-                code = a.get("code") if isinstance(a, dict) else str(a)
-                entry = ANOMALY_CATALOG.get(code, {})
-                icon, color, prefix = SEVERITY_STYLE.get(key, ("?", "#666", "?"))
-                label = entry.get("label", code)
-                action = entry.get("action", "")
+        if isinstance(a, dict):
+            code = a.get("code", "?")
+            severity = a.get("severity", "info")
+            repaired = a.get("repaired", False)
+        else:
+            code = str(a)
+            severity = "info"
+            repaired = False
 
-                text = f"<span style='color:{color}'><b>{icon} {prefix}:</b></span> {label}"
-                if action:
-                    text += f"<br><span style='color:#888; margin-left:20px'>→ {action}</span>"
+        if repaired:
+            severity = "repaired"
 
-                lbl = QLabel(text)
-                lbl.setWordWrap(True)
-                lbl.setStyleSheet("padding: 2px 0;")
-                layout.addWidget(lbl)
+        entry = ANOMALY_CATALOG.get(code, {})
+        # Prioritzar label de l'anomalia (override_label) sobre el catàleg
+        if isinstance(a, dict) and a.get("label"):
+            label_text = a["label"]
+        else:
+            label_text = entry.get("label", code)
+        action = entry.get("action", "")
+        icon, color = SEVERITY_STYLE.get(severity, ("?", "#666"))
 
-        return group
+        html = f"<span style='color:{color}'>{icon}</span> {label_text}"
+        if action:
+            html += f" <span style='color:#aaa; font-size:9px'>({action})</span>"
 
-    # ------------------------------------------------------------------
-    # Comparison group
-    # ------------------------------------------------------------------
-
-    def _create_comparison_group(self):
-        group = QGroupBox("Comparació Rèpliques")
-        layout = QGridLayout(group)
-        layout.setSpacing(8)
-
-        comparison = self.sample_data.get("comparison", {})
-        doc_comp = comparison.get("doc", {})
-        dad_comp = comparison.get("dad", {})
-
-        row = 0
-
-        # Pearson DOC
-        pearson = doc_comp.get("pearson", 0)
-        layout.addWidget(QLabel("Pearson DOC:"), row, 0)
-        p_label = QLabel(f"{pearson:.4f}")
-        if 0 < pearson < 0.995:
-            p_label.setStyleSheet("color: #F39C12; font-weight: bold;")
-        layout.addWidget(p_label, row, 1)
-        row += 1
-
-        # Diff area
-        area_diff = doc_comp.get("area_diff_pct", 0)
-        layout.addWidget(QLabel("Diff àrea DOC:"), row, 0)
-        diff_label = QLabel(f"{area_diff:.1f}%")
-        if area_diff > 10:
-            diff_label.setStyleSheet("color: #F39C12; font-weight: bold;")
-        layout.addWidget(diff_label, row, 1)
-        row += 1
-
-        # Pearson DAD 254
-        pearson_254 = dad_comp.get("pearson_254", 0)
-        if pearson_254:
-            layout.addWidget(QLabel("Pearson DAD 254:"), row, 0)
-            p254_label = QLabel(f"{pearson_254:.4f}")
-            if 0 < pearson_254 < 0.995:
-                p254_label.setStyleSheet("color: #F39C12; font-weight: bold;")
-            layout.addWidget(p254_label, row, 1)
-            row += 1
-
-        # Warnings
-        warnings = doc_comp.get("warnings", [])
-        if warnings:
-            layout.addWidget(QLabel("<b>Warnings:</b>"), row, 0, 1, 2)
-            row += 1
-            for w in warnings[:5]:
-                w_label = QLabel(f"⚠ {w}")
-                w_label.setStyleSheet("color: #F39C12; font-size: 11px;")
-                w_label.setWordWrap(True)
-                layout.addWidget(w_label, row, 0, 1, 2)
-                row += 1
-
-        return group
+        lbl = QLabel(html)
+        lbl.setWordWrap(True)
+        lbl.setStyleSheet("font-size: 10px; padding: 1px 4px; border: none;")
+        return lbl
 
     # ------------------------------------------------------------------
-    # Signal summary group (tmax + area + SNR per signal)
+    # Fractions table (compacta, a baix)
     # ------------------------------------------------------------------
 
-    def _create_signal_summary_group(self):
-        group = QGroupBox("Resum Senyals")
-        layout = QVBoxLayout(group)
-
-        tbl = QTableWidget()
-        tbl.setColumnCount(4)
-        tbl.setHorizontalHeaderLabels(["Senyal", "tmax (min)", "Àrea total", "SNR"])
-        configure_table_style(tbl, compact=True)
-
-        selected = self.sample_data.get("selected", {})
-        rep_sel = selected.get("doc", "1")
-        rep_data = (self.sample_data.get("replicas") or {}).get(rep_sel, {})
-
-        populate_signal_summary(tbl, rep_data, SIGNAL_KEYS_ALL, show_timeouts=False)
-
-        tbl.setMaximumHeight(30 + 26 * tbl.rowCount())
-        layout.addWidget(tbl)
-        return group
-
-    # ------------------------------------------------------------------
-    # Timeout group
-    # ------------------------------------------------------------------
-
-    def _create_timeout_summary(self):
-        """Crea un label compacte de resum de timeouts (sense GroupBox)."""
-        selected = self.sample_data.get("selected", {})
-        rep_sel = selected.get("doc", "1")
-        rep_data = (self.sample_data.get("replicas") or {}).get(rep_sel, {})
-        timeout_info = rep_data.get("timeout_info") or {}
-        n_timeouts = timeout_info.get("n_timeouts", 0)
-
-        if n_timeouts == 0:
-            return None
-
-        severity = timeout_info.get("severity", "INFO")
-        zones = timeout_info.get("zones", [])
-        color = "#E65100" if severity in ("WARNING", "CRITICAL") else "#1565C0"
-        zones_str = ", ".join(zones) if zones else "N/A"
-
-        # UIB
-        uib_timeout = rep_data.get("timeout_info_uib") or {}
-        uib_n = uib_timeout.get("n_timeouts", 0)
-        uib_part = ""
-        if uib_n > 0:
-            uib_in_peak = rep_data.get("timeout_in_peak_uib", False)
-            uib_part = f" · UIB: {uib_n}"
-            if uib_in_peak:
-                uib_part += " <b>(dins pic!)</b>"
-
-        label = QLabel(
-            f"<span style='color:{color}'>⏱ <b>{n_timeouts} timeout(s)</b> "
-            f"[{severity}] — Zones: {zones_str}{uib_part}</span>"
+    def _build_fractions_section(self):
+        """Taula fraccions completa (tots els senyals)."""
+        group = QGroupBox("Fraccions" if not self.is_bp else "Totals")
+        group.setStyleSheet(
+            "QGroupBox { font-size: 11px; font-weight: bold; border: 1px solid #ddd; "
+            "border-radius: 4px; margin-top: 6px; padding-top: 14px; }"
+            "QGroupBox::title { subcontrol-position: top left; padding: 0 6px; }"
         )
-        label.setWordWrap(True)
-        label.setStyleSheet(
-            f"background: {'#FFF3E0' if severity != 'INFO' else '#E3F2FD'}; "
-            "border-radius: 4px; padding: 6px 10px;"
-        )
-        return label
-
-    # ------------------------------------------------------------------
-    # Fractions group (complete, all wavelengths)
-    # ------------------------------------------------------------------
-
-    def _create_fractions_group(self):
-        group = QGroupBox("Àrees per Fracció" if not self.is_bp else "Àrees Totals")
         layout = QVBoxLayout(group)
+        layout.setContentsMargins(4, 4, 4, 4)
 
         selected = self.sample_data.get("selected", {})
         rep_sel = selected.get("doc", "1")
@@ -423,320 +684,36 @@ class SampleDetailDialog(QDialog):
         )
 
         max_rows = tbl.rowCount()
-        tbl.setMaximumHeight(min(400, 30 + 24 * max_rows))
+        tbl.setMaximumHeight(min(350, 28 + 22 * max_rows))
         layout.addWidget(tbl)
         return group
 
-    # ------------------------------------------------------------------
-    # Peaks HS group
-    # ------------------------------------------------------------------
 
-    def _create_peaks_hs_group(self):
-        selected = self.sample_data.get("selected", {})
-        rep_sel = selected.get("doc", "1")
-        rep_data = (self.sample_data.get("replicas") or {}).get(rep_sel, {})
-        n_peaks = rep_data.get("n_peaks_254_HS", 0)
+# ======================================================================
+# Helpers
+# ======================================================================
 
-        if not n_peaks:
-            return None
+def _as_array(val):
+    """Converteix a numpy array si no és None."""
+    if val is None:
+        return None
+    arr = np.asarray(val)
+    if arr.size < 5:
+        return None
+    return arr
 
-        group = QGroupBox("Pics zona HS (254nm)")
-        layout = QVBoxLayout(group)
-        peaks_label = QLabel(
-            f"<b>{n_peaks}</b> pics detectats a 254nm dins zona HS (18-23 min)"
-        )
-        peaks_label.setWordWrap(True)
-        layout.addWidget(peaks_label)
-        return group
 
-    # ------------------------------------------------------------------
-    # Graphs
-    # ------------------------------------------------------------------
+def _get_frac_areas(rep_data, signal_key):
+    """Extreu àrees per fracció d'un rep_data per un senyal."""
+    if rep_data is None:
+        return {}
+    areas = rep_data.get("areas") or {}
+    sig_areas = areas.get(signal_key) or {}
+    return sig_areas
 
-    def _plot_signals(self):
-        """Gràfics grid 2 columnes (Proposta D): DOC|UIB + parells DAD + taula."""
-        if not HAS_MATPLOTLIB:
-            return
 
-        from matplotlib.lines import Line2D
-
-        self.figure.clear()
-        replicas = self.sample_data.get("replicas", {})
-        if not replicas:
-            return
-
-        rep_keys = sorted(replicas.keys())
-        r1 = replicas.get(rep_keys[0], {})
-        r2 = replicas.get(rep_keys[1], {}) if len(rep_keys) > 1 else None
-        comparison = self.sample_data.get("comparison", {})
-        doc_comp = comparison.get("doc", {})
-        dad_comp = comparison.get("dad", {})
-
-        # DAD wavelength columns
-        df_dad1 = r1.get("df_dad")
-        wl_cols = []
-        if df_dad1 is not None and hasattr(df_dad1, 'columns'):
-            wl_cols = [c for c in df_dad1.columns if c != 'time (min)']
-            wl_cols.sort(key=lambda x: int(x) if str(x).isdigit() else 0)
-
-        # Colors
-        C1 = '#1565C0'
-        C2 = '#E65100'
-        C_UIB = '#2E7D32'
-        C_UIB2 = '#66BB6A'
-        LW = 0.7
-
-        # X-axis limits
-        x_min, x_max = (0, 15) if self.is_bp else (0, 70)
-
-        # Selected replica data
-        selected = self.sample_data.get("selected", {})
-        rep_sel = selected.get("doc", rep_keys[0])
-        sel_data = (replicas or {}).get(rep_sel, r1)
-        sel_areas = sel_data.get("areas") or {}
-        areas_uib = sel_data.get("areas_uib", {})
-        n_peaks_per_wl = sel_data.get("n_peaks_per_wl", {})
-
-        # Quantification
-        quant = self.sample_data.get("quantification", {})
-        ppm_direct = quant.get("concentration_ppm_direct") or quant.get("concentration_ppm", 0)
-        ppm_uib = quant.get("concentration_ppm_uib", 0)
-
-        # Fraccions from config
-        from hpsec_config import get_config
-        cfg = get_config()
-        mode = "BP" if self.is_bp else "COLUMN"
-        fracs = cfg.get_all_fractions(mode)
-
-        # R² values
-        pearson_doc = doc_comp.get("pearson", 0)
-        pearson_per_wl = dad_comp.get("pearson_per_wavelength", {})
-
-        # ── Annotation helper ──
-        def _annotate(ax, r2v=None, ppm=None, sig_key=None):
-            line1 = []
-            if r2v and r2v > 0:
-                line1.append(f"R\u00b2={r2v:.4f}")
-            if ppm:
-                line1.append(f"{ppm:.2f} ppm")
-            # Pics nomes HS
-            n_hs = n_peaks_per_wl.get(sig_key, {}).get("HS", 0)
-            line2 = f"{n_hs}p HS" if n_hs else ""
-            lines = []
-            if line1:
-                lines.append("  ".join(line1))
-            if line2:
-                lines.append(line2)
-            if lines:
-                clr = '#C62828' if (r2v and r2v < 0.990) else '#555'
-                ax.text(0.99, 0.92, "\n".join(lines),
-                        transform=ax.transAxes, fontsize=4.5,
-                        color=clr, ha='right', va='top', linespacing=1.3)
-
-        # ── Fraction vlines helper ──
-        def _add_vlines(ax):
-            for fname, finfo in fracs:
-                s = finfo['start']
-                if s > 0 and s <= x_max:
-                    ax.axvline(s, color='#999', ls=':', lw=0.5, zorder=0)
-
-        # ── GridSpec: 2 columns ──
-        pairs = []
-        for i in range(0, len(wl_cols), 2):
-            if i + 1 < len(wl_cols):
-                pairs.append((wl_cols[i], wl_cols[i + 1]))
-            else:
-                pairs.append((wl_cols[i], None))
-
-        n_graph_rows = 1 + len(pairs)  # DOC/UIB + DAD pairs
-        n_total_rows = n_graph_rows + 1  # + table
-        h_graphs = [1.0] * n_graph_rows
-        h_table = [2.5]
-        heights = h_graphs + h_table
-
-        gs = self.figure.add_gridspec(
-            n_total_rows, 2,
-            height_ratios=heights,
-            hspace=0.30, wspace=0.22,
-            top=0.94, bottom=0.03, left=0.08, right=0.97
-        )
-
-        all_graph_axes = []
-
-        # ── Row 0: DOC Direct | DOC UIB ──
-        ax_doc = self.figure.add_subplot(gs[0, 0])
-        ax_uib = self.figure.add_subplot(gs[0, 1])
-        all_graph_axes.extend([ax_doc, ax_uib])
-
-        # DOC Direct
-        t1 = r1.get("t_doc")
-        y1_d = r1.get("y_doc_net")
-        y1_u = r1.get("y_doc_uib_net")
-        t2_arr, y2_d_arr, y2_u_arr = None, None, None
-
-        if t1 is not None and y1_d is not None:
-            t1 = np.asarray(t1)
-            y1_d = np.asarray(y1_d)
-            ax_doc.plot(t1, y1_d, color=C1, lw=LW, label=f'R{rep_keys[0]}')
-            if r2:
-                t2_arr = r2.get("t_doc")
-                y2_d_arr = r2.get("y_doc_net")
-                if t2_arr is not None and y2_d_arr is not None:
-                    t2_arr = np.asarray(t2_arr)
-                    y2_d_arr = np.asarray(y2_d_arr)
-                    ax_doc.plot(t2_arr, y2_d_arr, color=C2, lw=LW, alpha=0.7,
-                                label=f'R{rep_keys[1]}')
-
-        ax_doc.set_ylabel("DOC", fontsize=6.5, labelpad=2)
-        ax_doc.tick_params(labelsize=5.5, length=2, pad=1)
-        ax_doc.grid(True, alpha=0.2, lw=0.3)
-        ax_doc.set_xlim(x_min, x_max)
-        _add_vlines(ax_doc)
-        ax_doc.legend(loc='upper left', fontsize=5, ncol=2,
-                      framealpha=0.7, handlelength=1.2)
-        _annotate(ax_doc, r2v=pearson_doc, ppm=ppm_direct, sig_key="DOC")
-
-        # DOC UIB
-        has_uib = y1_u is not None
-        if has_uib:
-            y1_u = np.asarray(y1_u)
-            if len(y1_u) == len(t1):
-                ax_uib.plot(t1, y1_u, color=C_UIB, lw=LW, label=f'R{rep_keys[0]}')
-                if r2:
-                    y2_u_arr = r2.get("y_doc_uib_net")
-                    if y2_u_arr is not None and t2_arr is not None:
-                        y2_u_arr = np.asarray(y2_u_arr)
-                        if len(y2_u_arr) == len(t2_arr):
-                            ax_uib.plot(t2_arr, y2_u_arr, color=C_UIB2, lw=LW,
-                                        alpha=0.7, label=f'R{rep_keys[1]}')
-                ax_uib.legend(loc='upper left', fontsize=5, ncol=2,
-                              framealpha=0.7, handlelength=1.2)
-                _annotate(ax_uib, ppm=ppm_uib, sig_key="UIB")
-            else:
-                has_uib = False
-
-        if not has_uib:
-            ax_uib.text(0.5, 0.5, "UIB no disponible",
-                        ha='center', va='center',
-                        transform=ax_uib.transAxes, fontsize=8, color='#aaa')
-
-        ax_uib.set_ylabel("UIB", fontsize=6.5, labelpad=2)
-        ax_uib.tick_params(labelsize=5.5, length=2, pad=1)
-        ax_uib.grid(True, alpha=0.2, lw=0.3)
-        ax_uib.set_xlim(x_min, x_max)
-        _add_vlines(ax_uib)
-
-        # ── DAD rows (parells) ──
-        for row_i, (wl_left, wl_right) in enumerate(pairs):
-            for col_j, wl in enumerate([wl_left, wl_right]):
-                if wl is None:
-                    ax = self.figure.add_subplot(gs[row_i + 1, col_j])
-                    ax.axis('off')
-                    all_graph_axes.append(ax)
-                    continue
-
-                ax = self.figure.add_subplot(gs[row_i + 1, col_j])
-                all_graph_axes.append(ax)
-
-                if (df_dad1 is not None and 'time (min)' in df_dad1.columns
-                        and wl in df_dad1.columns):
-                    ax.plot(df_dad1['time (min)'].values,
-                            df_dad1[wl].values, color=C1, lw=LW)
-                    if r2:
-                        df_dad2 = r2.get("df_dad")
-                        if (df_dad2 is not None
-                                and hasattr(df_dad2, 'columns')
-                                and wl in df_dad2.columns):
-                            ax.plot(df_dad2['time (min)'].values,
-                                    df_dad2[wl].values,
-                                    color=C2, lw=LW, alpha=0.7)
-
-                wl_label = f"A{wl}" if not str(wl).startswith('A') else wl
-                ax.set_ylabel(wl_label, fontsize=6.5, labelpad=2)
-                ax.grid(True, alpha=0.2, lw=0.3)
-                ax.tick_params(labelsize=5.5, length=2, pad=1)
-                ax.set_xlim(x_min, x_max)
-                _add_vlines(ax)
-
-                # R² (clau pot ser "A254" o "254")
-                wl_key = f"A{wl}" if not str(wl).startswith('A') else wl
-                r2v = pearson_per_wl.get(wl_key, 0) or pearson_per_wl.get(str(wl), 0)
-                _annotate(ax, r2v=r2v, sig_key=wl_key)
-
-        # X label on bottom row
-        bottom_row = n_graph_rows - 1
-        for col_j in range(2):
-            idx = 2 + bottom_row * 2 + col_j
-            if idx < len(all_graph_axes):
-                ax = all_graph_axes[idx]
-                if ax.axison:
-                    ax.set_xlabel("Temps (min)", fontsize=6.5)
-
-        # ── Fraction table (bottom, spans 2 columns) ──
-        if not self.is_bp and fracs:
-            ax_tbl = self.figure.add_subplot(gs[n_graph_rows, :])
-            ax_tbl.axis('off')
-
-            doc_areas = sel_areas.get("DOC", {})
-            # Sumar fraccions (consistent amb taula QTableWidget de _helpers.py)
-            doc_total = sum(doc_areas.get(fn, 0) for fn, _ in fracs)
-            uib_total = sum(areas_uib.get(fn, 0) for fn, _ in fracs)
-
-            # Header: Senyal | BioP (10.8-18) | HS (18-23) | ... | TOTAL (0-70)
-            col_labels = ["Senyal"]
-            for fname, finfo in fracs:
-                col_labels.append(f"{fname} ({finfo['start']:g}\u2013{finfo['end']:g})")
-            col_labels.append(f"TOTAL (0\u2013{x_max:g})")
-
-            # Signal rows
-            signal_names = ["DOC"]
-            if has_uib:
-                signal_names.append("UIB")
-            for wl in wl_cols:
-                wl_lbl = f"A{wl}" if not str(wl).startswith('A') else wl
-                signal_names.append(wl_lbl)
-
-            rows = []
-            for sig in signal_names:
-                row = [sig]
-                if sig == "DOC":
-                    sig_areas, sig_total = doc_areas, doc_total
-                elif sig == "UIB":
-                    sig_areas, sig_total = areas_uib, uib_total
-                else:
-                    sig_areas = sel_areas.get(sig, {})
-                    sig_total = sum(sig_areas.get(fn, 0) for fn, _ in fracs)
-                for fname, _finfo in fracs:
-                    fval = sig_areas.get(fname, 0)
-                    pct = (fval / sig_total * 100) if sig_total > 0 else 0
-                    row.append(f"{pct:.1f}")
-                row.append("100" if sig_total > 0 else "\u2013")
-                rows.append(row)
-
-            tbl = ax_tbl.table(cellText=rows, colLabels=col_labels,
-                               loc='upper center', cellLoc='center')
-            tbl.auto_set_font_size(False)
-            tbl.set_fontsize(6)
-            tbl.scale(1, 1.2)
-            for key, cell in tbl.get_celld().items():
-                cell.set_linewidth(0.3)
-                cell.set_height(0.08)
-                if key[0] == 0:
-                    cell.set_facecolor('#E0E0E0')
-                    cell.set_text_props(fontweight='bold', fontsize=5.5)
-                elif key[1] == 0:
-                    cell.set_facecolor('#F5F5F5')
-                    cell.set_text_props(fontweight='bold', fontsize=6)
-                else:
-                    cell.set_facecolor('white')
-
-        # ── Title ──
-        rep_label = f"R{rep_keys[0]}"
-        if r2:
-            rep_label += f"+R{rep_keys[1]}"
-        self.figure.suptitle(
-            f"{self.sample_name}  |  {self.method}  |  {rep_label}",
-            fontsize=9, fontweight='bold', y=0.98)
-
-        self.canvas.draw()
-
+def _get_uib_areas(rep_data):
+    """Extreu àrees UIB."""
+    if rep_data is None:
+        return {}
+    return rep_data.get("areas_uib") or {}

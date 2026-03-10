@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 
 from hpsec_config import get_config
 from hpsec_utils import get_baseline_value
-from hpsec_core import detect_timeout, downsample_to_cadence
+from hpsec_core import detect_timeout, detect_sequence_timeouts, map_timeouts_to_injection, downsample_to_cadence
 from hpsec_migrate_master import migrate_single
 
 # Import sistema d'avisos estructurats
@@ -2632,7 +2632,8 @@ def _validate_toc_assignments(result):
 def find_data_for_injection(injection, seq_path, uib_files, dad_files, dad_csv_files,
                             master_khp_data, used_files, config=None,
                             toc_df=None, toc_calc_df=None,
-                            valid_sample_names=None):
+                            valid_sample_names=None,
+                            seq_timeouts=None, method=None):
     """
     Busca dades per una injecció des de múltiples fonts.
 
@@ -2748,16 +2749,23 @@ def find_data_for_injection(injection, seq_path, uib_files, dad_files, dad_csv_f
                     row_end = None
 
         if row_start is not None and row_end is not None and row_start > 0:
-            # Extreure DOC Direct (amb truncat per última mostra)
+            # Extreure DOC Direct (sense detecció timeout local — ve de seq_timeouts)
             max_dur = config.get("max_duration_min", 80.0)
-            df_doc, timeout_info = extract_doc_from_masterfile(
-                toc_df, row_start, row_end, detect_timeouts=True,
+            df_doc = extract_doc_from_masterfile(
+                toc_df, row_start, row_end, detect_timeouts=False,
                 max_duration_min=max_dur
             )
 
             if not df_doc.empty:
                 t_direct = df_doc["time (min)"].values
                 y_direct = df_doc["DOC"].values
+
+                # Timeout info: font única = detecció global
+                is_bp_mode = (method or "").upper() == "BP"
+                timeout_info = map_timeouts_to_injection(
+                    seq_timeouts or [], row_start, row_end,
+                    t_rel=t_direct, is_bp=is_bp_mode
+                )
 
                 result["direct"] = {
                     "path": "MasterFile:2-TOC",
@@ -2766,6 +2774,8 @@ def find_data_for_injection(injection, seq_path, uib_files, dad_files, dad_csv_f
                     "row_start": row_start,
                     "row_end": row_end,
                     "timeout_info": timeout_info,
+                    "timeout_at_boundary": timeout_info["timeout_at_boundary"],
+                    "boundary_timeout": timeout_info["boundary_timeout"],
                 }
                 result["has_data"] = True
 
@@ -2847,11 +2857,15 @@ def find_data_for_injection(injection, seq_path, uib_files, dad_files, dad_csv_f
                     if t_uib is not None and len(t_uib) > 10:
                         t_uib, y_uib = downsample_to_cadence(t_uib, y_uib)
 
+                    # Propagar timeout_info de Direct a UIB (mateix detector TOC)
+                    uib_timeout = result.get("direct", {}).get("timeout_info", {})
                     result["uib"] = {
                         "path": uib_path,
                         "df": df_uib,  # df original (per referència)
                         "t": t_uib,
                         "y": y_uib,
+                        "timeout_info": uib_timeout,
+                        "timeout_at_boundary": uib_timeout.get("timeout_at_boundary", False),
                     }
                     result["has_data"] = True
                 break
@@ -3288,6 +3302,12 @@ def import_sequence(seq_path, config=None, progress_callback=None):
 
         report_progress(40, "Processant injeccions...")
 
+        # 4b. Detecció global de timeouts al flux TOC complet
+        seq_timeouts = detect_sequence_timeouts(toc_df) if toc_df is not None else []
+        if seq_timeouts:
+            logger.info("Detectats %d timeouts al flux TOC complet", len(seq_timeouts))
+        result["seq_timeouts"] = seq_timeouts
+
         # 5. Processar cada injecció
         used_files = {"uib": set(), "dad": set()}
         total_inj = len(injections)
@@ -3309,7 +3329,9 @@ def import_sequence(seq_path, config=None, progress_callback=None):
                 inj, seq_path, uib_files, dad_files, dad_csv_files,
                 master_khp_data, used_files, config,
                 toc_df=toc_df, toc_calc_df=toc_calc_df,
-                valid_sample_names=valid_sample_names
+                valid_sample_names=valid_sample_names,
+                seq_timeouts=seq_timeouts,
+                method=result.get("method")
             )
 
             # Classificar mostra
@@ -3976,6 +3998,9 @@ def generate_import_manifest(imported_data, include_injection_details=True):
         # Estadístiques globals
         "stats": imported_data.get("stats", {}),
 
+        # Timeouts globals del flux TOC (detectats a nivell de seqüència)
+        "seq_timeouts": imported_data.get("seq_timeouts", []),
+
         # Avisos i errors
         "warnings": imported_data.get("warnings", []),
         "warnings_structured": imported_data.get("warnings_structured", []),
@@ -4026,7 +4051,10 @@ def generate_import_manifest(imported_data, include_injection_details=True):
                     "baseline": direct.get("baseline"),
                     "has_timeout": _ti.get("n_timeouts", 0) > 0,
                     "timeout_severity": _ti.get("severity", "OK"),
+                    "timeout_at_boundary": direct.get("timeout_at_boundary", False),
                 }
+                if direct.get("boundary_timeout"):
+                    replica_entry["direct"]["boundary_timeout"] = direct["boundary_timeout"]
                 if _ti.get("n_timeouts", 0) > 0:
                     replica_entry["direct"]["timeout_ranges"] = _ti.get("timeouts", [])
                 if _ti.get("toc_minute_precision"):
@@ -4046,6 +4074,7 @@ def generate_import_manifest(imported_data, include_injection_details=True):
             uib = rep_data.get("uib") or {}
             if uib.get("t") is not None:
                 t_arr = uib["t"]
+                _uib_ti = uib.get("timeout_info", {})
                 replica_entry["uib"] = {
                     "source": "CSV",
                     "file": os.path.basename(uib.get("path", "") or uib.get("file", "")),
@@ -4053,7 +4082,12 @@ def generate_import_manifest(imported_data, include_injection_details=True):
                     "t_min": float(min(t_arr)),
                     "t_max": float(max(t_arr)),
                     "baseline": uib.get("baseline"),
+                    "has_timeout": _uib_ti.get("n_timeouts", 0) > 0,
+                    "timeout_severity": _uib_ti.get("severity", "OK"),
+                    "timeout_at_boundary": uib.get("timeout_at_boundary", False),
                 }
+                if _uib_ti.get("n_timeouts", 0) > 0:
+                    replica_entry["uib"]["timeout_ranges"] = _uib_ti.get("timeouts", [])
                 # Afegir info d'assignació manual si existeix
                 if uib.get("manual_assignment"):
                     replica_entry["uib"]["manual_assignment"] = True
@@ -4225,14 +4259,17 @@ def load_manifest(seq_path):
 # HELPERS COMPARTITS: càrrega DOC Direct / UIB
 # =============================================================================
 
-def _load_doc_direct(toc_df, row_start, row_end, mode, config):
+def _load_doc_direct(toc_df, row_start, row_end, mode, config, seq_timeouts=None):
     """Carrega DOC Direct des del MasterFile amb baseline i y_net.
+
+    Timeout info derivada de seq_timeouts (detecció global, font única).
 
     Args:
         toc_df: DataFrame 2-TOC
-        row_start, row_end: rang de files
+        row_start, row_end: rang de files (TOC_Row, Excel 1-indexed)
         mode: "COLUMN" o "BP"
         config: dict configuració
+        seq_timeouts: llista de timeouts de seqüència (detect_sequence_timeouts)
 
     Returns:
         dict amb {t, y, y_net, baseline, timeout_info, ...} o None si falla
@@ -4241,9 +4278,9 @@ def _load_doc_direct(toc_df, row_start, row_end, mode, config):
         return None
     try:
         max_dur = config.get("max_duration_min", 80.0)
-        df_doc, timeout_info = extract_doc_from_masterfile(
+        df_doc = extract_doc_from_masterfile(
             toc_df, row_start, row_end,
-            t_start=None, detect_timeouts=True,
+            detect_timeouts=False,
             max_duration_min=max_dur
         )
         if df_doc is None or df_doc.empty:
@@ -4252,6 +4289,14 @@ def _load_doc_direct(toc_df, row_start, row_end, mode, config):
         y_direct = df_doc["DOC"].values
         baseline = get_baseline_value(t_direct, y_direct, mode=mode)
         y_net = np.array(y_direct) - baseline
+
+        # Timeout info: font única = detecció global → mapejat per injecció
+        is_bp = mode.upper() == "BP"
+        timeout_info = map_timeouts_to_injection(
+            seq_timeouts or [], row_start, row_end,
+            t_rel=t_direct, is_bp=is_bp
+        )
+
         return {
             "path": "MasterFile:2-TOC",
             "t": t_direct,
@@ -4262,6 +4307,8 @@ def _load_doc_direct(toc_df, row_start, row_end, mode, config):
             "timeout_info": timeout_info,
             "y_net": y_net,
             "baseline": baseline,
+            "timeout_at_boundary": timeout_info["timeout_at_boundary"],
+            "boundary_timeout": timeout_info["boundary_timeout"],
         }
     except Exception as e:
         logger.warning("_load_doc_direct: %s", e)
@@ -4479,6 +4526,9 @@ def import_from_manifest(seq_path, manifest=None, config=None, progress_callback
 
     report_progress(20, "Processant mostres del manifest...")
 
+    # Detecció global de timeouts al flux TOC complet
+    seq_timeouts = detect_sequence_timeouts(toc_df) if toc_df is not None else []
+
     # Processar cada mostra del manifest
     manifest_samples = manifest.get("samples", [])
     total = len(manifest_samples)
@@ -4547,7 +4597,8 @@ def import_from_manifest(seq_path, manifest=None, config=None, progress_callback
 
                 # Intentar llegir les dades reals si tenim MasterFile
                 mode = "BP" if result["method"] == "BP" else "COLUMN"
-                doc_result = _load_doc_direct(toc_df, row_start, row_end, mode, config)
+                doc_result = _load_doc_direct(toc_df, row_start, row_end, mode, config,
+                                              seq_timeouts=seq_timeouts)
                 if doc_result:
                     rep_data["direct"] = doc_result
                     rep_data["has_data"] = True
@@ -4576,6 +4627,10 @@ def import_from_manifest(seq_path, manifest=None, config=None, progress_callback
                     uib_result = _load_uib_csv(uib_file, seq_path, mode)
                     if uib_result:
                         uib_result["manual_assignment"] = uib_info.get("manual_assignment", False)
+                        # Propagar timeout_info de Direct a UIB (mateix detector TOC)
+                        direct_ti = rep_data.get("direct", {}).get("timeout_info", {})
+                        uib_result["timeout_info"] = direct_ti
+                        uib_result["timeout_at_boundary"] = direct_ti.get("timeout_at_boundary", False)
                         rep_data["uib"] = uib_result
                         rep_data["has_data"] = True
 
@@ -4926,6 +4981,9 @@ def ensure_data_loaded(imported_data, config=None, progress_callback=None):
 
     report_progress(20, "Completant dades de mostres...")
 
+    # Detecció global de timeouts al flux TOC complet
+    seq_timeouts = detect_sequence_timeouts(toc_df) if toc_df is not None else []
+
     samples = imported_data.get("samples", {})
     total = len(samples)
 
@@ -4940,7 +4998,8 @@ def ensure_data_loaded(imported_data, config=None, progress_callback=None):
             direct = rep_data.get("direct")
             if direct and direct.get("t") is None and direct.get("row_start") is not None:
                 doc_result = _load_doc_direct(
-                    toc_df, direct["row_start"], direct["row_end"], mode, config
+                    toc_df, direct["row_start"], direct["row_end"], mode, config,
+                    seq_timeouts=seq_timeouts
                 )
                 if doc_result:
                     rep_data["direct"] = doc_result
@@ -4954,6 +5013,10 @@ def ensure_data_loaded(imported_data, config=None, progress_callback=None):
                     uib_result = _load_uib_csv(uib_file, seq_path, mode)
                     if uib_result:
                         uib_result["manual_assignment"] = uib.get("manual_assignment", False)
+                        # Propagar timeout_info de Direct a UIB (mateix detector TOC)
+                        direct_ti = rep_data.get("direct", {}).get("timeout_info", {})
+                        uib_result["timeout_info"] = direct_ti
+                        uib_result["timeout_at_boundary"] = direct_ti.get("timeout_at_boundary", False)
                         rep_data["uib"] = uib_result
                         rep_data["has_data"] = True
 

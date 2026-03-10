@@ -23,6 +23,7 @@ v1.0 - 2026-01-22: Versió inicial
 
 import logging
 import numpy as np
+import pandas as pd
 from scipy.signal import find_peaks, savgol_filter
 from scipy.stats import linregress, pearsonr
 from scipy.optimize import curve_fit
@@ -1199,6 +1200,231 @@ def detect_timeout(t_min, threshold_sec=None, major_threshold_sec=None, is_bp=Fa
         "severity": max_severity,
         "warning_message": warning_message,
         "total_affected_min": round(total_affected, 2)
+    }
+
+
+def detect_sequence_timeouts(toc_df, threshold_sec=None):
+    """
+    Detecta tots els timeouts al flux TOC complet (2-TOC sencer).
+
+    Escaneja tot el DataFrame 2-TOC un sol cop i retorna les posicions dels
+    timeouts en termes de TOC_Row (Excel row number, 1-indexed des de fila 8).
+
+    Args:
+        toc_df: DataFrame del 2-TOC complet (llegit amb header=6)
+        threshold_sec: Llindar en segons per considerar timeout (defecte: 60s)
+
+    Returns:
+        list de dicts, cadascun amb:
+            - toc_row_before: TOC_Row (Excel) de l'última fila ABANS del timeout
+            - toc_row_after: TOC_Row (Excel) de la primera fila DESPRÉS del timeout
+            - duration_sec: Durada del gap en segons
+            - is_major: True si >= 70s (recàrrega xeringues)
+    """
+    TOC_DATA_START_ROW = 8  # Excel row de la primera fila de dades (header=6 → data fila 8)
+
+    if threshold_sec is None:
+        threshold_sec = TIMEOUT_CONFIG["threshold_sec"]
+
+    if toc_df is None or toc_df.empty or len(toc_df) < 2:
+        return []
+
+    # Trobar columna de temps
+    time_col = None
+    for col in toc_df.columns:
+        col_str = str(col).lower()
+        if 'date' in col_str and 'start' in col_str:
+            time_col = col
+            break
+    if time_col is None and len(toc_df.columns) > 3:
+        time_col = toc_df.columns[3]
+    if time_col is None:
+        return []
+
+    # Convertir a timestamps i calcular intervals
+    timestamps = pd.to_datetime(toc_df[time_col], errors="coerce")
+    dt_sec = timestamps.diff().dt.total_seconds().values  # dt_sec[0] = NaN
+
+    major_threshold = TIMEOUT_CONFIG.get("major_timeout_sec", 70)
+    timeouts = []
+
+    for i in range(1, len(dt_sec)):
+        if np.isnan(dt_sec[i]):
+            continue
+        if dt_sec[i] > threshold_sec:
+            timeouts.append({
+                "toc_row_before": i - 1 + TOC_DATA_START_ROW,  # df index (i-1) → Excel row
+                "toc_row_after": i + TOC_DATA_START_ROW,        # df index i → Excel row
+                "duration_sec": round(float(dt_sec[i]), 1),
+                "is_major": float(dt_sec[i]) >= major_threshold,
+            })
+
+    return timeouts
+
+
+def map_timeouts_to_injection(seq_timeouts, row_start, row_end, t_rel=None, is_bp=False):
+    """
+    Font ÚNICA de timeout info per injecció.
+
+    Mapeja timeouts globals (detect_sequence_timeouts) a una injecció concreta,
+    calcula posicions en temps relatiu, classifica zones i severity.
+    Retorna un dict compatible amb l'antic detect_timeout() perquè tot el
+    downstream (analyze, calibrate, export, UI) funcioni sense canvis.
+
+    Args:
+        seq_timeouts: Llista de timeouts de detect_sequence_timeouts()
+        row_start: TOC_Row (Excel) d'inici de la injecció
+        row_end: TOC_Row (Excel) final de la injecció
+        t_rel: Array de temps relatiu de la injecció (min). Si None, no es
+               calculen posicions/zones (només boundary/inside booleans).
+        is_bp: Mode BP (zones BP_PEAK/BP_TAIL en lloc de HS/BB/etc.)
+
+    Returns:
+        dict compatible amb detect_timeout(), MÉS camps boundary:
+            - timeout_at_boundary: bool
+            - boundary_timeout: dict or None
+            - n_timeouts: int (dins la injecció)
+            - n_major_timeouts: int
+            - timeouts: llista amb info completa (temps relatiu + zona)
+            - t_positions: llista de temps relatiu (min) de cada timeout
+            - dt_median_sec: mediana dt del segment (0 si no t_rel)
+            - dt_max_sec: dt màxim
+            - zone_summary: {zona: count}
+            - severity: severitat màxima ("OK"/"INFO"/"WARNING"/"CRITICAL")
+            - warning_message: missatge formatat
+            - total_affected_min: durada total afectada
+    """
+    empty = {
+        "timeout_at_boundary": False,
+        "boundary_timeout": None,
+        "n_timeouts": 0,
+        "n_major_timeouts": 0,
+        "timeouts": [],
+        "t_positions": [],
+        "dt_median_sec": 0,
+        "dt_max_sec": 0,
+        "zone_summary": {},
+        "severity": "OK",
+        "warning_message": "",
+        "total_affected_min": 0,
+    }
+
+    if not seq_timeouts:
+        # Calcular dt stats del segment si tenim t_rel
+        if t_rel is not None and len(t_rel) >= 2:
+            dt_sec = np.diff(np.asarray(t_rel)) * 60.0
+            empty["dt_median_sec"] = round(float(np.median(dt_sec)), 2)
+            empty["dt_max_sec"] = round(float(np.max(dt_sec)), 2)
+        return empty
+
+    # Classificar cada timeout: boundary o inside
+    boundary_timeout = None
+    inside_raw = []
+
+    for to in seq_timeouts:
+        to_row_before = to["toc_row_before"]
+        to_row_after = to["toc_row_after"]
+
+        # Boundary: timeout just abans de row_start
+        if to_row_after == row_start or to_row_before == row_start - 1:
+            boundary_timeout = to
+
+        # Inside: ambdós extrems dins [row_start, row_end]
+        elif row_start <= to_row_before and to_row_after <= row_end:
+            inside_raw.append(to)
+
+    # Construir timeout_info complet per timeouts INSIDE
+    pre_zone = TIMEOUT_CONFIG["affected_zone_pre"]
+    post_zone = TIMEOUT_CONFIG["affected_zone_post"]
+    active_zones = TIMEOUT_CONFIG["bp_zones"] if is_bp else TIMEOUT_CONFIG["zones"]
+    zone_counts = {zone: 0 for zone in active_zones}
+    severity_order = ["OK", "INFO", "WARNING", "CRITICAL"]
+    max_severity = "OK"
+    timeouts = []
+    t_positions = []
+
+    for to in inside_raw:
+        # Posició en temps relatiu dins la injecció
+        row_idx = to["toc_row_before"] - row_start  # índex dins segment
+        if t_rel is not None and 0 <= row_idx < len(t_rel):
+            t_start = float(t_rel[row_idx])
+        else:
+            t_start = 0.0
+
+        row_idx_after = to["toc_row_after"] - row_start
+        if t_rel is not None and 0 <= row_idx_after < len(t_rel):
+            t_end = float(t_rel[row_idx_after])
+        else:
+            t_end = t_start + to["duration_sec"] / 60.0
+
+        duration_sec = to["duration_sec"]
+        is_major = to["is_major"]
+
+        # Zona afectada
+        affected_start = t_start - pre_zone
+        affected_end = t_end + post_zone
+        affected_duration = affected_end - affected_start
+
+        # Classificar zona
+        zone = "POST_RUN"
+        for zone_name, (t_ini, t_fi) in active_zones.items():
+            if zone_name == "RUN_START":
+                continue
+            if t_ini <= t_start < t_fi:
+                zone = zone_name
+                break
+        if t_start < 1.0 and not is_bp:
+            zone = "RUN_START"
+
+        zone_counts[zone] = zone_counts.get(zone, 0) + 1
+        severity = TIMEOUT_CONFIG["severity"].get(zone, "INFO")
+        if severity_order.index(severity) > severity_order.index(max_severity):
+            max_severity = severity
+
+        t_positions.append(t_start)
+        timeouts.append({
+            "index": row_idx,
+            "t_start_min": round(t_start, 2),
+            "t_end_min": round(t_end, 2),
+            "duration_sec": round(duration_sec, 1),
+            "is_major": is_major,
+            "zone": zone,
+            "severity": severity,
+            "affected_start_min": round(affected_start, 2),
+            "affected_end_min": round(affected_end, 2),
+            "affected_duration_min": round(affected_duration, 2),
+        })
+
+    # Warning message
+    total_affected = sum(to["affected_duration_min"] for to in timeouts)
+    warning_parts = []
+    for to in timeouts:
+        if to["severity"] in ("CRITICAL", "WARNING"):
+            warning_parts.append(
+                f"{to['severity']}: Timeout {to['duration_sec']:.0f}s at {to['t_start_min']:.1f} min ({to['zone']})"
+            )
+
+    # dt stats del segment
+    dt_median = 0
+    dt_max = 0
+    if t_rel is not None and len(t_rel) >= 2:
+        dt_sec = np.diff(np.asarray(t_rel)) * 60.0
+        dt_median = round(float(np.median(dt_sec)), 2)
+        dt_max = round(float(np.max(dt_sec)), 2)
+
+    return {
+        "timeout_at_boundary": boundary_timeout is not None,
+        "boundary_timeout": boundary_timeout,
+        "n_timeouts": len(timeouts),
+        "n_major_timeouts": sum(1 for to in timeouts if to["is_major"]),
+        "timeouts": timeouts,
+        "t_positions": t_positions,
+        "dt_median_sec": dt_median,
+        "dt_max_sec": dt_max,
+        "zone_summary": {k: v for k, v in zone_counts.items() if v > 0},
+        "severity": max_severity,
+        "warning_message": "; ".join(warning_parts),
+        "total_affected_min": round(total_affected, 2),
     }
 
 
