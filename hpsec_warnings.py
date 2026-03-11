@@ -99,6 +99,16 @@ ANOMALY_CATALOG = {
         "invalidates": False,
         "action": "Corregir MasterFile (Inj# duplicat)",
     },
+    "IMP_SHORT_CHROMATOGRAM": {
+        "severity": WarningLevel.BLOCKER,
+        "label": "Cromatograma truncat",
+        "icon": "✂",
+        "description": "Cromatograma DOC amb menys de 30 min de dades",
+        "stage": "import",
+        "repairable": False,
+        "invalidates": True,
+        "action": "Excloure mostra (dades insuficients)",
+    },
     "IMP_TOC_MINUTE_PRECISION": {
         "severity": WarningLevel.INFO,
         "label": "Timestamps TOC arrodonits",

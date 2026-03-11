@@ -41,7 +41,7 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 # Importar components del paquet
-from .worker import CalibrateWorker
+from .worker import CalibrateWorker, SiblingCalibrateWorker
 from .graph_widgets import KHPReplicaGraphWidget, HistoryBarWidget, CalibrationLineWidget
 # Importar estils compartits
 from gui.widgets.styles import (
@@ -68,6 +68,11 @@ class CalibratePanel(QWidget):
         self._warnings_confirmed = False
         self._warnings_confirmed_by = None
         self._notes = ""
+        # Siblings
+        self._sibling_worker = None
+        self._sibling_results = {}      # {path: cal_result}
+        self._sibling_cards = []        # llista de QFrames creats dinàmicament
+        self._active_sibling_path = None  # path del sibling mostrat al detall
 
         self._setup_ui()
 
@@ -81,6 +86,11 @@ class CalibratePanel(QWidget):
         self._warnings_confirmed = False
         self._warnings_confirmed_by = None
         self._notes = ""
+        self._sibling_worker = None
+        self._sibling_results = {}
+        self._active_sibling_path = None
+        # Netejar cards dinàmiques
+        self._clear_sibling_cards()
 
         # Reset UI elements
         self.condition_selector_frame.setVisible(False)
@@ -516,6 +526,11 @@ class CalibratePanel(QWidget):
         self.placeholder.setStyleSheet("color: #888; font-size: 14px; padding: 40px;")
         content_layout.addWidget(self.placeholder)
 
+        # === SIBLING CARDS (visible només amb siblings) ===
+        self._sibling_cards_layout = QVBoxLayout()
+        self._sibling_cards_layout.setSpacing(6)
+        content_layout.addLayout(self._sibling_cards_layout)
+
         # === COMPACT HEADER (substitueix summary_group) ===
         header_row = QHBoxLayout()
         self.compact_header = QLabel()
@@ -681,6 +696,14 @@ class CalibratePanel(QWidget):
 
     def _run_calibrate(self):
         """Executa la calibració."""
+        # Detectar mode siblings
+        sibling_imported = getattr(self.main_window, 'sibling_imported', {})
+        has_siblings = len(sibling_imported) > 1
+
+        if has_siblings:
+            self._run_calibrate_siblings(sibling_imported)
+            return
+
         imported_data = self.main_window.imported_data
 
         if not imported_data:
@@ -706,12 +729,7 @@ class CalibratePanel(QWidget):
         self.main_window.show_progress(0)
 
         # Netejar resultats anteriors
-        self.compact_header.setVisible(False)
-        self.delay_group.setVisible(False)
-        self.cal_line_group.setVisible(False)
-        self.graphs_group.setVisible(False)
-        self.metrics_group.setVisible(False)
-        self.history_group.setVisible(False)
+        self._hide_all_sections()
 
         if self.worker is not None:
             self.worker.wait()
@@ -720,6 +738,263 @@ class CalibratePanel(QWidget):
         self.worker.finished.connect(self._on_finished)
         self.worker.error.connect(self._on_error)
         self.worker.start()
+
+    def _hide_all_sections(self):
+        """Amaga totes les seccions de resultat."""
+        self.compact_header.setVisible(False)
+        self.delay_group.setVisible(False)
+        self.cal_line_group.setVisible(False)
+        self.graphs_group.setVisible(False)
+        self.metrics_group.setVisible(False)
+        self.history_group.setVisible(False)
+
+    def _run_calibrate_siblings(self, sibling_imported):
+        """Calibra N siblings independentment."""
+        import os
+        n = len(sibling_imported)
+        names = [os.path.basename(p) for p in sibling_imported]
+        logger.info("Verificació siblings: %d carpetes (%s)", n, ", ".join(names))
+
+        self.calibrate_btn.setEnabled(False)
+        self.main_window.show_progress(0)
+        self._hide_all_sections()
+        self._clear_sibling_cards()
+        self._sibling_results = {}
+
+        if self._sibling_worker is not None:
+            self._sibling_worker.wait()
+
+        self._sibling_worker = SiblingCalibrateWorker(sibling_imported)
+        self._sibling_worker.progress.connect(self._on_progress)
+        self._sibling_worker.sibling_finished.connect(self._on_sibling_cal_finished)
+        self._sibling_worker.all_finished.connect(self._on_all_siblings_cal_finished)
+        self._sibling_worker.error.connect(self._on_error)
+        self._sibling_worker.start()
+
+    def _on_sibling_cal_finished(self, path, result):
+        """Callback per cada sibling calibrat."""
+        import os
+        name = os.path.basename(path)
+        self._sibling_results[path] = result
+        self.main_window.sibling_calibrated[path] = result
+        ok = result.get("success", False)
+        logger.info("Sibling calibrat %s: %s", name, "OK" if ok else "ERROR/SENSE_KHP")
+
+    def _on_all_siblings_cal_finished(self, results):
+        """Callback quan tots els siblings han estat calibrats."""
+        import os
+        self.main_window.show_progress(-1)
+        self.calibrate_btn.setEnabled(True)
+        self.placeholder.setVisible(False)
+
+        if self._sibling_worker is not None:
+            self._sibling_worker.wait()
+
+        self._sibling_results = results
+
+        # Construir cards per cada sibling
+        self._build_sibling_cards(results)
+
+        # Usar primari com a calibration_data principal (backward compat)
+        primary_path = self.main_window.seq_path
+        if primary_path in results:
+            primary_result = results[primary_path]
+        else:
+            primary_result = next(iter(results.values()))
+
+        self.calibration_data = primary_result
+        self.main_window.calibration_data = primary_result
+
+        # Mostrar detall del primari (o del primer amb KHP vàlid)
+        first_ok = next(
+            (p for p, r in results.items() if r.get("success")),
+            primary_path
+        )
+        self._show_sibling_detail(first_ok)
+
+        self.main_window.enable_tab(2)
+        n = len(results)
+        n_ok = sum(1 for r in results.values() if r.get("success"))
+        self.main_window.set_status(
+            f"Verificació completada: {n_ok}/{n} carpetes amb KHP", 5000
+        )
+
+        # Emetre senyal amb resultat combinat
+        self.calibration_completed.emit(primary_result)
+
+    def _clear_sibling_cards(self):
+        """Elimina tots els cards de siblings del layout."""
+        for card in self._sibling_cards:
+            card.setParent(None)
+            card.deleteLater()
+        self._sibling_cards = []
+
+    def _build_sibling_cards(self, results):
+        """Construeix un card resum per cada sibling."""
+        import os
+
+        self._clear_sibling_cards()
+
+        for path, result in results.items():
+            name = os.path.basename(path)
+            ok = result.get("success", False)
+
+            # Extreure mètriques clau
+            khp_direct = result.get("khp_data_direct", {})
+            khp_uib = result.get("khp_data_uib", {})
+            shift_d = result.get("shift_direct", 0)
+            shift_u = result.get("shift_uib", 0)
+
+            # RF
+            rf_parts = []
+            if khp_direct:
+                reps = khp_direct.get("replicas", [khp_direct])
+                rf_vals = [r.get("rf_mass_doc", 0) for r in reps if r.get("rf_mass_doc", 0) > 0]
+                if rf_vals:
+                    rf_parts.append(f"RF_D={np.mean(rf_vals):.0f}")
+            if khp_uib:
+                reps = khp_uib.get("replicas", [khp_uib])
+                rf_vals = [r.get("rf_mass_doc", 0) for r in reps if r.get("rf_mass_doc", 0) > 0]
+                if rf_vals:
+                    rf_parts.append(f"RF_U={np.mean(rf_vals):.0f}")
+
+            # Shift
+            shift_parts = []
+            if shift_d != 0:
+                shift_parts.append(f"D:{shift_d*60:+.1f}s")
+            if shift_u != 0:
+                shift_parts.append(f"U:{shift_u*60:+.1f}s")
+
+            # Anomalies
+            anomalies = result.get("warnings_structured", [])
+            n_anom = len(anomalies)
+
+            # Construir card
+            card = QFrame()
+            card.setCursor(Qt.PointingHandCursor)
+            card.setProperty("sibling_path", path)
+
+            if ok:
+                border_color = "#27AE60" if n_anom == 0 else "#F39C12"
+                icon = "✓" if n_anom == 0 else "⚠"
+            else:
+                border_color = "#E74C3C"
+                icon = "✗"
+
+            is_active = (path == self._active_sibling_path)
+            bg_color = "#EBF5FB" if is_active else "#FAFAFA"
+
+            card.setStyleSheet(
+                f"QFrame {{ background: {bg_color}; border: 2px solid {border_color}; "
+                f"border-radius: 6px; padding: 8px; }}"
+                f"QFrame:hover {{ background: #E8F6F3; }}"
+            )
+
+            card_layout = QHBoxLayout(card)
+            card_layout.setContentsMargins(8, 4, 8, 4)
+            card_layout.setSpacing(12)
+
+            # Icona + nom
+            label_name = QLabel(f"<b>{icon} {name}</b>")
+            label_name.setStyleSheet("font-size: 13px; border: none;")
+            card_layout.addWidget(label_name)
+
+            # Mètriques
+            parts = []
+            if rf_parts:
+                parts.append(" · ".join(rf_parts))
+            if shift_parts:
+                parts.append(f"Shift: {' '.join(shift_parts)}")
+            if n_anom > 0:
+                parts.append(f"{n_anom} anomalies")
+            if not ok:
+                errors = result.get("errors", [])
+                if errors:
+                    short_err = errors[0][:60]
+                    parts.append(short_err)
+
+            if parts:
+                label_info = QLabel(" · ".join(parts))
+                label_info.setStyleSheet("color: #555; font-size: 11px; border: none;")
+                card_layout.addWidget(label_info)
+
+            card_layout.addStretch()
+
+            # Botó "Detall"
+            btn = QPushButton("Detall ▸")
+            btn.setStyleSheet(
+                "QPushButton { padding: 2px 8px; border: 1px solid #ccc; "
+                "border-radius: 3px; font-size: 11px; background: white; }"
+                "QPushButton:hover { background: #2E86AB; color: white; }"
+            )
+            btn.setFixedHeight(22)
+            _path = path  # captura per closure
+            btn.clicked.connect(lambda checked, p=_path: self._show_sibling_detail(p))
+            card_layout.addWidget(btn)
+
+            self._sibling_cards_layout.addWidget(card)
+            self._sibling_cards.append(card)
+
+    def _show_sibling_detail(self, path):
+        """Mostra el detall complet d'un sibling als widgets existents."""
+        import os
+
+        result = self._sibling_results.get(path)
+        if not result:
+            return
+
+        self._active_sibling_path = path
+        name = os.path.basename(path)
+
+        # Actualitzar highlight dels cards
+        for card in self._sibling_cards:
+            card_path = card.property("sibling_path")
+            is_active = (card_path == path)
+            bg = "#EBF5FB" if is_active else "#FAFAFA"
+            # Re-aplicar estil mantenint border original
+            style = card.styleSheet()
+            if "background:" in style:
+                import re
+                style = re.sub(r'background:\s*#[A-Fa-f0-9]+', f'background: {bg}', style)
+                card.setStyleSheet(style)
+
+        # Copiar rf_mass_direct/uib (mateixa lògica que _on_finished)
+        for signal_key, data_key in [("direct", "khp_data_direct"), ("uib", "khp_data_uib")]:
+            khp_data = result.get(data_key)
+            if khp_data:
+                replicas = khp_data.get("replicas", [khp_data])
+                rf_vals = [r.get("rf_mass_doc", 0) for r in replicas if r.get("rf_mass_doc", 0) > 0]
+                if not rf_vals:
+                    rf_vals = [r.get("rf_mass", 0) for r in replicas if r.get("rf_mass", 0) > 0]
+                if rf_vals:
+                    result[f"rf_mass_{signal_key}"] = float(np.mean(rf_vals))
+
+        # Actualitzar calibration_data i main_window per al sibling seleccionat
+        self.calibration_data = result
+        self.main_window.calibration_data = result
+        # Temporalment canviar seq_path per al delay diagnostic
+        orig_seq_path = self.main_window.seq_path
+        self.main_window.seq_path = path
+
+        # Actualitzar tots els widgets amb el resultat del sibling
+        for fn in [self._update_compact_header, self._update_delay_diagnostic,
+                   self._update_graphs, self._update_metrics_table,
+                   self._update_validation, self._update_history]:
+            try:
+                fn(result)
+            except Exception as e:
+                logger.warning(f"Error a {fn.__name__} per sibling {name}: {e}")
+
+        # Restaurar seq_path
+        self.main_window.seq_path = orig_seq_path
+
+        # Afegir nom sibling al header
+        if self.compact_header.isVisible():
+            current = self.compact_header.text()
+            if f"[{name}]" not in current:
+                self.compact_header.setText(
+                    f'<span style="color: #2E86AB; font-size: 11px;">[{name}]</span> {current}'
+                )
 
     def _on_progress(self, pct, msg):
         self.main_window.show_progress(pct)

@@ -3051,8 +3051,45 @@ def _generate_import_warnings(result: dict) -> list:
             anomaly["message"] = w_str.lstrip("\u26a0\ufe0f ").strip()
             warnings.append(anomaly)
 
-    # 4. TOC amb timestamps arrodonits al minut (cadència reconstruïda)
+    # 4. Cromatogrames truncats (DOC massa curt)
+    # COLUMN: mínim 30 min = 450 punts (dt=4s)
+    # BP: mínim 4 min = 60 punts (dt=4s)
+    is_bp = result.get("method", "").upper() == "BP"
+    min_doc_points = 60 if is_bp else 450
     samples = result.get("samples", {})
+    if isinstance(samples, dict):
+        for sample_name, sample_data in samples.items():
+            if not isinstance(sample_data, dict):
+                continue
+            replicas = sample_data.get("replicas", {})
+            if not isinstance(replicas, dict):
+                continue
+            for rep_key, rep in replicas.items():
+                if not isinstance(rep, dict):
+                    continue
+                direct = rep.get("direct", {})
+                if isinstance(direct, dict):
+                    n_pts = direct.get("n_points", 0)
+                    if 0 < n_pts < min_doc_points:
+                        min_min = 4 if is_bp else 30
+                        anomaly = create_anomaly(
+                            "IMP_SHORT_CHROMATOGRAM",
+                            sample=sample_name,
+                            details={
+                                "n_points": n_pts,
+                                "min_points": min_doc_points,
+                                "minutes": round(n_pts * 4 / 60, 1),
+                                "min_minutes": min_min,
+                                "replica": rep_key,
+                            },
+                        )
+                        anomaly["message"] = (
+                            f"{sample_name} R{rep_key}: cromatograma truncat "
+                            f"({round(n_pts * 4 / 60, 1)} min, mínim {min_min} min)"
+                        )
+                        warnings.append(anomaly)
+
+    # 5. TOC amb timestamps arrodonits al minut (cadència reconstruïda)
     if isinstance(samples, dict):
         for sample_data in samples.values():
             if not isinstance(sample_data, dict):
@@ -3765,7 +3802,7 @@ def import_sequence_pack(seq_paths, config=None, progress_callback=None):
 
     report_progress(0, f"Importació pack: {len(seq_paths)} siblings")
 
-    # Importar cada sibling
+    # Importar cada sibling i guardar el seu manifest individual
     imported_results = []
     for i, path in enumerate(seq_paths):
         pct_start = int(100 * i / len(seq_paths))
@@ -3777,6 +3814,10 @@ def import_sequence_pack(seq_paths, config=None, progress_callback=None):
 
         result = import_sequence(path, config, sub_progress)
         imported_results.append(result)
+
+        # Guardar manifest individual de cada sibling (per poder re-carregar independentment)
+        if result.get("success"):
+            save_import_manifest(result)
 
     # Fusionar resultats
     report_progress(95, "Fusionant resultats...")
@@ -3871,22 +3912,15 @@ def _merge_import_results(results, primary_path):
 
             # Fusionar rèpliques (evitar sobreescriure)
             for rep_key, rep_data in sample_data.get("replicas", {}).items():
-                # Crear clau única si ja existeix
+                # En un pack, cada sibling és una mesura independent (reinici equip).
+                # NO deduplicar entre siblings — sempre afegir amb clau única.
                 unique_key = rep_key
-                base_key = rep_key
-                counter = 1
-                while unique_key in merged["samples"][sample_name]["replicas"]:
-                    # Comprovar si són dades idèntiques (mateixa mostra processada 2 cops)
-                    existing = merged["samples"][sample_name]["replicas"][unique_key]
-                    if _replicas_identical(existing, rep_data):
-                        break  # No afegir duplicat
-                    unique_key = f"{base_key}_{source_name}"
-                    counter += 1
+                if unique_key in merged["samples"][sample_name]["replicas"]:
+                    unique_key = f"{rep_key}_{source_name}"
 
-                if unique_key not in merged["samples"][sample_name]["replicas"]:
-                    rep_copy = rep_data.copy() if rep_data else {}
-                    rep_copy["source_seq"] = source_name
-                    merged["samples"][sample_name]["replicas"][unique_key] = rep_copy
+                rep_copy = rep_data.copy() if rep_data else {}
+                rep_copy["source_seq"] = source_name
+                merged["samples"][sample_name]["replicas"][unique_key] = rep_copy
 
         # Fusionar llistes KHP/Control
         for khp in result.get("khp_samples", []):
@@ -3904,6 +3938,24 @@ def _merge_import_results(results, primary_path):
         # Fusionar orphan_files
         merged["orphan_files"]["uib"].extend(result.get("orphan_files", {}).get("uib", []))
         merged["orphan_files"]["dad"].extend(result.get("orphan_files", {}).get("dad", []))
+
+    # Renumerar rèpliques seqüencialment per sample (evitar claus com "2_297B_SEQ")
+    # Ordre: primer les del sibling primari, després secundaris, dins cada un per rep_key original
+    source_order = {name: i for i, name in enumerate(sibling_names)}
+    for sample_name, sample_data in merged["samples"].items():
+        old_replicas = sample_data.get("replicas", {})
+        if len(old_replicas) <= 2:
+            # 2 o menys rèpliques: no renumerar (comportament idèntic a SEQ normal)
+            continue
+        sorted_items = sorted(
+            old_replicas.items(),
+            key=lambda kv: (source_order.get(kv[1].get("source_seq", ""), 99), kv[0])
+        )
+        new_replicas = {}
+        for new_idx, (old_key, rep_data) in enumerate(sorted_items, start=1):
+            rep_data["original_rep_num"] = old_key
+            new_replicas[str(new_idx)] = rep_data
+        sample_data["replicas"] = new_replicas
 
     # Estadístiques fusionades
     merged["stats"] = {
@@ -3952,6 +4004,40 @@ def _replicas_identical(rep1, rep2):
     return False
 
 
+def _resolve_sibling_path(source_seq, primary_seq_path, pack_sources, config=None):
+    """Retorna el path de la carpeta SEQ d'on ve la rèplica (sibling o principal).
+
+    Args:
+        source_seq: Nom del sibling (ex: "297B_SEQ") o "" si principal
+        primary_seq_path: Path de la SEQ principal
+        pack_sources: Llista de paths de tots els siblings
+        config: Configuració (per data_folders)
+
+    Returns:
+        Path a la carpeta SEQ corresponent (o primary_seq_path si no es troba)
+    """
+    if not source_seq or source_seq == os.path.basename(primary_seq_path):
+        return primary_seq_path
+
+    # Buscar als pack_sources
+    for src_path in (pack_sources or []):
+        if os.path.basename(src_path) == source_seq:
+            if os.path.isdir(src_path):
+                return src_path
+
+    # Buscar a les data_folders
+    try:
+        from hpsec_config import get_data_folders
+        for df_path in get_data_folders(config):
+            candidate = os.path.join(df_path, source_seq)
+            if os.path.isdir(candidate):
+                return candidate
+    except Exception:
+        pass
+
+    return primary_seq_path
+
+
 # =============================================================================
 # GENERACIÓ DE MANIFEST JSON
 # =============================================================================
@@ -3994,6 +4080,10 @@ def generate_import_manifest(imported_data, include_injection_details=True):
             "format": imported_data.get("master_format", ""),  # NEW o OLD
             "filename": os.path.basename(imported_data.get("master_file", "")) if imported_data.get("master_file") else "",
         },
+
+        # Pack/siblings info (si aplica)
+        "is_pack": imported_data.get("is_pack", False),
+        "pack_sources": imported_data.get("pack_sources", []),
 
         # Estadístiques globals
         "stats": imported_data.get("stats", {}),
@@ -4163,6 +4253,12 @@ def generate_import_manifest(imported_data, include_injection_details=True):
                     "acq_date": inj_info.get("inj_date", ""),
                     "method": inj_info.get("inj_method"),
                 }
+
+            # Traçabilitat sibling (packs)
+            if rep_data.get("source_seq"):
+                replica_entry["source_seq"] = rep_data["source_seq"]
+            if rep_data.get("original_rep_num"):
+                replica_entry["original_rep_num"] = rep_data["original_rep_num"]
 
             sample_entry["replicas"].append(replica_entry)
 
@@ -4526,6 +4622,31 @@ def import_from_manifest(seq_path, manifest=None, config=None, progress_callback
 
     report_progress(20, "Processant mostres del manifest...")
 
+    # Pack/siblings: carregar MasterFiles addicionals
+    sibling_toc_dfs = {}  # {source_seq_name: toc_df}
+    if manifest.get("is_pack") and manifest.get("pack_sources") and load_data:
+        from hpsec_config import get_data_folders
+        data_folders = get_data_folders(config)
+        for sibling_path in manifest["pack_sources"]:
+            sibling_name = os.path.basename(sibling_path)
+            if sibling_name == os.path.basename(seq_path):
+                continue  # Principal ja carregat
+            # Trobar la carpeta del sibling
+            for df_path in data_folders:
+                candidate = os.path.join(df_path, sibling_name)
+                if os.path.isdir(candidate):
+                    sib_mf, _ = trobar_excel_mestre(candidate)
+                    if sib_mf:
+                        try:
+                            with pd.ExcelFile(sib_mf, engine="openpyxl") as xl:
+                                if "2-TOC" in xl.sheet_names:
+                                    sib_toc = pd.read_excel(xl, sheet_name="2-TOC", header=6, engine="openpyxl")
+                                    sibling_toc_dfs[sibling_name] = sib_toc
+                                    logger.info("Pack: carregat 2-TOC de %s (%d files)", sibling_name, len(sib_toc))
+                        except Exception as e:
+                            logger.warning("Pack: error llegint MasterFile de %s: %s", sibling_name, e)
+                    break
+
     # Detecció global de timeouts al flux TOC complet
     seq_timeouts = detect_sequence_timeouts(toc_df) if toc_df is not None else []
 
@@ -4568,6 +4689,12 @@ def import_from_manifest(seq_path, manifest=None, config=None, progress_callback
                 "injection_info": rep_info.get("injection"),
             }
 
+            # Traçabilitat sibling
+            if rep_info.get("source_seq"):
+                rep_data["source_seq"] = rep_info["source_seq"]
+            if rep_info.get("original_rep_num"):
+                rep_data["original_rep_num"] = rep_info["original_rep_num"]
+
             # === DOC Direct ===
             direct_info = rep_info.get("direct")
             if direct_info:
@@ -4595,9 +4722,13 @@ def import_from_manifest(seq_path, manifest=None, config=None, progress_callback
                     elif row_start is None or row_end is None:
                         result["warnings"].append(f"⚠️ {sample_name} R{rep_num}: Fila DOC no definida al manifest")
 
+                # Seleccionar toc_df correcte (sibling o principal)
+                _rep_source = rep_info.get("source_seq", "")
+                _rep_toc = sibling_toc_dfs.get(_rep_source, toc_df) if _rep_source else toc_df
+
                 # Intentar llegir les dades reals si tenim MasterFile
                 mode = "BP" if result["method"] == "BP" else "COLUMN"
-                doc_result = _load_doc_direct(toc_df, row_start, row_end, mode, config,
+                doc_result = _load_doc_direct(_rep_toc, row_start, row_end, mode, config,
                                               seq_timeouts=seq_timeouts)
                 if doc_result:
                     rep_data["direct"] = doc_result
@@ -4624,7 +4755,10 @@ def import_from_manifest(seq_path, manifest=None, config=None, progress_callback
 
                 if uib_file and load_data:
                     mode = "BP" if result["method"] == "BP" else "COLUMN"
-                    uib_result = _load_uib_csv(uib_file, seq_path, mode)
+                    # Sibling: buscar CSV a la carpeta del sibling
+                    _uib_search_path = _resolve_sibling_path(
+                        _rep_source, seq_path, manifest.get("pack_sources", []), config)
+                    uib_result = _load_uib_csv(uib_file, _uib_search_path, mode)
                     if uib_result:
                         uib_result["manual_assignment"] = uib_info.get("manual_assignment", False)
                         # Propagar timeout_info de Direct a UIB (mateix detector TOC)
@@ -4635,6 +4769,9 @@ def import_from_manifest(seq_path, manifest=None, config=None, progress_callback
                         rep_data["has_data"] = True
 
             # === DAD ===
+            # Sibling: buscar fitxers a la carpeta del sibling
+            _dad_search_path = _resolve_sibling_path(
+                _rep_source, seq_path, manifest.get("pack_sources", []), config)
             dad_info = rep_info.get("dad")
             dad_source = None
             if dad_info:

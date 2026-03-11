@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 
 # Importar components del paquet
 from .delegates import ComboBoxDelegate, FileAssignmentDelegate
-from .worker import ImportWorker
+from .worker import ImportWorker, SiblingImportWorker
 from .dialogs import OrphanFilesDialog, ChromatogramPreviewDialog
 
 # Importar estils compartits
@@ -161,6 +161,7 @@ class ImportPanel(QWidget):
         self._orphan_warning_dismissed = False  # Si l'usuari ha marcat l'avís d'orfes com revisat
         self._warnings_confirmed = False  # Si l'usuari ha confirmat els warnings (FUZZY, etc.)
         self._warnings_confirmed_by = None  # G05: Qui ha confirmat (traçabilitat)
+        self._sibling_worker = None  # Worker per importar siblings
 
         self._setup_ui()
 
@@ -304,6 +305,13 @@ class ImportPanel(QWidget):
         """Carrega una seqüència des del Dashboard - auto-carrega si hi ha manifest."""
         self.set_sequence_path(seq_path)
 
+        sibling_paths = getattr(self.main_window, 'sibling_paths', [])
+
+        # Si hi ha siblings, importar tots independentment
+        if sibling_paths:
+            self._load_siblings([seq_path] + sibling_paths)
+            return
+
         # Si main_window ja té imported_data (pre-carregat per _preload_completed_stages),
         # reutilitzar-lo directament sense reimportar (evita doble lectura MasterFile)
         if self.main_window.imported_data and self.main_window.imported_data.get("success"):
@@ -388,9 +396,121 @@ class ImportPanel(QWidget):
         self.worker.error.connect(self._on_import_error)
         self.worker.start()
 
+    def _load_siblings(self, all_paths):
+        """Importa N siblings independentment amb SiblingImportWorker."""
+        n = len(all_paths)
+        logger.info("Importació siblings: %d carpetes", n)
+        self.placeholder.setText(f"Important {n} carpetes...")
+        self.placeholder.setVisible(True)
+        self.main_window.show_progress(0)
+
+        self._sibling_worker = SiblingImportWorker(all_paths, load_data=False)
+        self._sibling_worker.progress.connect(self._on_progress)
+        self._sibling_worker.sibling_finished.connect(self._on_sibling_finished)
+        self._sibling_worker.all_finished.connect(self._on_all_siblings_finished)
+        self._sibling_worker.error.connect(self._on_import_error)
+        self._sibling_worker.start()
+
+    def _on_sibling_finished(self, path, result):
+        """Callback per cada sibling importat."""
+        name = os.path.basename(path)
+        ok = result.get("success", False)
+        self.main_window.sibling_imported[path] = result
+        logger.info("Sibling %s: %s", name, "OK" if ok else "ERROR")
+
+    def _on_all_siblings_finished(self, results):
+        """Callback quan tots els siblings han estat importats."""
+        if self._sibling_worker is not None:
+            self._sibling_worker.wait()
+        self.main_window.show_progress(-1)
+        self.placeholder.setVisible(False)
+
+        # Filtrar resultats exitosos
+        ok_results = {p: r for p, r in results.items() if r.get("success")}
+        fail_results = {p: r for p, r in results.items() if not r.get("success")}
+
+        if fail_results:
+            names = [os.path.basename(p) for p in fail_results]
+            logger.warning("Siblings amb errors: %s", names)
+
+        if not ok_results:
+            QMessageBox.critical(self, "Error", "Cap sibling s'ha pogut importar.")
+            self.import_completed.emit({'success': False, 'errors': ["Cap sibling importat"]})
+            return
+
+        # Usar el primari com a imported_data principal (backward compat)
+        primary_path = self.main_window.seq_path
+        if primary_path in ok_results:
+            primary_result = ok_results[primary_path]
+        else:
+            # Si el primari ha fallat, usar el primer que ha funcionat
+            primary_result = next(iter(ok_results.values()))
+
+        self.imported_data = primary_result
+        self.main_window.imported_data = primary_result
+
+        # Mostrar resultats unificats (taula amb totes les mostres)
+        self._show_sibling_results(ok_results)
+
+        self.main_window.enable_tab(1)
+        n_ok = len(ok_results)
+        n_fail = len(fail_results)
+        msg = f"Importació completada: {n_ok} carpetes"
+        if n_fail:
+            msg += f" ({n_fail} amb errors)"
+        self.main_window.set_status(msg, 5000)
+
+        # Emetre senyal
+        self.import_completed.emit({
+            'success': True,
+            'warnings': primary_result.get('warnings', []),
+            'warnings_structured': primary_result.get('warnings_structured', []),
+            'orphan_files': primary_result.get('orphan_files', {}),
+            'is_sibling_import': True,
+            'sibling_count': n_ok,
+        })
+
+    def _show_sibling_results(self, results_by_path):
+        """Mostra resultats de N siblings en una vista unificada."""
+        # Mostrar la taula del primari (la vista actual ja funciona bé per 1 SEQ)
+        primary_path = self.main_window.seq_path
+        if primary_path in results_by_path:
+            self._show_results(results_by_path[primary_path])
+        else:
+            self._show_results(next(iter(results_by_path.values())))
+
+        # Actualitzar barra d'info amb recompte total de totes les carpetes
+        total_samples = 0
+        total_inj = 0
+        for result in results_by_path.values():
+            samples = result.get("samples", {})
+            total_samples += len(samples)
+            for s in samples.values():
+                total_inj += len(s.get("replicas", {}))
+
+        n = len(results_by_path)
+        names = [os.path.basename(p) for p in results_by_path]
+        self.total_label.setText(
+            f"Pack [{n} carpetes]: {total_samples} mostres, {total_inj} injeccions"
+        )
+        self.total_label.setToolTip("\n".join(names))
+
     def _run_import(self, force_reimport=False):
         """Executa importació. Si force_reimport=True, reimporta tot."""
         if not self.seq_path:
+            return
+
+        # Si hi ha siblings, reimportar tots
+        sibling_paths = getattr(self.main_window, 'sibling_paths', [])
+        if sibling_paths:
+            all_paths = [self.seq_path] + sibling_paths
+            self._sibling_worker = SiblingImportWorker(all_paths, load_data=True)
+            self._sibling_worker.progress.connect(self._on_progress)
+            self._sibling_worker.sibling_finished.connect(self._on_sibling_finished)
+            self._sibling_worker.all_finished.connect(self._on_all_siblings_finished)
+            self._sibling_worker.error.connect(self._on_import_error)
+            self.main_window.show_progress(0)
+            self._sibling_worker.start()
             return
 
         self.main_window.show_progress(0)

@@ -45,7 +45,7 @@ from gui.widgets.styles import (
     COLOR_SUCCESS, COLOR_WARNING, COLOR_ERROR,
     apply_panel_layout, create_empty_state_widget
 )
-from .worker import AnalyzeWorker
+from .worker import AnalyzeWorker, SiblingAnalyzeWorker
 from .dialogs import SampleDetailDialog
 from .repair_dialog import JaggedPeakRepairDialog
 from ._constants import (
@@ -195,6 +195,9 @@ class AnalyzePanel(QWidget):
         self._chart_control = {}
         self._chart_khp = {}
         self._chart_is_bp = False
+        # Siblings
+        self._sibling_worker = None
+        self._sibling_results = {}  # {path: analysis_result}
 
         self._setup_ui()
 
@@ -317,11 +320,11 @@ class AnalyzePanel(QWidget):
 
         # === UNIFIED TABLE ===
         self.results_table = QTableWidget()
-        self.results_table.setColumnCount(15)
+        self.results_table.setColumnCount(16)
         self.results_table.setHorizontalHeaderLabels([
             "Mostra", "Inj", "Sel DOC", "Sel DAD", "A_DOC", "ppm",
             "A_UIB", "ppm_U", "SNR", "A_254", "SNR_254",
-            "R²_DOC", "R²_DAD", "HCI", "Estat"
+            "R²_DOC", "R²_DAD", "HCI", "Estat", "Rpar."
         ])
         self.results_table.setMinimumHeight(180)
         configure_table_style(self.results_table)
@@ -476,6 +479,8 @@ class AnalyzePanel(QWidget):
         for i in range(self.results_table.columnCount()):
             if i == 14:  # Estat — stretch
                 header.setSectionResizeMode(i, QHeaderView.Stretch)
+            elif i == 15:  # Rpar. — compact
+                header.setSectionResizeMode(i, QHeaderView.ResizeToContents)
             else:
                 header.setSectionResizeMode(i, QHeaderView.ResizeToContents)
 
@@ -505,6 +510,8 @@ class AnalyzePanel(QWidget):
         self._chart_khp = {}
         self._chart_is_bp = False
         self._charts_initialized = False
+        self._sibling_worker = None
+        self._sibling_results = {}
 
         self.results_table.setRowCount(0)
 
@@ -524,18 +531,46 @@ class AnalyzePanel(QWidget):
         self.status_indicator.setText("")
 
     def _check_existing_analysis(self):
-        """Comprova si existeix anàlisi prèvia i la carrega automàticament."""
+        """Comprova si existeix anàlisi prèvia i la carrega automàticament.
+
+        Si hi ha siblings, carrega i fusiona tots els resultats.
+        """
         seq_path = self.main_window.seq_path
         if not seq_path:
             return
         if self.samples_grouped:
             return
-        try:
-            existing_analysis = load_analysis_result(seq_path)
-            if existing_analysis and existing_analysis.get("success"):
-                self._load_existing_analysis(existing_analysis)
-        except Exception as e:
-            logger.warning(f"Error comprovant anàlisi existent: {e}")
+
+        sibling_paths = getattr(self.main_window, 'sibling_paths', [])
+        all_paths = [seq_path] + sibling_paths
+
+        if len(all_paths) > 1:
+            # Carregar anàlisi de cada sibling i fusionar
+            results = {}
+            for path in all_paths:
+                try:
+                    r = load_analysis_result(path)
+                    if r and r.get("success"):
+                        results[path] = r
+                except Exception as e:
+                    logger.warning("Error carregant anàlisi %s: %s", path, e)
+
+            if results:
+                merged = self._merge_sibling_samples(results)
+                # Usar primari com a base
+                base = results.get(seq_path) or next(iter(results.values()))
+                base_result = dict(base)
+                base_result["samples_grouped"] = merged
+                base_result["is_sibling_merge"] = True
+                base_result["sibling_results"] = results
+                self._load_existing_analysis(base_result)
+        else:
+            try:
+                existing_analysis = load_analysis_result(seq_path)
+                if existing_analysis and existing_analysis.get("success"):
+                    self._load_existing_analysis(existing_analysis)
+            except Exception as e:
+                logger.warning(f"Error comprovant anàlisi existent: {e}")
 
     def _load_existing_analysis(self, result):
         """Carrega una anàlisi existent."""
@@ -672,6 +707,15 @@ class AnalyzePanel(QWidget):
 
     def _run_analyze(self):
         """Executa l'anàlisi."""
+        # Detectar mode siblings
+        sibling_imported = getattr(self.main_window, 'sibling_imported', {})
+        sibling_calibrated = getattr(self.main_window, 'sibling_calibrated', {})
+        logger.info("_run_analyze: sibling_imported keys=%s (n=%d)",
+                     list(sibling_imported.keys()), len(sibling_imported))
+        if len(sibling_imported) > 1:
+            self._run_analyze_siblings(sibling_imported, sibling_calibrated)
+            return
+
         imported_data = self.main_window.imported_data
         calibration_data = self.main_window.calibration_data
         seq_path = self.main_window.seq_path
@@ -843,6 +887,193 @@ class AnalyzePanel(QWidget):
         self.status_frame.setVisible(True)
 
     # ------------------------------------------------------------------
+    # Siblings analyze
+    # ------------------------------------------------------------------
+
+    def _run_analyze_siblings(self, sibling_imported, sibling_calibrated):
+        """Analitza N siblings independentment."""
+        import os
+        n = len(sibling_imported)
+        names = [os.path.basename(p) for p in sibling_imported]
+        logger.info("Anàlisi siblings: %d carpetes (%s)", n, ", ".join(names))
+
+        self.analyze_btn.setEnabled(False)
+        self.empty_state.setVisible(False)
+        self.status_frame.setVisible(False)
+        self.progress_frame.setVisible(True)
+        self.progress_bar.setValue(0)
+        self.results_frame.setVisible(False)
+        self._tab_widget.setVisible(False)
+        self._sibling_results = {}
+
+        if self._sibling_worker is not None:
+            self._sibling_worker.wait()
+
+        self._sibling_worker = SiblingAnalyzeWorker(
+            sibling_imported, sibling_calibrated
+        )
+        self._sibling_worker.progress.connect(self._on_progress)
+        self._sibling_worker.sibling_finished.connect(self._on_sibling_analyze_finished)
+        self._sibling_worker.all_finished.connect(self._on_all_siblings_analyze_finished)
+        self._sibling_worker.error.connect(self._on_error)
+        self._sibling_worker.start()
+
+    def _on_sibling_analyze_finished(self, path, result):
+        """Callback per cada sibling analitzat."""
+        import os
+        name = os.path.basename(path)
+        self._sibling_results[path] = result
+        self.main_window.sibling_analyzed[path] = result
+        ok = result.get("success", False)
+        logger.info("Sibling analitzat %s: %s", name, "OK" if ok else "ERROR")
+
+    def _on_all_siblings_analyze_finished(self, results):
+        """Callback quan tots els siblings han estat analitzats."""
+        import os
+
+        if self._sibling_worker is not None:
+            self._sibling_worker.wait()
+
+        self.progress_frame.setVisible(False)
+        self.analyze_btn.setEnabled(True)
+        self._sibling_results = results
+
+        # Fusionar samples_grouped de tots els siblings
+        merged = self._merge_sibling_samples(results)
+
+        if not merged:
+            self._show_inline_message("Cap sibling analitzat correctament.", level="error")
+            self.analyze_completed.emit({"success": False, "error": "Cap sibling OK"})
+            return
+
+        # Construir resultat unificat (usar el primari com a base)
+        primary_path = self.main_window.seq_path
+        if primary_path in results and results[primary_path].get("success"):
+            base_result = dict(results[primary_path])
+        else:
+            base_result = dict(next(
+                r for r in results.values() if r.get("success")
+            ))
+
+        base_result["samples_grouped"] = merged
+        base_result["is_sibling_merge"] = True
+        base_result["sibling_results"] = results
+
+        self.main_window.processed_data = base_result
+        self.samples_grouped = merged
+
+        # Preparar taula + gràfics (mateixa lògica que _on_finished)
+        from PySide6.QtWidgets import QApplication
+        n_samples = len(merged)
+        self.progress_label.setText(f"Preparant taula ({n_samples} mostres)...")
+        self.progress_bar.setValue(95)
+        self.progress_frame.setVisible(True)
+        QApplication.processEvents()
+
+        self._populate_table()
+        self.results_frame.setVisible(True)
+
+        self.progress_label.setText("Generant gràfics...")
+        self.progress_bar.setValue(97)
+        QApplication.processEvents()
+
+        self._populate_charts(base_result)
+        self._populate_sub_tabs(base_result)
+        self._tab_widget.setVisible(True)
+
+        self.progress_frame.setVisible(False)
+        self.status_frame.setVisible(False)
+
+        n = len(results)
+        n_ok = sum(1 for r in results.values() if r.get("success"))
+        self.main_window.set_status(
+            f"Anàlisi completada: {n_ok}/{n} carpetes, {n_samples} mostres", 5000
+        )
+
+        self.analyze_completed.emit(base_result)
+
+    def _merge_sibling_samples(self, results):
+        """Fusiona samples_grouped de N siblings en un dict unificat.
+
+        Mostres amb el MATEIX nom es fusionen en una sola entrada amb
+        rèpliques renumerades seqüencialment. Cada rèplica porta
+        metadades d'origen (_source_path, _source_label).
+
+        KHP/BLANK/CONTROL NO es fusionen entre siblings (condicions
+        de calibració pròpies). Es diferencien amb suffix [A]/[B].
+
+        Exemples:
+            LQ0468 SEQ_A R1,R2 + SEQ_B R1,R2
+            → LQ0468 amb R1,R2 (d'A) + R3,R4 (de B)
+            Columna Inj: "5, 6, 3B, 4B"
+        """
+        import os
+        merged = {}
+        # Tipus que NO es fusionen (cada sibling té condicions pròpies)
+        no_merge_types = {"KHP", "BLANK", "CONTROL"}
+
+        for path, result in results.items():
+            if not result.get("success"):
+                continue
+
+            suffix = self._get_sibling_suffix(path)
+            label = suffix if suffix else "A"
+            samples = result.get("samples_grouped", {})
+
+            for name, data in samples.items():
+                sample_type = data.get("sample_type", "SAMPLE")
+
+                # Marcar traçabilitat a cada rèplica
+                replicas = data.get("replicas", {})
+                for rk, rd in replicas.items():
+                    if isinstance(rd, dict):
+                        rd["_source_path"] = path
+                        rd["_source_label"] = label
+
+                if sample_type in no_merge_types:
+                    # KHP/BLANK/CONTROL: no fusionar, afegir suffix
+                    display = f"{name} [{label}]" if len(results) > 1 else name
+                    if display in merged:
+                        display = f"{name} [{os.path.basename(path)}]"
+                    data["_source_path"] = path
+                    data["_source_label"] = label
+                    merged[display] = data
+                elif name in merged:
+                    # SAMPLE ja existent → fusionar rèpliques
+                    existing = merged[name]
+                    existing_reps = existing.get("replicas", {})
+                    # Trobar el número de rèplica màxim existent
+                    max_rep = max(
+                        (int(k) for k in existing_reps if str(k).isdigit()),
+                        default=0
+                    )
+                    # Afegir noves rèpliques amb números seqüencials
+                    for rk in sorted(replicas.keys()):
+                        max_rep += 1
+                        new_key = str(max_rep)
+                        existing_reps[new_key] = replicas[rk]
+                else:
+                    # Primera vegada que apareix → afegir directament
+                    data["_source_path"] = path
+                    data["_source_label"] = label
+                    merged[name] = data
+
+        return merged
+
+    @staticmethod
+    def _get_sibling_suffix(path):
+        """Extreu el suffix del sibling ('' per primari, 'B' per 282B_SEQ, etc)."""
+        import os, re
+        name = os.path.basename(path)
+        # Extreure número + suffix: 282_SEQ → ('282', ''), 282B_SEQ → ('282', 'B')
+        clean = name.replace("_SEQ", "").replace("_BP", "").replace("_CAL", "")
+        clean = clean.rstrip("_")
+        m = re.match(r'^(\d+)([A-Z]?)$', clean)
+        if m:
+            return m.group(2)  # '' o 'B', 'C', etc
+        return ""
+
+    # ------------------------------------------------------------------
     # (SEQ_CAL regression removed — ara a GlobalCalibrationPanel, tab 5)
     # ------------------------------------------------------------------
 
@@ -889,15 +1120,25 @@ class AnalyzePanel(QWidget):
             else:
                 sample_names.append(name)
 
-        # Ordenar per índex d'injecció (ordre cronològic al MasterFile)
-        def _min_inj_index(name):
-            reps = self.samples_grouped[name].get("replicas", {})
-            indices = [r.get("injection_index", 999) for r in reps.values()
-                       if r.get("injection_index") is not None]
-            return min(indices) if indices else 999
+        # Ordenar per índex d'injecció mínim (ordre cronològic).
+        # Per mostres fusionades (siblings), la primera injecció determina la posició.
+        def _sort_key(name):
+            sg = self.samples_grouped[name]
+            reps = sg.get("replicas", {})
+            # Construir tuples (sibling_order, injection_index) per cada rèplica
+            keys = []
+            for r in reps.values():
+                if not isinstance(r, dict):
+                    continue
+                label = r.get("_source_label", "A")
+                idx = r.get("injection_index", 999)
+                # A=0, B=1, C=2... per ordenar siblings
+                sib_order = 0 if label in ("", "A") else ord(label) - ord("A")
+                keys.append((sib_order, idx))
+            return min(keys) if keys else (0, 999)
 
         for lst in (sample_names, blank_names, control_names):
-            lst.sort(key=_min_inj_index)
+            lst.sort(key=_sort_key)
 
         # --- Regular samples + Blancs (full rendering) ---
         full_render_list = [(name, False) for name in sample_names]
@@ -1036,13 +1277,18 @@ class AnalyzePanel(QWidget):
                         hci_item = QTableWidgetItem("-")
                     self.results_table.setItem(row, 13, hci_item)
 
-                    # Col 14: Estat (anomalies, igual que mostres)
-                    status_color, status_text, tooltip = self._classify_sample_status(
+                    # Col 14-15: Estat + Reparació
+                    (status_color, status_text, s_tooltip,
+                     repair_color, repair_text, r_tooltip) = self._classify_sample_status(
                         rep_data, rep_data, comparison, sample_data=sample_data)
                     status_item = QTableWidgetItem(status_text)
                     status_item.setForeground(QBrush(QColor(status_color)))
-                    status_item.setToolTip(tooltip)
+                    status_item.setToolTip(s_tooltip)
                     self.results_table.setItem(row, 14, status_item)
+                    repair_item = QTableWidgetItem(repair_text)
+                    repair_item.setForeground(QBrush(QColor(repair_color)))
+                    repair_item.setToolTip(r_tooltip)
+                    self.results_table.setItem(row, 15, repair_item)
 
                     # Fons gris
                     blank_bg = QBrush(QColor("#F4F6F6"))
@@ -1077,29 +1323,46 @@ class AnalyzePanel(QWidget):
             item_name.setData(Qt.UserRole, sample_name)
             self.results_table.setItem(row, 0, item_name)
 
-            # Col 1: Inj (injection indices)
+            # Col 1: Inj (injection indices amb suffix sibling per rèplica)
+            # Cada rèplica pot venir d'un sibling diferent: "5, 6, 3B, 4B"
             inj_indices = []
-            for rk, rd in sorted(replicas.items()):
+            tip_parts = []
+            for rk, rd in sorted(replicas.items(), key=lambda x: int(x[0]) if x[0].isdigit() else 999):
                 idx = rd.get("injection_index")
+                rep_label = rd.get("_source_label", "") if isinstance(rd, dict) else ""
+                rep_suffix = rep_label if rep_label and rep_label != "A" else ""
                 if idx is not None:
-                    inj_indices.append(str(idx))
+                    inj_indices.append(f"{idx}{rep_suffix}")
+                import os as _os
+                src = rd.get("_source_path", "") if isinstance(rd, dict) else ""
+                src_name = _os.path.basename(src) if src else ""
+                if idx is not None:
+                    tip_parts.append(
+                        f"R{rk}: inj #{idx}{rep_suffix}"
+                        + (f" ({src_name})" if src_name else "")
+                    )
             inj_text = ", ".join(inj_indices) if inj_indices else "-"
             inj_item = QTableWidgetItem(inj_text)
             inj_item.setForeground(QBrush(QColor("#888")))
-            if inj_indices:
-                tip_parts = []
-                for rk, rd in sorted(replicas.items()):
-                    idx = rd.get("injection_index")
-                    if idx is not None:
-                        tip_parts.append(f"R{rk}: inj #{idx}")
+            if tip_parts:
                 inj_item.setToolTip("\n".join(tip_parts))
             self.results_table.setItem(row, 1, inj_item)
 
             # Col 2: Sel DOC — replica selector with (s) for suggested + "Cap" option
             doc_combo = QComboBox()
             doc_combo.setStyleSheet("QComboBox { border: none; background: transparent; padding: 2px; }")
-            for rep_num in sorted(replicas.keys()):
-                label = f"R{rep_num} (s)" if rep_num == doc_rec else f"R{rep_num}"
+            for rep_num in sorted(replicas.keys(), key=lambda x: int(x) if x.isdigit() else 999):
+                label = f"R{rep_num}"
+                # Mostrar injecció + sibling si ve d'un sibling
+                rep_data = replicas.get(rep_num, {})
+                if isinstance(rep_data, dict):
+                    _idx = rep_data.get("injection_index")
+                    _slabel = rep_data.get("_source_label", "")
+                    _ssuffix = _slabel if _slabel and _slabel != "A" else ""
+                    if _idx is not None:
+                        label += f" (inj {_idx}{_ssuffix})"
+                if rep_num == doc_rec:
+                    label += " ★"
                 doc_combo.addItem(label, rep_num)
                 if rep_num == doc_sel:
                     doc_combo.setCurrentIndex(doc_combo.count() - 1)
@@ -1114,8 +1377,17 @@ class AnalyzePanel(QWidget):
             # Col 3: Sel DAD — replica selector with (s) for suggested + "Cap" option
             dad_combo = QComboBox()
             dad_combo.setStyleSheet("QComboBox { border: none; background: transparent; padding: 2px; }")
-            for rep_num in sorted(replicas.keys()):
-                label = f"R{rep_num} (s)" if rep_num == dad_rec else f"R{rep_num}"
+            for rep_num in sorted(replicas.keys(), key=lambda x: int(x) if x.isdigit() else 999):
+                label = f"R{rep_num}"
+                rep_data = replicas.get(rep_num, {})
+                if isinstance(rep_data, dict):
+                    _idx = rep_data.get("injection_index")
+                    _slabel = rep_data.get("_source_label", "")
+                    _ssuffix = _slabel if _slabel and _slabel != "A" else ""
+                    if _idx is not None:
+                        label += f" (inj {_idx}{_ssuffix})"
+                if rep_num == dad_rec:
+                    label += " ★"
                 dad_combo.addItem(label, rep_num)
                 if rep_num == dad_sel:
                     dad_combo.setCurrentIndex(dad_combo.count() - 1)
@@ -1185,15 +1457,27 @@ class AnalyzePanel(QWidget):
 
             # --- Correlation columns (sample-level, not replica-specific) ---
 
-            # Col 11: R2_DOC
-            r2_doc = comparison.get("doc", {}).get("pearson", 0) if comparison else 0
+            # Col 11: R²_DOC (min pairwise si >1 parella)
+            pairwise = sample_data.get("pairwise_comparisons", {})
+            if pairwise and len(pairwise) > 1:
+                r2_doc = min(
+                    (c.get("doc", {}).get("pearson", 0) for c in pairwise.values()),
+                    default=0)
+            else:
+                r2_doc = comparison.get("doc", {}).get("pearson", 0) if comparison else 0
             r2_doc_item = QTableWidgetItem(f"{r2_doc:.4f}" if r2_doc > 0 else "-")
             if 0 < r2_doc < 0.990:
                 r2_doc_item.setForeground(QBrush(QColor(COLOR_WARNING)))
             self.results_table.setItem(row, 11, r2_doc_item)
 
-            # Col 12: R2_DAD (min across wavelengths)
-            dad_comp = comparison.get("dad", {}) if comparison else {}
+            # Col 12: R²_DAD (min across wavelengths, min pairwise si >1 parella)
+            if pairwise and len(pairwise) > 1:
+                dad_comp = min(
+                    (c.get("dad", {}) for c in pairwise.values()),
+                    key=lambda d: d.get("pearson_min", 0),
+                    default={})
+            else:
+                dad_comp = comparison.get("dad", {}) if comparison else {}
             r2_dad_min = dad_comp.get("pearson_min", 0)
             wl_min = dad_comp.get("wavelength_min", "")
             if r2_dad_min > 0:
@@ -1234,13 +1518,18 @@ class AnalyzePanel(QWidget):
                 hci_item = QTableWidgetItem("-")
             self.results_table.setItem(row, 13, hci_item)
 
-            # Col 14: Estat (considers both DOC and DAD replicas)
-            status_color, status_text, tooltip = self._classify_sample_status(
+            # Col 14-15: Estat + Reparació
+            (status_color, status_text, s_tooltip,
+             repair_color, repair_text, r_tooltip) = self._classify_sample_status(
                 doc_rep, dad_rep, comparison, sample_data=sample_data)
             status_item = QTableWidgetItem(status_text)
             status_item.setForeground(QBrush(QColor(status_color)))
-            status_item.setToolTip(tooltip)
+            status_item.setToolTip(s_tooltip)
             self.results_table.setItem(row, 14, status_item)
+            repair_item = QTableWidgetItem(repair_text)
+            repair_item.setForeground(QBrush(QColor(repair_color)))
+            repair_item.setToolTip(r_tooltip)
+            self.results_table.setItem(row, 15, repair_item)
 
             # Count stats for regular samples
             if status_color == COLOR_ERROR:
@@ -1323,10 +1612,11 @@ class AnalyzePanel(QWidget):
                 for c in (9, 10, 11, 12, 13):
                     self.results_table.setItem(row, c, QTableWidgetItem("-"))
 
-                # Col 14: Neteja
+                # Col 14-15: Neteja / sense reparació
                 type_item = QTableWidgetItem("Neteja")
                 type_item.setForeground(QBrush(QColor("#888888")))
                 self.results_table.setItem(row, 14, type_item)
+                self.results_table.setItem(row, 15, QTableWidgetItem(""))
 
                 # Light grey background
                 light_bg = QBrush(QColor("#F0F0F0"))
@@ -1366,28 +1656,32 @@ class AnalyzePanel(QWidget):
 
     def _classify_sample_status(self, doc_rep_data, dad_rep_data, comparison,
                                 sample_data=None):
-        """Classifica l'estat d'una mostra considerant ambdues rèpliques (DOC + DAD).
+        """Classifica l'estat d'una mostra: anomalies (col 14) + reparació (col 15).
 
         Usa ANOMALY_CATALOG com a font de veritat per severitat, icones i labels.
+        Separa anomalies generals de l'estat de reparació irregular_top.
 
-        Args:
-            doc_rep_data: Dades de la rèplica DOC seleccionada
-            dad_rep_data: Dades de la rèplica DAD seleccionada
-            comparison: Comparació entre rèpliques
-            sample_data: Dict complet del sample_group (per accedir a sample_valid, repaired)
-
-        Returns (color, status_text, tooltip).
+        Returns (status_color, status_text, status_tooltip,
+                 repair_color, repair_text, repair_tooltip).
         """
+        # --- Defaults reparació ---
+        repair_color = "#888"
+        repair_text = ""
+        repair_tooltip = ""
+
         # Comprovar si l'usuari ha seleccionat "Cap"
         if sample_data:
             selected = sample_data.get("selected", {})
             if selected.get("doc") == "none":
-                return COLOR_ERROR, "NO VÀL", "Usuari ha seleccionat 'Cap' — No es quantificarà ni exportarà"
-            # Comprovar mostra no vàlida (ambdues rèpliques amb anomalies no reparables)
+                return (COLOR_ERROR, "NO VÀL",
+                        "Usuari ha seleccionat 'Cap' — No es quantificarà ni exportarà",
+                        repair_color, repair_text, repair_tooltip)
             if sample_data.get("sample_valid") is False and not sample_data.get("repaired"):
                 reason = (sample_data.get("recommendation", {})
                           .get("doc", {}).get("reason", "Ambdues rèpliques amb anomalies crítiques"))
-                return COLOR_ERROR, "NO VÀL", f"Mostra no vàlida — {reason}\nSeleccionar 'Cap' o generar noves dades"
+                return (COLOR_ERROR, "NO VÀL",
+                        f"Mostra no vàlida — {reason}\nSeleccionar 'Cap' o generar noves dades",
+                        repair_color, repair_text, repair_tooltip)
 
         # Merge anomalies from both replicas (deduplicate by code)
         doc_anomalies = doc_rep_data.get("anomalies", [])
@@ -1400,7 +1694,17 @@ class AnalyzePanel(QWidget):
                 all_anomalies.append(a)
                 existing_codes.add(code)
 
-        classified = classify_anomalies(all_anomalies)
+        # Separar anomalies de reparació (IRREGULAR_TOP) de la resta
+        repair_codes = {"IRREGULAR_TOP", "IRREGULAR_TOP_DIRECT", "IRREGULAR_TOP_UIB"}
+        anomalies_general = [a for a in all_anomalies
+                             if (a.get("code") if isinstance(a, dict) else str(a).split("_REPAIRED")[0])
+                             not in repair_codes]
+        anomalies_repair = [a for a in all_anomalies
+                            if (a.get("code") if isinstance(a, dict) else str(a).split("_REPAIRED")[0])
+                            in repair_codes]
+
+        # --- COLUMNA ESTAT (col 14): anomalies generals ---
+        classified = classify_anomalies(anomalies_general)
         timeout_info = doc_rep_data.get("timeout_info", {})
         timeout_severity = timeout_info.get("severity", "OK")
         n_timeouts = timeout_info.get("n_timeouts", 0)
@@ -1409,74 +1713,53 @@ class AnalyzePanel(QWidget):
             for domain in ("doc", "dad"):
                 replica_warnings.extend((comparison.get(domain) or {}).get("warnings", []))
 
-        # Determine severity
         has_blocker = bool(classified["blocker"])
-        has_warn = bool(classified["warning"] or classified["repaired"]
+        has_warn = bool(classified["warning"]
                         or (timeout_severity in ("WARNING", "CRITICAL"))
                         or replica_warnings)
 
-        # Build concise status text
         n_blocker = len(classified["blocker"])
         n_warn = len(classified["warning"])
-        n_repaired = len(classified["repaired"])
-        # Repairable indicator
-        can_repair = (sample_data and sample_data.get("repairable")
-                      and not sample_data.get("repaired"))
-        repair_icon = " 🔧" if can_repair else ""
 
         if has_blocker:
             status_color = COLOR_ERROR
-            # Mostrar motiu concret del primer blocker
             first_blocker = classified["blocker"][0]
             b_code = first_blocker.get("code") if isinstance(first_blocker, dict) else str(first_blocker)
             b_entry = ANOMALY_CATALOG.get(b_code, {})
-            # Prioritzar label de l'anomalia (override_label) sobre el catàleg
             b_label = (first_blocker.get("label") if isinstance(first_blocker, dict) else None
                        ) or b_entry.get("label", b_code)
-            if n_blocker == 1:
-                status_text = b_label + repair_icon
-            else:
-                status_text = f"{b_label} +{n_blocker - 1}" + repair_icon
-        elif has_warn or n_repaired:
+            status_text = f"{b_label} +{n_blocker - 1}" if n_blocker > 1 else b_label
+        elif has_warn:
             status_color = COLOR_WARNING
             parts = []
             if n_warn:
                 parts.append(f"{n_warn} avís" if n_warn == 1 else f"{n_warn} avisos")
-            if n_repaired:
-                parts.append(f"{n_repaired} reparat" if n_repaired == 1 else f"{n_repaired} reparats")
             if n_timeouts > 0:
                 parts.append(f"{n_timeouts} timeout")
-            status_text = " \u00b7 ".join(parts) + repair_icon
+            status_text = " \u00b7 ".join(parts)
         else:
             status_color = COLOR_SUCCESS
             status_text = "OK"
 
-        # Build tooltip with catalog labels + action hints
+        # Tooltip anomalies
         tooltip_parts = []
-        for key, label_prefix in [("blocker", "CRÍTIC"), ("repaired", "REPARAT"),
-                                    ("warning", "Avís"), ("info", "Info")]:
-            items = classified[key]
-            if items:
-                for a in items:
-                    code = a.get("code") if isinstance(a, dict) else str(a).replace("_REPAIRED", "")
-                    entry = ANOMALY_CATALOG.get(code, {})
-                    lbl = (a.get("label") if isinstance(a, dict) else None
-                           ) or entry.get("label", code)
-                    det = a.get("details", {}) if isinstance(a, dict) else {}
-                    if det.get("snr"):
-                        lbl += f" (SNR={det['snr']:.1f})"
-                    line = f"{label_prefix}: {lbl}"
-                    action = entry.get("action", "")
-                    if action:
-                        line += f"\n   \u2192 {action}"
-                    tooltip_parts.append(line)
-
+        for key, label_prefix in [("blocker", "CRÍTIC"), ("warning", "Avís"), ("info", "Info")]:
+            for a in classified[key]:
+                code = a.get("code") if isinstance(a, dict) else str(a)
+                entry = ANOMALY_CATALOG.get(code, {})
+                lbl = (a.get("label") if isinstance(a, dict) else None) or entry.get("label", code)
+                det = a.get("details", {}) if isinstance(a, dict) else {}
+                if det.get("snr"):
+                    lbl += f" (SNR={det['snr']:.1f})"
+                line = f"{label_prefix}: {lbl}"
+                action = entry.get("action", "")
+                if action:
+                    line += f"\n   \u2192 {action}"
+                tooltip_parts.append(line)
         if n_timeouts > 0:
             zones = timeout_info.get("zones", [])
             tooltip_parts.append(
-                f"Timeouts Direct: {n_timeouts} ({timeout_severity}) — zones: {', '.join(zones) if zones else '?'}"
-            )
-            # UIB timeout propagat
+                f"Timeouts Direct: {n_timeouts} ({timeout_severity}) — zones: {', '.join(zones) if zones else '?'}")
             uib_ti = doc_rep_data.get("timeout_info_uib") or {}
             if uib_ti.get("n_timeouts", 0) > 0:
                 uib_zones = uib_ti.get("zones", [])
@@ -1487,19 +1770,41 @@ class AnalyzePanel(QWidget):
                 tooltip_parts.append(uib_tip)
         if replica_warnings:
             for rw in replica_warnings:
-                if isinstance(rw, dict):
-                    tooltip_parts.append(rw.get("label", rw.get("code", str(rw))))
-                else:
-                    tooltip_parts.append(str(rw))
+                tooltip_parts.append(rw.get("label", rw.get("code", str(rw))) if isinstance(rw, dict) else str(rw))
+        status_tooltip = "\n".join(tooltip_parts) if tooltip_parts else "OK"
 
-        # Repairable hint
-        if sample_data and sample_data.get("repairable") and not sample_data.get("repaired"):
-            tooltip_parts.append("Pic amb cim irregular reparable — Clic a Estat per obrir diàleg de reparació")
-        elif sample_data and sample_data.get("repaired"):
-            tooltip_parts.append("Clic a Estat per desfer o veure detalls de la reparació")
+        # --- COLUMNA REPARACIÓ (col 15): irregular_top ---
+        if anomalies_repair:
+            classified_r = classify_anomalies(anomalies_repair)
+            n_repaired = len(classified_r["repaired"])
+            n_pending = len(classified_r["blocker"]) + len(classified_r["warning"])
+            can_repair = (sample_data and sample_data.get("repairable")
+                          and not sample_data.get("repaired"))
 
-        tooltip = "\n".join(tooltip_parts) if tooltip_parts else "OK"
-        return status_color, status_text, tooltip
+            if n_repaired > 0 and n_pending == 0:
+                repair_color = COLOR_SUCCESS
+                repair_text = f"✓ ({n_repaired})"
+                repair_tooltip = "Reparació aplicada — Clic per desfer o veure detalls"
+            elif n_pending > 0:
+                repair_color = COLOR_ERROR
+                repair_text = "🔧" if can_repair else "⚠"
+                repair_tooltip = "Cim irregular detectat — Clic per revisar i reparar"
+            # Afegir detalls per cada rèplica
+            rp_details = []
+            for a in anomalies_repair:
+                code = a.get("code", "") if isinstance(a, dict) else str(a)
+                repaired = a.get("repaired", False) if isinstance(a, dict) else "_REPAIRED" in str(a)
+                det = a.get("details", {}) if isinstance(a, dict) else {}
+                depth = det.get("max_depth", 0)
+                n_v = det.get("n_valleys", 0)
+                signal = "Direct" if "DIRECT" in code else ("UIB" if "UIB" in code else "DOC")
+                state = "reparat" if repaired else "pendent"
+                rp_details.append(f"{signal}: {n_v} valls (prof. {depth:.1%}) — {state}")
+            if rp_details:
+                repair_tooltip = "\n".join(rp_details) + "\n\nClic per obrir diàleg de reparació"
+
+        return (status_color, status_text, status_tooltip,
+                repair_color, repair_text, repair_tooltip)
 
     # ------------------------------------------------------------------
     # Replica change (separate DOC / DAD handlers)
@@ -1655,7 +1960,7 @@ class AnalyzePanel(QWidget):
                 snr_254_item.setForeground(QBrush(QColor("#000000")))
 
     def _update_estat_column(self, row, sample_name):
-        """Actualitza la columna Estat (col 14) considerant ambdues rèpliques."""
+        """Actualitza les columnes Estat (col 14) i Reparació (col 15)."""
         sample_data = self.samples_grouped[sample_name]
         selected = sample_data.get("selected", {})
         replicas = sample_data.get("replicas", {})
@@ -1663,13 +1968,19 @@ class AnalyzePanel(QWidget):
         doc_rep = replicas.get(selected.get("doc", "1"), {})
         dad_rep = replicas.get(selected.get("dad", "1"), {})
 
-        status_color, status_text, tooltip = self._classify_sample_status(
+        (status_color, status_text, s_tooltip,
+         repair_color, repair_text, r_tooltip) = self._classify_sample_status(
             doc_rep, dad_rep, comparison, sample_data=sample_data)
         status_item = self.results_table.item(row, 14)
         if status_item:
             status_item.setText(status_text)
             status_item.setForeground(QBrush(QColor(status_color)))
-            status_item.setToolTip(tooltip)
+            status_item.setToolTip(s_tooltip)
+        repair_item = self.results_table.item(row, 15)
+        if repair_item:
+            repair_item.setText(repair_text)
+            repair_item.setForeground(QBrush(QColor(repair_color)))
+            repair_item.setToolTip(r_tooltip)
 
     # ------------------------------------------------------------------
     # Quantification recalculation
@@ -1749,8 +2060,8 @@ class AnalyzePanel(QWidget):
     # ------------------------------------------------------------------
 
     def _on_table_cell_click(self, row, col):
-        """Handler per clic a cel·la — col 14 (Estat) obre diàleg reparació si aplicable."""
-        if col != 14:
+        """Handler per clic a cel·la — col 15 (Rpar.) obre diàleg reparació si aplicable."""
+        if col != 15:
             return
         item = self.results_table.item(row, 0)
         if not item:
@@ -1989,13 +2300,13 @@ class AnalyzePanel(QWidget):
     def _build_sample_checkboxes(self, regular, blank, control, khp):
         """Registra mostres per categoria (sense checkboxes individuals)."""
         self._sample_checkboxes = []
-        for name in sorted(regular.keys()):
+        for name in self._chart_sorted_names(regular):
             self._sample_checkboxes.append((None, name, "sample"))
-        for name in sorted(blank.keys()):
+        for name in self._chart_sorted_names(blank):
             self._sample_checkboxes.append((None, name, "blank"))
-        for name in sorted(control.keys()):
+        for name in self._chart_sorted_names(control):
             self._sample_checkboxes.append((None, name, "control"))
-        for name in sorted(khp.keys()):
+        for name in self._chart_sorted_names(khp):
             self._sample_checkboxes.append((None, name, "khp"))
 
         self._cat_counts = {
@@ -2173,13 +2484,36 @@ class AnalyzePanel(QWidget):
         self.timeout_canvas.draw()
 
     @staticmethod
+    def _chart_sorted_names(samples_dict):
+        """Ordena noms de mostra per sibling + injection_index (cronològic)."""
+        def _key(name):
+            data = samples_dict[name]
+            reps = data.get("replicas", {})
+            keys = []
+            for r in reps.values():
+                if not isinstance(r, dict):
+                    continue
+                label = r.get("_source_label", "A")
+                idx = r.get("injection_index", 999)
+                sib_order = 0 if label in ("", "A") else ord(label) - ord("A")
+                keys.append((sib_order, idx))
+            return min(keys) if keys else (0, 999)
+        return sorted(samples_dict.keys(), key=_key)
+
+    @staticmethod
     def _chart_short_label(name, data):
-        """Retorna etiqueta curta per eix X: índex injecció o nom truncat."""
+        """Retorna etiqueta curta per eix X: índex injecció + suffix sibling.
+
+        Exemples: "5" (primari/A), "5B" (sibling B), "5C" (sibling C).
+        La label ve de la rèplica seleccionada (pot ser d'un sibling diferent).
+        """
         sel = (data.get("selected") or {}).get("doc", "1")
         rep = (data.get("replicas") or {}).get(sel, {})
         idx = rep.get("injection_index")
         if idx is not None:
-            return str(idx)
+            label = rep.get("_source_label", "") if isinstance(rep, dict) else ""
+            suffix = label if label and label != "A" else ""
+            return f"{idx}{suffix}"
         # Truncar nom si massa llarg
         return name[:12] + "…" if len(name) > 12 else name
 
@@ -2228,7 +2562,7 @@ class AnalyzePanel(QWidget):
         fractions_data = {f: [] for f in FRACTION_ORDER}
         ppm_values = []
 
-        for name in sorted(regular.keys()):
+        for name in self._chart_sorted_names(regular):
             data = regular[name]
             sel = (data.get("selected") or {}).get("doc", "1")
             rep = (data.get("replicas") or {}).get(sel, {})
@@ -2250,7 +2584,7 @@ class AnalyzePanel(QWidget):
             ppm_values.append(quant.get("concentration_ppm") or 0)
 
         light_start = len(names)
-        for name in sorted(light.keys()):
+        for name in self._chart_sorted_names(light):
             data = light[name]
             sel = (data.get("selected") or {}).get("doc", "1")
             rep = (data.get("replicas") or {}).get(sel, {})
@@ -2326,7 +2660,7 @@ class AnalyzePanel(QWidget):
         labels = []
         fractions_data = {f: [] for f in FRACTION_ORDER}
 
-        for name in sorted(regular.keys()):
+        for name in self._chart_sorted_names(regular):
             data = regular[name]
             selected = data.get("selected") or {}
             sel = selected.get("dad", selected.get("doc", "1"))
@@ -2346,7 +2680,7 @@ class AnalyzePanel(QWidget):
                 fractions_data["BioP"][-1] = area_total
 
         light_start = len(names)
-        for name in sorted(light.keys()):
+        for name in self._chart_sorted_names(light):
             data = light[name]
             sel = (data.get("selected") or {}).get("doc", "1")
             rep = (data.get("replicas") or {}).get(sel, {})

@@ -1131,152 +1131,135 @@ def compare_replicas(r1_result, r2_result, mode="COLUMN", config=None):
     return result
 
 
-def recommend_replica(r1_result, r2_result, comparison, mode="COLUMN"):
+def recommend_replica(r1_result, r2_result=None, comparison=None, mode="COLUMN"):
     """
     Recomana la millor rèplica per DOC i DAD independentment.
+    Suporta 2 rèpliques (signatura clàssica) o N rèpliques.
 
-    Args:
+    Args (clàssic, 2 rèpliques):
         r1_result: Resultat de analyze_sample() per rèplica 1
         r2_result: Resultat de analyze_sample() per rèplica 2
         comparison: Resultat de compare_replicas()
         mode: "COLUMN" o "BP"
 
+    Args (N rèpliques):
+        r1_result: dict {rep_key: analyze_result, ...} amb totes les rèpliques
+        r2_result: None (no usat)
+        comparison: dict {(ki,kj): compare_result, ...} pairwise comparisons
+        mode: "COLUMN" o "BP"
+
     Returns:
         dict amb:
-            - doc: { replica: "1"|"2", score: float, reason: str }
-            - dad: { replica: "1"|"2", score: float, reason: str }
+            - doc: { replica: str, score: float, reason: str }
+            - dad: { replica: str, score: float, reason: str }
     """
-    result = {
-        "doc": {"replica": "1", "score": 0.5, "reason": "Default"},
-        "dad": {"replica": "1", "score": 0.5, "reason": "Default"}
-    }
+    # Detectar mode: N-rèpliques vs 2-rèpliques
+    if r2_result is None and isinstance(r1_result, dict):
+        # Mode N: r1_result és dict de rèpliques
+        return _recommend_replica_multi(r1_result, comparison or {}, mode)
 
-    is_bp = mode.upper() == "BP"
+    # Mode clàssic: 2 rèpliques → delegar a _recommend_replica_multi
+    replicas_dict = {"1": r1_result, "2": r2_result}
+    pairwise = {("1", "2"): comparison} if comparison else {}
+    return _recommend_replica_multi(replicas_dict, pairwise, mode)
 
-    # =========================================================================
-    # RECOMANACIÓ DOC
-    # =========================================================================
-    # Criteri principal: sense anomalies
-    # Criteri secundari: SNR més alt
 
-    anom1 = r1_result.get("anomalies", [])
-    anom2 = r2_result.get("anomalies", [])
-    snr1 = r1_result.get("snr_info", {}).get("snr_direct", 0) or 0
-    snr2 = r2_result.get("snr_info", {}).get("snr_direct", 0) or 0
+def _score_replica_doc(rep_key, rep_result):
+    """Puntua una rèplica per DOC: anomalies + SNR. Retorna (score, reason)."""
+    anomalies = rep_result.get("anomalies", [])
+    codes = get_anomaly_codes(anomalies)
+    snr = rep_result.get("snr_info", {}).get("snr_direct", 0) or 0
 
-    # Anomalies crítiques (del catàleg)
-    codes1 = get_anomaly_codes(anom1)
-    codes2 = get_anomaly_codes(anom2)
-    has_critical1 = bool(codes1 & CRITICAL_ANOMALIES)
-    has_critical2 = bool(codes2 & CRITICAL_ANOMALIES)
-
-    # Sets derivats del catàleg per reparabilitat
     irreparable_codes = {c for c, e in ANOMALY_CATALOG.items()
                          if e.get("invalidates") and not e.get("repairable")}
     repairable_codes = {c for c, e in ANOMALY_CATALOG.items()
                         if e.get("severity") == WarningLevel.BLOCKER and e.get("repairable")}
 
-    if has_critical1 and not has_critical2:
-        result["doc"] = {"replica": "2", "score": 0.95, "reason": "R1 té anomalies crítiques"}
-    elif has_critical2 and not has_critical1:
-        result["doc"] = {"replica": "1", "score": 0.95, "reason": "R2 té anomalies crítiques"}
-    elif has_critical1 and has_critical2:
-        # Ambdues tenen anomalies crítiques
-        has_irreparable1 = bool(codes1 & irreparable_codes)
-        has_irreparable2 = bool(codes2 & irreparable_codes)
-        has_repairable1 = bool(codes1 & repairable_codes)
-        has_repairable2 = bool(codes2 & repairable_codes)
+    has_critical = bool(codes & CRITICAL_ANOMALIES)
+    has_irreparable = bool(codes & irreparable_codes)
+    has_repairable = bool(codes & repairable_codes)
 
-        if has_irreparable1 and has_irreparable2:
-            # Ambdues amb anomalies no reparables → mostra no vàlida
-            if snr2 > snr1:
-                result["doc"] = {"replica": "2", "score": 0.3,
-                                 "reason": "Ambdues amb anomalies no reparables",
-                                 "valid": False}
-            else:
-                result["doc"] = {"replica": "1", "score": 0.3,
-                                 "reason": "Ambdues amb anomalies no reparables",
-                                 "valid": False}
-        elif has_repairable1 or has_repairable2:
-            # Almenys una té cim irregular (reparable) → triar la millor, suggerir reparació
-            repairable = []
-            if has_repairable1 and not has_irreparable1:
-                repairable.append("1")
-            if has_repairable2 and not has_irreparable2:
-                repairable.append("2")
-
-            if len(repairable) == 2:
-                # Ambdues reparables, triar per SNR
-                chosen = "2" if snr2 > snr1 else "1"
-                result["doc"] = {"replica": chosen, "score": 0.4,
-                                 "reason": "Ambdues amb cim irregular (reparable), triar per SNR",
-                                 "repairable": True,
-                                 "repairable_replicas": repairable}
-            elif len(repairable) == 1:
-                result["doc"] = {"replica": repairable[0], "score": 0.4,
-                                 "reason": f"R{repairable[0]} amb cim irregular (reparable)",
-                                 "repairable": True,
-                                 "repairable_replicas": repairable}
-            else:
-                # Cap reparable (p.ex. ambdues amb irreparable + cim irregular)
-                if snr2 > snr1:
-                    result["doc"] = {"replica": "2", "score": 0.3,
-                                     "reason": "Ambdues amb anomalies crítiques",
-                                     "valid": False}
-                else:
-                    result["doc"] = {"replica": "1", "score": 0.3,
-                                     "reason": "Ambdues amb anomalies crítiques",
-                                     "valid": False}
-        else:
-            # Anomalies crítiques sense cim irregular → no vàlida
-            if snr2 > snr1:
-                result["doc"] = {"replica": "2", "score": 0.3,
-                                 "reason": "Ambdues amb anomalies crítiques",
-                                 "valid": False}
-            else:
-                result["doc"] = {"replica": "1", "score": 0.3,
-                                 "reason": "Ambdues amb anomalies crítiques",
-                                 "valid": False}
+    if has_irreparable:
+        return (0.1 + snr * 0.0001, "anomalies no reparables", False, False)
+    elif has_critical and has_repairable:
+        return (0.4 + snr * 0.0001, "cim irregular (reparable)", True, True)
+    elif has_critical:
+        return (0.2 + snr * 0.0001, "anomalies crítiques", False, False)
     else:
-        # Cap anomalia crítica, triar per SNR
-        if snr2 > snr1 * 1.1:  # R2 ha de ser >10% millor
-            result["doc"] = {"replica": "2", "score": 0.85, "reason": "SNR superior"}
-        elif snr1 > snr2 * 1.1:
-            result["doc"] = {"replica": "1", "score": 0.85, "reason": "SNR superior"}
-        else:
-            result["doc"] = {"replica": "1", "score": 0.75, "reason": "SNR similar, preferència R1"}
+        # Sense anomalies crítiques — puntuar per SNR
+        return (0.75 + min(snr / 1000, 0.20), "OK", True, False)
 
-    # =========================================================================
-    # RECOMANACIÓ DAD
-    # =========================================================================
-    # BP: SNR alt, FWHM consistent
-    # COLUMN: SNR alt, deriva baseline baixa
 
-    snr_dad1 = r1_result.get("snr_info_dad", {}).get("A254", {}).get("snr", 0) or 0
-    snr_dad2 = r2_result.get("snr_info_dad", {}).get("A254", {}).get("snr", 0) or 0
+def _recommend_replica_multi(replicas_dict, pairwise_comparisons, mode="COLUMN"):
+    """
+    Recomana la millor rèplica entre N candidats per DOC i DAD.
 
-    if is_bp:
-        # BP: prioritzar SNR i FWHM
-        fwhm1 = r1_result.get("fwhm_254", 0) or 0
-        fwhm2 = r2_result.get("fwhm_254", 0) or 0
+    Args:
+        replicas_dict: {rep_key: analyze_result}
+        pairwise_comparisons: {(ki,kj): compare_result}
+        mode: "COLUMN" o "BP"
+    """
+    keys = sorted(replicas_dict.keys())
+    if not keys:
+        return {
+            "doc": {"replica": "1", "score": 0, "reason": "Sense rèpliques"},
+            "dad": {"replica": "1", "score": 0, "reason": "Sense rèpliques"},
+        }
+    if len(keys) == 1:
+        return {
+            "doc": {"replica": keys[0], "score": 0.5, "reason": "Rèplica única"},
+            "dad": {"replica": keys[0], "score": 0.5, "reason": "Rèplica única"},
+        }
 
-        if snr_dad2 > snr_dad1 * 1.1:
-            result["dad"] = {"replica": "2", "score": 0.85, "reason": "SNR 254nm superior"}
-        elif snr_dad1 > snr_dad2 * 1.1:
-            result["dad"] = {"replica": "1", "score": 0.85, "reason": "SNR 254nm superior"}
-        else:
-            result["dad"] = {"replica": "1", "score": 0.75, "reason": "SNR similar, preferència R1"}
-    else:
-        # COLUMN: prioritzar SNR i deriva baseline
-        # TODO: Implementar detecció deriva baseline DAD
-        if snr_dad2 > snr_dad1 * 1.1:
-            result["dad"] = {"replica": "2", "score": 0.85, "reason": "SNR 254nm superior"}
-        elif snr_dad1 > snr_dad2 * 1.1:
-            result["dad"] = {"replica": "1", "score": 0.85, "reason": "SNR 254nm superior"}
-        else:
-            result["dad"] = {"replica": "1", "score": 0.75, "reason": "SNR similar, preferència R1"}
+    # === DOC ===
+    doc_scores = {}
+    all_valid = True
+    repairable_keys = []
+    for k in keys:
+        score, reason, valid, repairable = _score_replica_doc(k, replicas_dict[k])
+        doc_scores[k] = {"score": score, "reason": reason, "valid": valid, "repairable": repairable}
+        if not valid:
+            all_valid = False
+        if repairable:
+            repairable_keys.append(k)
 
-    return result
+    best_doc_key = max(keys, key=lambda k: doc_scores[k]["score"])
+    best_doc = doc_scores[best_doc_key]
+    doc_result = {
+        "replica": best_doc_key,
+        "score": best_doc["score"],
+        "reason": best_doc["reason"],
+    }
+    # valid=False si TOTES les rèpliques tenen anomalies no reparables
+    any_valid = any(doc_scores[k]["valid"] for k in keys)
+    if not any_valid:
+        doc_result["valid"] = False
+        doc_result["reason"] = "Totes les rèpliques amb anomalies no reparables"
+    if repairable_keys:
+        doc_result["repairable"] = True
+        doc_result["repairable_replicas"] = repairable_keys
+
+    # === DAD ===
+    dad_scores = {}
+    for k in keys:
+        snr_dad = replicas_dict[k].get("snr_info_dad", {}).get("A254", {}).get("snr", 0) or 0
+        dad_scores[k] = snr_dad
+
+    best_dad_key = max(keys, key=lambda k: dad_scores[k])
+    best_dad_snr = dad_scores[best_dad_key]
+    # Preferir R1 si SNR similar (dins 10%)
+    first_key = keys[0]
+    if best_dad_key != first_key:
+        if dad_scores[first_key] >= best_dad_snr * 0.9:
+            best_dad_key = first_key  # preferència primera rèplica si similar
+
+    dad_result = {
+        "replica": best_dad_key,
+        "score": 0.85 if best_dad_snr > 0 else 0.5,
+        "reason": "SNR 254nm superior" if best_dad_key != first_key else "SNR similar, preferència R1",
+    }
+
+    return {"doc": doc_result, "dad": dad_result}
 
 
 def repair_irregular_top_in_replica(sample_result, signal="direct"):
@@ -1691,6 +1674,11 @@ def analyze_sample(sample_data, calibration_data=None, config=None):
         "processed": False,
         "anomalies": [],
     }
+    # Traçabilitat sibling (packs)
+    if sample_data.get("source_seq"):
+        result["source_seq"] = sample_data["source_seq"]
+    if sample_data.get("original_rep_num"):
+        result["original_rep_num"] = sample_data["original_rep_num"]
 
     # Obtenir dades RAW
     t_doc = sample_data.get("t_doc")
@@ -2317,6 +2305,12 @@ def _flatten_samples_for_processing(imported_data, data_mode="DUAL"):
                 "uib_sensitivity": uib_sensitivity,  # ppb (700/1000) per detecció saturació
             }
 
+            # Traçabilitat sibling (packs): d'on ve cada rèplica
+            if rep_data.get("source_seq"):
+                flat_sample["source_seq"] = rep_data["source_seq"]
+            if rep_data.get("original_rep_num"):
+                flat_sample["original_rep_num"] = rep_data["original_rep_num"]
+
             # Propagar timeout_info complet (font única: import → map_timeouts_to_injection)
             direct = rep_data.get("direct", {})
             if isinstance(direct, dict):
@@ -2852,6 +2846,9 @@ def analyze_sequence(imported_data, calibration_data=None, config=None, progress
         # Fallback: usar calibration_data passat (compatibilitat)
         return calibration_data
 
+    # Mínim de punts DOC per considerar un cromatograma vàlid
+    min_doc_points = 60 if mode == "BP" else 450  # BP: 4 min, COLUMN: 30 min (dt=4s)
+
     # Processar totes les mostres — un sol bucle
     total_samples = len(all_flat)
     for i, sample in enumerate(all_flat):
@@ -2860,6 +2857,26 @@ def analyze_sequence(imported_data, calibration_data=None, config=None, progress
                               (i + 1) / total_samples * 100)
 
         sample_type = sample.get("sample_type", "SAMPLE")
+
+        # Saltar mostres amb cromatograma truncat
+        doc_n_pts = sample.get("n_points", 0) or len(sample.get("t", []))
+        if 0 < doc_n_pts < min_doc_points:
+            processed = {
+                "name": sample.get("name", "UNKNOWN"),
+                "replica": sample.get("replica", "1"),
+                "sample_type": sample_type,
+                "processed": False,
+                "sample_valid": False,
+                "error": f"Cromatograma truncat ({doc_n_pts} punts, mínim {min_doc_points})",
+                "anomalies": [create_anomaly(
+                    "IMP_SHORT_CHROMATOGRAM",
+                    sample=sample.get("name"),
+                    details={"n_points": doc_n_pts, "min_points": min_doc_points},
+                )],
+            }
+            result["samples"].append(processed)
+            continue
+
         try:
             if sample_type == "CONTROL":
                 processed = _analyze_light_sample(sample)
@@ -2934,62 +2951,117 @@ def analyze_sequence(imported_data, calibration_data=None, config=None, progress
         replica_keys = sorted(replicas.keys())
 
         if len(replica_keys) >= 2:
-            # Comparar R1 vs R2
-            r1 = replicas.get(replica_keys[0])
-            r2 = replicas.get(replica_keys[1])
+            # Comparacions pairwise (totes les parelles)
+            from itertools import combinations
+            valid_replicas = {k: replicas[k] for k in replica_keys if replicas.get(k)}
 
-            if r1 and r2:
-                # Comparació
-                comparison = compare_replicas(r1, r2, mode=mode, config=config)
-                sample_group["comparison"] = comparison
+            pairwise_comparisons = {}
+            for ki, kj in combinations(sorted(valid_replicas.keys()), 2):
+                comp = compare_replicas(valid_replicas[ki], valid_replicas[kj],
+                                        mode=mode, config=config)
+                pairwise_comparisons[(ki, kj)] = comp
 
-                # Recomanació
-                recommendation = recommend_replica(r1, r2, comparison, mode=mode)
-                sample_group["recommendation"] = recommendation
+            # Backward compat: "comparison" = primera parella
+            first_pair = (replica_keys[0], replica_keys[1])
+            sample_group["comparison"] = pairwise_comparisons.get(first_pair)
+            if len(pairwise_comparisons) > 1:
+                sample_group["pairwise_comparisons"] = pairwise_comparisons
 
-                # Selecció inicial = recomanació
-                sample_group["selected"] = {
-                    "doc": recommendation["doc"]["replica"],
-                    "dad": recommendation["dad"]["replica"]
-                }
+            # Recomanació (N rèpliques)
+            recommendation = recommend_replica(
+                valid_replicas, None, pairwise_comparisons, mode=mode)
+            sample_group["recommendation"] = recommendation
 
-                # Propagare flags de validesa i reparabilitat
-                doc_rec = recommendation.get("doc", {})
-                sample_group["sample_valid"] = doc_rec.get("valid", True)
-                sample_group["repairable"] = doc_rec.get("repairable", False)
-                sample_group["repairable_replicas"] = doc_rec.get("repairable_replicas", [])
-                sample_group["repaired"] = False  # Es posarà True si l'usuari repara
+            # Selecció inicial = recomanació
+            sample_group["selected"] = {
+                "doc": recommendation["doc"]["replica"],
+                "dad": recommendation["dad"]["replica"]
+            }
 
-                # Quantificació (saltar si mostra no vàlida o exclosa)
-                if sample_group["sample_valid"] is False:
-                    sample_group["quantification"] = {
-                        "concentration_ppm": None,
-                        "concentration_ppm_direct": None,
-                        "concentration_ppm_uib": None,
-                        "area_total": None,
-                        "valid": False,
-                        "reason": doc_rec.get("reason", "Mostra no vàlida")
-                    }
-                elif skip_quant:
-                    sample_group["quantification"] = {
-                        "concentration_ppm": None,
-                        "concentration_ppm_direct": None,
-                        "concentration_ppm_uib": None,
-                        "valid": False,
-                        "reason": "Patró de referència (sense quantificació)"
-                    }
+            # Propagare flags de validesa i reparabilitat
+            doc_rec = recommendation.get("doc", {})
+            sample_group["sample_valid"] = doc_rec.get("valid", True)
+            sample_group["repairable"] = doc_rec.get("repairable", False)
+            sample_group["repairable_replicas"] = doc_rec.get("repairable_replicas", [])
+            sample_group["repaired"] = False  # Es posarà True si l'usuari repara
+
+            # Cross-replica validation per irregular_top:
+            # Si és real, TOTES les rèpliques DOC Direct l'han de presentar.
+            # Si només algunes el tenen → fals positiu → descartar detecció.
+            _irr_codes = {"IRREGULAR_TOP", "IRREGULAR_TOP_DIRECT"}
+            _reps_with_irr = []
+            _reps_without_irr = []
+            for rk in replica_keys:
+                rep = replicas.get(rk, {})
+                rep_codes = get_anomaly_codes(rep.get("anomalies", []))
+                if rep_codes & _irr_codes:
+                    _reps_with_irr.append(rk)
                 else:
-                    selected_replica = sample_group["selected"]["doc"]
-                    selected_sample = replicas.get(selected_replica, r1)
-                    # Usar calibració específica segons volum d'injecció
-                    sample_cal = get_sample_calibration(selected_sample)
-                    quantification = quantify_sample(selected_sample, sample_cal, mode=mode)
-                    # HCI del doc_replica seleccionat
-                    hci = selected_sample.get("hci")
-                    if hci is not None:
-                        quantification["hci"] = hci
-                        quantification["hci_character"] = selected_sample.get("hci_character", "")
-                    sample_group["quantification"] = quantification
+                    _reps_without_irr.append(rk)
+            if _reps_with_irr and _reps_without_irr and len(replica_keys) >= 2:
+                # Fals positiu: no totes les rèpliques el presenten
+                logger.info(
+                    "Cross-replica validation %s: irregular_top en %s però no en %s → fals positiu",
+                    sample_name, _reps_with_irr, _reps_without_irr)
+                for rk in _reps_with_irr:
+                    rep = replicas[rk]
+                    # Reclassificar anomalies: BLOCKER → INFO (fals positiu)
+                    new_anomalies = []
+                    for a in rep.get("anomalies", []):
+                        code = a.get("code", "") if isinstance(a, dict) else str(a)
+                        if code in _irr_codes:
+                            if isinstance(a, dict):
+                                a = dict(a)
+                                a["severity"] = "INFO"
+                                a["false_positive"] = True
+                                a["label"] = (a.get("label", "") or code) + " (FP)"
+                            new_anomalies.append(a)
+                        else:
+                            new_anomalies.append(a)
+                    rep["anomalies"] = new_anomalies
+                    rep["is_irregular_top"] = False
+                    rep["irregular_top_false_positive"] = True
+                # Recalcular repairable (ja no cal)
+                sample_group["repairable"] = False
+                sample_group["repairable_replicas"] = []
+                # Recalcular sample_valid (pot tornar a ser True)
+                score, reason, valid, _ = _score_replica_doc(
+                    replica_keys[0], replicas[replica_keys[0]])
+                any_valid = any(
+                    _score_replica_doc(k, replicas[k])[2] for k in replica_keys)
+                sample_group["sample_valid"] = any_valid
+
+            # Quantificació (saltar si mostra no vàlida o exclosa)
+            if sample_group["sample_valid"] is False:
+                sample_group["quantification"] = {
+                    "concentration_ppm": None,
+                    "concentration_ppm_direct": None,
+                    "concentration_ppm_uib": None,
+                    "area_total": None,
+                    "valid": False,
+                    "reason": doc_rec.get("reason", "Mostra no vàlida")
+                }
+            elif skip_quant:
+                sample_group["quantification"] = {
+                    "concentration_ppm": None,
+                    "concentration_ppm_direct": None,
+                    "concentration_ppm_uib": None,
+                    "valid": False,
+                    "reason": "Patró de referència (sense quantificació)"
+                }
+            else:
+                selected_replica = sample_group["selected"]["doc"]
+                r1 = replicas.get(replica_keys[0])
+                selected_sample = replicas.get(selected_replica, r1)
+                # Usar calibració específica segons volum d'injecció
+                sample_cal = get_sample_calibration(selected_sample)
+                quantification = quantify_sample(selected_sample, sample_cal, mode=mode)
+                # HCI del doc_replica seleccionat
+                hci = selected_sample.get("hci")
+                if hci is not None:
+                    quantification["hci"] = hci
+                    quantification["hci_character"] = selected_sample.get("hci_character", "")
+                sample_group["quantification"] = quantification
 
         elif len(replica_keys) == 1:
             # Només una rèplica

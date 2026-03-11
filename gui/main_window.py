@@ -42,6 +42,7 @@ class HPSECSuiteWindow(QMainWindow):
 
         # Estat de l'aplicació
         self.seq_path = None
+        self.sibling_paths = []  # [sibB, sibC, ...] — buit si no té siblings
         self.imported_data = None
         self.calibration_data = None
         self.processed_data = None
@@ -49,6 +50,11 @@ class HPSECSuiteWindow(QMainWindow):
         self.review_completed = False
         self.manifest_saved = False
         self.has_unsaved_changes = False
+
+        # Siblings: dades independents per cada sibling
+        self.sibling_imported = {}    # {path: imported_data}
+        self.sibling_calibrated = {}  # {path: calibration_data}
+        self.sibling_analyzed = {}    # {path: analysis_data}
 
         # Configurar UI
         self._setup_ui()
@@ -316,12 +322,13 @@ class HPSECSuiteWindow(QMainWindow):
         """Marca que hi ha canvis sense guardar."""
         self.has_unsaved_changes = True
 
-    def load_sequence(self, seq_path):
-        """Carrega una seqüència."""
+    def load_sequence(self, seq_path, siblings=None):
+        """Carrega una seqüència (opcionalment amb siblings)."""
         if not os.path.isdir(seq_path):
             return False
 
         self.seq_path = seq_path
+        self.sibling_paths = siblings or []
         seq_name = os.path.basename(seq_path)
 
         # Reset estat
@@ -333,13 +340,19 @@ class HPSECSuiteWindow(QMainWindow):
         self.manifest_saved = False
         self.has_unsaved_changes = False
 
+        # Reset siblings
+        self.sibling_imported = {}
+        self.sibling_calibrated = {}
+        self.sibling_analyzed = {}
+
         # Actualitzar títol
-        self.setWindowTitle(f"HPSEC Suite - {seq_name}")
+        suffix = f" [+{len(self.sibling_paths)}]" if self.sibling_paths else ""
+        self.setWindowTitle(f"HPSEC Suite - {seq_name}{suffix}")
 
         # Carregar al wizard (assegurar que existeix)
         self._ensure_wizard()
         if self.process_panel:
-            self.process_panel.load_sequence_from_dashboard(seq_path)
+            self.process_panel.load_sequence_from_dashboard(seq_path, siblings=self.sibling_paths)
 
         return True
 
@@ -347,6 +360,13 @@ class HPSECSuiteWindow(QMainWindow):
         """Callback quan es selecciona una seqüència al Dashboard."""
         import os
         seq_name = os.path.basename(seq_path)
+
+        # Buscar siblings des del SequenceState del dashboard
+        siblings = []
+        for s in self.dashboard_panel.sequences:
+            if s.seq_path == seq_path:
+                siblings = s.siblings if hasattr(s, 'siblings') else []
+                break
 
         try:
             self.set_status(f"Carregant {seq_name}...")
@@ -356,7 +376,7 @@ class HPSECSuiteWindow(QMainWindow):
                 self._load_seq_cal(seq_path)
             else:
                 # Flux normal: wizard de 4 passos
-                self.load_sequence(seq_path)
+                self.load_sequence(seq_path, siblings=siblings)
                 self._show_wizard()
 
             self.set_status(f"{seq_name} carregat", 3000)

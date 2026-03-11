@@ -292,6 +292,7 @@ class ProcessWizardPanel(QWidget):
         super().__init__()
         self.main_window = main_window
         self.tab_states = ["pending", "pending", "pending", "pending"]
+        self.sibling_paths = []  # Paths de siblings (sense primary)
 
         self._setup_ui()
 
@@ -1554,8 +1555,18 @@ class ProcessWizardPanel(QWidget):
         # IMPORTANT: Reset tots els panels abans de carregar nova SEQ
         self._reset_all_panels()
 
-        # Actualitzar header
-        self.seq_label.setText(seq_name)
+        # Actualitzar header (amb badge siblings si aplica)
+        siblings = getattr(self, 'sibling_paths', [])
+        if siblings:
+            sibling_names = [os.path.basename(s) for s in siblings]
+            display = f"{seq_name} [+{len(siblings)}]"
+            self.seq_label.setText(display)
+            self.seq_label.setToolTip(
+                f"Pack: {seq_name} + {', '.join(sibling_names)}"
+            )
+        else:
+            self.seq_label.setText(seq_name)
+            self.seq_label.setToolTip("")
 
         # Detectar method/mode si hi ha manifest
         self._update_seq_info(seq_path)
@@ -1563,12 +1574,20 @@ class ProcessWizardPanel(QWidget):
         # Notificar main_window
         self.main_window.seq_path = seq_path
 
-        # Detectar etapes completades
-        self.tab_states = self._detect_completed_stages(seq_path)
+        # Detectar etapes completades (per TOTS els siblings si aplica)
+        if siblings:
+            self.tab_states = self._detect_completed_stages_siblings(
+                [seq_path] + siblings
+            )
+        else:
+            self.tab_states = self._detect_completed_stages(seq_path)
         self._update_tab_titles()
 
         # Pre-carregar dades des de JSON si etapes anteriors ja estan completades
-        self._preload_completed_stages(seq_path)
+        if siblings:
+            self._preload_completed_stages_siblings([seq_path] + siblings)
+        else:
+            self._preload_completed_stages(seq_path)
 
         # Mostrar PDF btn si anàlisi ja completada
         if self.tab_states[2] in ("ok", "warning"):
@@ -1621,6 +1640,9 @@ class ProcessWizardPanel(QWidget):
         self.main_window.processed_data = None
         self.main_window.review_data = None
         self.main_window.review_completed = False
+        self.main_window.sibling_imported = {}
+        self.main_window.sibling_calibrated = {}
+        self.main_window.sibling_analyzed = {}
         self.pdf_btn.setVisible(False)
 
 
@@ -1641,81 +1663,19 @@ class ProcessWizardPanel(QWidget):
     def _preload_completed_stages(self, seq_path: str):
         """Pre-carrega dades des de JSON per etapes ja completades (evita reimportar)."""
         from pathlib import Path
-        import json
 
         data_path = Path(seq_path) / "CHECK" / "data"
         if not data_path.exists():
             return
 
-        # Import: carregar metadades del manifest per a la info_frame
-        # dels panels posteriors (cal/ana/review necessiten method, data_mode, samples, etc.)
+        # Import: carregar metadades del manifest
         if self.tab_states[0] in ("ok", "warning") and not self.main_window.imported_data:
             manifest_path = data_path / "import_manifest.json"
             if manifest_path.exists():
                 try:
-                    with open(manifest_path, 'r', encoding='utf-8') as f:
-                        manifest = json.load(f)
-                    if manifest.get("success") or manifest.get("samples"):
-                        # Extreure metadades correctament del manifest
-                        seq_info = manifest.get("sequence", {})
-                        mf_info = manifest.get("master_file", {})
-                        method = (manifest.get("method")
-                                  or seq_info.get("method", "COLUMN"))
-                        data_mode = (manifest.get("data_mode")
-                                     or seq_info.get("data_mode", "DUAL"))
-                        master_path = (manifest.get("masterfile_path")
-                                       or mf_info.get("path", ""))
-
-                        # Convertir samples de llista (format manifest) a dict
-                        # (format import_sequence) per compatibilitat amb
-                        # ensure_data_loaded() i la resta del pipeline
-                        manifest_samples = manifest.get("samples", [])
-                        samples_dict = {}
-                        if isinstance(manifest_samples, list):
-                            for s_info in manifest_samples:
-                                s_name = s_info.get("name", "")
-                                if not s_name:
-                                    continue
-                                reps_dict = {}
-                                for r_info in s_info.get("replicas", []):
-                                    r_num = str(r_info.get("replica",
-                                                r_info.get("rep_num", "1")))
-                                    reps_dict[r_num] = {
-                                        "direct": r_info.get("direct"),
-                                        "uib": r_info.get("uib"),
-                                        "dad": r_info.get("dad"),
-                                        "dad_source": (r_info.get("dad", {}) or {}).get("source"),
-                                        "has_data": False,
-                                        "injection_info": r_info.get("injection"),
-                                    }
-                                samples_dict[s_name] = {
-                                    "type": s_info.get("type", "SAMPLE"),
-                                    "original_name": s_info.get("original_name", s_name),
-                                    "replicas": reps_dict,
-                                }
-                        elif isinstance(manifest_samples, dict):
-                            samples_dict = manifest_samples
-
-                        # Construir imported_data lleuger (metadades only)
-                        self.main_window.imported_data = {
-                            "success": True,
-                            "seq_path": seq_path,
-                            "seq_name": seq_info.get("name",
-                                        os.path.basename(seq_path)),
-                            "method": method,
-                            "data_mode": data_mode,
-                            "uib_sensitivity": seq_info.get("uib_sensitivity"),
-                            "samples": samples_dict,
-                            "master_file": master_path,
-                            "khp_samples": [s.get("name", "") for s in manifest_samples
-                                            if isinstance(s, dict) and s.get("type") == "KHP"]
-                                           if isinstance(manifest_samples, list) else [],
-                            "control_samples": [s.get("name", "") for s in manifest_samples
-                                                if isinstance(s, dict) and s.get("type") == "CONTROL"]
-                                               if isinstance(manifest_samples, list) else [],
-                            "stats": manifest.get("stats", {}),
-                            "data_deferred": True,
-                        }
+                    imported = self._build_lightweight_imported(seq_path, manifest_path)
+                    if imported:
+                        self.main_window.imported_data = imported
                 except Exception as e:
                     logger.warning(f"Error pre-carregant import: {e}")
 
@@ -1724,38 +1684,9 @@ class ProcessWizardPanel(QWidget):
             cal_path = data_path / "calibration_result.json"
             if cal_path.exists():
                 try:
-                    with open(cal_path, 'r', encoding='utf-8') as f:
-                        cal_file = json.load(f)
-                    calibrations = cal_file.get("calibrations", [])
-                    if calibrations:
-                        active_cal = next(
-                            (c for c in calibrations if c.get("is_active")),
-                            calibrations[0]
-                        )
-                        area = active_cal.get("area", 0)
-                        conc = active_cal.get("conc_ppm", 5)
-                        rf = active_cal.get("rf", 0)
-                        if rf == 0 and conc > 0 and area > 0:
-                            rf = area / conc
-                        self.main_window.calibration_data = {
-                            "success": True,
-                            "mode": active_cal.get("mode", "DUAL"),
-                            "rf_direct": active_cal.get("rf_direct", rf),
-                            "rf_uib": active_cal.get("rf_uib", 0),
-                            "rf": rf,
-                            "rf_mass": active_cal.get("rf_mass", 0),
-                            "shift_direct": active_cal.get("shift_direct") or active_cal.get("shift_min", 0),
-                            "shift_uib": active_cal.get("shift_uib") or active_cal.get("shift_min_u", 0),
-                            "khp_area_direct": area,
-                            "khp_area_uib": active_cal.get("area_u", 0),
-                            "khp_area": area,
-                            "khp_conc": conc,
-                            "volume_uL": active_cal.get("volume_uL", 0),
-                            "khp_source": active_cal.get("khp_source", "LOCAL"),
-                            "calibration": active_cal,
-                            "errors": [],
-                            "loaded_from_json": True,
-                        }
+                    cal_data = self._build_lightweight_calibrated(cal_path)
+                    if cal_data:
+                        self.main_window.calibration_data = cal_data
                 except Exception as e:
                     logger.warning(f"Error pre-carregant calibració: {e}")
 
@@ -1827,6 +1758,191 @@ class ProcessWizardPanel(QWidget):
                 break
 
         return states
+
+    def _detect_completed_stages_siblings(self, all_paths: list) -> list:
+        """Detecta etapes completades per un pack de siblings.
+
+        Una etapa es considera completada només si TOTS els siblings la tenen.
+        L'estat resultant és el "pitjor" de tots (pending > warning > ok).
+        """
+        # Obtenir estats individuals
+        all_states = []
+        for path in all_paths:
+            states = self._detect_completed_stages(path)
+            all_states.append(states)
+
+        if not all_states:
+            return ["pending", "pending", "pending", "pending"]
+
+        # Per cada etapa, agafar el pitjor estat
+        priority = {"pending": 0, "current": 1, "warning": 2, "ok": 3}
+        merged = []
+        for stage_idx in range(4):
+            worst = min(
+                (priority.get(s[stage_idx], 0) for s in all_states),
+                default=0
+            )
+            # Revertir priority a nom
+            for name, val in priority.items():
+                if val == worst:
+                    merged.append(name)
+                    break
+
+        # Marcar primera etapa pendent com a "current"
+        for i, state in enumerate(merged):
+            if state in ("pending", "current"):
+                merged[i] = "current"
+                break
+
+        return merged
+
+    def _preload_completed_stages_siblings(self, all_paths: list):
+        """Pre-carrega dades de TOTS els siblings per etapes completades."""
+        import json
+        from pathlib import Path
+
+        for path in all_paths:
+            data_path = Path(path) / "CHECK" / "data"
+            if not data_path.exists():
+                continue
+
+            # Import: preload per cada sibling
+            if self.tab_states[0] in ("ok", "warning"):
+                if path not in self.main_window.sibling_imported:
+                    manifest_path = data_path / "import_manifest.json"
+                    if manifest_path.exists():
+                        try:
+                            imported = self._build_lightweight_imported(
+                                path, manifest_path
+                            )
+                            if imported:
+                                self.main_window.sibling_imported[path] = imported
+                        except Exception as e:
+                            logger.warning("Error pre-carregant import %s: %s",
+                                           os.path.basename(path), e)
+
+            # Calibració: preload per cada sibling
+            if self.tab_states[1] in ("ok", "warning"):
+                if path not in self.main_window.sibling_calibrated:
+                    cal_path = data_path / "calibration_result.json"
+                    if cal_path.exists():
+                        try:
+                            cal_data = self._build_lightweight_calibrated(cal_path)
+                            if cal_data:
+                                self.main_window.sibling_calibrated[path] = cal_data
+                        except Exception as e:
+                            logger.warning("Error pre-carregant calibració %s: %s",
+                                           os.path.basename(path), e)
+
+        # Backward compat: imported_data i calibration_data del primari
+        primary = all_paths[0] if all_paths else None
+        if primary:
+            if primary in self.main_window.sibling_imported:
+                self.main_window.imported_data = self.main_window.sibling_imported[primary]
+            if primary in self.main_window.sibling_calibrated:
+                self.main_window.calibration_data = self.main_window.sibling_calibrated[primary]
+
+    def _build_lightweight_imported(self, seq_path, manifest_path):
+        """Construeix imported_data lleuger des d'un manifest JSON."""
+        import json
+
+        with open(manifest_path, 'r', encoding='utf-8') as f:
+            manifest = json.load(f)
+
+        if not (manifest.get("success") or manifest.get("samples")):
+            return None
+
+        seq_info = manifest.get("sequence", {})
+        mf_info = manifest.get("master_file", {})
+        method = manifest.get("method") or seq_info.get("method", "COLUMN")
+        data_mode = manifest.get("data_mode") or seq_info.get("data_mode", "DUAL")
+        master_path = manifest.get("masterfile_path") or mf_info.get("path", "")
+
+        manifest_samples = manifest.get("samples", [])
+        samples_dict = {}
+        if isinstance(manifest_samples, list):
+            for s_info in manifest_samples:
+                s_name = s_info.get("name", "")
+                if not s_name:
+                    continue
+                reps_dict = {}
+                for r_info in s_info.get("replicas", []):
+                    r_num = str(r_info.get("replica", r_info.get("rep_num", "1")))
+                    reps_dict[r_num] = {
+                        "direct": r_info.get("direct"),
+                        "uib": r_info.get("uib"),
+                        "dad": r_info.get("dad"),
+                        "dad_source": (r_info.get("dad", {}) or {}).get("source"),
+                        "has_data": False,
+                        "injection_info": r_info.get("injection"),
+                    }
+                samples_dict[s_name] = {
+                    "type": s_info.get("type", "SAMPLE"),
+                    "original_name": s_info.get("original_name", s_name),
+                    "replicas": reps_dict,
+                }
+        elif isinstance(manifest_samples, dict):
+            samples_dict = manifest_samples
+
+        return {
+            "success": True,
+            "seq_path": seq_path,
+            "seq_name": seq_info.get("name", os.path.basename(seq_path)),
+            "method": method,
+            "data_mode": data_mode,
+            "uib_sensitivity": seq_info.get("uib_sensitivity"),
+            "samples": samples_dict,
+            "master_file": master_path,
+            "khp_samples": [s.get("name", "") for s in manifest_samples
+                            if isinstance(s, dict) and s.get("type") == "KHP"]
+                           if isinstance(manifest_samples, list) else [],
+            "control_samples": [s.get("name", "") for s in manifest_samples
+                                if isinstance(s, dict) and s.get("type") == "CONTROL"]
+                               if isinstance(manifest_samples, list) else [],
+            "stats": manifest.get("stats", {}),
+            "data_deferred": True,
+        }
+
+    def _build_lightweight_calibrated(self, cal_path):
+        """Construeix calibration_data lleuger des d'un JSON."""
+        import json
+
+        with open(cal_path, 'r', encoding='utf-8') as f:
+            cal_file = json.load(f)
+
+        calibrations = cal_file.get("calibrations", [])
+        if not calibrations:
+            return None
+
+        active_cal = next(
+            (c for c in calibrations if c.get("is_active")),
+            calibrations[0]
+        )
+        area = active_cal.get("area", 0)
+        conc = active_cal.get("conc_ppm", 5)
+        rf = active_cal.get("rf", 0)
+        if rf == 0 and conc > 0 and area > 0:
+            rf = area / conc
+
+        return {
+            "success": True,
+            "mode": active_cal.get("mode", "DUAL"),
+            "rf_direct": active_cal.get("rf_direct", rf),
+            "rf_uib": active_cal.get("rf_uib", 0),
+            "rf": rf,
+            "rf_mass": active_cal.get("rf_mass", 0),
+            "shift_direct": active_cal.get("shift_direct") or active_cal.get("shift_min", 0),
+            "shift_uib": active_cal.get("shift_uib") or active_cal.get("shift_min_u", 0),
+            "khp_area_direct": area,
+            "khp_area_uib": active_cal.get("area_u", 0),
+            "khp_area": area,
+            "khp_conc": conc,
+            "volume_uL": active_cal.get("volume_uL", 0),
+            "khp_source": active_cal.get("khp_source", "LOCAL"),
+            "calibration": active_cal,
+            "errors": [],
+            "loaded_from_json": True,
+        }
 
     # Warnings trivials que no mostren triangle (resolts automàticament)
     _TRIVIAL_WARNINGS = {
@@ -2035,8 +2151,9 @@ class ProcessWizardPanel(QWidget):
         self.process_completed.emit(data)
         self._update_header_for_tab(3)
 
-    def load_sequence_from_dashboard(self, seq_path: str):
+    def load_sequence_from_dashboard(self, seq_path: str, siblings=None):
         """Carrega seqüència des del Dashboard."""
+        self.sibling_paths = siblings or []
         self._load_sequence(seq_path)
 
     def load_sequence_with_state(self, seq_path: str, states: list = None):
