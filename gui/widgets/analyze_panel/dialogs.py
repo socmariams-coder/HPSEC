@@ -112,8 +112,8 @@ class SampleDetailDialog(QDialog):
         if anom_widget:
             content_layout.addWidget(anom_widget)
 
-        # Fractions table (compacta)
-        content_layout.addWidget(self._build_fractions_section())
+        # Quality metrics section (compact)
+        content_layout.addWidget(self._build_quality_section())
 
         content_layout.addStretch()
         scroll.setWidget(content)
@@ -232,6 +232,8 @@ class SampleDetailDialog(QDialog):
             r2_val=pearson_doc,
             fracs=fracs, x_range=(x_min, x_max),
             selected_rep=doc_sel,
+            timeout_r1=r1.get("timeout_info"),
+            timeout_r2=r2.get("timeout_info") if r2 else None,
         )
         if doc_block:
             layout.addWidget(doc_block)
@@ -252,6 +254,9 @@ class SampleDetailDialog(QDialog):
                 areas_r2=_get_uib_areas(r2) if r2 else {},
                 fracs=fracs, x_range=(x_min, x_max),
                 selected_rep=doc_sel,
+                timeout_r1=r1.get("timeout_info_uib", r1.get("timeout_info")),
+                timeout_r2=(r2.get("timeout_info_uib", r2.get("timeout_info"))
+                            if r2 else None),
             )
             if uib_block:
                 layout.addWidget(uib_block)
@@ -297,7 +302,8 @@ class SampleDetailDialog(QDialog):
                             areas_r1, areas_r2,
                             r2_val=None, fracs=None,
                             x_range=(0, 70),
-                            selected_rep=None):
+                            selected_rep=None,
+                            timeout_r1=None, timeout_r2=None):
         """Construeix un bloc per un senyal: cromatograma + barres.
 
         Args:
@@ -403,6 +409,11 @@ class SampleDetailDialog(QDialog):
                 s = finfo['start']
                 if 0 < s <= x_range[1]:
                     ax.axvline(s, color='#bbb', ls=':', lw=0.4, zorder=0)
+
+        # Timeout zones
+        if timeout_r1 or timeout_r2:
+            from ._helpers import draw_timeout_zones_on_ax
+            draw_timeout_zones_on_ax(ax, timeout_r1, timeout_r2)
 
         fig.tight_layout(pad=0.3)
         canvas.draw()
@@ -656,6 +667,75 @@ class SampleDetailDialog(QDialog):
         lbl.setWordWrap(True)
         lbl.setStyleSheet("font-size: 10px; padding: 1px 4px; border: none;")
         return lbl
+
+    # ------------------------------------------------------------------
+    # Quality metrics (compact summary)
+    # ------------------------------------------------------------------
+
+    def _build_quality_section(self):
+        """Secció compacta de mètriques de qualitat."""
+        frame = QFrame()
+        frame.setStyleSheet(
+            "QFrame { border: 1px solid #e0e0e0; border-radius: 4px; "
+            "background: #f8f9fa; padding: 6px 10px; }"
+        )
+        layout = QVBoxLayout(frame)
+        layout.setContentsMargins(8, 4, 8, 4)
+        layout.setSpacing(2)
+
+        replicas = self.sample_data.get("replicas", {})
+        selected = self.sample_data.get("selected", {})
+        doc_sel = selected.get("doc", "1")
+        doc_rep = replicas.get(doc_sel, {})
+        comparison = self.sample_data.get("comparison", {})
+        quant = self.sample_data.get("quantification", {})
+
+        parts = []
+
+        # SNR
+        snr_info = doc_rep.get("snr_info", {})
+        snr = snr_info.get("snr_direct", 0)
+        if snr:
+            c = "#27AE60" if snr >= 50 else ("#F39C12" if snr >= 10 else "#E74C3C")
+            parts.append(f"<span style='color:{c}'>SNR: {snr:.0f}</span>")
+
+        # LOD/LOQ ppm
+        lod_ppm = quant.get("lod_ppm")
+        loq_ppm = quant.get("loq_ppm")
+        if lod_ppm is not None:
+            parts.append(f"LOD: {lod_ppm:.3f} ppm")
+        if loq_ppm is not None:
+            parts.append(f"LOQ: {loq_ppm:.3f} ppm")
+
+        # R² DOC
+        r2_doc = comparison.get("doc", {}).get("pearson", 0) if comparison else 0
+        if r2_doc > 0:
+            c = "#27AE60" if r2_doc >= 0.99 else ("#F39C12" if r2_doc >= 0.95 else "#E74C3C")
+            parts.append(f"<span style='color:{c}'>R²_DOC: {r2_doc:.4f}</span>")
+
+        # R² DAD
+        dad_comp = comparison.get("dad", {}) if comparison else {}
+        r2_dad = dad_comp.get("pearson_min", 0)
+        if r2_dad > 0:
+            c = "#27AE60" if r2_dad >= 0.99 else ("#F39C12" if r2_dad >= 0.95 else "#E74C3C")
+            parts.append(f"<span style='color:{c}'>R²_DAD: {r2_dad:.4f}</span>")
+
+        # Injection indices
+        inj_parts = []
+        for rk, rd in sorted(replicas.items()):
+            idx = rd.get("injection_index")
+            if idx is not None:
+                inj_parts.append(str(idx))
+        if inj_parts:
+            parts.append(f"Inj: {', '.join(inj_parts)}")
+
+        html = " &middot; ".join(parts) if parts else "—"
+        lbl = QLabel(f"<span style='font-size: 11px'>{html}</span>")
+        lbl.setWordWrap(True)
+        lbl.setStyleSheet("border: none;")
+        layout.addWidget(lbl)
+
+        return frame
 
     # ------------------------------------------------------------------
     # Fractions table (compacta, a baix)

@@ -316,15 +316,14 @@ class AnalyzePanel(QWidget):
         sel_layout.addWidget(self._wl_combo)
 
         sel_layout.addStretch()
-        results_layout.addWidget(sel_frame)
+        # sel_frame s'afegeix al header_row (mateixa fila que tabs) més avall
 
-        # === UNIFIED TABLE ===
+        # === UNIFIED TABLE (10 columnes simplificades) ===
         self.results_table = QTableWidget()
-        self.results_table.setColumnCount(16)
+        self.results_table.setColumnCount(10)
         self.results_table.setHorizontalHeaderLabels([
-            "Mostra", "Inj", "Sel DOC", "Sel DAD", "A_DOC", "ppm",
-            "A_UIB", "ppm_U", "SNR", "A_254", "SNR_254",
-            "R²_DOC", "R²_DAD", "HCI", "Estat", "Rpar."
+            "Mostra", "DOC", "DAD", "ppm", "ppm_U",
+            "R²", "HCI", "Estat", "Acció", "ⓘ"
         ])
         self.results_table.setMinimumHeight(180)
         configure_table_style(self.results_table)
@@ -365,31 +364,14 @@ class AnalyzePanel(QWidget):
             self.doc_canvas.setMinimumHeight(170)
             doc_row.addWidget(self.doc_canvas, 3)
 
-            # DOC overlay miniatura + botó ampliar
-            doc_overlay_frame = QFrame()
-            doc_overlay_lay = QVBoxLayout(doc_overlay_frame)
-            doc_overlay_lay.setContentsMargins(0, 0, 0, 0)
-            doc_overlay_lay.setSpacing(0)
-
+            # DOC overlay miniatura (doble-clic per ampliar)
             self.doc_overlay_figure = Figure(figsize=(3, 2.8), dpi=100)
             self.doc_overlay_figure.set_facecolor(_CHART_BG)
             self.doc_overlay_canvas = _ClickableCanvas(
                 self.doc_overlay_figure,
                 on_dblclick=lambda: self._open_overlay_popup("doc"))
             self.doc_overlay_canvas.setMinimumHeight(160)
-            doc_overlay_lay.addWidget(self.doc_overlay_canvas, 1)
-
-            doc_zoom_btn = QPushButton("\U0001f50d  Ampliar DOC overlay")
-            doc_zoom_btn.setCursor(Qt.PointingHandCursor)
-            doc_zoom_btn.setStyleSheet(
-                "QPushButton { background: #e3ecf5; color: #446; border: none;"
-                " font-size: 10px; font-weight: bold; padding: 5px; }"
-                "QPushButton:hover { background: #c9daf0; color: #224; }"
-            )
-            doc_zoom_btn.clicked.connect(lambda _=None: self._open_overlay_popup("doc"))
-            doc_overlay_lay.addWidget(doc_zoom_btn)
-
-            doc_row.addWidget(doc_overlay_frame, 2)
+            doc_row.addWidget(self.doc_overlay_canvas, 2)
 
             self._charts_content_layout.addLayout(doc_row)
 
@@ -403,45 +385,29 @@ class AnalyzePanel(QWidget):
             self.dad_canvas.setMinimumHeight(170)
             dad_row.addWidget(self.dad_canvas, 3)
 
-            # DAD overlay miniatura + botó ampliar
-            dad_overlay_frame = QFrame()
-            dad_overlay_lay = QVBoxLayout(dad_overlay_frame)
-            dad_overlay_lay.setContentsMargins(0, 0, 0, 0)
-            dad_overlay_lay.setSpacing(0)
-
+            # DAD overlay miniatura (doble-clic per ampliar)
             self.dad_overlay_figure = Figure(figsize=(3, 2.8), dpi=100)
             self.dad_overlay_figure.set_facecolor(_CHART_BG)
             self.dad_overlay_canvas = _ClickableCanvas(
                 self.dad_overlay_figure,
                 on_dblclick=lambda: self._open_overlay_popup("dad"))
             self.dad_overlay_canvas.setMinimumHeight(160)
-            dad_overlay_lay.addWidget(self.dad_overlay_canvas, 1)
-
-            dad_zoom_btn = QPushButton("\U0001f50d  Ampliar DAD overlay")
-            dad_zoom_btn.setCursor(Qt.PointingHandCursor)
-            dad_zoom_btn.setStyleSheet(
-                "QPushButton { background: #e3ecf5; color: #446; border: none;"
-                " font-size: 10px; font-weight: bold; padding: 5px; }"
-                "QPushButton:hover { background: #c9daf0; color: #224; }"
-            )
-            dad_zoom_btn.clicked.connect(lambda _=None: self._open_overlay_popup("dad"))
-            dad_overlay_lay.addWidget(dad_zoom_btn)
-
-            dad_row.addWidget(dad_overlay_frame, 2)
+            dad_row.addWidget(self.dad_overlay_canvas, 2)
 
             self._charts_content_layout.addLayout(dad_row)
 
-            # F5: Timeout timeline (full width, compact)
-            self.timeout_figure = Figure(figsize=(10, 1.5), dpi=100)
-            self.timeout_figure.set_facecolor(_CHART_BG)
-            self.timeout_canvas = FigureCanvas(self.timeout_figure)
-            self.timeout_canvas.setMinimumHeight(100)
-            self.timeout_canvas.setMaximumHeight(130)
-            self._charts_content_layout.addWidget(self.timeout_canvas)
-
         charts_outer.addWidget(self._charts_content)
 
-        # === TAB WIDGET (Resultats + QC + Comparació) ===
+        # === HEADER ROW: selector (esquerra) + tabs (dreta) ===
+        header_row = QHBoxLayout()
+        header_row.setContentsMargins(0, 0, 0, 0)
+        header_row.setSpacing(0)
+
+        # Selector a l'esquerra (shrink-to-fit)
+        header_row.addWidget(sel_frame)
+        header_row.addStretch()
+
+        # Tab bar a la dreta (sense pane, només les pestanyes)
         self._tab_widget = QTabWidget()
         self._tab_widget.setVisible(False)
         self._tab_widget.setStyleSheet(
@@ -467,6 +433,7 @@ class AnalyzePanel(QWidget):
         self._comparison_tab = ComparisonTab(main_window=self.main_window)
         self._tab_widget.addTab(self._comparison_tab, "Comparació COL↔BP")
 
+        layout.addLayout(header_row)
         layout.addWidget(self._tab_widget, 1)
 
         # Completar scroll area
@@ -474,12 +441,12 @@ class AnalyzePanel(QWidget):
         outer_layout.addWidget(scroll_area, 1)
 
     def _configure_unified_columns(self):
-        """Configura columnes de la taula unificada."""
+        """Configura columnes de la taula unificada (10 cols)."""
         header = self.results_table.horizontalHeader()
         for i in range(self.results_table.columnCount()):
-            if i == 14:  # Estat — stretch
+            if i == 0:  # Mostra — stretch
                 header.setSectionResizeMode(i, QHeaderView.Stretch)
-            elif i == 15:  # Rpar. — compact
+            elif i in (8, 9):  # Acció, ⓘ — compact
                 header.setSectionResizeMode(i, QHeaderView.ResizeToContents)
             else:
                 header.setSectionResizeMode(i, QHeaderView.ResizeToContents)
@@ -1093,7 +1060,7 @@ class AnalyzePanel(QWidget):
     # ------------------------------------------------------------------
 
     def _populate_table(self):
-        """Omple la taula unificada amb els resultats (15 cols, selectors DOC/DAD independents)."""
+        """Omple la taula unificada amb els resultats (10 cols simplificades)."""
         self.results_table.setRowCount(0)
         self._sample_row_map = {}
         n_ok, n_warning, n_error, n_blank, n_control = 0, 0, 0, 0, 0
@@ -1172,7 +1139,6 @@ class AnalyzePanel(QWidget):
             sample_data = self.samples_grouped[sample_name]
 
             # BLANK: una fila per injecció (no agrupat per rèplica)
-            # Rendering idèntic a mostres regulars, però cada injecció per separat
             if is_blank:
                 replicas = sample_data.get("replicas") or {}
                 quantification = sample_data.get("quantification") or {}
@@ -1186,82 +1152,29 @@ class AnalyzePanel(QWidget):
                     display_name = f"{sample_name} R{rep_key}" if len(replicas) > 1 else sample_name
                     item_name = QTableWidgetItem(display_name)
                     item_name.setData(Qt.UserRole, sample_name)
+                    idx = rep_data.get("injection_index")
+                    if idx is not None:
+                        item_name.setToolTip(f"Inj: {idx}")
                     self.results_table.setItem(row, 0, item_name)
 
-                    # Col 1: Inj
-                    idx = rep_data.get("injection_index")
-                    inj_item = QTableWidgetItem(str(idx) if idx is not None else "-")
-                    inj_item.setForeground(QBrush(QColor("#888")))
-                    self.results_table.setItem(row, 1, inj_item)
-
-                    # Col 2-3: Sense selectors (cada injecció es mostra directament)
+                    # Col 1-2: DOC/DAD (no selectors for blanks)
+                    self.results_table.setItem(row, 1, QTableWidgetItem(f"R{rep_key}"))
                     self.results_table.setItem(row, 2, QTableWidgetItem(f"R{rep_key}"))
-                    self.results_table.setItem(row, 3, QTableWidgetItem(f"R{rep_key}"))
 
-                    # Col 4: A_DOC amb tooltip fraccions
-                    areas = rep_data.get("areas") or {}
-                    doc_areas = areas.get("DOC") or {}
-                    area_direct = doc_areas.get("total", 0)
-                    a_doc_item = QTableWidgetItem(f"{area_direct:.0f}" if area_direct else "-")
-                    frac_tip = []
-                    for frac in FRACTION_ORDER:
-                        fa = doc_areas.get(frac, 0)
-                        if fa:
-                            pct = (fa / area_direct * 100) if area_direct > 0 else 0
-                            frac_tip.append(f"{frac}: {fa:.0f} ({pct:.0f}%)")
-                    if frac_tip:
-                        a_doc_item.setToolTip("Fraccions DOC:\n" + "\n".join(frac_tip))
-                    self.results_table.setItem(row, 4, a_doc_item)
-
-                    # Col 5: ppm
+                    # Col 3: ppm
                     ppm_direct = quantification.get("concentration_ppm_direct") or quantification.get("concentration_ppm")
-                    self.results_table.setItem(row, 5, QTableWidgetItem(
+                    self.results_table.setItem(row, 3, QTableWidgetItem(
                         f"{ppm_direct:.2f}" if ppm_direct else "-"))
 
-                    # Col 6: A_UIB
-                    areas_uib = rep_data.get("areas_uib") or {}
-                    area_uib = areas_uib.get("total", 0)
-                    self.results_table.setItem(row, 6, QTableWidgetItem(
-                        f"{area_uib:.0f}" if area_uib else "-"))
-
-                    # Col 7: ppm_U
+                    # Col 4: ppm_U
                     ppm_uib = quantification.get("concentration_ppm_uib")
-                    self.results_table.setItem(row, 7, QTableWidgetItem(
+                    self.results_table.setItem(row, 4, QTableWidgetItem(
                         f"{ppm_uib:.2f}" if ppm_uib else "-"))
 
-                    # Col 8: SNR
-                    snr_info = rep_data.get("snr_info") or {}
-                    snr_direct = snr_info.get("snr_direct", 0)
-                    snr_item = QTableWidgetItem(f"{snr_direct:.0f}" if snr_direct else "-")
-                    if snr_direct and snr_direct < 10:
-                        snr_item.setForeground(QBrush(QColor(COLOR_ERROR)))
-                    elif snr_direct and snr_direct < 50:
-                        snr_item.setForeground(QBrush(QColor(COLOR_WARNING)))
-                    snr_uib = snr_info.get("snr_uib", 0)
-                    if snr_uib:
-                        snr_item.setToolTip(f"SNR UIB: {snr_uib:.0f}")
-                    self.results_table.setItem(row, 8, snr_item)
+                    # Col 5: R² (no comparison for single blank injections)
+                    self.results_table.setItem(row, 5, QTableWidgetItem("-"))
 
-                    # Col 9: A_254
-                    area_254 = (areas.get("A254") or {}).get("total", 0)
-                    self.results_table.setItem(row, 9, QTableWidgetItem(
-                        f"{area_254:.1f}" if area_254 else "-"))
-
-                    # Col 10: SNR_254
-                    snr_info_dad = rep_data.get("snr_info_dad") or {}
-                    snr_254 = (snr_info_dad.get("A254") or {}).get("snr", 0)
-                    snr_254_item = QTableWidgetItem(f"{snr_254:.0f}" if snr_254 else "-")
-                    if snr_254 and snr_254 < 10:
-                        snr_254_item.setForeground(QBrush(QColor(COLOR_ERROR)))
-                    elif snr_254 and snr_254 < 50:
-                        snr_254_item.setForeground(QBrush(QColor(COLOR_WARNING)))
-                    self.results_table.setItem(row, 10, snr_254_item)
-
-                    # Col 11-12: No R2 (sense comparació rèpliques)
-                    self.results_table.setItem(row, 11, QTableWidgetItem("-"))
-                    self.results_table.setItem(row, 12, QTableWidgetItem("-"))
-
-                    # Col 13: HCI
+                    # Col 6: HCI
                     hci_val = quantification.get("hci")
                     if hci_val is not None:
                         hci_char = quantification.get("hci_character", "")
@@ -1275,20 +1188,29 @@ class AnalyzePanel(QWidget):
                             hci_item.setBackground(QBrush(QColor("#D5F5E3")))
                     else:
                         hci_item = QTableWidgetItem("-")
-                    self.results_table.setItem(row, 13, hci_item)
+                    self.results_table.setItem(row, 6, hci_item)
 
-                    # Col 14-15: Estat + Reparació
+                    # Col 7: Estat
                     (status_color, status_text, s_tooltip,
-                     repair_color, repair_text, r_tooltip) = self._classify_sample_status(
+                     _, _, _) = self._classify_sample_status(
                         rep_data, rep_data, comparison, sample_data=sample_data)
                     status_item = QTableWidgetItem(status_text)
                     status_item.setForeground(QBrush(QColor(status_color)))
                     status_item.setToolTip(s_tooltip)
-                    self.results_table.setItem(row, 14, status_item)
-                    repair_item = QTableWidgetItem(repair_text)
-                    repair_item.setForeground(QBrush(QColor(repair_color)))
-                    repair_item.setToolTip(r_tooltip)
-                    self.results_table.setItem(row, 15, repair_item)
+                    self.results_table.setItem(row, 7, status_item)
+
+                    # Col 8-9: Acció + ⓘ (buit per blancs)
+                    self.results_table.setItem(row, 8, QTableWidgetItem(""))
+                    detail_btn = QPushButton("ⓘ")
+                    detail_btn.setFixedSize(24, 24)
+                    detail_btn.setStyleSheet(
+                        "QPushButton { border: 1px solid #ccc; border-radius: 12px; "
+                        "font-size: 12px; background: #f0f0f0; }"
+                        "QPushButton:hover { background: #ddd; }"
+                    )
+                    detail_btn.clicked.connect(
+                        lambda _, n=sample_name: self._show_detail(n))
+                    self.results_table.setCellWidget(row, 9, detail_btn)
 
                     # Fons gris
                     blank_bg = QBrush(QColor("#F4F6F6"))
@@ -1300,7 +1222,7 @@ class AnalyzePanel(QWidget):
                 n_blank += 1
                 continue
 
-            # --- Regular sample rendering ---
+            # --- Regular sample rendering (10 columnes) ---
             row = self.results_table.rowCount()
             self.results_table.insertRow(row)
             self._sample_row_map[sample_name] = row
@@ -1318,53 +1240,50 @@ class AnalyzePanel(QWidget):
             doc_rep = replicas.get(doc_sel, {})
             dad_rep = replicas.get(dad_sel, {})
 
-            # Col 0: Sample name
+            # Col 0: Sample name (amb tooltip d'injeccions)
             item_name = QTableWidgetItem(sample_name)
             item_name.setData(Qt.UserRole, sample_name)
-            self.results_table.setItem(row, 0, item_name)
-
-            # Col 1: Inj (injection indices amb suffix sibling per rèplica)
-            # Cada rèplica pot venir d'un sibling diferent: "5, 6, 3B, 4B"
-            inj_indices = []
-            tip_parts = []
+            inj_tip_parts = []
             for rk, rd in sorted(replicas.items(), key=lambda x: int(x[0]) if x[0].isdigit() else 999):
+                if not isinstance(rd, dict):
+                    continue
                 idx = rd.get("injection_index")
-                rep_label = rd.get("_source_label", "") if isinstance(rd, dict) else ""
+                rep_label = rd.get("_source_label", "")
                 rep_suffix = rep_label if rep_label and rep_label != "A" else ""
-                if idx is not None:
-                    inj_indices.append(f"{idx}{rep_suffix}")
                 import os as _os
-                src = rd.get("_source_path", "") if isinstance(rd, dict) else ""
+                src = rd.get("_source_path", "")
                 src_name = _os.path.basename(src) if src else ""
                 if idx is not None:
-                    tip_parts.append(
+                    inj_tip_parts.append(
                         f"R{rk}: inj #{idx}{rep_suffix}"
                         + (f" ({src_name})" if src_name else "")
                     )
-            inj_text = ", ".join(inj_indices) if inj_indices else "-"
-            inj_item = QTableWidgetItem(inj_text)
-            inj_item.setForeground(QBrush(QColor("#888")))
-            if tip_parts:
-                inj_item.setToolTip("\n".join(tip_parts))
-            self.results_table.setItem(row, 1, inj_item)
+            if inj_tip_parts:
+                item_name.setToolTip("\n".join(inj_tip_parts))
+            self.results_table.setItem(row, 0, item_name)
 
-            # Col 2: Sel DOC — replica selector with (s) for suggested + "Cap" option
+            # Col 1: DOC — replica selector + "Comp" + "Cap"
             doc_combo = QComboBox()
             doc_combo.setStyleSheet("QComboBox { border: none; background: transparent; padding: 2px; }")
             for rep_num in sorted(replicas.keys(), key=lambda x: int(x) if x.isdigit() else 999):
                 label = f"R{rep_num}"
-                # Mostrar injecció + sibling si ve d'un sibling
                 rep_data = replicas.get(rep_num, {})
                 if isinstance(rep_data, dict):
                     _idx = rep_data.get("injection_index")
                     _slabel = rep_data.get("_source_label", "")
                     _ssuffix = _slabel if _slabel and _slabel != "A" else ""
                     if _idx is not None:
-                        label += f" (inj {_idx}{_ssuffix})"
+                        label += f" ({_idx}{_ssuffix})"
                 if rep_num == doc_rec:
                     label += " ★"
                 doc_combo.addItem(label, rep_num)
                 if rep_num == doc_sel:
+                    doc_combo.setCurrentIndex(doc_combo.count() - 1)
+            # "Comp" if composition available
+            sel_rep = replicas.get(doc_sel, {})
+            if sel_rep.get("timeout_composition"):
+                doc_combo.addItem("Comp", "comp")
+                if doc_sel == "comp":
                     doc_combo.setCurrentIndex(doc_combo.count() - 1)
             doc_combo.addItem("Cap", "none")
             if doc_sel == "none":
@@ -1372,9 +1291,9 @@ class AnalyzePanel(QWidget):
             doc_combo.currentIndexChanged.connect(
                 lambda idx, name=sample_name: self._on_doc_replica_changed(name)
             )
-            self.results_table.setCellWidget(row, 2, doc_combo)
+            self.results_table.setCellWidget(row, 1, doc_combo)
 
-            # Col 3: Sel DAD — replica selector with (s) for suggested + "Cap" option
+            # Col 2: DAD — replica selector + "Cap"
             dad_combo = QComboBox()
             dad_combo.setStyleSheet("QComboBox { border: none; background: transparent; padding: 2px; }")
             for rep_num in sorted(replicas.keys(), key=lambda x: int(x) if x.isdigit() else 999):
@@ -1385,7 +1304,7 @@ class AnalyzePanel(QWidget):
                     _slabel = rep_data.get("_source_label", "")
                     _ssuffix = _slabel if _slabel and _slabel != "A" else ""
                     if _idx is not None:
-                        label += f" (inj {_idx}{_ssuffix})"
+                        label += f" ({_idx}{_ssuffix})"
                 if rep_num == dad_rec:
                     label += " ★"
                 dad_combo.addItem(label, rep_num)
@@ -1397,109 +1316,81 @@ class AnalyzePanel(QWidget):
             dad_combo.currentIndexChanged.connect(
                 lambda idx, name=sample_name: self._on_dad_replica_changed(name)
             )
-            self.results_table.setCellWidget(row, 3, dad_combo)
+            self.results_table.setCellWidget(row, 2, dad_combo)
 
-            # --- DOC columns (from DOC replica) ---
-
-            # Col 4: A_DOC
+            # Col 3: ppm
+            ppm_direct = quantification.get("concentration_ppm_direct") or quantification.get("concentration_ppm")
+            ppm_item = QTableWidgetItem(f"{ppm_direct:.2f}" if ppm_direct else "-")
+            # Tooltip amb A_DOC
             areas = doc_rep.get("areas") or {}
             doc_areas = areas.get("DOC") or {}
             area_direct = doc_areas.get("total", 0)
-            self.results_table.setItem(row, 4, QTableWidgetItem(
-                f"{area_direct:.0f}" if area_direct else "-"))
-
-            # Col 5: ppm
-            ppm_direct = quantification.get("concentration_ppm_direct") or quantification.get("concentration_ppm")
-            self.results_table.setItem(row, 5, QTableWidgetItem(
-                f"{ppm_direct:.2f}" if ppm_direct else "-"))
-
-            # Col 6: A_UIB
-            areas_uib = doc_rep.get("areas_uib") or {}
-            area_uib = areas_uib.get("total", 0)
-            self.results_table.setItem(row, 6, QTableWidgetItem(
-                f"{area_uib:.0f}" if area_uib else "-"))
-
-            # Col 7: ppm_U
-            ppm_uib = quantification.get("concentration_ppm_uib")
-            self.results_table.setItem(row, 7, QTableWidgetItem(
-                f"{ppm_uib:.2f}" if ppm_uib else "-"))
-
-            # Col 8: SNR (DOC Direct)
             snr_info = doc_rep.get("snr_info") or {}
             snr_direct = snr_info.get("snr_direct", 0)
-            snr_item = QTableWidgetItem(f"{snr_direct:.0f}" if snr_direct else "-")
-            if snr_direct and snr_direct < 10:
-                snr_item.setForeground(QBrush(QColor(COLOR_ERROR)))
-            elif snr_direct and snr_direct < 50:
-                snr_item.setForeground(QBrush(QColor(COLOR_WARNING)))
+            ppm_tip = []
+            if area_direct:
+                ppm_tip.append(f"A_DOC: {area_direct:.0f}")
+            if snr_direct:
+                ppm_tip.append(f"SNR: {snr_direct:.0f}")
+            if ppm_tip:
+                ppm_item.setToolTip(" · ".join(ppm_tip))
+            self.results_table.setItem(row, 3, ppm_item)
+
+            # Col 4: ppm_U
+            ppm_uib = quantification.get("concentration_ppm_uib")
+            ppm_u_item = QTableWidgetItem(f"{ppm_uib:.2f}" if ppm_uib else "-")
+            areas_uib = doc_rep.get("areas_uib") or {}
+            area_uib = areas_uib.get("total", 0)
             snr_uib = snr_info.get("snr_uib", 0)
+            ppm_u_tip = []
+            if area_uib:
+                ppm_u_tip.append(f"A_UIB: {area_uib:.0f}")
             if snr_uib:
-                snr_item.setToolTip(f"SNR UIB: {snr_uib:.0f}")
-            self.results_table.setItem(row, 8, snr_item)
+                ppm_u_tip.append(f"SNR_UIB: {snr_uib:.0f}")
+            if ppm_u_tip:
+                ppm_u_item.setToolTip(" · ".join(ppm_u_tip))
+            self.results_table.setItem(row, 4, ppm_u_item)
 
-            # --- DAD columns (from DAD replica) ---
-
-            # Col 9: A_254
-            dad_areas = (dad_rep.get("areas") or {})
-            area_254 = (dad_areas.get("A254") or {}).get("total", 0)
-            self.results_table.setItem(row, 9, QTableWidgetItem(
-                f"{area_254:.1f}" if area_254 else "-"))
-
-            # Col 10: SNR_254
-            snr_info_dad = dad_rep.get("snr_info_dad") or {}
-            snr_254 = (snr_info_dad.get("A254") or {}).get("snr", 0)
-            snr_254_item = QTableWidgetItem(f"{snr_254:.0f}" if snr_254 else "-")
-            if snr_254 and snr_254 < 10:
-                snr_254_item.setForeground(QBrush(QColor(COLOR_ERROR)))
-            elif snr_254 and snr_254 < 50:
-                snr_254_item.setForeground(QBrush(QColor(COLOR_WARNING)))
-            self.results_table.setItem(row, 10, snr_254_item)
-
-            # --- Correlation columns (sample-level, not replica-specific) ---
-
-            # Col 11: R²_DOC (min pairwise si >1 parella)
+            # Col 5: R² (min of DOC and DAD)
             pairwise = sample_data.get("pairwise_comparisons", {})
             if pairwise and len(pairwise) > 1:
                 r2_doc = min(
                     (c.get("doc", {}).get("pearson", 0) for c in pairwise.values()),
                     default=0)
-            else:
-                r2_doc = comparison.get("doc", {}).get("pearson", 0) if comparison else 0
-            r2_doc_item = QTableWidgetItem(f"{r2_doc:.4f}" if r2_doc > 0 else "-")
-            if 0 < r2_doc < 0.990:
-                r2_doc_item.setForeground(QBrush(QColor(COLOR_WARNING)))
-            self.results_table.setItem(row, 11, r2_doc_item)
-
-            # Col 12: R²_DAD (min across wavelengths, min pairwise si >1 parella)
-            if pairwise and len(pairwise) > 1:
                 dad_comp = min(
                     (c.get("dad", {}) for c in pairwise.values()),
-                    key=lambda d: d.get("pearson_min", 0),
-                    default={})
+                    key=lambda d: d.get("pearson_min", 0), default={})
             else:
+                r2_doc = comparison.get("doc", {}).get("pearson", 0) if comparison else 0
                 dad_comp = comparison.get("dad", {}) if comparison else {}
             r2_dad_min = dad_comp.get("pearson_min", 0)
-            wl_min = dad_comp.get("wavelength_min", "")
+            # Min of the two
+            r2_vals = [v for v in (r2_doc, r2_dad_min) if v > 0]
+            r2_min = min(r2_vals) if r2_vals else 0
+            r2_item = QTableWidgetItem(f"{r2_min:.3f}" if r2_min > 0 else "-")
+            if r2_min > 0:
+                if r2_min >= 0.99:
+                    r2_item.setForeground(QBrush(QColor(COLOR_SUCCESS)))
+                elif r2_min >= 0.95:
+                    r2_item.setForeground(QBrush(QColor(COLOR_WARNING)))
+                else:
+                    r2_item.setForeground(QBrush(QColor(COLOR_ERROR)))
+            # Tooltip amb detall DOC i DAD
+            r2_tip = []
+            if r2_doc > 0:
+                r2_tip.append(f"DOC: {r2_doc:.4f}")
             if r2_dad_min > 0:
-                cell_text = f"{r2_dad_min:.4f}"
-                if 0 < r2_dad_min < 0.990 and wl_min:
-                    cell_text += f" (A{wl_min})"
-            else:
-                cell_text = "-"
-            r2_dad_item = QTableWidgetItem(cell_text)
-            if 0 < r2_dad_min < 0.990:
-                r2_dad_item.setForeground(QBrush(QColor(COLOR_WARNING)))
+                r2_tip.append(f"DAD: {r2_dad_min:.4f}")
             pearson_per_wl = dad_comp.get("pearson_per_wavelength", {})
             if pearson_per_wl:
-                tip_lines = []
                 for wl, val in sorted(pearson_per_wl.items()):
-                    marker = " <- min" if str(wl) == str(wl_min) else ""
                     warn = " !" if val < 0.990 else ""
-                    tip_lines.append(f"A{wl}: {val:.4f}{warn}{marker}")
-                r2_dad_item.setToolTip("\n".join(tip_lines))
-            self.results_table.setItem(row, 12, r2_dad_item)
+                    r2_tip.append(f"  A{wl}: {val:.4f}{warn}")
+            if r2_tip:
+                r2_item.setToolTip("\n".join(r2_tip))
+            self.results_table.setItem(row, 5, r2_item)
 
-            # Col 13: HCI (Humic Character Index)
+            # Col 6: HCI
             hci_val = quantification.get("hci")
             if hci_val is not None:
                 hci_char = quantification.get("hci_character", "")
@@ -1516,20 +1407,32 @@ class AnalyzePanel(QWidget):
                     f"Model PCA+LDA v2.0")
             else:
                 hci_item = QTableWidgetItem("-")
-            self.results_table.setItem(row, 13, hci_item)
+            self.results_table.setItem(row, 6, hci_item)
 
-            # Col 14-15: Estat + Reparació
+            # Col 7: Estat (simplificat amb LOD/LOQ)
             (status_color, status_text, s_tooltip,
              repair_color, repair_text, r_tooltip) = self._classify_sample_status(
                 doc_rep, dad_rep, comparison, sample_data=sample_data)
             status_item = QTableWidgetItem(status_text)
             status_item.setForeground(QBrush(QColor(status_color)))
             status_item.setToolTip(s_tooltip)
-            self.results_table.setItem(row, 14, status_item)
-            repair_item = QTableWidgetItem(repair_text)
-            repair_item.setForeground(QBrush(QColor(repair_color)))
-            repair_item.setToolTip(r_tooltip)
-            self.results_table.setItem(row, 15, repair_item)
+            self.results_table.setItem(row, 7, status_item)
+
+            # Col 8: Acció (icones clicables)
+            action_widget = self._build_action_widget(sample_name, sample_data)
+            self.results_table.setCellWidget(row, 8, action_widget)
+
+            # Col 9: ⓘ detail button
+            detail_btn = QPushButton("ⓘ")
+            detail_btn.setFixedSize(24, 24)
+            detail_btn.setStyleSheet(
+                "QPushButton { border: 1px solid #ccc; border-radius: 12px; "
+                "font-size: 12px; background: #f0f0f0; }"
+                "QPushButton:hover { background: #ddd; }"
+            )
+            detail_btn.clicked.connect(
+                lambda _, n=sample_name: self._show_detail(n))
+            self.results_table.setCellWidget(row, 9, detail_btn)
 
             # Count stats for regular samples
             if status_color == COLOR_ERROR:
@@ -1576,47 +1479,32 @@ class AnalyzePanel(QWidget):
                 item_name.setData(Qt.UserRole, sample_name)
                 self.results_table.setItem(row, 0, item_name)
 
-                # Col 1: Inj
-                inj_indices = []
-                for rk, rd in sorted(replicas.items()):
-                    idx = rd.get("injection_index")
-                    if idx is not None:
-                        inj_indices.append(str(idx))
-                inj_item = QTableWidgetItem(", ".join(inj_indices) if inj_indices else "-")
-                inj_item.setForeground(QBrush(QColor("#888")))
-                self.results_table.setItem(row, 1, inj_item)
-
-                # Col 2-3: No selectors for control
+                # Col 1-2: No selectors for control
+                self.results_table.setItem(row, 1, QTableWidgetItem("-"))
                 self.results_table.setItem(row, 2, QTableWidgetItem("-"))
-                self.results_table.setItem(row, 3, QTableWidgetItem("-"))
 
-                # Col 4: A_DOC (area_total from light analysis)
+                # Col 3: A_DOC as tooltip in ppm placeholder
                 area_total = doc_rep.get("area_total", 0)
-                self.results_table.setItem(row, 4, QTableWidgetItem(
-                    f"{area_total:.0f}" if area_total else "-"))
+                ppm_item = QTableWidgetItem("-")
+                if area_total:
+                    ppm_item.setToolTip(f"A_DOC: {area_total:.0f}")
+                self.results_table.setItem(row, 3, ppm_item)
 
-                # Col 5-7: No ppm, no UIB
-                for c in (5, 6, 7):
+                # Col 4-6: No ppm_U, no R², no HCI
+                for c in (4, 5, 6):
                     self.results_table.setItem(row, c, QTableWidgetItem("-"))
 
-                # Col 8: SNR
-                snr = doc_rep.get("snr", 0)
-                snr_item = QTableWidgetItem(f"{snr:.0f}" if snr else "-")
-                if snr and snr < 10:
-                    snr_item.setForeground(QBrush(QColor(COLOR_ERROR)))
-                elif snr and snr < 50:
-                    snr_item.setForeground(QBrush(QColor(COLOR_WARNING)))
-                self.results_table.setItem(row, 8, snr_item)
-
-                # Col 9-13: No DAD, no R2, no HCI
-                for c in (9, 10, 11, 12, 13):
-                    self.results_table.setItem(row, c, QTableWidgetItem("-"))
-
-                # Col 14-15: Neteja / sense reparació
+                # Col 7: Neteja
                 type_item = QTableWidgetItem("Neteja")
                 type_item.setForeground(QBrush(QColor("#888888")))
-                self.results_table.setItem(row, 14, type_item)
-                self.results_table.setItem(row, 15, QTableWidgetItem(""))
+                snr = doc_rep.get("snr", 0)
+                if snr:
+                    type_item.setToolTip(f"SNR: {snr:.0f}")
+                self.results_table.setItem(row, 7, type_item)
+
+                # Col 8-9: Acció + ⓘ
+                self.results_table.setItem(row, 8, QTableWidgetItem(""))
+                self.results_table.setItem(row, 9, QTableWidgetItem(""))
 
                 # Light grey background
                 light_bg = QBrush(QColor("#F0F0F0"))
@@ -1656,10 +1544,7 @@ class AnalyzePanel(QWidget):
 
     def _classify_sample_status(self, doc_rep_data, dad_rep_data, comparison,
                                 sample_data=None):
-        """Classifica l'estat d'una mostra: anomalies (col 14) + reparació (col 15).
-
-        Usa ANOMALY_CATALOG com a font de veritat per severitat, icones i labels.
-        Separa anomalies generals de l'estat de reparació irregular_top.
+        """Classifica l'estat d'una mostra: anomalies (col 7) + reparació (per Acció col 8).
 
         Returns (status_color, status_text, status_tooltip,
                  repair_color, repair_text, repair_tooltip).
@@ -1673,13 +1558,13 @@ class AnalyzePanel(QWidget):
         if sample_data:
             selected = sample_data.get("selected", {})
             if selected.get("doc") == "none":
-                return (COLOR_ERROR, "NO VÀL",
+                return ("#888888", "\u2014",
                         "Usuari ha seleccionat 'Cap' — No es quantificarà ni exportarà",
                         repair_color, repair_text, repair_tooltip)
             if sample_data.get("sample_valid") is False and not sample_data.get("repaired"):
                 reason = (sample_data.get("recommendation", {})
                           .get("doc", {}).get("reason", "Ambdues rèpliques amb anomalies crítiques"))
-                return (COLOR_ERROR, "NO VÀL",
+                return (COLOR_ERROR, "\u2718",
                         f"Mostra no vàlida — {reason}\nSeleccionar 'Cap' o generar noves dades",
                         repair_color, repair_text, repair_tooltip)
 
@@ -1721,25 +1606,42 @@ class AnalyzePanel(QWidget):
         n_blocker = len(classified["blocker"])
         n_warn = len(classified["warning"])
 
+        # Check LOD/LOQ from quantification
+        quantification = sample_data.get("quantification", {}) if sample_data else {}
+        below_lod = quantification.get("below_lod", False)
+        below_loq = quantification.get("below_loq", False)
+        lod_ppm = quantification.get("lod_ppm")
+        loq_ppm = quantification.get("loq_ppm")
+
+        # Check timeout composition
+        timeout_composed = False
+        if sample_data:
+            sel_key = (sample_data.get("selected", {}) or {}).get("doc", "1")
+            sel_rep = (sample_data.get("replicas", {}) or {}).get(sel_key, {})
+            timeout_composed = bool(sel_rep.get("timeout_composition"))
+
         if has_blocker:
             status_color = COLOR_ERROR
-            first_blocker = classified["blocker"][0]
-            b_code = first_blocker.get("code") if isinstance(first_blocker, dict) else str(first_blocker)
-            b_entry = ANOMALY_CATALOG.get(b_code, {})
-            b_label = (first_blocker.get("label") if isinstance(first_blocker, dict) else None
-                       ) or b_entry.get("label", b_code)
-            status_text = f"{b_label} +{n_blocker - 1}" if n_blocker > 1 else b_label
+            status_text = "\u2718"  # ✘
+        elif below_lod and not has_warn:
+            status_color = COLOR_ERROR
+            status_text = "<LOD"
+        elif below_loq and not has_warn:
+            status_color = COLOR_WARNING
+            status_text = "<LOQ"
+        elif n_timeouts > 0 and not has_warn and not timeout_composed:
+            status_color = COLOR_WARNING
+            status_text = "\u23f1"  # ⏱
+        elif n_timeouts > 0 and timeout_composed:
+            status_color = COLOR_SUCCESS
+            status_text = "\u23f1\u2713"  # ⏱✓
         elif has_warn:
             status_color = COLOR_WARNING
-            parts = []
-            if n_warn:
-                parts.append(f"{n_warn} avís" if n_warn == 1 else f"{n_warn} avisos")
-            if n_timeouts > 0:
-                parts.append(f"{n_timeouts} timeout")
-            status_text = " \u00b7 ".join(parts)
+            n_total_warn = n_warn + (1 if n_timeouts > 0 else 0)
+            status_text = f"\u26a0 {n_total_warn}"  # ⚠ N
         else:
             status_color = COLOR_SUCCESS
-            status_text = "OK"
+            status_text = "\u2713"  # ✓
 
         # Tooltip anomalies
         tooltip_parts = []
@@ -1757,23 +1659,29 @@ class AnalyzePanel(QWidget):
                     line += f"\n   \u2192 {action}"
                 tooltip_parts.append(line)
         if n_timeouts > 0:
-            zones = timeout_info.get("zones", [])
+            zone_summary = timeout_info.get("zone_summary", {})
+            zones_str = ", ".join(zone_summary.keys()) if zone_summary else "?"
             tooltip_parts.append(
-                f"Timeouts Direct: {n_timeouts} ({timeout_severity}) — zones: {', '.join(zones) if zones else '?'}")
+                f"Timeouts Direct: {n_timeouts} ({timeout_severity}) — zones: {zones_str}")
             uib_ti = doc_rep_data.get("timeout_info_uib") or {}
             if uib_ti.get("n_timeouts", 0) > 0:
-                uib_zones = uib_ti.get("zones", [])
+                uib_zone_summary = uib_ti.get("zone_summary", {})
                 uib_in_peak = doc_rep_data.get("timeout_in_peak_uib", False)
-                uib_tip = f"Timeouts UIB: {uib_ti['n_timeouts']} — zones: {', '.join(uib_zones) if uib_zones else '?'}"
+                uib_zones_str = ", ".join(uib_zone_summary.keys()) if uib_zone_summary else "?"
+                uib_tip = f"Timeouts UIB: {uib_ti['n_timeouts']} — zones: {uib_zones_str}"
                 if uib_in_peak:
                     uib_tip += " — DINS DEL PIC UIB!"
                 tooltip_parts.append(uib_tip)
         if replica_warnings:
             for rw in replica_warnings:
                 tooltip_parts.append(rw.get("label", rw.get("code", str(rw))) if isinstance(rw, dict) else str(rw))
+        if below_lod and lod_ppm is not None:
+            tooltip_parts.append(f"Sota LOD ({lod_ppm:.3f} ppm)")
+        elif below_loq and loq_ppm is not None:
+            tooltip_parts.append(f"Sota LOQ ({loq_ppm:.3f} ppm)")
         status_tooltip = "\n".join(tooltip_parts) if tooltip_parts else "OK"
 
-        # --- COLUMNA REPARACIÓ (col 15): irregular_top ---
+        # --- COLUMNA REPARACIÓ (col 15): irregular_top + timeout composition ---
         if anomalies_repair:
             classified_r = classify_anomalies(anomalies_repair)
             n_repaired = len(classified_r["repaired"])
@@ -1803,6 +1711,31 @@ class AnalyzePanel(QWidget):
             if rp_details:
                 repair_tooltip = "\n".join(rp_details) + "\n\nClic per obrir diàleg de reparació"
 
+        # Timeout composable
+        if sample_data:
+            tc = sample_data.get("timeout_composability", {})
+            if tc.get("composable"):
+                repair_text = repair_text + " TC" if repair_text else "TC"
+                repair_color = repair_color or "#3498DB"
+                coverage = tc.get("coverage_pct", 100)
+                unrep = tc.get("unrepairable_min", 0)
+                if coverage < 100 and unrep > 0:
+                    tc_tip = (
+                        f"\n\nTC: Composable ({coverage:.0f}% cobertura, "
+                        f"{unrep:.1f} min solapament)\n"
+                        "   → A la zona de solapament, s'usarà la rèplica menys degradada\n"
+                        "   Clic per composar rèpliques"
+                    )
+                else:
+                    tc_tip = "\n\nTC: Timeouts composables — Clic per composar rèpliques"
+                repair_tooltip = (repair_tooltip or "") + tc_tip
+            # Already composed
+            sel_key = (sample_data.get("selected", {}) or {}).get("doc", "1")
+            sel_rep = (sample_data.get("replicas", {}) or {}).get(sel_key, {})
+            if sel_rep.get("timeout_composition"):
+                repair_text = repair_text.replace("TC", "TC✓") if "TC" in (repair_text or "") else "TC✓"
+                repair_color = COLOR_SUCCESS
+
         return (status_color, status_text, status_tooltip,
                 repair_color, repair_text, repair_tooltip)
 
@@ -1811,18 +1744,17 @@ class AnalyzePanel(QWidget):
     # ------------------------------------------------------------------
 
     def _on_doc_replica_changed(self, sample_name):
-        """Gestiona el canvi de rèplica DOC (inclou opció 'Cap')."""
+        """Gestiona el canvi de rèplica DOC (inclou opció 'Comp' i 'Cap')."""
         if sample_name not in self.samples_grouped:
             return
         row = self._sample_row_map.get(sample_name)
         if row is None:
             return
-        combo = self.results_table.cellWidget(row, 2)
+        combo = self.results_table.cellWidget(row, 1)  # Col 1: DOC
         if combo:
             new_replica = combo.currentData()
             self.samples_grouped[sample_name]["selected"]["doc"] = new_replica
             if new_replica == "none":
-                # Marcar mostra com no vàlida per DOC
                 self.samples_grouped[sample_name]["sample_valid"] = False
                 self.samples_grouped[sample_name]["quantification"] = {
                     "concentration_ppm": None,
@@ -1832,8 +1764,11 @@ class AnalyzePanel(QWidget):
                     "valid": False,
                     "reason": "Usuari ha seleccionat 'Cap' per DOC"
                 }
+            elif new_replica == "comp":
+                # Use composed signal — quantification already done
+                self.samples_grouped[sample_name]["sample_valid"] = True
+                self._update_quantification(sample_name)
             else:
-                # Restaurar validesa si era "none" abans
                 self.samples_grouped[sample_name]["sample_valid"] = True
                 self._update_quantification(sample_name)
             self._update_doc_columns(row, sample_name)
@@ -1846,15 +1781,15 @@ class AnalyzePanel(QWidget):
         row = self._sample_row_map.get(sample_name)
         if row is None:
             return
-        combo = self.results_table.cellWidget(row, 3)
+        combo = self.results_table.cellWidget(row, 2)  # Col 2: DAD
         if combo:
             new_replica = combo.currentData()
             self.samples_grouped[sample_name]["selected"]["dad"] = new_replica
-            self._update_dad_columns(row, sample_name)
+            self._update_r2_column(row, sample_name)
             self._update_estat_column(row, sample_name)
 
     def _update_doc_columns(self, row, sample_name):
-        """Actualitza columnes DOC (4-8) quan canvia la r\u00e8plica DOC."""
+        """Actualitza columnes DOC (3-4, 6) quan canvia la rèplica DOC."""
         sample_data = self.samples_grouped[sample_name]
         selected = sample_data.get("selected", {})
         doc_sel = selected.get("doc", "1")
@@ -1862,55 +1797,55 @@ class AnalyzePanel(QWidget):
 
         # "Cap" seleccionat → buidar columnes
         if doc_sel == "none":
-            for col in (4, 5, 6, 7, 8, 13):
+            for col in (3, 4, 6):
                 item = self.results_table.item(row, col)
                 if item:
                     item.setText("-")
-                    if col == 13:
+                    item.setToolTip("")
+                    if col == 6:
                         item.setBackground(QBrush(QColor("#FFFFFF")))
-                        item.setToolTip("")
             return
 
         doc_rep = replicas.get(doc_sel, {})
         quantification = sample_data.get("quantification", {})
 
-        areas = doc_rep.get("areas") or {}
-        doc_areas = areas.get("DOC") or {}
-        areas_uib = doc_rep.get("areas_uib") or {}
-
-        # Col 4: A_DOC
-        area_direct = doc_areas.get("total", 0)
-        self.results_table.item(row, 4).setText(f"{area_direct:.0f}" if area_direct else "-")
-
-        # Col 5: ppm
+        # Col 3: ppm (amb tooltip A_DOC + SNR)
         ppm_direct = quantification.get("concentration_ppm_direct") or quantification.get("concentration_ppm")
-        self.results_table.item(row, 5).setText(f"{ppm_direct:.2f}" if ppm_direct else "-")
+        ppm_item = self.results_table.item(row, 3)
+        if ppm_item:
+            ppm_item.setText(f"{ppm_direct:.2f}" if ppm_direct else "-")
+            areas = doc_rep.get("areas") or {}
+            doc_areas = areas.get("DOC") or {}
+            area_direct = doc_areas.get("total", 0)
+            snr_info = doc_rep.get("snr_info") or {}
+            snr_direct = snr_info.get("snr_direct", 0)
+            tip = []
+            if area_direct:
+                tip.append(f"A_DOC: {area_direct:.0f}")
+            if snr_direct:
+                tip.append(f"SNR: {snr_direct:.0f}")
+            ppm_item.setToolTip(" · ".join(tip) if tip else "")
 
-        # Col 6: A_UIB
-        area_uib = areas_uib.get("total", 0)
-        self.results_table.item(row, 6).setText(f"{area_uib:.0f}" if area_uib else "-")
-
-        # Col 7: ppm_U
+        # Col 4: ppm_U (amb tooltip A_UIB + SNR_UIB)
         ppm_uib = quantification.get("concentration_ppm_uib")
-        self.results_table.item(row, 7).setText(f"{ppm_uib:.2f}" if ppm_uib else "-")
+        ppm_u_item = self.results_table.item(row, 4)
+        if ppm_u_item:
+            ppm_u_item.setText(f"{ppm_uib:.2f}" if ppm_uib else "-")
+            areas_uib = doc_rep.get("areas_uib") or {}
+            area_uib = areas_uib.get("total", 0)
+            snr_uib = (doc_rep.get("snr_info") or {}).get("snr_uib", 0)
+            tip = []
+            if area_uib:
+                tip.append(f"A_UIB: {area_uib:.0f}")
+            if snr_uib:
+                tip.append(f"SNR_UIB: {snr_uib:.0f}")
+            ppm_u_item.setToolTip(" · ".join(tip) if tip else "")
 
-        # Col 8: SNR (DOC Direct)
-        snr_info = doc_rep.get("snr_info") or {}
-        snr_direct = snr_info.get("snr_direct", 0)
-        snr_item = self.results_table.item(row, 8)
-        if snr_item:
-            snr_item.setText(f"{snr_direct:.0f}" if snr_direct else "-")
-            if snr_direct and snr_direct < 10:
-                snr_item.setForeground(QBrush(QColor(COLOR_ERROR)))
-            elif snr_direct and snr_direct < 50:
-                snr_item.setForeground(QBrush(QColor(COLOR_WARNING)))
-            else:
-                snr_item.setForeground(QBrush(QColor("#000000")))
-            snr_uib = snr_info.get("snr_uib", 0)
-            snr_item.setToolTip(f"SNR UIB: {snr_uib:.0f}" if snr_uib else "")
+        # Col 5: R² (recalculate)
+        self._update_r2_column(row, sample_name)
 
-        # Col 13: HCI (update from new quantification)
-        hci_item = self.results_table.item(row, 13)
+        # Col 6: HCI
+        hci_item = self.results_table.item(row, 6)
         if hci_item:
             hci_val = quantification.get("hci")
             if hci_val is not None:
@@ -1931,36 +1866,46 @@ class AnalyzePanel(QWidget):
                 hci_item.setBackground(QBrush(QColor("#FFFFFF")))
                 hci_item.setToolTip("")
 
-    def _update_dad_columns(self, row, sample_name):
-        """Actualitza columnes DAD (9-10) quan canvia la rèplica DAD."""
+    def _update_r2_column(self, row, sample_name):
+        """Actualitza columna R² (col 5) — min(DOC, DAD)."""
         sample_data = self.samples_grouped[sample_name]
-        selected = sample_data.get("selected", {})
-        dad_sel = selected.get("dad", "1")
-        replicas = sample_data.get("replicas", {})
-        dad_rep = replicas.get(dad_sel, {})
+        comparison = sample_data.get("comparison") or {}
+        pairwise = sample_data.get("pairwise_comparisons", {})
 
-        # Col 9: A_254
-        dad_areas = (dad_rep.get("areas") or {})
-        area_254 = (dad_areas.get("A254") or {}).get("total", 0)
-        item_9 = self.results_table.item(row, 9)
-        if item_9:
-            item_9.setText(f"{area_254:.1f}" if area_254 else "-")
+        if pairwise and len(pairwise) > 1:
+            r2_doc = min(
+                (c.get("doc", {}).get("pearson", 0) for c in pairwise.values()),
+                default=0)
+            dad_comp = min(
+                (c.get("dad", {}) for c in pairwise.values()),
+                key=lambda d: d.get("pearson_min", 0), default={})
+        else:
+            r2_doc = comparison.get("doc", {}).get("pearson", 0) if comparison else 0
+            dad_comp = comparison.get("dad", {}) if comparison else {}
+        r2_dad_min = dad_comp.get("pearson_min", 0)
 
-        # Col 10: SNR_254
-        snr_info_dad = dad_rep.get("snr_info_dad") or {}
-        snr_254 = (snr_info_dad.get("A254") or {}).get("snr", 0)
-        snr_254_item = self.results_table.item(row, 10)
-        if snr_254_item:
-            snr_254_item.setText(f"{snr_254:.0f}" if snr_254 else "-")
-            if snr_254 and snr_254 < 10:
-                snr_254_item.setForeground(QBrush(QColor(COLOR_ERROR)))
-            elif snr_254 and snr_254 < 50:
-                snr_254_item.setForeground(QBrush(QColor(COLOR_WARNING)))
-            else:
-                snr_254_item.setForeground(QBrush(QColor("#000000")))
+        r2_vals = [v for v in (r2_doc, r2_dad_min) if v > 0]
+        r2_min = min(r2_vals) if r2_vals else 0
+
+        r2_item = self.results_table.item(row, 5)
+        if r2_item:
+            r2_item.setText(f"{r2_min:.3f}" if r2_min > 0 else "-")
+            if r2_min > 0:
+                if r2_min >= 0.99:
+                    r2_item.setForeground(QBrush(QColor(COLOR_SUCCESS)))
+                elif r2_min >= 0.95:
+                    r2_item.setForeground(QBrush(QColor(COLOR_WARNING)))
+                else:
+                    r2_item.setForeground(QBrush(QColor(COLOR_ERROR)))
+            r2_tip = []
+            if r2_doc > 0:
+                r2_tip.append(f"DOC: {r2_doc:.4f}")
+            if r2_dad_min > 0:
+                r2_tip.append(f"DAD: {r2_dad_min:.4f}")
+            r2_item.setToolTip("\n".join(r2_tip) if r2_tip else "")
 
     def _update_estat_column(self, row, sample_name):
-        """Actualitza les columnes Estat (col 14) i Reparació (col 15)."""
+        """Actualitza la columna Estat (col 7) i Acció (col 8)."""
         sample_data = self.samples_grouped[sample_name]
         selected = sample_data.get("selected", {})
         replicas = sample_data.get("replicas", {})
@@ -1969,18 +1914,62 @@ class AnalyzePanel(QWidget):
         dad_rep = replicas.get(selected.get("dad", "1"), {})
 
         (status_color, status_text, s_tooltip,
-         repair_color, repair_text, r_tooltip) = self._classify_sample_status(
+         _, _, _) = self._classify_sample_status(
             doc_rep, dad_rep, comparison, sample_data=sample_data)
-        status_item = self.results_table.item(row, 14)
+        status_item = self.results_table.item(row, 7)
         if status_item:
             status_item.setText(status_text)
             status_item.setForeground(QBrush(QColor(status_color)))
             status_item.setToolTip(s_tooltip)
-        repair_item = self.results_table.item(row, 15)
-        if repair_item:
-            repair_item.setText(repair_text)
-            repair_item.setForeground(QBrush(QColor(repair_color)))
-            repair_item.setToolTip(r_tooltip)
+
+        # Update action widget
+        action_widget = self._build_action_widget(sample_name, sample_data)
+        self.results_table.setCellWidget(row, 8, action_widget)
+
+    # ------------------------------------------------------------------
+    # Quantification recalculation
+    # ------------------------------------------------------------------
+
+    def _build_action_widget(self, sample_name, sample_data):
+        """Construeix widget amb icones d'acció per la columna Acció (col 8)."""
+        widget = QWidget()
+        layout = QHBoxLayout(widget)
+        layout.setContentsMargins(2, 0, 2, 0)
+        layout.setSpacing(2)
+
+        btn_style = (
+            "QPushButton { border: none; font-size: 13px; padding: 1px 3px; "
+            "background: transparent; }"
+            "QPushButton:hover { background: #e0e0e0; border-radius: 3px; }"
+        )
+
+        # Repair button (irregular top)
+        has_repair = bool(self._find_repair_targets(sample_name))
+        is_repaired = sample_data.get("repaired", False)
+        if has_repair:
+            repair_btn = QPushButton("\u2713" if is_repaired else "\U0001f527")
+            repair_btn.setStyleSheet(btn_style)
+            repair_btn.setToolTip("Reparació aplicada" if is_repaired else "Reparar pic irregular")
+            repair_btn.clicked.connect(
+                lambda _, n=sample_name: self._open_repair_dialog_multi(n))
+            layout.addWidget(repair_btn)
+
+        # Compose button (timeout composition)
+        tc = sample_data.get("timeout_composability", {})
+        if tc.get("composable"):
+            sel_key = (sample_data.get("selected", {}) or {}).get("doc", "1")
+            sel_rep = (sample_data.get("replicas", {}) or {}).get(sel_key, {})
+            composed = bool(sel_rep.get("timeout_composition"))
+            compose_btn = QPushButton("\u21c4\u2713" if composed else "\u21c4")
+            compose_btn.setStyleSheet(btn_style)
+            compose_btn.setToolTip(
+                "Composició aplicada" if composed else "Composar rèpliques (timeout)")
+            compose_btn.clicked.connect(
+                lambda _, n=sample_name: self._open_composition_dialog(n))
+            layout.addWidget(compose_btn)
+
+        layout.addStretch()
+        return widget
 
     # ------------------------------------------------------------------
     # Quantification recalculation
@@ -2060,8 +2049,8 @@ class AnalyzePanel(QWidget):
     # ------------------------------------------------------------------
 
     def _on_table_cell_click(self, row, col):
-        """Handler per clic a cel·la — col 15 (Rpar.) obre diàleg reparació si aplicable."""
-        if col != 15:
+        """Handler per clic a cel·la — col 8 (Acció) obre diàleg reparació o composició."""
+        if col != 8:
             return
         item = self.results_table.item(row, 0)
         if not item:
@@ -2073,26 +2062,29 @@ class AnalyzePanel(QWidget):
         if not sample_data:
             return
 
-        targets = self._find_repair_targets(sample_name)
-        if not targets:
-            return
+        # Timeout composable?
+        tc = sample_data.get("timeout_composability", {})
+        has_repair = bool(self._find_repair_targets(sample_name))
+        has_composition = tc.get("composable", False)
 
-        if len(targets) == 1:
-            rep_key, signal_type = targets[0]
-            self._open_repair_dialog(sample_name, rep_key, signal_type)
-        else:
-            # Multiple targets — show context menu
-            from PySide6.QtWidgets import QMenu
-            from PySide6.QtGui import QCursor
-            menu = QMenu(self)
-            for rep_key, signal_type in targets:
-                label = f"R{rep_key} {signal_type.upper()}"
-                action = menu.addAction(label)
-                action.triggered.connect(
-                    lambda _checked, rk=rep_key, st=signal_type:
-                    self._open_repair_dialog(sample_name, rk, st)
-                )
-            menu.exec(QCursor.pos())
+        if has_repair and has_composition:
+            # Ambdós disponibles — preguntar
+            from PySide6.QtWidgets import QMessageBox
+            msg = QMessageBox(self)
+            msg.setWindowTitle("Tipus de reparació")
+            msg.setText("Hi ha dues opcions de reparació disponibles:")
+            btn_repair = msg.addButton("Reparar pic irregular", QMessageBox.ActionRole)
+            btn_compose = msg.addButton("Composar rèpliques (timeout)", QMessageBox.ActionRole)
+            msg.addButton(QMessageBox.Cancel)
+            msg.exec()
+            if msg.clickedButton() == btn_repair:
+                self._open_repair_dialog_multi(sample_name)
+            elif msg.clickedButton() == btn_compose:
+                self._open_composition_dialog(sample_name)
+        elif has_composition:
+            self._open_composition_dialog(sample_name)
+        elif has_repair:
+            self._open_repair_dialog_multi(sample_name)
 
     def _find_repair_targets(self, sample_name):
         """Busca rèpliques/senyals amb anomalies de cim irregular (pendents, reparades o dismissed)."""
@@ -2116,8 +2108,8 @@ class AnalyzePanel(QWidget):
 
         return targets
 
-    def _open_repair_dialog(self, sample_name, rep_key, signal_type):
-        """Obre el diàleg de reparació de pic irregular."""
+    def _open_repair_dialog_multi(self, sample_name):
+        """Obre el diàleg multi-reparació per totes les rèpliques × senyals."""
         sample_data = self.samples_grouped.get(sample_name)
         if not sample_data:
             return
@@ -2127,18 +2119,58 @@ class AnalyzePanel(QWidget):
             method = self.main_window.processed_data.get("method", "COLUMN")
 
         dialog = JaggedPeakRepairDialog(
-            sample_name, sample_data, rep_key, signal_type, method, parent=self
+            sample_name, sample_data, method, parent=self
         )
-        dialog.repair_applied.connect(self._on_repair_action)
-        dialog.repair_undone.connect(self._on_repair_action)
-        dialog.dismissed.connect(self._on_repair_action)
-        dialog.reactivated.connect(self._on_repair_action)
+        dialog.repair_completed.connect(self._on_repair_action)
         dialog.exec()
 
-    def _on_repair_action(self, sample_name, rep_key, signal_type):
-        """Actualitza la taula després d'una acció de reparació."""
+    def _open_repair_dialog(self, sample_name, rep_key=None, signal_type=None):
+        """Obre el diàleg multi-reparació (backward compat)."""
+        self._open_repair_dialog_multi(sample_name)
+
+    def _open_composition_dialog(self, sample_name):
+        """Obre el diàleg de composició de rèpliques per timeout."""
+        sample_data = self.samples_grouped.get(sample_name)
+        if not sample_data:
+            return
+
+        is_bp = False
+        if self.main_window.processed_data:
+            is_bp = self.main_window.processed_data.get("method", "COLUMN").upper() == "BP"
+
+        from .composition_dialog import TimeoutCompositionDialog
+        dialog = TimeoutCompositionDialog(
+            sample_name, sample_data, is_bp=is_bp, parent=self
+        )
+        dialog.composition_completed.connect(self._on_repair_action)
+        dialog.exec()
+
+    def _on_repair_action(self, sample_name):
+        """Actualitza la taula després d'una acció de reparació o composició."""
         row = self._sample_row_map.get(sample_name)
         if row is not None:
+            # After composition, add "Comp" to DOC combo if not already there
+            sample_data = self.samples_grouped.get(sample_name, {})
+            sel_key = (sample_data.get("selected", {}) or {}).get("doc", "1")
+            sel_rep = (sample_data.get("replicas", {}) or {}).get(sel_key, {})
+            if sel_rep.get("timeout_composition"):
+                combo = self.results_table.cellWidget(row, 1)
+                if combo:
+                    # Check if "Comp" already exists
+                    comp_idx = None
+                    for i in range(combo.count()):
+                        if combo.itemData(i) == "comp":
+                            comp_idx = i
+                            break
+                    if comp_idx is None:
+                        # Insert before "Cap"
+                        cap_idx = combo.count() - 1  # "Cap" is last
+                        combo.insertItem(cap_idx, "Comp", "comp")
+                        comp_idx = cap_idx
+                    combo.blockSignals(True)
+                    combo.setCurrentIndex(comp_idx)
+                    combo.blockSignals(False)
+                    sample_data["selected"]["doc"] = "comp"
             self._update_quantification(sample_name)
             self._update_doc_columns(row, sample_name)
             self._update_estat_column(row, sample_name)
@@ -2285,11 +2317,6 @@ class AnalyzePanel(QWidget):
         self._chart_khp = khp
         self._chart_is_bp = is_bp
 
-        try:
-            self._plot_timeout_chart(processed_data, is_bp)
-        except Exception as e:
-            logger.error(f"Error plotting timeout chart: {e}")
-
         self._build_sample_checkboxes(regular, blank, control, khp)
         self.charts_section.setVisible(True)
 
@@ -2407,81 +2434,6 @@ class AnalyzePanel(QWidget):
             self._plot_dad_overlay(reg, light)
         except Exception as e:
             logger.error(f"Error redrawing charts: {e}")
-
-    def _plot_timeout_chart(self, processed_data, is_bp):
-        """Diagrama fraccions (eix temps) amb comptador timeouts per zona."""
-        self.timeout_figure.clear()
-        ax = self.timeout_figure.add_subplot(111)
-
-        zone_totals = {}
-        zone_injections = {}  # zona → [inj_idx, ...]
-        for sample in processed_data.get("samples", []):
-            ti = sample.get("timeout_info") or {}
-            inj_idx = sample.get("injection_index")
-            for zone, count in (ti.get("zone_summary") or {}).items():
-                if count > 0:
-                    zone_totals[zone] = zone_totals.get(zone, 0) + count
-                    if inj_idx is not None:
-                        zone_injections.setdefault(zone, []).append(str(inj_idx))
-
-        if is_bp:
-            zones = [
-                ("BP_PEAK", 0, 5, "#E74C3C"),
-                ("BP_TAIL", 5, 10, "#F39C12"),
-            ]
-            x_max = 12
-        else:
-            from hpsec_config import ConfigManager
-            cfg = ConfigManager()
-            fractions = cfg.get_all_fractions(mode="COLUMN")
-            max_dur = cfg.get("chromatogram", "max_duration_min", default=78.65)
-            zones = []
-            first_start = 10.8
-            if fractions:
-                first_start = fractions[0][1]["start"]
-            if first_start > 0:
-                zones.append(("RUN_START", 0, first_start, "#95a5a6"))
-            for name, frac in fractions:
-                color = FRACTION_COLORS.get(name, "#95a5a6")
-                zones.append((name, frac["start"], frac["end"], color))
-            last_end = zones[-1][2] if zones else 70
-            if max_dur > last_end:
-                zones.append(("POST_RUN", last_end, max_dur, "#d5dbdb"))
-            x_max = max_dur
-
-        for zone_name, t0, t1, color in zones:
-            count = zone_totals.get(zone_name, 0)
-            injs = zone_injections.get(zone_name, [])
-            alpha = 0.8 if count > 0 else 0.3
-            ax.barh(0, t1 - t0, left=t0, height=0.6, color=color,
-                    alpha=alpha, edgecolor='white', linewidth=0.5)
-            mid = (t0 + t1) / 2
-            if count > 0:
-                inj_str = ",".join(injs[:6])
-                if len(injs) > 6:
-                    inj_str += "..."
-                label = f"{zone_name}\ninj {inj_str}"
-                fw = 'bold'
-                fc = '#c0392b'
-            else:
-                label = zone_name
-                fw = 'normal'
-                fc = '#555'
-            ax.text(mid, 0, label, ha='center', va='center',
-                    fontsize=5.5, fontweight=fw, color=fc, fontfamily=_CHART_FONT)
-
-        ax.set_xlim(0, x_max)
-        ax.set_yticks([])
-        ax.set_xlabel("Temps (min)", fontsize=_CHART_TICK_SIZE,
-                       fontfamily=_CHART_FONT)
-        ax.set_title("Timeouts TOC", fontsize=_CHART_TITLE_SIZE,
-                      fontweight='bold', fontfamily=_CHART_FONT)
-        ax.tick_params(axis='x', labelsize=6)
-        ax.spines['top'].set_visible(False)
-        ax.spines['right'].set_visible(False)
-        ax.spines['left'].set_visible(False)
-        self.timeout_figure.tight_layout(pad=0.3)
-        self.timeout_canvas.draw()
 
     @staticmethod
     def _chart_sorted_names(samples_dict):
@@ -2623,12 +2575,13 @@ class AnalyzePanel(QWidget):
                        edgecolor='white', linewidth=0.3, label=frac)
                 bottom += values
 
+            # Llegenda a la part inferior del gràfic
             handles = [
                 ax.bar(0, 0, color=FRACTION_COLORS[f], label=f)[0]
                 for f in FRACTION_ORDER
             ]
             ax.legend(handles=handles, labels=FRACTION_ORDER,
-                      loc='lower center', bbox_to_anchor=(0.5, 1.01),
+                      loc='upper center', bbox_to_anchor=(0.5, -0.12),
                       fontsize=_CHART_TICK_SIZE, framealpha=0.9,
                       ncol=len(FRACTION_ORDER), borderaxespad=0,
                       handlelength=1.2, columnspacing=0.8,
@@ -2639,13 +2592,14 @@ class AnalyzePanel(QWidget):
                            fontsize=_CHART_TICK_SIZE, fontfamily=_CHART_FONT)
         ax.set_ylabel("DOC", fontsize=_CHART_LABEL_SIZE,
                        fontfamily=_CHART_FONT)
-        ax.set_title("DOC per mostra", fontsize=_CHART_TITLE_SIZE,
-                      fontweight='bold', fontfamily=_CHART_FONT, pad=16)
+        ax.set_title("Distribució per fraccions", fontsize=_CHART_TITLE_SIZE,
+                      fontweight='bold', fontfamily=_CHART_FONT, pad=4)
         ax.tick_params(axis='y', labelsize=_CHART_TICK_SIZE)
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
         self._setup_bar_hover(self.doc_figure, self.doc_canvas, ax, x, names, totals)
         self.doc_figure.tight_layout()
+        self.doc_figure.subplots_adjust(bottom=0.22)
         self.doc_canvas.draw()
 
     def _plot_dad_chart(self, regular, light):
@@ -2721,8 +2675,13 @@ class AnalyzePanel(QWidget):
                 ax.bar(0, 0, color=FRACTION_COLORS[f], label=f)[0]
                 for f in FRACTION_ORDER
             ]
+            # Llegenda a la part inferior del gràfic
+            handles = [
+                ax.bar(0, 0, color=FRACTION_COLORS[f], label=f)[0]
+                for f in FRACTION_ORDER
+            ]
             ax.legend(handles=handles, labels=FRACTION_ORDER,
-                      loc='lower center', bbox_to_anchor=(0.5, 1.01),
+                      loc='upper center', bbox_to_anchor=(0.5, -0.12),
                       fontsize=_CHART_TICK_SIZE, framealpha=0.9,
                       ncol=len(FRACTION_ORDER), borderaxespad=0,
                       handlelength=1.2, columnspacing=0.8,
@@ -2733,13 +2692,14 @@ class AnalyzePanel(QWidget):
                            fontsize=_CHART_TICK_SIZE, fontfamily=_CHART_FONT)
         ax.set_ylabel(wl_key, fontsize=_CHART_LABEL_SIZE,
                        fontfamily=_CHART_FONT)
-        ax.set_title(f"{wl_key} per mostra", fontsize=_CHART_TITLE_SIZE,
-                      fontweight='bold', fontfamily=_CHART_FONT, pad=16)
+        ax.set_title("Distribució per fraccions", fontsize=_CHART_TITLE_SIZE,
+                      fontweight='bold', fontfamily=_CHART_FONT, pad=4)
         ax.tick_params(axis='y', labelsize=_CHART_TICK_SIZE)
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
         self._setup_bar_hover(self.dad_figure, self.dad_canvas, ax, x, names, totals)
         self.dad_figure.tight_layout()
+        self.dad_figure.subplots_adjust(bottom=0.22)
         self.dad_canvas.draw()
 
     @staticmethod
@@ -2776,8 +2736,8 @@ class AnalyzePanel(QWidget):
                        fontfamily=_CHART_FONT)
         ax.set_ylabel("DOC (ppb)", fontsize=_CHART_LABEL_SIZE,
                        fontfamily=_CHART_FONT)
-        ax.set_title("DOC superposats", fontsize=_CHART_TITLE_SIZE,
-                      fontweight='bold', fontfamily=_CHART_FONT)
+        ax.set_title("Cromatogrames superposats", fontsize=_CHART_TITLE_SIZE,
+                      fontweight='bold', fontfamily=_CHART_FONT, pad=4)
 
     def _draw_dad_overlay_on_ax(self, ax, all_samples, is_bp, wl,
                                  is_popup=False):
@@ -2822,8 +2782,8 @@ class AnalyzePanel(QWidget):
                        fontfamily=_CHART_FONT)
         ax.set_ylabel(f"{wl_key} (mAU)", fontsize=_CHART_LABEL_SIZE,
                        fontfamily=_CHART_FONT)
-        ax.set_title(f"{wl_key} superposats", fontsize=_CHART_TITLE_SIZE,
-                      fontweight='bold', fontfamily=_CHART_FONT)
+        ax.set_title("Cromatogrames superposats", fontsize=_CHART_TITLE_SIZE,
+                      fontweight='bold', fontfamily=_CHART_FONT, pad=4)
 
     def _plot_doc_overlay(self, regular, light, is_bp):
         """Miniatura DOC overlay (sense llegenda)."""
@@ -2840,11 +2800,16 @@ class AnalyzePanel(QWidget):
         ax.tick_params(axis='both', labelsize=_CHART_TICK_SIZE)
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
-        # Miniatura: sense llegenda, hint visual
+        # Miniatura: hint visual + "Ampliar" al corner
         n = len(all_samples)
         ax.text(0.98, 0.02, f"{n} traces",
                 transform=ax.transAxes, fontsize=7, ha='right', va='bottom',
                 color='#aaa', fontfamily=_CHART_FONT)
+        ax.text(0.02, 0.02, "\U0001f50d Ampliar",
+                transform=ax.transAxes, fontsize=7, ha='left', va='bottom',
+                color='#446', fontfamily=_CHART_FONT,
+                bbox=dict(boxstyle='round,pad=0.3', fc='#e3ecf5', ec='#c0c0c0',
+                          alpha=0.85))
         self.doc_overlay_figure.tight_layout(pad=0.5)
         self.doc_overlay_canvas.draw()
 
@@ -2869,6 +2834,11 @@ class AnalyzePanel(QWidget):
         ax.text(0.98, 0.02, f"{n} traces",
                 transform=ax.transAxes, fontsize=7, ha='right', va='bottom',
                 color='#aaa', fontfamily=_CHART_FONT)
+        ax.text(0.02, 0.02, "\U0001f50d Ampliar",
+                transform=ax.transAxes, fontsize=7, ha='left', va='bottom',
+                color='#446', fontfamily=_CHART_FONT,
+                bbox=dict(boxstyle='round,pad=0.3', fc='#e3ecf5', ec='#c0c0c0',
+                          alpha=0.85))
         self.dad_overlay_figure.tight_layout(pad=0.5)
         self.dad_overlay_canvas.draw()
 
@@ -2916,7 +2886,6 @@ class AnalyzePanel(QWidget):
             plots_dir.mkdir(parents=True, exist_ok=True)
 
             for name, fig in [
-                ("timeout_zones.png", self.timeout_figure),
                 ("doc_areas.png", self.doc_figure),
                 ("doc_overlay.png", self.doc_overlay_figure),
                 ("dad_areas.png", self.dad_figure),

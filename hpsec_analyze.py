@@ -841,9 +841,8 @@ def analyze_signal(t, y, signal_type="DOC", mode="COLUMN", timeout_positions=Non
                 for tp in timeout_positions
             )
             result["timeout_in_peak"] = timeout_in_peak
-
-            if timeout_in_peak:
-                result["anomalies"].append(create_anomaly("TIMEOUT_IN_PEAK"))
+            # Nota: l'anomalia TIMEOUT_IN_PEAK s'afegeix a analyze_sample()
+            # (L1946) amb més detall (timeout_info complet), no aquí.
     else:
         result["has_timeout"] = False
         result["timeout_in_peak"] = False
@@ -1262,7 +1261,7 @@ def _recommend_replica_multi(replicas_dict, pairwise_comparisons, mode="COLUMN")
     return {"doc": doc_result, "dad": dad_result}
 
 
-def repair_irregular_top_in_replica(sample_result, signal="direct"):
+def repair_irregular_top_in_replica(sample_result, signal="direct", factor=None):
     """
     Repara cim irregular (jagged/batman) en una rèplica usant repair_with_parabola().
 
@@ -1272,6 +1271,7 @@ def repair_irregular_top_in_replica(sample_result, signal="direct"):
     Args:
         sample_result: Dict retornat per analyze_sample()
         signal: "direct" o "uib"
+        factor: correction factor per l'altura teòrica (None = default REPAIR_FACTOR)
 
     Returns:
         dict amb info de reparació:
@@ -1319,8 +1319,11 @@ def repair_irregular_top_in_replica(sample_result, signal="direct"):
     y_seg = y_original[seg_mask]
 
     # Aplicar reparació sobre segment (force=True: l'anomalia ja ha estat detectada)
+    repair_kwargs = {"force": True}
+    if factor is not None:
+        repair_kwargs["factor"] = factor
     y_seg_repaired, repair_info, was_repaired = repair_with_parabola(
-        t_seg, y_seg, force=True
+        t_seg, y_seg, **repair_kwargs
     )
 
     if not was_repaired:
@@ -1479,7 +1482,11 @@ def quantify_sample(sample_result, calibration_data, mode="COLUMN", seq_date=Non
         "fractions_uib": {},
         "calibration_source": None,
         "rf_mass_cal_used": None,
-        "intercept": 0
+        "intercept": 0,
+        "below_lod": False,
+        "below_loq": False,
+        "lod_ppm": None,
+        "loq_ppm": None
     }
 
     if not sample_result.get("processed"):
@@ -1566,6 +1573,23 @@ def quantify_sample(sample_result, calibration_data, mode="COLUMN", seq_date=Non
                             result["fractions"][frac] = float(area_frac / rf_local)
                         else:
                             result["fractions"][frac] = 0.0
+
+    # =========================================================================
+    # LOD/LOQ in ppm (from area-based LOD/LOQ in snr_info)
+    # =========================================================================
+    snr_info = sample_result.get("snr_info", {})
+    if use_global and rf_mass_direct > 0:
+        lod_area = snr_info.get("lod_direct", 0)
+        loq_area = snr_info.get("loq_direct", 0)
+        if lod_area > 0:
+            result["lod_ppm"] = float(apply_formula(lod_area, rf_mass_direct))
+        if loq_area > 0:
+            result["loq_ppm"] = float(apply_formula(loq_area, rf_mass_direct))
+        ppm_d = result.get("concentration_ppm_direct")
+        if ppm_d is not None and result["lod_ppm"]:
+            result["below_lod"] = ppm_d < result["lod_ppm"]
+        if ppm_d is not None and result["loq_ppm"]:
+            result["below_loq"] = ppm_d < result["loq_ppm"]
 
     # =========================================================================
     # QUANTIFICACIÓ DOC UIB (si DUAL i rf_mass_uib disponible)
@@ -1959,10 +1983,10 @@ def analyze_sample(sample_data, calibration_data=None, config=None):
             # UIB timeout usa affected_start/affected_end (no gaps sinó zones pertorbades)
             uib_to_details = uib_timeout.get("timeouts", [])
             timeout_in_uib_peak = any(
-                (t_start_uib <= to.get("affected_start", to.get("t_start_min", 0)) <= t_end_uib) or
-                (t_start_uib <= to.get("affected_end", to.get("t_end_min", 0)) <= t_end_uib) or
-                (to.get("affected_start", to.get("t_start_min", 0)) <= t_start_uib and
-                 to.get("affected_end", to.get("t_end_min", 0)) >= t_end_uib)
+                (t_start_uib <= to.get("affected_start_min", to.get("t_start_min", 0)) <= t_end_uib) or
+                (t_start_uib <= to.get("affected_end_min", to.get("t_end_min", 0)) <= t_end_uib) or
+                (to.get("affected_start_min", to.get("t_start_min", 0)) <= t_start_uib and
+                 to.get("affected_end_min", to.get("t_end_min", 0)) >= t_end_uib)
                 for to in uib_to_details
             )
             if timeout_in_uib_peak:
@@ -3285,6 +3309,7 @@ def save_analysis_result(analysis_data, output_path=None):
             "areas_uib": sample.get("areas_uib", {}),
             "anomalies": sample.get("anomalies", []),
             "timeout_info": sample.get("timeout_info", {}),
+            "timeout_info_uib": sample.get("timeout_info_uib", {}),
             "snr_info": sample.get("snr_info", {}),
             "snr_info_dad": sample.get("snr_info_dad", {}),
             "irregular_top_uib": sample.get("irregular_top_uib"),
@@ -3352,6 +3377,22 @@ def save_analysis_result(analysis_data, output_path=None):
                 }
                 for rep_key, rep_data in sample_data.get("replicas", {}).items():
                     grouped_entry["replicas"][rep_key] = summarize_sample(rep_data)
+
+                # Detectar composabilitat de timeouts entre rèpliques
+                rep_keys_list = sorted(grouped_entry["replicas"].keys())
+                if len(rep_keys_list) >= 2:
+                    r1_ti = grouped_entry["replicas"][rep_keys_list[0]].get("timeout_info", {})
+                    r2_ti = grouped_entry["replicas"][rep_keys_list[1]].get("timeout_info", {})
+                    r1_has = (r1_ti.get("n_timeouts", 0) or len(r1_ti.get("timeouts", []))) > 0
+                    r2_has = (r2_ti.get("n_timeouts", 0) or len(r2_ti.get("timeouts", []))) > 0
+                    if r1_has and r2_has:
+                        from hpsec_core import check_timeout_composability
+                        is_bp_method = "BP" in (analysis_data.get("method", "") or "").upper()
+                        run_dur = 12.0 if is_bp_method else 70.0
+                        grouped_entry["timeout_composability"] = check_timeout_composability(
+                            r1_ti, r2_ti, run_duration_min=run_dur
+                        )
+
             result["samples_grouped"][sample_name] = grouped_entry
 
     # Guardar
