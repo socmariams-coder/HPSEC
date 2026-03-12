@@ -1199,14 +1199,14 @@ class AnalyzePanel(QWidget):
                     status_item.setToolTip(s_tooltip)
                     self.results_table.setItem(row, 7, status_item)
 
-                    # Col 8-9: Acció + ⓘ (buit per blancs)
+                    # Col 8-9: Acció (buit) + ⓘ
                     self.results_table.setItem(row, 8, QTableWidgetItem(""))
                     detail_btn = QPushButton("ⓘ")
-                    detail_btn.setFixedSize(24, 24)
+                    detail_btn.setFixedSize(20, 20)
                     detail_btn.setStyleSheet(
-                        "QPushButton { border: 1px solid #ccc; border-radius: 12px; "
-                        "font-size: 12px; background: #f0f0f0; }"
-                        "QPushButton:hover { background: #ddd; }"
+                        "QPushButton { border: 1px solid #ccc; border-radius: 10px; "
+                        "font-size: 11px; background: transparent; padding: 0px; }"
+                        "QPushButton:hover { background: #e0e0e0; }"
                     )
                     detail_btn.clicked.connect(
                         lambda _, n=sample_name: self._show_detail(n))
@@ -1418,17 +1418,20 @@ class AnalyzePanel(QWidget):
             status_item.setToolTip(s_tooltip)
             self.results_table.setItem(row, 7, status_item)
 
-            # Col 8: Acció (icones clicables)
+            # Col 8: Acció (icones clicables, buit si no hi ha accions)
             action_widget = self._build_action_widget(sample_name, sample_data)
-            self.results_table.setCellWidget(row, 8, action_widget)
+            if action_widget:
+                self.results_table.setCellWidget(row, 8, action_widget)
+            else:
+                self.results_table.setItem(row, 8, QTableWidgetItem(""))
 
             # Col 9: ⓘ detail button
             detail_btn = QPushButton("ⓘ")
-            detail_btn.setFixedSize(24, 24)
+            detail_btn.setFixedSize(20, 20)
             detail_btn.setStyleSheet(
-                "QPushButton { border: 1px solid #ccc; border-radius: 12px; "
-                "font-size: 12px; background: #f0f0f0; }"
-                "QPushButton:hover { background: #ddd; }"
+                "QPushButton { border: 1px solid #ccc; border-radius: 10px; "
+                "font-size: 11px; background: transparent; padding: 0px; }"
+                "QPushButton:hover { background: #e0e0e0; }"
             )
             detail_btn.clicked.connect(
                 lambda _, n=sample_name: self._show_detail(n))
@@ -1924,24 +1927,29 @@ class AnalyzePanel(QWidget):
 
         # Update action widget
         action_widget = self._build_action_widget(sample_name, sample_data)
-        self.results_table.setCellWidget(row, 8, action_widget)
+        if action_widget:
+            self.results_table.setCellWidget(row, 8, action_widget)
+        else:
+            self.results_table.removeCellWidget(row, 8)
+            if not self.results_table.item(row, 8):
+                self.results_table.setItem(row, 8, QTableWidgetItem(""))
 
     # ------------------------------------------------------------------
     # Quantification recalculation
     # ------------------------------------------------------------------
 
     def _build_action_widget(self, sample_name, sample_data):
-        """Construeix widget amb icones d'acció per la columna Acció (col 8)."""
-        widget = QWidget()
-        layout = QHBoxLayout(widget)
-        layout.setContentsMargins(2, 0, 2, 0)
-        layout.setSpacing(2)
+        """Construeix widget amb icones d'acció per la columna Acció (col 8).
 
+        Returns None si no hi ha accions disponibles.
+        """
         btn_style = (
-            "QPushButton { border: none; font-size: 13px; padding: 1px 3px; "
-            "background: transparent; }"
+            "QPushButton { border: none; font-size: 11px; padding: 0px 2px; "
+            "background: transparent; min-width: 20px; max-height: 20px; }"
             "QPushButton:hover { background: #e0e0e0; border-radius: 3px; }"
         )
+
+        buttons = []
 
         # Repair button (irregular top)
         has_repair = bool(self._find_repair_targets(sample_name))
@@ -1952,7 +1960,7 @@ class AnalyzePanel(QWidget):
             repair_btn.setToolTip("Reparació aplicada" if is_repaired else "Reparar pic irregular")
             repair_btn.clicked.connect(
                 lambda _, n=sample_name: self._open_repair_dialog_multi(n))
-            layout.addWidget(repair_btn)
+            buttons.append(repair_btn)
 
         # Compose button (timeout composition)
         tc = sample_data.get("timeout_composability", {})
@@ -1966,8 +1974,18 @@ class AnalyzePanel(QWidget):
                 "Composició aplicada" if composed else "Composar rèpliques (timeout)")
             compose_btn.clicked.connect(
                 lambda _, n=sample_name: self._open_composition_dialog(n))
-            layout.addWidget(compose_btn)
+            buttons.append(compose_btn)
 
+        if not buttons:
+            return None
+
+        widget = QWidget()
+        widget.setStyleSheet("background: transparent;")
+        layout = QHBoxLayout(widget)
+        layout.setContentsMargins(1, 0, 1, 0)
+        layout.setSpacing(1)
+        for btn in buttons:
+            layout.addWidget(btn)
         layout.addStretch()
         return widget
 
