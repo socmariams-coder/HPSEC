@@ -404,6 +404,17 @@ class ImportPanel(QWidget):
         self.placeholder.setVisible(True)
         self.main_window.show_progress(0)
 
+        # Desconnectar worker anterior si existeix
+        if self._sibling_worker is not None:
+            try:
+                self._sibling_worker.sibling_finished.disconnect()
+                self._sibling_worker.all_finished.disconnect()
+                self._sibling_worker.progress.disconnect()
+                self._sibling_worker.error.disconnect()
+            except (RuntimeError, TypeError):
+                pass
+            self._sibling_worker = None
+
         self._sibling_worker = SiblingImportWorker(all_paths, load_data=False)
         self._sibling_worker.progress.connect(self._on_progress)
         self._sibling_worker.sibling_finished.connect(self._on_sibling_finished)
@@ -499,6 +510,19 @@ class ImportPanel(QWidget):
         """Executa importació. Si force_reimport=True, reimporta tot."""
         if not self.seq_path:
             return
+
+        # Esperar i desconnectar worker anterior si existeix (evitar signals duplicats)
+        if self._sibling_worker is not None:
+            try:
+                self._sibling_worker.sibling_finished.disconnect()
+                self._sibling_worker.all_finished.disconnect()
+                self._sibling_worker.progress.disconnect()
+                self._sibling_worker.error.disconnect()
+            except (RuntimeError, TypeError):
+                pass
+            if self._sibling_worker.isRunning():
+                self._sibling_worker.wait(5000)
+            self._sibling_worker = None
 
         # Si hi ha siblings, reimportar tots
         sibling_paths = getattr(self.main_window, 'sibling_paths', [])

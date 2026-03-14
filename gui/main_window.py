@@ -444,6 +444,14 @@ def main():
         datefmt="%H:%M:%S",
     )
 
+    # Catch unhandled exceptions to stderr before Qt swallows them
+    import traceback as _tb
+    _original_excepthook = sys.excepthook
+    def _excepthook(exc_type, exc_val, exc_tb):
+        _tb.print_exception(exc_type, exc_val, exc_tb)
+        _original_excepthook(exc_type, exc_val, exc_tb)
+    sys.excepthook = _excepthook
+
     app = QApplication(sys.argv)
 
     # Configurar aplicació

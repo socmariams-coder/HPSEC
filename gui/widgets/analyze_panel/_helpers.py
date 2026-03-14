@@ -2,7 +2,7 @@
 Shared helper functions for analyze_panel package.
 
 Provides reusable table population and styling functions used by both
-panel.py (main panel) and dialogs.py (detail dialog).
+panel.py (main panel), dialogs.py (detail dialog), and sample_card.py.
 """
 
 from PySide6.QtWidgets import (
@@ -10,8 +10,12 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtGui import QFont, QColor, QBrush
 
-from gui.widgets.styles import COLOR_WARNING
+from gui.widgets.styles import COLOR_SUCCESS, COLOR_WARNING, COLOR_ERROR
 from ._constants import FRACTION_NAMES, FRACTION_RANGES
+from hpsec_warnings import (
+    has_anomaly, get_anomaly_codes, classify_anomalies,
+    ANOMALY_CATALOG,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -285,6 +289,47 @@ def _set_pct_cell(table, row, col, value, total):
 
 
 # ---------------------------------------------------------------------------
+# Timeout zone drawing (shared between detail dialog, results tab, etc.)
+# ---------------------------------------------------------------------------
+
+def draw_timeout_zones_on_ax(ax, timeout_info_r1, timeout_info_r2=None,
+                              color_r1='#E74C3C', color_r2='#F39C12'):
+    """Draw semi-transparent timeout zone rectangles on a matplotlib Axes.
+
+    Args:
+        ax: matplotlib Axes
+        timeout_info_r1: timeout_info dict for replica 1 (or None)
+        timeout_info_r2: timeout_info dict for replica 2 (or None)
+        color_r1: color for R1 timeout zones
+        color_r2: color for R2 timeout zones
+    """
+    drawn_labels = set()
+
+    def _draw(timeout_info, color, label_prefix):
+        if not timeout_info:
+            return
+        timeouts_list = timeout_info.get('timeouts', [])
+        for to in timeouts_list:
+            t_start = to.get('t_start_min', 0)
+            t_end = to.get('t_end_min', 0)
+            aff_start = to.get('affected_start_min', t_start - 0.5)
+            aff_end = to.get('affected_end_min', t_end + 1.0)
+            ax.axvspan(aff_start, aff_end, alpha=0.15, color=color, zorder=0)
+            ax.axvline(t_start, color=color, ls='--', lw=0.8, alpha=0.6)
+            # Label (una sola per rèplica)
+            key = f"{label_prefix}_{t_start:.1f}"
+            if key not in drawn_labels:
+                drawn_labels.add(key)
+                zone = to.get('zone', '')
+                ax.annotate(f'TO {label_prefix}',
+                            xy=(t_start, 0.95), xycoords=('data', 'axes fraction'),
+                            fontsize=6, color=color, alpha=0.8, ha='center')
+
+    _draw(timeout_info_r1, color_r1, 'R1')
+    _draw(timeout_info_r2, color_r2, 'R2')
+
+
+# ---------------------------------------------------------------------------
 # Calibration comparison helpers (shared between AnalyzePanel and ReviewPanel)
 # ---------------------------------------------------------------------------
 
@@ -427,3 +472,246 @@ def compute_prediction_band(x_fit, rf, intercept, x_data, y_data, confidence=0.9
     se_pred = np.sqrt(mse * (1 + 1.0 / n + (x_fit - x_mean) ** 2 / Sxx))
 
     return (y_fit - t_val * se_pred, y_fit + t_val * se_pred)
+
+
+# ---------------------------------------------------------------------------
+# Sample status classification (extracted from AnalyzePanel)
+# ---------------------------------------------------------------------------
+
+def classify_sample_status(doc_rep_data, dad_rep_data, comparison,
+                           sample_data=None):
+    """Classifica l'estat d'una mostra: anomalies (col 7) + reparacio (per Accio col 8).
+
+    Returns (status_color, status_text, status_tooltip,
+             repair_color, repair_text, repair_tooltip).
+    """
+    # --- Defaults reparacio ---
+    repair_color = "#888"
+    repair_text = ""
+    repair_tooltip = ""
+
+    # Comprovar si l'usuari ha seleccionat "Cap"
+    if sample_data:
+        selected = sample_data.get("selected", {})
+        if selected.get("doc") == "none":
+            return ("#888888", "\u2014",
+                    "Usuari ha seleccionat 'Cap' \u2014 No es quantificara ni exportara",
+                    repair_color, repair_text, repair_tooltip)
+        if sample_data.get("sample_valid") is False and not sample_data.get("repaired"):
+            reason = (sample_data.get("recommendation", {})
+                      .get("doc", {}).get("reason", "Ambdues repliques amb anomalies critiques"))
+            return (COLOR_ERROR, "\u2718",
+                    f"Mostra no valida \u2014 {reason}\nSeleccionar 'Cap' o generar noves dades",
+                    repair_color, repair_text, repair_tooltip)
+
+    # Merge anomalies from both replicas (deduplicate by code)
+    doc_anomalies = doc_rep_data.get("anomalies", [])
+    dad_anomalies = dad_rep_data.get("anomalies", [])
+    all_anomalies = list(doc_anomalies)
+    existing_codes = get_anomaly_codes(all_anomalies)
+    for a in dad_anomalies:
+        code = a.get("code") if isinstance(a, dict) else str(a).replace("_REPAIRED", "")
+        if code not in existing_codes:
+            all_anomalies.append(a)
+            existing_codes.add(code)
+
+    # Separar anomalies de reparacio (IRREGULAR_TOP) de la resta
+    repair_codes = {"IRREGULAR_TOP", "IRREGULAR_TOP_DIRECT", "IRREGULAR_TOP_UIB"}
+    anomalies_general = [a for a in all_anomalies
+                         if (a.get("code") if isinstance(a, dict) else str(a).split("_REPAIRED")[0])
+                         not in repair_codes]
+    anomalies_repair = [a for a in all_anomalies
+                        if (a.get("code") if isinstance(a, dict) else str(a).split("_REPAIRED")[0])
+                        in repair_codes]
+
+    # --- COLUMNA ESTAT: anomalies generals ---
+    classified = classify_anomalies(anomalies_general)
+    timeout_info = doc_rep_data.get("timeout_info", {})
+    timeout_severity = timeout_info.get("severity", "OK")
+    n_timeouts = timeout_info.get("n_timeouts", 0)
+    replica_warnings = []
+    if comparison:
+        for domain in ("doc", "dad"):
+            replica_warnings.extend((comparison.get(domain) or {}).get("warnings", []))
+
+    has_blocker = bool(classified["blocker"])
+    has_warn = bool(classified["warning"]
+                    or (timeout_severity in ("WARNING", "CRITICAL"))
+                    or replica_warnings)
+
+    n_blocker = len(classified["blocker"])
+    n_warn = len(classified["warning"])
+
+    # Check LOD/LOQ from quantification
+    quantification = sample_data.get("quantification", {}) if sample_data else {}
+    below_lod = quantification.get("below_lod", False)
+    below_loq = quantification.get("below_loq", False)
+    lod_ppm = quantification.get("lod_ppm")
+    loq_ppm = quantification.get("loq_ppm")
+
+    # Check timeout composition
+    timeout_composed = False
+    if sample_data:
+        sel_key = (sample_data.get("selected", {}) or {}).get("doc", "1")
+        sel_rep = (sample_data.get("replicas", {}) or {}).get(sel_key, {})
+        timeout_composed = bool(sel_rep.get("timeout_composition"))
+
+    if has_blocker:
+        status_color = COLOR_ERROR
+        status_text = "\u2718"  # X
+    elif below_lod and not has_warn:
+        status_color = COLOR_ERROR
+        status_text = "<LOD"
+    elif below_loq and not has_warn:
+        status_color = COLOR_WARNING
+        status_text = "<LOQ"
+    elif n_timeouts > 0 and not has_warn and not timeout_composed:
+        status_color = COLOR_WARNING
+        status_text = "\u23f1"  # timer
+    elif n_timeouts > 0 and timeout_composed:
+        status_color = COLOR_SUCCESS
+        status_text = "\u23f1\u2713"  # timer+check
+    elif has_warn:
+        status_color = COLOR_WARNING
+        n_total_warn = n_warn + (1 if n_timeouts > 0 else 0)
+        status_text = f"\u26a0 {n_total_warn}"  # warning N
+    else:
+        status_color = COLOR_SUCCESS
+        status_text = "\u2713"  # check
+
+    # Tooltip anomalies
+    tooltip_parts = []
+    for key, label_prefix in [("blocker", "CRITIC"), ("warning", "Avis"), ("info", "Info")]:
+        for a in classified[key]:
+            code = a.get("code") if isinstance(a, dict) else str(a)
+            entry = ANOMALY_CATALOG.get(code, {})
+            lbl = (a.get("label") if isinstance(a, dict) else None) or entry.get("label", code)
+            det = a.get("details", {}) if isinstance(a, dict) else {}
+            if det.get("snr"):
+                lbl += f" (SNR={det['snr']:.1f})"
+            line = f"{label_prefix}: {lbl}"
+            action = entry.get("action", "")
+            if action:
+                line += f"\n   \u2192 {action}"
+            tooltip_parts.append(line)
+    if n_timeouts > 0:
+        zone_summary = timeout_info.get("zone_summary", {})
+        zones_str = ", ".join(zone_summary.keys()) if zone_summary else "?"
+        tooltip_parts.append(
+            f"Timeouts Direct: {n_timeouts} ({timeout_severity}) \u2014 zones: {zones_str}")
+        uib_ti = doc_rep_data.get("timeout_info_uib") or {}
+        if uib_ti.get("n_timeouts", 0) > 0:
+            uib_zone_summary = uib_ti.get("zone_summary", {})
+            uib_in_peak = doc_rep_data.get("timeout_in_peak_uib", False)
+            uib_zones_str = ", ".join(uib_zone_summary.keys()) if uib_zone_summary else "?"
+            uib_tip = f"Timeouts UIB: {uib_ti['n_timeouts']} \u2014 zones: {uib_zones_str}"
+            if uib_in_peak:
+                uib_tip += " \u2014 DINS DEL PIC UIB!"
+            tooltip_parts.append(uib_tip)
+    if replica_warnings:
+        for rw in replica_warnings:
+            tooltip_parts.append(rw.get("label", rw.get("code", str(rw))) if isinstance(rw, dict) else str(rw))
+    if below_lod and lod_ppm is not None:
+        tooltip_parts.append(f"Sota LOD ({lod_ppm:.3f} ppm)")
+    elif below_loq and loq_ppm is not None:
+        tooltip_parts.append(f"Sota LOQ ({loq_ppm:.3f} ppm)")
+    status_tooltip = "\n".join(tooltip_parts) if tooltip_parts else "OK"
+
+    # --- COLUMNA REPARACIO: irregular_top + timeout composition ---
+    if anomalies_repair:
+        classified_r = classify_anomalies(anomalies_repair)
+        n_repaired = len(classified_r["repaired"])
+        n_pending = len(classified_r["blocker"]) + len(classified_r["warning"])
+        can_repair = (sample_data and sample_data.get("repairable")
+                      and not sample_data.get("repaired"))
+
+        if n_repaired > 0 and n_pending == 0:
+            repair_color = COLOR_SUCCESS
+            repair_text = f"R\u2713 ({n_repaired})"
+            repair_tooltip = "Reparacio aplicada \u2014 Clic per desfer o veure detalls"
+        elif n_pending > 0:
+            repair_color = COLOR_ERROR
+            repair_text = "R" if can_repair else "\u26a0"
+            repair_tooltip = "Cim irregular detectat \u2014 Clic per revisar i reparar"
+        # Afegir detalls per cada replica
+        rp_details = []
+        for a in anomalies_repair:
+            code = a.get("code", "") if isinstance(a, dict) else str(a)
+            repaired = a.get("repaired", False) if isinstance(a, dict) else "_REPAIRED" in str(a)
+            det = a.get("details", {}) if isinstance(a, dict) else {}
+            depth = det.get("max_depth", 0)
+            n_v = det.get("n_valleys", 0)
+            signal = "Direct" if "DIRECT" in code else ("UIB" if "UIB" in code else "DOC")
+            state = "reparat" if repaired else "pendent"
+            rp_details.append(f"{signal}: {n_v} valls (prof. {depth:.1%}) \u2014 {state}")
+        if rp_details:
+            repair_tooltip = "\n".join(rp_details) + "\n\nClic per obrir dialeg de reparacio"
+
+    # Timeout composable
+    if sample_data:
+        tc = sample_data.get("timeout_composability", {})
+        if tc.get("composable"):
+            repair_text = repair_text + " TC" if repair_text else "TC"
+            repair_color = repair_color or "#3498DB"
+            coverage = tc.get("coverage_pct", 100)
+            unrep = tc.get("unrepairable_min", 0)
+            if coverage < 100 and unrep > 0:
+                tc_tip = (
+                    f"\n\nTC: Composable ({coverage:.0f}% cobertura, "
+                    f"{unrep:.1f} min solapament)\n"
+                    "   \u2192 A la zona de solapament, s'usara la replica menys degradada\n"
+                    "   Clic per composar repliques"
+                )
+            else:
+                tc_tip = "\n\nTC: Timeouts composables \u2014 Clic per composar repliques"
+            repair_tooltip = (repair_tooltip or "") + tc_tip
+        # Already composed
+        sel_key = (sample_data.get("selected", {}) or {}).get("doc", "1")
+        sel_rep = (sample_data.get("replicas", {}) or {}).get(sel_key, {})
+        if sel_rep.get("timeout_composition"):
+            repair_text = repair_text.replace("TC", "TC\u2713") if "TC" in (repair_text or "") else "TC\u2713"
+            repair_color = COLOR_SUCCESS
+
+    return (status_color, status_text, status_tooltip,
+            repair_color, repair_text, repair_tooltip)
+
+
+def resolve_doc_replica(sample_data):
+    """Resol la replica DOC real (gestiona 'comp' -> replica amb timeout_composition).
+
+    Returns (replica_key, replica_data_dict).
+    """
+    doc_sel = (sample_data.get("selected", {}) or {}).get("doc", "1")
+    replicas = sample_data.get("replicas", {})
+    if doc_sel == "comp":
+        for rk, rv in replicas.items():
+            if rv.get("timeout_composition"):
+                return rk, rv
+        return doc_sel, {}
+    return doc_sel, replicas.get(doc_sel, {})
+
+
+def find_repair_targets(sample_name, samples_grouped):
+    """Busca repliques/senyals amb anomalies de cim irregular (pendents, reparades o dismissed).
+
+    Returns list of (rep_key, signal_type) tuples.
+    """
+    sample_data = samples_grouped.get(sample_name, {})
+    replicas = sample_data.get("replicas", {})
+    targets = []
+
+    for rep_key, rep_data in replicas.items():
+        anomalies = rep_data.get("anomalies", [])
+        for signal_type, anom_key in [
+            ("direct", "IRREGULAR_TOP_DIRECT"),
+            ("uib", "IRREGULAR_TOP_UIB"),
+        ]:
+            for a in anomalies:
+                if isinstance(a, dict) and a.get("code") == anom_key:
+                    targets.append((rep_key, signal_type))
+                    break
+                elif isinstance(a, str) and anom_key in a:
+                    targets.append((rep_key, signal_type))
+                    break
+
+    return targets
