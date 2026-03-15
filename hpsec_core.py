@@ -1016,7 +1016,7 @@ def calibrate_factor(t, y):
 TIMEOUT_CONFIG = {
     "threshold_sec": 60,        # Considera timeout si dt > 60 segons
     "major_timeout_sec": 70,    # Timeout major (recàrrega xeringues ~74s)
-    "affected_zone_pre": 0.5,   # Minuts afectats ABANS del gap (~0.5 min)
+    "affected_zone_pre": 3.0,   # Minuts afectats ABANS del gap (degradació TOC comença ~2.5-5 min abans)
     "affected_zone_post": 1.0,  # Minuts afectats DESPRÉS del gap (~1.0 min)
     "zones": {
         "RUN_START": [0, 0],      # Abans de BioP (inici run)
@@ -1365,15 +1365,16 @@ def map_timeouts_to_injection(seq_timeouts, row_start, row_end, t_rel=None, is_b
         affected_end = t_end + post_zone
         affected_duration = affected_end - affected_start
 
-        # Classificar zona
+        # Classificar zona per on comença la degradació (affected_start),
+        # no per on és el gap temporal (t_start)
         zone = "POST_RUN"
         for zone_name, (t_ini, t_fi) in active_zones.items():
             if zone_name == "RUN_START":
                 continue
-            if t_ini <= t_start < t_fi:
+            if t_ini <= affected_start < t_fi:
                 zone = zone_name
                 break
-        if t_start < 1.0 and not is_bp:
+        if affected_start < 1.0 and not is_bp:
             zone = "RUN_START"
 
         zone_counts[zone] = zone_counts.get(zone, 0) + 1
@@ -1508,12 +1509,18 @@ def estimate_timeout_for_uib(direct_timeout_info=None, sample_num=None,
 
             for t_pos in t_positions:
                 zone, sev = _classify_position(t_pos)
+                aff_start = round(t_pos - ANOMALY_PRE_MIN, 2)
+                aff_end = round(t_pos + ANOMALY_POST_MIN, 2)
                 timeouts.append({
-                    "position_min": round(t_pos, 2),
+                    "t_start_min": round(t_pos, 2),
+                    "t_end_min": round(t_pos + 1.23, 2),  # ~74s timeout
+                    "duration_sec": 74.0,
+                    "is_major": True,
                     "zone": zone,
                     "severity": sev,
-                    "affected_start": round(t_pos - ANOMALY_PRE_MIN, 2),
-                    "affected_end": round(t_pos + ANOMALY_POST_MIN, 2),
+                    "affected_start_min": aff_start,
+                    "affected_end_min": aff_end,
+                    "affected_duration_min": round(aff_end - aff_start, 2),
                 })
                 zone_counts[zone] = zone_counts.get(zone, 0) + 1
                 if max_sev_order.get(sev, 0) > max_sev_order.get(max_severity, 0):
@@ -1554,11 +1561,15 @@ def estimate_timeout_for_uib(direct_timeout_info=None, sample_num=None,
                 "n_timeouts": 1,
                 "n_major_timeouts": 1,
                 "timeouts": [{
-                    "position_min": round(pos, 2),
+                    "t_start_min": round(pos, 2),
+                    "t_end_min": round(pos + 1.23, 2),
+                    "duration_sec": 74.0,
+                    "is_major": True,
                     "zone": zone,
                     "severity": sev,
-                    "affected_start": round(pos - ANOMALY_PRE_MIN, 2),
-                    "affected_end": round(pos + ANOMALY_POST_MIN, 2),
+                    "affected_start_min": round(pos - ANOMALY_PRE_MIN, 2),
+                    "affected_end_min": round(pos + ANOMALY_POST_MIN, 2),
+                    "affected_duration_min": round(ANOMALY_PRE_MIN + ANOMALY_POST_MIN, 2),
                 }],
                 "t_positions": [round(pos, 2)],
                 "zone_summary": {zone: 1},
@@ -1582,6 +1593,342 @@ def estimate_timeout_for_uib(direct_timeout_info=None, sample_num=None,
         "severity": "OK",
         "warning_message": "",
     }
+
+
+# =============================================================================
+# TIMEOUT REPLICA COMPOSITION
+# =============================================================================
+
+def check_timeout_composability(ti_r1, ti_r2, run_duration_min=None):
+    """
+    Comprova si dues rèpliques amb timeouts es poden composar.
+
+    Composable = els timeouts de R1 i R2 no se solapen temporalment,
+    de manera que podem agafar segments "bons" de cada rèplica.
+
+    Args:
+        ti_r1: timeout_info dict de rèplica 1
+        ti_r2: timeout_info dict de rèplica 2
+        run_duration_min: durada del cromatograma en minuts (70 COLUMN, 12 BP)
+
+    Returns:
+        dict: {composable, overlap_zones, segments}
+    """
+    def _get_affected_intervals(ti):
+        if not ti:
+            return []
+        intervals = []
+        for to in ti.get('timeouts', []):
+            s = to.get('affected_start_min', to.get('t_start_min', 0) - 0.5)
+            e = to.get('affected_end_min', to.get('t_end_min', 0) + 1.0)
+            intervals.append((s, e))
+        return intervals
+
+    zones_r1 = _get_affected_intervals(ti_r1)
+    zones_r2 = _get_affected_intervals(ti_r2)
+
+    if not zones_r1 and not zones_r2:
+        return {"composable": False, "reason": "cap timeout", "segments": []}
+    if not zones_r1 or not zones_r2:
+        # Només una rèplica té timeouts — no cal composar, usar l'altra
+        return {"composable": False, "reason": "una rèplica sense timeouts", "segments": []}
+
+    # Comprovar solapament
+    overlaps = []
+    for s1, e1 in zones_r1:
+        for s2, e2 in zones_r2:
+            ov_start = max(s1, s2)
+            ov_end = min(e1, e2)
+            if ov_start < ov_end:
+                overlaps.append((ov_start, ov_end))
+
+    # Construir segments: ordenar tots els límits i assignar font
+    all_boundaries = sorted(set(
+        [s for s, e in zones_r1] + [e for s, e in zones_r1] +
+        [s for s, e in zones_r2] + [e for s, e in zones_r2]
+    ))
+
+    def _in_any(t, zones):
+        return any(s <= t <= e for s, e in zones)
+
+    # Construir timeline de segments des de t=0 fins al final del cromatograma
+    if run_duration_min:
+        t_max = run_duration_min
+    else:
+        t_max = max(all_boundaries) + 5 if all_boundaries else 70
+    edges = sorted(set([0] + all_boundaries + [t_max]))
+    segments = []
+    for i in range(len(edges) - 1):
+        t_s, t_e = edges[i], edges[i + 1]
+        t_mid = (t_s + t_e) / 2
+        r1_bad = _in_any(t_mid, zones_r1)
+        r2_bad = _in_any(t_mid, zones_r2)
+        if r1_bad and r2_bad:
+            source = "unrepairable"
+        elif r1_bad:
+            source = "2"
+        elif r2_bad:
+            source = "1"
+        else:
+            source = "1"  # Default: usar R1 quan cap té timeout
+        segments.append({"source": source, "t_start": t_s, "t_end": t_e})
+
+    # Simplificar: fusionar segments consecutius amb mateixa font
+    merged = [segments[0].copy()]
+    for seg in segments[1:]:
+        if seg["source"] == merged[-1]["source"]:
+            merged[-1]["t_end"] = seg["t_end"]
+        else:
+            merged.append(seg.copy())
+
+    has_unrepairable = any(s["source"] == "unrepairable" for s in merged)
+
+    # Calcular cobertura: quina fracció del cromatograma és reparable
+    total_span = merged[-1]["t_end"] - merged[0]["t_start"] if merged else 1
+    unrepairable_span = sum(
+        s["t_end"] - s["t_start"] for s in merged if s["source"] == "unrepairable"
+    )
+    coverage_pct = 100 * (1 - unrepairable_span / total_span) if total_span > 0 else 0
+
+    # Composable si no hi ha solapament, o si la zona irrecuperable és petita
+    # (<5 min o <10% del cromatograma) — a la zona de solapament s'escull la rèplica menys degradada
+    small_overlap = unrepairable_span < 5.0 and coverage_pct > 90
+
+    return {
+        "composable": not has_unrepairable or small_overlap,
+        "overlap_zones": overlaps,
+        "unrepairable_min": round(unrepairable_span, 1),
+        "coverage_pct": round(coverage_pct, 1),
+        "segments": merged,
+        "zones_r1": zones_r1,
+        "zones_r2": zones_r2,
+    }
+
+
+# Composition methods
+COMPOSE_METHODS = {
+    "nearest": "Selecció per distància (sense blend)",
+    "hard": "Tall net (sense transició)",
+    "cosine": "Blend cosinus (suau)",
+    "linear": "Blend lineal",
+    "spline": "Spline cúbica (zones netes)",
+}
+COMPOSE_METHOD_DEFAULT = "nearest"
+
+
+def compose_replicas(t1, y1, t2, y2, segments, blend_width_min=0.2,
+                     method="nearest", timeout_info_1=None, timeout_info_2=None):
+    """
+    Composa un cromatograma net combinant segments de dues rèpliques.
+
+    Args:
+        t1, y1: temps i senyal rèplica 1
+        t2, y2: temps i senyal rèplica 2
+        segments: llista de {"source": "1"|"2", "t_start", "t_end"}
+        blend_width_min: amplada del blend en minuts (cosine/linear)
+        method: algorisme de composició:
+            - "nearest": per cada punt, tria la rèplica més lluny del seu timeout
+            - "hard": tall net al límit del segment, sense transició
+            - "cosine": blend cosinus al límit (comportament antic)
+            - "linear": blend lineal al límit
+            - "spline": spline cúbica per les zones netes
+        timeout_info_1, timeout_info_2: timeout_info dicts (per mètode "nearest")
+
+    Returns:
+        (t_out, y_out, metadata)
+    """
+    t1 = np.asarray(t1, dtype=float)
+    y1 = np.asarray(y1, dtype=float)
+    t2 = np.asarray(t2, dtype=float)
+    y2 = np.asarray(y2, dtype=float)
+
+    # Interpolar R2 sobre el time base de R1 si diferent
+    if len(t1) != len(t2) or not np.allclose(t1, t2, atol=0.001):
+        y2_interp = np.interp(t1, t2, y2)
+    else:
+        y2_interp = y2.copy()
+
+    t_out = t1.copy()
+
+    if method == "nearest":
+        y_out = _compose_nearest(t_out, y1, y2_interp, segments,
+                                 timeout_info_1, timeout_info_2)
+    elif method == "hard":
+        y_out = _compose_hard(t_out, y1, y2_interp, segments)
+    elif method == "spline":
+        y_out = _compose_spline(t_out, y1, y2_interp, segments,
+                                timeout_info_1, timeout_info_2)
+    elif method == "linear":
+        y_out = _compose_blended(t_out, y1, y2_interp, segments,
+                                 blend_width_min, use_cosine=False)
+    else:  # cosine (default antic)
+        y_out = _compose_blended(t_out, y1, y2_interp, segments,
+                                 blend_width_min, use_cosine=True)
+
+    metadata = {
+        "segments": segments,
+        "method": method,
+        "blend_width_min": blend_width_min,
+        "t_range": (float(t_out[0]), float(t_out[-1])),
+        "n_points": len(t_out),
+    }
+
+    return t_out, y_out, metadata
+
+
+def _get_timeout_positions(timeout_info):
+    """Extract timeout center positions from timeout_info dict."""
+    if not timeout_info:
+        return []
+    positions = []
+    for to in timeout_info.get("timeouts", []):
+        t_start = to.get("t_start_min", to.get("affected_start_min", 0))
+        t_end = to.get("t_end_min", to.get("affected_end_min", 0))
+        positions.append((t_start + t_end) / 2)
+    return positions
+
+
+def _min_distance_to_timeouts(t, timeout_positions):
+    """For each point in t, compute min distance to any timeout."""
+    if not timeout_positions:
+        return np.full(len(t), np.inf)
+    dists = np.full(len(t), np.inf)
+    for tp in timeout_positions:
+        dists = np.minimum(dists, np.abs(t - tp))
+    return dists
+
+
+def _compose_nearest(t_out, y1, y2, segments, ti1, ti2):
+    """Select replica furthest from its own timeout at each point."""
+    y_out = np.empty_like(y1)
+
+    # Get timeout positions for each replica
+    tp1 = _get_timeout_positions(ti1)
+    tp2 = _get_timeout_positions(ti2)
+
+    # If no timeout info, fall back to segment-based hard switch
+    if not tp1 and not tp2:
+        return _compose_hard(t_out, y1, y2, segments)
+
+    d1 = _min_distance_to_timeouts(t_out, tp1)
+    d2 = _min_distance_to_timeouts(t_out, tp2)
+
+    # Per each point: choose the replica with larger distance to its timeout
+    use_r1 = d1 >= d2
+    y_out[use_r1] = y1[use_r1]
+    y_out[~use_r1] = y2[~use_r1]
+
+    return y_out
+
+
+def _compose_hard(t_out, y1, y2, segments):
+    """Hard switch at segment boundaries, no blending."""
+    y_out = y1.copy()
+    for seg in segments:
+        mask = (t_out >= seg["t_start"]) & (t_out <= seg["t_end"])
+        if seg["source"] == "2":
+            y_out[mask] = y2[mask]
+        elif seg["source"] not in ("1", "2"):
+            # Unrepairable: choose higher signal
+            if np.any(mask):
+                if np.mean(y2[mask]) > np.mean(y1[mask]):
+                    y_out[mask] = y2[mask]
+    return y_out
+
+
+def _compose_blended(t_out, y1, y2, segments, blend_width_min, use_cosine=True):
+    """Segment-based with cosine or linear blend at boundaries."""
+    y_out = y1.copy()
+    hw = blend_width_min / 2
+
+    for seg in segments:
+        if seg["source"] == "1":
+            src = y1
+        elif seg["source"] == "2":
+            src = y2
+        else:
+            mask = (t_out >= seg["t_start"]) & (t_out <= seg["t_end"])
+            if np.any(mask):
+                mean_r1 = np.mean(y1[mask])
+                mean_r2 = np.mean(y2[mask])
+                y_out[mask] = y1[mask] if mean_r1 >= mean_r2 else y2[mask]
+                seg["chosen"] = "1" if mean_r1 >= mean_r2 else "2"
+            continue
+        mask = (t_out >= seg["t_start"]) & (t_out <= seg["t_end"])
+        y_out[mask] = src[mask]
+
+    # Blend at boundaries
+    for i in range(len(segments) - 1):
+        seg_a = segments[i]
+        seg_b = segments[i + 1]
+        if seg_a["source"] == seg_b["source"]:
+            continue
+        boundary = seg_a["t_end"]
+        src_a = y1 if seg_a["source"] == "1" else y2
+        src_b = y1 if seg_b["source"] == "1" else y2
+
+        blend_mask = (t_out >= boundary - hw) & (t_out <= boundary + hw)
+        if not np.any(blend_mask):
+            continue
+
+        t_blend = t_out[blend_mask]
+        phase = (t_blend - (boundary - hw)) / max(blend_width_min, 0.001)
+        phase = np.clip(phase, 0, 1)
+        if use_cosine:
+            w = 0.5 * (1 + np.cos(np.pi * phase))
+        else:
+            w = 1 - phase  # linear
+        y_out[blend_mask] = w * src_a[blend_mask] + (1 - w) * src_b[blend_mask]
+
+    return y_out
+
+
+def _compose_spline(t_out, y1, y2, segments, ti1, ti2):
+    """Spline through clean regions of both replicas."""
+    from scipy.interpolate import CubicSpline
+
+    tp1 = _get_timeout_positions(ti1)
+    tp2 = _get_timeout_positions(ti2)
+    if not tp1 and not tp2:
+        return _compose_hard(t_out, y1, y2, segments)
+
+    # Build mask of clean points (far from both timeouts)
+    d1 = _min_distance_to_timeouts(t_out, tp1)
+    d2 = _min_distance_to_timeouts(t_out, tp2)
+
+    # A point is "clean" if at least one replica is far from timeout (>1 min)
+    min_dist = 1.0  # min distance to consider clean
+    clean_r1 = d1 > min_dist
+    clean_r2 = d2 > min_dist
+
+    # For clean points, use the better replica; for ambiguous, average
+    t_clean = []
+    y_clean = []
+    # Subsample to avoid overly dense spline
+    step = max(1, len(t_out) // 500)
+    for i in range(0, len(t_out), step):
+        if clean_r1[i] and clean_r2[i]:
+            t_clean.append(t_out[i])
+            y_clean.append((y1[i] + y2[i]) / 2)
+        elif clean_r1[i]:
+            t_clean.append(t_out[i])
+            y_clean.append(y1[i])
+        elif clean_r2[i]:
+            t_clean.append(t_out[i])
+            y_clean.append(y2[i])
+
+    if len(t_clean) < 4:
+        return _compose_nearest(t_out, y1, y2, segments, ti1, ti2)
+
+    try:
+        cs = CubicSpline(t_clean, y_clean, extrapolate=True)
+        y_out = cs(t_out)
+        # Clamp to non-negative
+        y_out = np.maximum(y_out, 0)
+    except Exception:
+        return _compose_nearest(t_out, y1, y2, segments, ti1, ti2)
+
+    return y_out
 
 
 # =============================================================================

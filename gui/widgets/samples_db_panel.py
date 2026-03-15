@@ -1,768 +1,612 @@
 """
-HPSEC Suite - Samples Database Panel
-=====================================
+HPSEC Suite - Samples Panel (Mostres)
+======================================
 
-Panel per visualitzar la base de dades de mostres:
-- Llistat de totes les mostres
-- Historial d'aparicions
-- Tendències temporals
-- Comparació de mostres
-- Configuració d'àlies
+Simplified panel:
+1. SEQ selector for packaging
+2. Global sample inventory (COL<->BP comparison)
+3. Packaging section (collapsible)
 """
 
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QGroupBox,
-    QGridLayout, QFrame, QTableWidget, QTableWidgetItem, QHeaderView,
-    QComboBox, QMessageBox, QSplitter, QTabWidget, QScrollArea,
-    QSizePolicy, QCheckBox, QLineEdit, QDialog, QDialogButtonBox,
-    QFormLayout, QFileDialog
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFrame,
+    QTableWidget, QTableWidgetItem, QHeaderView, QComboBox,
+    QAbstractItemView, QSizePolicy, QGroupBox, QCheckBox,
+    QFileDialog, QMessageBox, QLineEdit
 )
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QFont, QColor
+from PySide6.QtCore import Qt, Signal, QThread
+from PySide6.QtGui import QFont, QColor, QBrush
 
+import os
+import json
+import logging
 from pathlib import Path
-from datetime import datetime
-import sys
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from hpsec_samples_db import (
-    load_samples_index, rebuild_samples_index, search_samples,
-    get_sample_history, get_sample_trends, compare_samples,
-    load_sample_aliases, get_sample_alias, get_excel_columns,
-    get_excel_preview, configure_alias_mapping
+logger = logging.getLogger(__name__)
+
+from hpsec_config import get_data_folders
+from hpsec_consolidate import extract_seq_number, detect_seq_type
+from gui.widgets.styles import (
+    COLOR_SUCCESS, COLOR_WARNING, COLOR_ERROR,
+    COLOR_PRIMARY, COLOR_TEXT_SECONDARY, COLOR_TEXT_MUTED,
+    PANEL_MARGINS, PANEL_SPACING,
 )
 
-# Matplotlib
-import matplotlib
-matplotlib.use('QtAgg')
-from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
-from matplotlib.figure import Figure
 
+# ---------------------------------------------------------------------------
+# Data loading helpers
+# ---------------------------------------------------------------------------
+
+def _load_analysis_json(seq_path):
+    """Load analysis_result.json from a SEQ folder."""
+    json_path = os.path.join(seq_path, "CHECK", "data", "analysis_result.json")
+    if not os.path.exists(json_path):
+        return None
+    try:
+        with open(json_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        logger.warning("Failed to load %s: %s", json_path, e)
+        return None
+
+
+def _format_ppm(val):
+    if val is None:
+        return "\u2014"
+    return f"{val:.2f}"
+
+
+def _format_area(val):
+    if val is None or val == 0:
+        return "\u2014"
+    return f"{val:.1f}"
+
+
+def _get_selected_replica(sample_data, signal="doc"):
+    """Return the selected replica dict for a signal."""
+    selected = sample_data.get("selected", {}) or {}
+    sel_key = selected.get(signal, selected.get("doc", "1"))
+    replicas = sample_data.get("replicas", {}) or {}
+    return replicas.get(sel_key, {})
+
+
+def _extract_sample_metrics(sample_data):
+    """Extract display metrics from a sample_data dict."""
+    quant = sample_data.get("quantification", {}) or {}
+    doc_rep = _get_selected_replica(sample_data, "doc")
+    dad_rep = _get_selected_replica(sample_data, "dad")
+
+    areas = (doc_rep.get("areas") or {}).get("DOC") or {}
+    dad_info = dad_rep.get("dad_info") or {}
+
+    return {
+        "ppm": quant.get("concentration_ppm_direct"),
+        "a254": dad_info.get("area_254"),
+        "area_total": areas.get("total", 0),
+        "sample_type": sample_data.get("sample_type", "SAMPLE"),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Background scanner
+# ---------------------------------------------------------------------------
+
+class _ScanWorker(QThread):
+    """Scan data_folders for all SEQs with analysis_result.json."""
+    finished = Signal(list)
+    progress = Signal(str)
+
+    def run(self):
+        seqs = []
+        for folder in get_data_folders():
+            if not os.path.isdir(folder):
+                continue
+            try:
+                entries = sorted(os.listdir(folder))
+            except OSError:
+                continue
+            for d in entries:
+                full = os.path.join(folder, d)
+                if not os.path.isdir(full):
+                    continue
+                json_path = os.path.join(
+                    full, "CHECK", "data", "analysis_result.json")
+                if os.path.exists(json_path):
+                    method = detect_seq_type(d)
+                    seq_num = extract_seq_number(d)
+                    mtime = os.path.getmtime(json_path)
+                    seqs.append({
+                        "name": d,
+                        "path": full,
+                        "method": method,
+                        "seq_num": seq_num,
+                        "json_path": json_path,
+                        "mtime": mtime,
+                    })
+        # Sort by seq number descending
+        seqs.sort(key=lambda s: s.get("seq_num") or 0, reverse=True)
+        self.finished.emit(seqs)
+
+
+# ---------------------------------------------------------------------------
+# Main panel
+# ---------------------------------------------------------------------------
 
 class SamplesDBPanel(QWidget):
-    """Panel de base de dades de mostres."""
+    """Panel de mostres -- inventari global COL/BP."""
 
-    sample_selected = Signal(str)  # Emès quan es selecciona una mostra
+    sample_selected = Signal(str)
 
     def __init__(self, main_window):
         super().__init__()
         self.main_window = main_window
-        self._all_samples = []
-        self._selected_sample = None
+        self._initialized = False
+
+        # State
+        self._all_seqs = []          # list of seq info dicts
+        self._seq_cache = {}         # {seq_path: analysis_data}
+        self._inventory = {}         # {sample_name: {col_*, bp_*}}
+
+        # Workers
+        self._scan_worker = None
+
         self._setup_ui()
 
+    # ------------------------------------------------------------------
+    # UI setup
+    # ------------------------------------------------------------------
+
     def _setup_ui(self):
-        """Configura la interfície."""
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 24, 24, 24)
-        layout.setSpacing(16)
+        layout.setContentsMargins(*PANEL_MARGINS)
+        layout.setSpacing(PANEL_SPACING)
 
-        # Títol
-        title = QLabel("Base de Dades de Mostres")
-        title.setFont(QFont("Segoe UI", 16, QFont.Bold))
-        layout.addWidget(title)
+        # --- Header row ---
+        header_row = QHBoxLayout()
 
-        # Info
-        info = QLabel(
-            "Visualitza totes les mostres analitzades. "
-            "Pots cercar per nom o àlies, filtrar per tipus, i veure l'historial de cada mostra."
-        )
-        info.setWordWrap(True)
-        info.setStyleSheet("color: #666;")
-        layout.addWidget(info)
+        self._info_label = QLabel("")
+        self._info_label.setStyleSheet(f"color: {COLOR_TEXT_SECONDARY};")
+        header_row.addWidget(self._info_label)
+        header_row.addStretch()
 
-        # Toolbar amb filtres
-        toolbar = QHBoxLayout()
+        # Refresh
+        self._refresh_btn = QPushButton("Actualitzar")
+        self._refresh_btn.clicked.connect(self._scan_seqs)
+        header_row.addWidget(self._refresh_btn)
 
-        # Cerca
-        toolbar.addWidget(QLabel("Cercar:"))
-        self.search_edit = QLineEdit()
-        self.search_edit.setPlaceholderText("Nom o àlies...")
-        self.search_edit.setMaximumWidth(200)
-        self.search_edit.textChanged.connect(self._apply_filters)
-        toolbar.addWidget(self.search_edit)
+        layout.addLayout(header_row)
 
-        # Filtre tipus
-        toolbar.addWidget(QLabel("Tipus:"))
-        self.type_filter = QComboBox()
-        self.type_filter.addItem("Tots", None)
-        self.type_filter.addItem("Mostres", "MOSTRA")
-        self.type_filter.addItem("Controls", "CONTROL")
-        self.type_filter.addItem("Patrons", "PATRÓ_CAL")
-        self.type_filter.currentIndexChanged.connect(self._apply_filters)
-        toolbar.addWidget(self.type_filter)
+        # --- Filter bar ---
+        filt_row = QHBoxLayout()
+        filt_row.addWidget(QLabel("Cercar:"))
+        self._search_edit = QLineEdit()
+        self._search_edit.setPlaceholderText("Nom mostra...")
+        self._search_edit.setMaximumWidth(220)
+        self._search_edit.textChanged.connect(self._filter_inventory_table)
+        filt_row.addWidget(self._search_edit)
 
-        # Filtre mode
-        toolbar.addWidget(QLabel("Mode:"))
-        self.mode_filter = QComboBox()
-        self.mode_filter.addItem("Tots", None)
-        self.mode_filter.addItem("COLUMN", "COLUMN")
-        self.mode_filter.addItem("BP", "BP")
-        self.mode_filter.currentIndexChanged.connect(self._apply_filters)
-        toolbar.addWidget(self.mode_filter)
+        filt_row.addSpacing(12)
+        filt_row.addWidget(QLabel("SEQ:"))
+        self._inv_seq_filter = QComboBox()
+        self._inv_seq_filter.addItem("Totes", None)
+        self._inv_seq_filter.setMinimumWidth(140)
+        self._inv_seq_filter.currentIndexChanged.connect(
+            self._filter_inventory_table)
+        filt_row.addWidget(self._inv_seq_filter)
+        filt_row.addStretch()
 
-        # Filtre BP aparellat
-        toolbar.addWidget(QLabel("BP:"))
-        self.bp_filter = QComboBox()
-        self.bp_filter.addItem("Tots", None)
-        self.bp_filter.addItem("Amb BP", True)
-        self.bp_filter.addItem("Sense BP", False)
-        self.bp_filter.currentIndexChanged.connect(self._apply_filters)
-        toolbar.addWidget(self.bp_filter)
+        self._inv_count_label = QLabel("")
+        self._inv_count_label.setStyleSheet(
+            f"color: {COLOR_TEXT_MUTED}; font-size: 11px;")
+        filt_row.addWidget(self._inv_count_label)
 
-        toolbar.addStretch()
+        layout.addLayout(filt_row)
 
-        # Botó configurar àlies
-        self.alias_btn = QPushButton("Configurar àlies...")
-        self.alias_btn.clicked.connect(self._show_alias_config)
-        toolbar.addWidget(self.alias_btn)
-
-        # Botó refrescar
-        self.refresh_btn = QPushButton("Actualitzar")
-        self.refresh_btn.clicked.connect(self._load_samples)
-        toolbar.addWidget(self.refresh_btn)
-
-        # Botó reconstruir índex
-        self.rebuild_btn = QPushButton("Reconstruir")
-        self.rebuild_btn.setToolTip("Reconstrueix l'índex escanejant totes les SEQs")
-        self.rebuild_btn.clicked.connect(self._rebuild_index)
-        toolbar.addWidget(self.rebuild_btn)
-
-        layout.addLayout(toolbar)
-
-        # Contingut amb tabs
-        self.content_tabs = QTabWidget()
-
-        # === TAB 1: Llistat ===
-        list_widget = QWidget()
-        list_layout = QVBoxLayout(list_widget)
-        list_layout.setContentsMargins(0, 8, 0, 0)
-
-        self.samples_table = QTableWidget()
-        self.samples_table.setColumnCount(8)
-        self.samples_table.setHorizontalHeaderLabels([
-            "Mostra", "Àlies", "Tipus", "Primera", "Última", "N", "Àrea", "BP?"
+        # --- Comparison table ---
+        self._inv_table = QTableWidget()
+        self._inv_table.setColumnCount(9)
+        self._inv_table.setHorizontalHeaderLabels([
+            "Mostra",
+            "SEQ COL", "SEQ BP",
+            "ppm COL", "ppm BP", "Ratio",
+            "A254 COL", "A254 BP", "Ratio A254",
         ])
+        self._configure_table(self._inv_table)
+        layout.addWidget(self._inv_table, 1)
 
-        headers = self.samples_table.horizontalHeader()
-        headers.setSectionResizeMode(QHeaderView.ResizeToContents)
-        headers.setSectionResizeMode(0, QHeaderView.Stretch)  # Mostra expandeix
-        headers.setSectionResizeMode(1, QHeaderView.Stretch)  # Àlies expandeix
-        self.samples_table.setAlternatingRowColors(True)
-        self.samples_table.setSelectionBehavior(QTableWidget.SelectRows)
-        self.samples_table.setEditTriggers(QTableWidget.NoEditTriggers)
-        self.samples_table.setSortingEnabled(True)
-        self.samples_table.verticalHeader().setVisible(False)
-        self.samples_table.itemSelectionChanged.connect(self._on_sample_selected)
-        self.samples_table.doubleClicked.connect(self._on_sample_double_click)
+        # --- Packaging (collapsible) ---
+        self._pkg_group = self._build_packaging_section()
+        layout.addWidget(self._pkg_group)
 
-        list_layout.addWidget(self.samples_table)
-        self.content_tabs.addTab(list_widget, "Llistat")
+    # ------------------------------------------------------------------
+    # Packaging section (collapsible)
+    # ------------------------------------------------------------------
 
-        # === TAB 2: Detall ===
-        detail_widget = QWidget()
-        detail_layout = QVBoxLayout(detail_widget)
-        detail_layout.setContentsMargins(0, 8, 0, 0)
+    def _build_packaging_section(self):
+        grp = QGroupBox("Empaquetar")
+        grp.setCheckable(True)
+        grp.setChecked(False)
+        grp.setStyleSheet("QGroupBox { font-weight: bold; }")
 
-        # Info mostra
-        self.detail_info = QGroupBox("Informació")
-        info_layout = QGridLayout(self.detail_info)
+        lay = QVBoxLayout(grp)
+        lay.setContentsMargins(8, 8, 8, 8)
+        lay.setSpacing(8)
 
-        self.detail_name = QLabel("-")
-        self.detail_name.setFont(QFont("Segoe UI", 12, QFont.Bold))
-        info_layout.addWidget(QLabel("Nom:"), 0, 0)
-        info_layout.addWidget(self.detail_name, 0, 1)
+        # SEQ selector row
+        seq_row = QHBoxLayout()
+        seq_row.addWidget(QLabel("Seqüència:"))
+        self._seq_combo = QComboBox()
+        self._seq_combo.setSizePolicy(
+            QSizePolicy.Expanding, QSizePolicy.Fixed)
+        seq_row.addWidget(self._seq_combo)
+        lay.addLayout(seq_row)
 
-        self.detail_alias = QLabel("-")
-        info_layout.addWidget(QLabel("Àlies:"), 0, 2)
-        info_layout.addWidget(self.detail_alias, 0, 3)
+        # Content + destination row
+        opts_row = QHBoxLayout()
+        opts_row.addWidget(QLabel("Contingut:"))
+        self._pkg_excel = QCheckBox("Excels")
+        self._pkg_excel.setChecked(True)
+        opts_row.addWidget(self._pkg_excel)
+        self._pkg_summary = QCheckBox("SUMMARY")
+        self._pkg_summary.setChecked(True)
+        opts_row.addWidget(self._pkg_summary)
+        self._pkg_raw = QCheckBox("CSV RAW")
+        opts_row.addWidget(self._pkg_raw)
+        self._pkg_proc = QCheckBox("CSV PROC")
+        opts_row.addWidget(self._pkg_proc)
+        self._pkg_pdf = QCheckBox("PDF")
+        opts_row.addWidget(self._pkg_pdf)
 
-        self.detail_type = QLabel("-")
-        info_layout.addWidget(QLabel("Tipus:"), 1, 0)
-        info_layout.addWidget(self.detail_type, 1, 1)
+        opts_row.addSpacing(12)
 
-        self.detail_appearances = QLabel("-")
-        info_layout.addWidget(QLabel("Aparicions:"), 1, 2)
-        info_layout.addWidget(self.detail_appearances, 1, 3)
+        # Destination
+        opts_row.addWidget(QLabel("Dest\u00ed:"))
+        self._pkg_path_edit = QLineEdit()
+        self._pkg_path_edit.setReadOnly(True)
+        self._pkg_path_edit.setPlaceholderText("Carpeta de sortida...")
+        self._pkg_path_edit.setMinimumWidth(200)
+        opts_row.addWidget(self._pkg_path_edit)
+        browse_btn = QPushButton("\U0001f4c1")
+        browse_btn.setFixedWidth(30)
+        browse_btn.clicked.connect(self._browse_pkg_dest)
+        opts_row.addWidget(browse_btn)
+        self._pkg_zip = QCheckBox("ZIP")
+        opts_row.addWidget(self._pkg_zip)
 
-        detail_layout.addWidget(self.detail_info)
+        opts_row.addSpacing(12)
 
-        # Taula d'aparicions
-        detail_layout.addWidget(QLabel("Historial d'aparicions:"))
-        self.history_table = QTableWidget()
-        self.history_table.setColumnCount(7)
-        self.history_table.setHorizontalHeaderLabels([
-            "Data", "SEQ", "Mode", "Rèpliques", "Àrea", "[ppm]", "BP?"
-        ])
-        headers2 = self.history_table.horizontalHeader()
-        headers2.setSectionResizeMode(QHeaderView.ResizeToContents)
-        headers2.setSectionResizeMode(1, QHeaderView.Stretch)
-        self.history_table.setAlternatingRowColors(True)
-        self.history_table.setEditTriggers(QTableWidget.NoEditTriggers)
-        self.history_table.verticalHeader().setVisible(False)
-        detail_layout.addWidget(self.history_table)
+        self._pkg_btn = QPushButton("Empaquetar")
+        self._pkg_btn.setStyleSheet(
+            f"background-color: {COLOR_PRIMARY}; color: white; "
+            "font-weight: bold; padding: 4px 16px;")
+        self._pkg_btn.clicked.connect(self._on_package)
+        opts_row.addWidget(self._pkg_btn)
 
-        self.content_tabs.addTab(detail_widget, "Detall")
+        opts_row.addStretch()
 
-        # === TAB 3: Tendències ===
-        trends_widget = QWidget()
-        trends_layout = QVBoxLayout(trends_widget)
-        trends_layout.setContentsMargins(0, 8, 0, 0)
+        lay.addLayout(opts_row)
 
-        # Selector de mètrica
-        metric_layout = QHBoxLayout()
-        metric_layout.addWidget(QLabel("Mètrica:"))
-        self.metric_combo = QComboBox()
-        self.metric_combo.addItem("Àrea Total", "area_total")
-        self.metric_combo.addItem("Concentració (ppm)", "concentration_ppm")
-        self.metric_combo.addItem("Fraccions (%)", "fractions")
-        self.metric_combo.currentIndexChanged.connect(self._update_trend_chart)
-        metric_layout.addWidget(self.metric_combo)
-        metric_layout.addStretch()
-        trends_layout.addLayout(metric_layout)
+        return grp
 
-        # Gràfic
-        self.trend_figure = Figure(figsize=(10, 5), dpi=100)
-        self.trend_canvas = FigureCanvas(self.trend_figure)
-        trends_layout.addWidget(self.trend_canvas)
+    # ------------------------------------------------------------------
+    # Table helpers
+    # ------------------------------------------------------------------
 
-        self.content_tabs.addTab(trends_widget, "Tendències")
+    def _configure_table(self, table):
+        """Apply consistent table styling."""
+        table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        table.setSelectionMode(QAbstractItemView.SingleSelection)
+        table.setAlternatingRowColors(True)
+        table.verticalHeader().setVisible(False)
+        table.setStyleSheet("""
+            QTableWidget {
+                gridline-color: #ddd;
+                background-color: white;
+                alternate-background-color: #f9f9f9;
+                font-size: 11px;
+            }
+            QTableWidget::item { padding: 2px 4px; }
+            QHeaderView::section {
+                background-color: #f5f5f5;
+                padding: 4px;
+                border: none;
+                border-bottom: 2px solid #ddd;
+                font-weight: bold;
+                font-size: 10px;
+            }
+        """)
 
-        # === TAB 4: Comparar ===
-        compare_widget = QWidget()
-        compare_layout = QVBoxLayout(compare_widget)
-        compare_layout.setContentsMargins(0, 8, 0, 0)
+        header = table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.Stretch)
+        for col in range(1, table.columnCount()):
+            header.setSectionResizeMode(col, QHeaderView.ResizeToContents)
 
-        # Instruccions
-        compare_layout.addWidget(QLabel(
-            "Selecciona múltiples mostres al llistat (Ctrl+clic) per comparar-les."
-        ))
-
-        # Taula comparativa
-        self.compare_table = QTableWidget()
-        self.compare_table.setColumnCount(7)
-        self.compare_table.setHorizontalHeaderLabels([
-            "Mostra", "N", "Última Àrea", "Àrea Mitja", "Última [ppm]", "[ppm] Mitjà", "HS%"
-        ])
-        headers3 = self.compare_table.horizontalHeader()
-        headers3.setSectionResizeMode(QHeaderView.ResizeToContents)
-        headers3.setSectionResizeMode(0, QHeaderView.Stretch)
-        self.compare_table.setAlternatingRowColors(True)
-        self.compare_table.setEditTriggers(QTableWidget.NoEditTriggers)
-        compare_layout.addWidget(self.compare_table)
-
-        # Gràfic comparatiu
-        self.compare_figure = Figure(figsize=(10, 4), dpi=100)
-        self.compare_canvas = FigureCanvas(self.compare_figure)
-        compare_layout.addWidget(self.compare_canvas)
-
-        self.content_tabs.addTab(compare_widget, "Comparar")
-
-        layout.addWidget(self.content_tabs)
-
-        # Resum
-        summary_layout = QHBoxLayout()
-        self.summary_label = QLabel()
-        self.summary_label.setStyleSheet("color: #666;")
-        summary_layout.addWidget(self.summary_label)
-        summary_layout.addStretch()
-        layout.addLayout(summary_layout)
-
-        # Permetre selecció múltiple
-        self.samples_table.setSelectionMode(QTableWidget.ExtendedSelection)
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
 
     def showEvent(self, event):
-        """Carrega les dades quan es mostra el panel."""
         super().showEvent(event)
-        self._load_samples()
+        if not self._initialized:
+            self._initialized = True
+            self._scan_seqs()
 
-    def _load_samples(self):
-        """Carrega totes les mostres de l'índex."""
-        self._all_samples = search_samples()
-        self._apply_filters()
-        self._update_summary()
+    def set_current_seq(self, seq_path):
+        """Called from wizard to pre-select last processed SEQ."""
+        if not seq_path:
+            return
+        # If already initialized, update combo selection
+        if self._initialized and self._all_seqs:
+            self._select_seq_in_combo(seq_path)
 
-    def _apply_filters(self):
-        """Aplica els filtres a la taula."""
-        query = self.search_edit.text().strip() or None
-        sample_type = self.type_filter.currentData()
-        seq_type = self.mode_filter.currentData()
-        has_bp = self.bp_filter.currentData()
+    # ------------------------------------------------------------------
+    # Scanning
+    # ------------------------------------------------------------------
 
-        # Cercar amb filtres
-        filtered = search_samples(
-            query=query,
-            sample_type=sample_type,
-            seq_type=seq_type,
-            has_bp=has_bp
-        )
+    def _scan_seqs(self):
+        """Scan all data_folders for analyzed SEQs."""
+        self._info_label.setText("Escanejant...")
+        self._refresh_btn.setEnabled(False)
 
-        # Actualitzar taula
-        self.samples_table.setSortingEnabled(False)
-        self.samples_table.setRowCount(len(filtered))
+        self._scan_worker = _ScanWorker(self)
+        self._scan_worker.finished.connect(self._on_scan_finished)
+        self._scan_worker.start()
 
-        for row, sample in enumerate(filtered):
-            # Mostra
-            self.samples_table.setItem(row, 0,
-                QTableWidgetItem(sample.get("sample_name", "")))
+    def _on_scan_finished(self, seqs):
+        self._all_seqs = seqs
+        self._refresh_btn.setEnabled(True)
 
-            # Àlies
-            alias = sample.get("alias", "") or "-"
-            self.samples_table.setItem(row, 1, QTableWidgetItem(alias))
+        # Populate SEQ combo (for packaging)
+        self._seq_combo.blockSignals(True)
+        self._seq_combo.clear()
+        mw_seq = self.main_window.seq_path
 
-            # Tipus
-            self.samples_table.setItem(row, 2,
-                QTableWidgetItem(sample.get("sample_type", "")))
+        for i, s in enumerate(seqs):
+            label = f"{s['name']}  ({s['method']})"
+            if (mw_seq and
+                    os.path.normpath(s["path"]) == os.path.normpath(mw_seq)):
+                label = f"\u2605 {label}"
+            self._seq_combo.addItem(label, s["path"])
+        self._seq_combo.blockSignals(False)
 
-            # Primera
-            self.samples_table.setItem(row, 3,
-                QTableWidgetItem(sample.get("first_seen", "")[:10]))
+        # Pre-select current SEQ in combo
+        if mw_seq:
+            self._select_seq_in_combo(mw_seq)
 
-            # Última
-            self.samples_table.setItem(row, 4,
-                QTableWidgetItem(sample.get("last_seen", "")[:10]))
+        # Populate inventory filter
+        self._inv_seq_filter.blockSignals(True)
+        self._inv_seq_filter.clear()
+        self._inv_seq_filter.addItem("Totes", None)
+        for s in seqs:
+            self._inv_seq_filter.addItem(s["name"], s["path"])
+        self._inv_seq_filter.blockSignals(False)
 
-            # N aparicions
-            n_item = QTableWidgetItem()
-            n_item.setData(Qt.DisplayRole, sample.get("n_appearances", 0))
-            self.samples_table.setItem(row, 5, n_item)
+        n = len(seqs)
+        self._info_label.setText(
+            f"{n} seq\u00fc\u00e8ncies amb an\u00e0lisi")
 
-            # Àrea (última)
-            appearances = sample.get("appearances", [])
-            last_area = ""
-            has_bp_txt = "-"
-            if appearances:
-                last = appearances[-1]
-                area = last.get("area_total")
-                if area is not None:
-                    last_area = f"{area:.1f}"
-                if last.get("has_bp_paired"):
-                    has_bp_txt = "Sí"
+        # Build inventory
+        self._build_and_show_inventory()
+
+    def _select_seq_in_combo(self, seq_path):
+        norm = os.path.normpath(seq_path)
+        for i in range(self._seq_combo.count()):
+            if os.path.normpath(self._seq_combo.itemData(i) or "") == norm:
+                self._seq_combo.setCurrentIndex(i)
+                return
+
+    # ------------------------------------------------------------------
+    # Inventory (per mostra)
+    # ------------------------------------------------------------------
+
+    def _build_and_show_inventory(self):
+        """Build global sample inventory from all cached data."""
+        if not self._all_seqs:
+            return
+
+        # Load all JSONs that aren't cached yet
+        for s in self._all_seqs:
+            if s["path"] not in self._seq_cache:
+                data = _load_analysis_json(s["path"])
+                if data:
+                    self._seq_cache[s["path"]] = data
+
+        self._inventory = self._build_sample_inventory()
+        self._populate_inventory_table()
+
+    def _build_sample_inventory(self):
+        """Build {sample_name: {col_seq, bp_seq, col_data, bp_data, ...}}."""
+        inventory = {}
+        for seq_info in self._all_seqs:
+            data = self._seq_cache.get(seq_info["path"])
+            if not data:
+                continue
+            sg = data.get("samples_grouped", {})
+            method = seq_info.get("method", "COLUMN")
+            is_bp = "BP" in method.upper() if method else False
+
+            for name, sdata in sg.items():
+                if sdata.get("sample_type", "SAMPLE") != "SAMPLE":
+                    continue
+                if name not in inventory:
+                    inventory[name] = {}
+                if is_bp:
+                    inventory[name]["bp_seq"] = seq_info["name"]
+                    inventory[name]["bp_path"] = seq_info["path"]
+                    inventory[name]["bp_data"] = sdata
                 else:
-                    has_bp_txt = "No"
+                    inventory[name]["col_seq"] = seq_info["name"]
+                    inventory[name]["col_path"] = seq_info["path"]
+                    inventory[name]["col_data"] = sdata
+        return inventory
 
-            self.samples_table.setItem(row, 6, QTableWidgetItem(last_area))
-            self.samples_table.setItem(row, 7, QTableWidgetItem(has_bp_txt))
+    def _populate_inventory_table(self):
+        """Fill the inventory table with all samples."""
+        table = self._inv_table
+        table.setSortingEnabled(False)
+        table.setRowCount(0)
 
-            # Guardar key per referència
-            item = self.samples_table.item(row, 0)
-            item.setData(Qt.UserRole, sample.get("key"))
+        search = self._search_edit.text().strip().lower()
+        seq_filter = self._inv_seq_filter.currentData()
 
-        self.samples_table.setSortingEnabled(True)
-        self._update_summary()
+        visible_count = 0
+        for name in sorted(self._inventory.keys()):
+            entry = self._inventory[name]
 
-    def _update_summary(self):
-        """Actualitza el resum."""
-        total = len(self._all_samples)
-        visible = self.samples_table.rowCount()
-        self.summary_label.setText(
-            f"Mostrant {visible} de {total} mostres"
-        )
+            # Search filter
+            if search and search not in name.lower():
+                continue
 
-    def _on_sample_selected(self):
-        """Gestiona selecció de mostra."""
-        selected = self.samples_table.selectionModel().selectedRows()
+            # SEQ filter
+            if seq_filter:
+                col_path = entry.get("col_path")
+                bp_path = entry.get("bp_path")
+                if col_path != seq_filter and bp_path != seq_filter:
+                    continue
 
-        if len(selected) == 1:
-            # Una sola mostra: mostrar detall
-            row = selected[0].row()
-            item = self.samples_table.item(row, 0)
-            sample_name = item.text()
-            self._selected_sample = sample_name
-            self._update_detail(sample_name)
-            self._update_trend_chart()
+            row = table.rowCount()
+            table.insertRow(row)
+            visible_count += 1
 
-        elif len(selected) > 1:
-            # Múltiples: mostrar comparació
-            names = []
-            for idx in selected:
-                item = self.samples_table.item(idx.row(), 0)
-                names.append(item.text())
-            self._update_comparison(names)
+            # Col 0: Mostra
+            item = QTableWidgetItem(name)
+            item.setData(Qt.UserRole, name)
+            table.setItem(row, 0, item)
 
-    def _on_sample_double_click(self):
-        """Doble clic: anar a tab detall."""
-        self.content_tabs.setCurrentIndex(1)
+            # Col 1-2: SEQ COL / BP
+            table.setItem(row, 1,
+                          QTableWidgetItem(entry.get("col_seq", "\u2014")))
+            table.setItem(row, 2,
+                          QTableWidgetItem(entry.get("bp_seq", "\u2014")))
 
-    def _update_detail(self, sample_name: str):
-        """Actualitza la vista de detall."""
-        # Info bàsica
-        self.detail_name.setText(sample_name)
-        alias = get_sample_alias(sample_name)
-        self.detail_alias.setText(alias if alias else "-")
+            # Extract metrics
+            col_m = (_extract_sample_metrics(entry["col_data"])
+                     if entry.get("col_data") else {})
+            bp_m = (_extract_sample_metrics(entry["bp_data"])
+                    if entry.get("bp_data") else {})
 
-        # Cercar mostra
-        samples = search_samples(query=sample_name)
-        sample = samples[0] if samples else None
+            ppm_col = col_m.get("ppm")
+            ppm_bp = bp_m.get("ppm")
 
-        if not sample:
-            self.detail_type.setText("-")
-            self.detail_appearances.setText("-")
-            self.history_table.setRowCount(0)
+            # Col 3-4: ppm COL / BP
+            item = QTableWidgetItem(_format_ppm(ppm_col))
+            item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            table.setItem(row, 3, item)
+            item = QTableWidgetItem(_format_ppm(ppm_bp))
+            item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            table.setItem(row, 4, item)
+
+            # Col 5: Ratio ppm
+            if ppm_col and ppm_bp and ppm_col > 0:
+                ratio = ppm_bp / ppm_col
+                ratio_item = QTableWidgetItem(f"{ratio:.3f}")
+                if abs(ratio - 1.0) > 0.15:
+                    ratio_item.setForeground(
+                        QBrush(QColor(COLOR_WARNING)))
+                ratio_item.setTextAlignment(
+                    Qt.AlignRight | Qt.AlignVCenter)
+            else:
+                ratio_item = QTableWidgetItem("\u2014")
+                ratio_item.setTextAlignment(Qt.AlignCenter)
+            table.setItem(row, 5, ratio_item)
+
+            # Col 6-7: A254 COL / BP
+            a254_col = col_m.get("a254")
+            a254_bp = bp_m.get("a254")
+            item = QTableWidgetItem(_format_area(a254_col))
+            item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            table.setItem(row, 6, item)
+            item = QTableWidgetItem(_format_area(a254_bp))
+            item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            table.setItem(row, 7, item)
+
+            # Col 8: Ratio A254
+            if a254_col and a254_bp and a254_col > 0:
+                r = a254_bp / a254_col
+                ri = QTableWidgetItem(f"{r:.3f}")
+                ri.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            else:
+                ri = QTableWidgetItem("\u2014")
+                ri.setTextAlignment(Qt.AlignCenter)
+            table.setItem(row, 8, ri)
+
+        table.setSortingEnabled(True)
+        self._inv_count_label.setText(f"{visible_count} mostres")
+
+    def _filter_inventory_table(self):
+        """Re-filter the inventory table based on search/seq filter."""
+        if self._inventory:
+            self._populate_inventory_table()
+
+    # ------------------------------------------------------------------
+    # Packaging
+    # ------------------------------------------------------------------
+
+    def _browse_pkg_dest(self):
+        folder = QFileDialog.getExistingDirectory(
+            self, "Selecciona carpeta de sortida")
+        if folder:
+            self._pkg_path_edit.setText(folder)
+
+    def _on_package(self):
+        """Package the currently selected SEQ using export_sequence."""
+        idx = self._seq_combo.currentIndex()
+        if idx < 0 or idx >= len(self._all_seqs):
+            QMessageBox.warning(
+                self, "Av\u00eds",
+                "Selecciona una seq\u00fc\u00e8ncia primer.")
             return
 
-        self.detail_type.setText(sample.get("sample_type", "-"))
-        self.detail_appearances.setText(str(sample.get("n_appearances", 0)))
+        seq_info = self._all_seqs[idx]
+        data = self._seq_cache.get(seq_info["path"])
+        if not data:
+            # Try loading it
+            data = _load_analysis_json(seq_info["path"])
+            if data:
+                self._seq_cache[seq_info["path"]] = data
 
-        # Historial
-        history = get_sample_history(sample_name)
-        self.history_table.setRowCount(len(history))
-
-        for row, app in enumerate(history):
-            # Data
-            date = app.get("date_processed", "")[:10]
-            self.history_table.setItem(row, 0, QTableWidgetItem(date))
-
-            # SEQ
-            self.history_table.setItem(row, 1,
-                QTableWidgetItem(app.get("seq_name", "")))
-
-            # Mode
-            self.history_table.setItem(row, 2,
-                QTableWidgetItem(app.get("seq_type", "")))
-
-            # Rèpliques
-            n_rep = app.get("n_replicas", 0)
-            self.history_table.setItem(row, 3,
-                QTableWidgetItem(str(n_rep)))
-
-            # Àrea
-            area = app.get("area_total")
-            area_txt = f"{area:.1f}" if area else "-"
-            self.history_table.setItem(row, 4, QTableWidgetItem(area_txt))
-
-            # Concentració
-            conc = app.get("concentration_ppm")
-            conc_txt = f"{conc:.2f}" if conc else "-"
-            self.history_table.setItem(row, 5, QTableWidgetItem(conc_txt))
-
-            # BP
-            bp_txt = "Sí" if app.get("has_bp_paired") else "No"
-            self.history_table.setItem(row, 6, QTableWidgetItem(bp_txt))
-
-    def _update_trend_chart(self):
-        """Actualitza el gràfic de tendències."""
-        if not self._selected_sample:
+        if not data:
+            QMessageBox.warning(
+                self, "Av\u00eds",
+                "Les dades de la seq\u00fc\u00e8ncia no estan carregades.")
             return
 
-        metric = self.metric_combo.currentData()
-        trends = get_sample_trends(self._selected_sample)
-
-        if not trends or not trends.get("dates"):
-            self.trend_figure.clear()
-            self.trend_canvas.draw()
+        sg = data.get("samples_grouped", {})
+        if not sg:
+            QMessageBox.warning(
+                self, "Av\u00eds", "No hi ha mostres per empaquetar.")
             return
 
-        self.trend_figure.clear()
-        ax = self.trend_figure.add_subplot(111)
+        # Determine output dir
+        output_dir = self._pkg_path_edit.text().strip()
+        if not output_dir:
+            output_dir = os.path.join(seq_info["path"], "RESULTATS")
 
-        dates = trends["dates"]
-        x = range(len(dates))
-
-        if metric == "area_total":
-            values = trends.get("area_total", [])
-            ax.plot(x, values, 'b-o', linewidth=2, markersize=6)
-            ax.set_ylabel("Àrea Total")
-            ax.set_title(f"Evolució Àrea - {self._selected_sample}")
-
-        elif metric == "concentration_ppm":
-            values = trends.get("concentration_ppm", [])
-            ax.plot(x, values, 'g-o', linewidth=2, markersize=6)
-            ax.set_ylabel("Concentració (ppm)")
-            ax.set_title(f"Evolució Concentració - {self._selected_sample}")
-
-        elif metric == "fractions":
-            fracs = trends.get("fractions", {})
-            colors = ['#E63946', '#F6AE2D', '#2A9D8F', '#457B9D', '#1D3557']
-            for i, (frac, values) in enumerate(fracs.items()):
-                if any(v is not None for v in values):
-                    ax.plot(x, values, '-o', linewidth=2, markersize=4,
-                           label=frac, color=colors[i % len(colors)])
-            ax.set_ylabel("Fracció (%)")
-            ax.set_title(f"Evolució Fraccions - {self._selected_sample}")
-            ax.legend(loc='upper right')
-
-        ax.set_xlabel("Anàlisi")
-        ax.set_xticks(x)
-        ax.set_xticklabels(dates, rotation=45, ha='right')
-        ax.grid(True, alpha=0.3)
-
-        self.trend_figure.tight_layout()
-        self.trend_canvas.draw()
-
-    def _update_comparison(self, sample_names: list):
-        """Actualitza la comparació de mostres."""
-        comparison = compare_samples(sample_names)
-        samples = comparison.get("samples", [])
-
-        # Taula
-        self.compare_table.setRowCount(len(samples))
-
-        for row, s in enumerate(samples):
-            self.compare_table.setItem(row, 0,
-                QTableWidgetItem(s.get("name", "")))
-
-            n_item = QTableWidgetItem()
-            n_item.setData(Qt.DisplayRole, s.get("n_appearances", 0))
-            self.compare_table.setItem(row, 1, n_item)
-
-            last_area = s.get("last_area")
-            self.compare_table.setItem(row, 2,
-                QTableWidgetItem(f"{last_area:.1f}" if last_area else "-"))
-
-            avg_area = s.get("avg_area")
-            self.compare_table.setItem(row, 3,
-                QTableWidgetItem(f"{avg_area:.1f}" if avg_area else "-"))
-
-            last_conc = s.get("last_conc")
-            self.compare_table.setItem(row, 4,
-                QTableWidgetItem(f"{last_conc:.2f}" if last_conc else "-"))
-
-            avg_conc = s.get("avg_conc")
-            self.compare_table.setItem(row, 5,
-                QTableWidgetItem(f"{avg_conc:.2f}" if avg_conc else "-"))
-
-            fracs = s.get("last_fractions", {})
-            hs = fracs.get("HS")
-            self.compare_table.setItem(row, 6,
-                QTableWidgetItem(f"{hs:.1f}" if hs else "-"))
-
-        # Gràfic
-        self._update_compare_chart(samples)
-
-        # Anar a tab comparar
-        self.content_tabs.setCurrentIndex(3)
-
-    def _update_compare_chart(self, samples: list):
-        """Actualitza el gràfic comparatiu."""
-        self.compare_figure.clear()
-        ax = self.compare_figure.add_subplot(111)
-
-        if not samples:
-            self.compare_canvas.draw()
-            return
-
-        names = [s.get("name", "")[:15] for s in samples]
-        areas = [s.get("avg_area") or 0 for s in samples]
-
-        x = range(len(names))
-        bars = ax.bar(x, areas, color='#2E86AB', alpha=0.8)
-
-        ax.set_ylabel("Àrea Mitjana")
-        ax.set_title("Comparació d'Àrees")
-        ax.set_xticks(x)
-        ax.set_xticklabels(names, rotation=45, ha='right')
-        ax.grid(True, alpha=0.3, axis='y')
-
-        self.compare_figure.tight_layout()
-        self.compare_canvas.draw()
-
-    def _show_alias_config(self):
-        """Mostra el diàleg de configuració d'àlies."""
-        dialog = AliasConfigDialog(self)
-        if dialog.exec() == QDialog.Accepted:
-            # Refrescar per mostrar nous àlies
-            self._load_samples()
-
-    def _rebuild_index(self):
-        """Reconstrueix l'índex de mostres."""
-        reply = QMessageBox.question(
-            self,
-            "Reconstruir índex",
-            "Això escanejará totes les SEQs i pot trigar uns moments.\n\nContinuar?",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No
-        )
-
-        if reply != QMessageBox.Yes:
-            return
-
-        # Reconstruir
-        self.main_window.set_status("Reconstruint índex de mostres...")
-        self.main_window.show_progress(0, 100)
+        method = seq_info.get("method", "COLUMN")
 
         try:
-            def progress(current, total, msg):
-                pct = int(100 * current / total) if total > 0 else 0
-                self.main_window.show_progress(pct, 100)
-                self.main_window.set_status(msg)
+            from hpsec_export import export_sequence
 
-            rebuild_samples_index(progress_callback=progress)
+            result = export_sequence(
+                samples_grouped=sg,
+                output_dir=output_dir,
+                mode=method,
+                seq_path=seq_info["path"],
+                export_raw=self._pkg_raw.isChecked(),
+                export_processed=self._pkg_proc.isChecked(),
+            )
 
-            self.main_window.show_progress(-1)
-            self.main_window.set_status("Índex reconstruït", 3000)
+            n = result.get("n_exported", 0)
+            errs = result.get("n_errors", 0)
+            msg = f"Exportades {n} mostres a:\n{output_dir}"
+            if errs > 0:
+                msg += f"\n({errs} errors)"
 
-            # Refrescar
-            self._load_samples()
+            QMessageBox.information(self, "Empaquetat", msg)
 
         except Exception as e:
-            self.main_window.show_progress(-1)
-            QMessageBox.critical(
-                self,
-                "Error",
-                f"Error reconstruint índex:\n{str(e)}"
-            )
-
-
-class AliasConfigDialog(QDialog):
-    """Diàleg per configurar el fitxer d'àlies."""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Configurar fitxer d'àlies")
-        self.setMinimumWidth(500)
-        self._columns = []
-        self._setup_ui()
-        self._load_current_config()
-
-    def _setup_ui(self):
-        """Configura la interfície."""
-        layout = QVBoxLayout(self)
-
-        # Selector de fitxer
-        file_layout = QHBoxLayout()
-        file_layout.addWidget(QLabel("Fitxer Excel:"))
-        self.file_edit = QLineEdit()
-        self.file_edit.setReadOnly(True)
-        file_layout.addWidget(self.file_edit)
-        self.browse_btn = QPushButton("Examinar...")
-        self.browse_btn.clicked.connect(self._browse_file)
-        file_layout.addWidget(self.browse_btn)
-        layout.addLayout(file_layout)
-
-        # Selectors de columnes
-        cols_group = QGroupBox("Columnes")
-        cols_layout = QFormLayout(cols_group)
-
-        self.id_combo = QComboBox()
-        self.id_combo.currentIndexChanged.connect(self._update_preview)
-        cols_layout.addRow("Columna ID mostra:", self.id_combo)
-
-        self.alias_combo = QComboBox()
-        self.alias_combo.currentIndexChanged.connect(self._update_preview)
-        cols_layout.addRow("Columna àlies:", self.alias_combo)
-
-        layout.addWidget(cols_group)
-
-        # Vista prèvia
-        preview_group = QGroupBox("Vista prèvia")
-        preview_layout = QVBoxLayout(preview_group)
-
-        self.preview_table = QTableWidget()
-        self.preview_table.setColumnCount(2)
-        self.preview_table.setHorizontalHeaderLabels(["ID", "Àlies"])
-        self.preview_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self.preview_table.setMaximumHeight(150)
-        preview_layout.addWidget(self.preview_table)
-
-        layout.addWidget(preview_group)
-
-        # Botons
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.Save | QDialogButtonBox.Cancel
-        )
-        buttons.accepted.connect(self._save_config)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
-
-    def _load_current_config(self):
-        """Carrega la configuració actual."""
-        from hpsec_config import get_config
-        cfg = get_config()
-
-        excel_path = cfg.get("paths", "samples_alias_excel", "")
-        if excel_path:
-            self.file_edit.setText(excel_path)
-            self._load_columns(excel_path)
-
-            samples_db = cfg.get_section("samples_db") or {}
-            id_col = samples_db.get("alias_column_id", "")
-            alias_col = samples_db.get("alias_column_alias", "")
-
-            if id_col:
-                idx = self.id_combo.findText(id_col)
-                if idx >= 0:
-                    self.id_combo.setCurrentIndex(idx)
-
-            if alias_col:
-                idx = self.alias_combo.findText(alias_col)
-                if idx >= 0:
-                    self.alias_combo.setCurrentIndex(idx)
-
-    def _browse_file(self):
-        """Obre diàleg per seleccionar fitxer."""
-        path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Selecciona fitxer Excel",
-            "",
-            "Excel files (*.xlsx *.xls);;All files (*.*)"
-        )
-        if path:
-            self.file_edit.setText(path)
-            self._load_columns(path)
-
-    def _load_columns(self, path: str):
-        """Carrega les columnes del fitxer."""
-        self._columns = get_excel_columns(path)
-
-        self.id_combo.clear()
-        self.alias_combo.clear()
-
-        for col in self._columns:
-            self.id_combo.addItem(col)
-            self.alias_combo.addItem(col)
-
-        # Seleccionar segona columna per àlies si hi ha múltiples
-        if len(self._columns) > 1:
-            self.alias_combo.setCurrentIndex(1)
-
-        self._update_preview()
-
-    def _update_preview(self):
-        """Actualitza la vista prèvia."""
-        path = self.file_edit.text()
-        id_col = self.id_combo.currentText()
-        alias_col = self.alias_combo.currentText()
-
-        if not path or not id_col or not alias_col:
-            self.preview_table.setRowCount(0)
-            return
-
-        preview = get_excel_preview(path, id_col, alias_col, n_rows=5)
-
-        self.preview_table.setRowCount(len(preview))
-        for row, item in enumerate(preview):
-            self.preview_table.setItem(row, 0,
-                QTableWidgetItem(item.get("id", "")))
-            self.preview_table.setItem(row, 1,
-                QTableWidgetItem(item.get("alias", "")))
-
-    def _save_config(self):
-        """Guarda la configuració."""
-        path = self.file_edit.text()
-        id_col = self.id_combo.currentText()
-        alias_col = self.alias_combo.currentText()
-
-        if not path:
-            QMessageBox.warning(self, "Avís", "Cal seleccionar un fitxer Excel.")
-            return
-
-        if not id_col or not alias_col:
-            QMessageBox.warning(self, "Avís", "Cal seleccionar les columnes.")
-            return
-
-        if id_col == alias_col:
-            QMessageBox.warning(self, "Avís", "Les columnes han de ser diferents.")
-            return
-
-        if configure_alias_mapping(path, id_col, alias_col):
-            QMessageBox.information(
-                self, "Configurat",
-                "La configuració d'àlies s'ha guardat correctament."
-            )
-            self.accept()
-        else:
+            logger.error("Export error: %s", e)
             QMessageBox.critical(
                 self, "Error",
-                "No s'ha pogut guardar la configuració."
-            )
+                f"Error durant l'exportaci\u00f3:\n{e}")

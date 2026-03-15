@@ -1,5 +1,5 @@
 """
-HPSEC Suite - Analyze Panel (Fase 3) -- Cards View
+HPSEC Suite - Analyze Panel (Fase 3) -- Table View
 ====================================================
 
 Panel per la fase 3: Analisi de mostres.
@@ -7,14 +7,14 @@ Panel per la fase 3: Analisi de mostres.
 - Selector row: DOC/DAD global replicas + category buttons
 - QC miniatures row (collapsible)
 - Charts section: DOC/DAD bars + overlays with category buttons
-- Filter bar with pending toggle + stats
-- Sample cards: compact/expanded inline detail
+- Stats bar with summary counts
+- 10-column table with DOC/DAD group headers
 - Comparison COL<->BP collapsible section at bottom
 """
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QHeaderView, QComboBox,
+    QHeaderView, QComboBox, QTableWidget, QTableWidgetItem,
     QFrame, QAbstractItemView, QProgressBar, QMessageBox, QDialog,
     QGroupBox, QGridLayout, QCheckBox, QScrollArea, QSizePolicy
 )
@@ -64,9 +64,8 @@ from ._helpers import (
     configure_table_style, populate_signal_summary, populate_fractions_table,
     classify_sample_status, resolve_doc_replica, find_repair_targets,
 )
-from .sample_card import SampleCard
 from .sequence_qc_tab import SequenceQCTab
-from .comparison_tab import ComparisonTab
+# ComparisonTab moved to tab Mostres
 
 # Fraction colors (consistent palette)
 FRACTION_COLORS = {
@@ -181,7 +180,7 @@ if HAS_MATPLOTLIB:
 
 
 class AnalyzePanel(QWidget):
-    """Panel d'analisi de mostres (Fase 3) -- Cards View."""
+    """Panel d'analisi de mostres (Fase 3) -- Table View."""
 
     analyze_completed = Signal(dict)
 
@@ -193,8 +192,9 @@ class AnalyzePanel(QWidget):
         self._warnings_confirmed = False
         self._warnings_confirmed_by = ""
         self._selected_sample = None
-        self._sample_cards = {}         # sample_name -> SampleCard
-        self._expanded_card = None      # currently expanded card name
+        self._review_sample = None
+        self._sample_row_map = {}       # sample_name -> row index
+        self._row_sample_map = {}       # row index -> sample_name (reverse)
         self._status_initialized = False
         # Chart data
         self._chart_regular = {}
@@ -213,7 +213,7 @@ class AnalyzePanel(QWidget):
     # ------------------------------------------------------------------
 
     def _setup_ui(self):
-        """Configura la interficie -- Single scrollable view amb cards."""
+        """Configura la interficie -- Single scrollable view amb taula."""
         outer_layout = QVBoxLayout(self)
         outer_layout.setContentsMargins(0, 0, 0, 0)
         outer_layout.setSpacing(0)
@@ -391,41 +391,104 @@ class AnalyzePanel(QWidget):
         charts_outer.addWidget(self._charts_content)
         results_layout.addWidget(self.charts_section)
 
-        # === FILTER BAR ===
-        self._filter_frame = QFrame()
-        self._filter_frame.setStyleSheet(
-            "QFrame { background: #F8F9FA; border: 1px solid #E0E0E0;"
-            " border-radius: 4px; padding: 4px; }")
-        filter_layout = QHBoxLayout(self._filter_frame)
-        filter_layout.setContentsMargins(8, 4, 8, 4)
-        filter_layout.setSpacing(8)
-
-        self._pending_toggle = QCheckBox("Nomes pendents")
-        self._pending_toggle.setStyleSheet("font-size: 11px;")
-        self._pending_toggle.toggled.connect(self._on_pending_filter_changed)
-        filter_layout.addWidget(self._pending_toggle)
-
-        filter_layout.addStretch()
-
+        # === STATS BAR ===
         self._stats_label = QLabel()
-        self._stats_label.setStyleSheet("font-size: 11px; color: #555;")
-        filter_layout.addWidget(self._stats_label)
+        self._stats_label.setStyleSheet(
+            "font-size: 11px; color: #555; background: #F8F9FA;"
+            " border: 1px solid #E0E0E0; border-radius: 4px;"
+            " padding: 6px 10px;")
+        results_layout.addWidget(self._stats_label)
 
-        results_layout.addWidget(self._filter_frame)
+        # === TABLE WITH GROUP HEADERS ===
+        self._table_container = QWidget()
+        self._table_container_layout = QVBoxLayout(self._table_container)
+        self._table_container_layout.setContentsMargins(0, 0, 0, 0)
+        self._table_container_layout.setSpacing(0)
+        self._build_table_with_group_headers()
+        results_layout.addWidget(self._table_container)
 
-        # === CARDS CONTAINER ===
-        self._cards_container = QWidget()
-        self._cards_layout = QVBoxLayout(self._cards_container)
-        self._cards_layout.setContentsMargins(0, 0, 0, 0)
-        self._cards_layout.setSpacing(2)
-        results_layout.addWidget(self._cards_container)
+        # === REVIEW PANEL (shown on row click) ===
+        self._review_panel = QFrame()
+        self._review_panel.setVisible(False)
+        self._review_panel.setStyleSheet(
+            "QFrame { border: 1px solid #DEE2E6; border-radius: 6px;"
+            " background: white; }")
+        review_layout = QVBoxLayout(self._review_panel)
+        review_layout.setContentsMargins(8, 8, 8, 8)
+        review_layout.setSpacing(6)
 
-        # === COMPARISON COL<->BP (collapsible) ===
-        self._comparison_collapsible = self._build_collapsible_section(
-            "Comparacio COL\u2194BP", collapsed=True)
-        self._comparison_tab = ComparisonTab(main_window=self.main_window)
-        self._comparison_collapsible["content_layout"].addWidget(self._comparison_tab)
-        results_layout.addWidget(self._comparison_collapsible["frame"])
+        # Navigation row
+        nav_row = QHBoxLayout()
+        self._review_prev_btn = QPushButton("◀ Anterior")
+        self._review_prev_btn.clicked.connect(lambda: self._navigate_review(-1))
+        nav_row.addWidget(self._review_prev_btn)
+        self._review_title = QLabel()
+        self._review_title.setAlignment(Qt.AlignCenter)
+        self._review_title.setStyleSheet("font-size: 12px; font-weight: bold;")
+        nav_row.addWidget(self._review_title, 1)
+        self._review_next_btn = QPushButton("Seguent ▶")
+        self._review_next_btn.clicked.connect(lambda: self._navigate_review(1))
+        nav_row.addWidget(self._review_next_btn)
+        self._review_close_btn = QPushButton("✕")
+        self._review_close_btn.setFixedSize(24, 24)
+        self._review_close_btn.clicked.connect(self._close_review)
+        nav_row.addWidget(self._review_close_btn)
+        review_layout.addLayout(nav_row)
+
+        # Chromatogram
+        if HAS_MATPLOTLIB:
+            self._review_figure = Figure(figsize=(8, 3), dpi=100)
+            self._review_figure.set_facecolor("#FAFAFA")
+            self._review_canvas = FigureCanvas(self._review_figure)
+            self._review_canvas.setMinimumHeight(250)
+            self._review_toolbar = NavigationToolbar2QT(
+                self._review_canvas, self._review_panel)
+            review_layout.addWidget(self._review_toolbar)
+            review_layout.addWidget(self._review_canvas)
+
+        # Controls row
+        controls_row = QHBoxLayout()
+        controls_row.addWidget(QLabel("<b>DOC:</b>"))
+        self._review_doc_combo = QComboBox()
+        self._review_doc_combo.setMinimumWidth(100)
+        self._review_doc_combo.currentIndexChanged.connect(
+            self._on_review_doc_changed)
+        controls_row.addWidget(self._review_doc_combo)
+        controls_row.addWidget(QLabel("<b>DAD:</b>"))
+        self._review_dad_combo = QComboBox()
+        self._review_dad_combo.setMinimumWidth(100)
+        self._review_dad_combo.currentIndexChanged.connect(
+            self._on_review_dad_changed)
+        controls_row.addWidget(self._review_dad_combo)
+        controls_row.addStretch()
+        self._review_metrics = QLabel()
+        self._review_metrics.setStyleSheet("font-size: 11px; color: #444;")
+        controls_row.addWidget(self._review_metrics)
+        review_layout.addLayout(controls_row)
+
+        # Fractions + anomalies row
+        info_row = QHBoxLayout()
+        self._review_fractions = QLabel()
+        self._review_fractions.setStyleSheet("font-size: 11px; color: #555;")
+        info_row.addWidget(self._review_fractions, 1)
+        self._review_anomalies = QLabel()
+        self._review_anomalies.setStyleSheet("font-size: 11px;")
+        self._review_anomalies.setWordWrap(True)
+        info_row.addWidget(self._review_anomalies, 1)
+        review_layout.addLayout(info_row)
+
+        # Action buttons
+        action_row = QHBoxLayout()
+        self._review_repair_btn = QPushButton("Reparar pic...")
+        self._review_repair_btn.clicked.connect(self._on_review_repair)
+        action_row.addWidget(self._review_repair_btn)
+        self._review_compose_btn = QPushButton("Composar timeout...")
+        self._review_compose_btn.clicked.connect(self._on_review_compose)
+        action_row.addWidget(self._review_compose_btn)
+        action_row.addStretch()
+        review_layout.addLayout(action_row)
+
+        results_layout.addWidget(self._review_panel)
 
         layout.addWidget(self.results_frame, 1)
 
@@ -494,8 +557,9 @@ class AnalyzePanel(QWidget):
         self._warnings_confirmed = False
         self._warnings_confirmed_by = ""
         self._selected_sample = None
-        self._sample_cards = {}
-        self._expanded_card = None
+        self._review_sample = None
+        self._sample_row_map = {}
+        self._row_sample_map = {}
         self._status_initialized = False
         self._chart_regular = {}
         self._chart_blank = {}
@@ -506,8 +570,8 @@ class AnalyzePanel(QWidget):
         self._sibling_worker = None
         self._sibling_results = {}
 
-        # Clear cards
-        self._clear_cards()
+        # Clear table
+        self._samples_table.setRowCount(0)
 
         self.empty_state.setVisible(True)
         self.info_frame.setVisible(False)
@@ -515,27 +579,78 @@ class AnalyzePanel(QWidget):
         self.progress_frame.setVisible(False)
         self.progress_bar.setValue(0)
         self.results_frame.setVisible(False)
+        self._review_panel.setVisible(False)
         self.charts_section.setVisible(False)
         self._qc_tab.reset()
-        self._comparison_tab.reset()
+        # comparison moved to tab Mostres
         self._charts_content.setVisible(True)
         self.analyze_btn.setEnabled(True)
         self.status_indicator.setText("")
 
-    def _clear_cards(self):
-        """Remove all sample cards from the layout."""
-        for card in self._sample_cards.values():
-            card.setParent(None)
-            card.deleteLater()
-        self._sample_cards = {}
-        self._expanded_card = None
-        # Clear remaining items in layout
-        while self._cards_layout.count():
-            item = self._cards_layout.takeAt(0)
-            widget = item.widget()
-            if widget:
-                widget.setParent(None)
-                widget.deleteLater()
+    def _build_table_with_group_headers(self):
+        """Creates the sample table with DOC/DAD group header labels above."""
+        # --- Group header row ---
+        header_row = QHBoxLayout()
+        header_row.setContentsMargins(0, 0, 0, 0)
+        header_row.setSpacing(0)
+
+        # Spacer for "Mostra" column (col 0) -- approximate width
+        mostra_spacer = QLabel("")
+        mostra_spacer.setMinimumWidth(140)
+        mostra_spacer.setMaximumWidth(200)
+        header_row.addWidget(mostra_spacer)
+
+        doc_label = QLabel("DOC")
+        doc_label.setAlignment(Qt.AlignCenter)
+        doc_label.setStyleSheet(
+            "font-weight: bold; font-size: 11px; color: #1A5276;"
+            " background: #EBF5FB; border: 1px solid #D4E6F1;"
+            " border-radius: 3px; padding: 3px 0; margin: 0 1px;")
+        header_row.addWidget(doc_label, 6)  # spans 6 columns worth
+
+        dad_label = QLabel("DAD")
+        dad_label.setAlignment(Qt.AlignCenter)
+        dad_label.setStyleSheet(
+            "font-weight: bold; font-size: 11px; color: #7D6608;"
+            " background: #FEF9E7; border: 1px solid #F9E79F;"
+            " border-radius: 3px; padding: 3px 0; margin: 0 1px;")
+        header_row.addWidget(dad_label, 3)  # spans 3 columns worth
+
+        # Small spacer for scrollbar area
+        sb_spacer = QLabel("")
+        sb_spacer.setFixedWidth(16)
+        header_row.addWidget(sb_spacer)
+
+        self._table_container_layout.addLayout(header_row)
+
+        # --- Table ---
+        self._samples_table = QTableWidget()
+        self._samples_table.setColumnCount(10)
+        self._samples_table.setHorizontalHeaderLabels([
+            "Mostra",
+            "ppm", "ppm\u1d64\u1d62\u1d47", "SNR", "r\u00b2",
+            "Timeout", "Pic",
+            "A254", "SNR\u2082\u2085\u2084", "r\u00b2\u2082\u2085\u2084",
+        ])
+
+        configure_table_style(self._samples_table)
+        self._samples_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self._samples_table.setSelectionMode(QAbstractItemView.SingleSelection)
+
+        # Column sizing
+        header = self._samples_table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.Stretch)
+        for col in range(1, 10):
+            header.setSectionResizeMode(col, QHeaderView.ResizeToContents)
+
+        # Minimum column widths for readability
+        self._samples_table.setColumnWidth(0, 160)
+        for col in range(1, 10):
+            self._samples_table.setColumnWidth(col, 60)
+
+        self._samples_table.setMinimumHeight(200)
+        self._samples_table.clicked.connect(self._on_table_row_clicked)
+        self._table_container_layout.addWidget(self._samples_table)
 
     def _check_existing_analysis(self):
         """Comprova si existeix analisi previa i la carrega automaticament."""
@@ -583,7 +698,7 @@ class AnalyzePanel(QWidget):
                 result["seq_path"] = self.main_window.seq_path
             self.main_window.processed_data = result
             try:
-                self._populate_cards()
+                self._populate_table()
                 self._populate_charts(result)
                 self._populate_sub_tabs(result)
             except Exception as e:
@@ -603,10 +718,7 @@ class AnalyzePanel(QWidget):
             self._qc_tab.populate(result)
         except Exception as e:
             logger.warning(f"Error populating QC tab: {e}")
-        try:
-            self._comparison_tab.populate(result)
-        except Exception as e:
-            logger.warning(f"Error populating Comparison tab: {e}")
+        # Comparison COL↔BP moved to tab Mostres
 
     def _update_status(self):
         """Actualitza l'indicador d'estat amb format professional."""
@@ -831,13 +943,13 @@ class AnalyzePanel(QWidget):
         save_analysis_result(result)
 
         n_samples = len(self.samples_grouped)
-        self.progress_label.setText(f"Preparant cards ({n_samples} mostres)...")
+        self.progress_label.setText(f"Preparant taula ({n_samples} mostres)...")
         self.progress_bar.setValue(95)
         self.progress_frame.setVisible(True)
         from PySide6.QtWidgets import QApplication
         QApplication.processEvents()
 
-        self._populate_cards()
+        self._populate_table()
         self.results_frame.setVisible(True)
 
         self.progress_label.setText("Generant grafics...")
@@ -953,12 +1065,12 @@ class AnalyzePanel(QWidget):
 
         from PySide6.QtWidgets import QApplication
         n_samples = len(merged)
-        self.progress_label.setText(f"Preparant cards ({n_samples} mostres)...")
+        self.progress_label.setText(f"Preparant taula ({n_samples} mostres)...")
         self.progress_bar.setValue(95)
         self.progress_frame.setVisible(True)
         QApplication.processEvents()
 
-        self._populate_cards()
+        self._populate_table()
         self.results_frame.setVisible(True)
 
         self.progress_label.setText("Generant grafics...")
@@ -1040,21 +1152,24 @@ class AnalyzePanel(QWidget):
         return ""
 
     # ------------------------------------------------------------------
-    # Populate cards
+    # Populate table
     # ------------------------------------------------------------------
 
-    def _populate_cards(self):
-        """Create SampleCard widgets for all samples."""
+    def _populate_table(self):
+        """Fill the samples table with analysis results."""
         try:
-            self._populate_cards_inner()
+            self._populate_table_inner()
         except Exception as e:
             import traceback
             traceback.print_exc()
-            logger.error(f"Error creating cards: {e}")
+            logger.error(f"Error populating table: {e}")
 
-    def _populate_cards_inner(self):
-        """Internal card population (wrapped for safety)."""
-        self._clear_cards()
+    def _populate_table_inner(self):
+        """Internal table population (wrapped for safety)."""
+        table = self._samples_table
+        table.setRowCount(0)
+        self._sample_row_map = {}
+        self._row_sample_map = {}
 
         show_blank = (self._cat_buttons.get("blank")
                       and self._cat_buttons["blank"].isChecked())
@@ -1095,35 +1210,21 @@ class AnalyzePanel(QWidget):
             lst.sort(key=_sort_key)
 
         n_ok, n_warning, n_error = 0, 0, 0
-        only_pending = self._pending_toggle.isChecked()
+        grey_bg = QColor("#F0F0F0")
+        sep_bg = QColor("#EAECEE")
 
         # --- Regular samples ---
         for name in sample_names:
             sample_data = self.samples_grouped[name]
+            row = table.rowCount()
+            table.insertRow(row)
+            self._sample_row_map[name] = row
+            self._row_sample_map[row] = name
 
-            # If pending filter, skip OK samples
-            if only_pending:
-                _, doc_rep = resolve_doc_replica(sample_data)
-                dad_sel = (sample_data.get("selected", {}) or {}).get("dad", "1")
-                dad_rep = (sample_data.get("replicas", {}) or {}).get(dad_sel, {})
-                comparison = sample_data.get("comparison", {})
-                (sc, st_text, _, _, _, _) = classify_sample_status(
-                    doc_rep, dad_rep, comparison, sample_data=sample_data)
-                if sc == COLOR_SUCCESS and not find_repair_targets(name, self.samples_grouped):
-                    n_ok += 1
-                    continue
-
-            card = SampleCard(
-                name, sample_data, self.samples_grouped,
-                self.main_window, parent=self._cards_container)
-            card.expand_requested.connect(self._on_card_expand)
-            card.data_changed.connect(self._on_card_data_changed)
-            self._cards_layout.addWidget(card)
-            self._sample_cards[name] = card
-
-            # Count stats
+            # Classify for stats
             _, doc_rep = resolve_doc_replica(sample_data)
-            dad_sel = (sample_data.get("selected", {}) or {}).get("dad", "1")
+            selected = sample_data.get("selected", {}) or {}
+            dad_sel = selected.get("dad", selected.get("doc", "1"))
             dad_rep = (sample_data.get("replicas", {}) or {}).get(dad_sel, {})
             comparison = sample_data.get("comparison", {})
             (sc, _, _, _, _, _) = classify_sample_status(
@@ -1135,48 +1236,58 @@ class AnalyzePanel(QWidget):
             else:
                 n_ok += 1
 
-        # --- Blancs separator + cards ---
+            self._fill_sample_row(table, row, name, sample_data,
+                                  doc_rep, dad_rep, comparison)
+
+        # --- Blancs separator + rows ---
         if blank_names and show_blank:
-            sep = QLabel("--- BLANCS / MQ ---")
-            sep.setAlignment(Qt.AlignCenter)
-            sep.setStyleSheet(
-                "font-weight: bold; color: #7f8c8d; background: #EAECEE;"
-                " padding: 4px; border-radius: 3px; margin: 4px 0;")
-            self._cards_layout.addWidget(sep)
+            row = table.rowCount()
+            table.insertRow(row)
+            sep_item = QTableWidgetItem("--- BLANCS / MQ ---")
+            sep_item.setTextAlignment(Qt.AlignCenter)
+            sep_font = QFont()
+            sep_font.setBold(True)
+            sep_item.setFont(sep_font)
+            sep_item.setForeground(QBrush(QColor("#7f8c8d")))
+            table.setItem(row, 0, sep_item)
+            table.setSpan(row, 0, 1, 10)
+            for c in range(10):
+                it = table.item(row, c) or QTableWidgetItem("")
+                it.setBackground(QBrush(sep_bg))
+                table.setItem(row, c, it)
 
             for name in blank_names:
                 sample_data = self.samples_grouped[name]
-                card = SampleCard(
-                    name, sample_data, self.samples_grouped,
-                    self.main_window, is_blank=True,
-                    parent=self._cards_container)
-                card.expand_requested.connect(self._on_card_expand)
-                card.data_changed.connect(self._on_card_data_changed)
-                self._cards_layout.addWidget(card)
-                self._sample_cards[name] = card
+                row = table.rowCount()
+                table.insertRow(row)
+                self._sample_row_map[name] = row
+                self._row_sample_map[row] = name
+                self._fill_blank_row(table, row, name, sample_data, grey_bg)
 
-        # --- Control separator + cards ---
+        # --- Control separator + rows ---
         if control_names and show_control:
-            sep = QLabel("--- NETEJA ---")
-            sep.setAlignment(Qt.AlignCenter)
-            sep.setStyleSheet(
-                "font-weight: bold; color: #888; background: #E8E8E8;"
-                " padding: 4px; border-radius: 3px; margin: 4px 0;")
-            self._cards_layout.addWidget(sep)
+            row = table.rowCount()
+            table.insertRow(row)
+            sep_item = QTableWidgetItem("--- NETEJA ---")
+            sep_item.setTextAlignment(Qt.AlignCenter)
+            sep_font = QFont()
+            sep_font.setBold(True)
+            sep_item.setFont(sep_font)
+            sep_item.setForeground(QBrush(QColor("#888")))
+            table.setItem(row, 0, sep_item)
+            table.setSpan(row, 0, 1, 10)
+            for c in range(10):
+                it = table.item(row, c) or QTableWidgetItem("")
+                it.setBackground(QBrush(QColor("#E8E8E8")))
+                table.setItem(row, c, it)
 
             for name in control_names:
                 sample_data = self.samples_grouped[name]
-                card = SampleCard(
-                    name, sample_data, self.samples_grouped,
-                    self.main_window, is_control=True,
-                    parent=self._cards_container)
-                card.expand_requested.connect(self._on_card_expand)
-                card.data_changed.connect(self._on_card_data_changed)
-                self._cards_layout.addWidget(card)
-                self._sample_cards[name] = card
-
-        # Add stretch at bottom
-        self._cards_layout.addStretch()
+                row = table.rowCount()
+                table.insertRow(row)
+                self._sample_row_map[name] = row
+                self._row_sample_map[row] = name
+                self._fill_control_row(table, row, name, grey_bg)
 
         # Update stats
         total = n_ok + n_warning + n_error
@@ -1206,53 +1317,259 @@ class AnalyzePanel(QWidget):
         )
 
     # ------------------------------------------------------------------
-    # Card management
+    # Table row fill helpers
     # ------------------------------------------------------------------
 
-    def _on_card_expand(self, sample_name):
-        """Handle card expand request -- only one expanded at a time."""
-        # Collapse currently expanded card
-        if self._expanded_card and self._expanded_card != sample_name:
-            old_card = self._sample_cards.get(self._expanded_card)
-            if old_card:
-                old_card.collapse()
+    def _fill_sample_row(self, table, row, name, sample_data,
+                         doc_rep, dad_rep, comparison):
+        """Fill one regular sample row in the table."""
+        selected = sample_data.get("selected", {}) or {}
+        quantification = sample_data.get("quantification", {}) or {}
 
-        card = self._sample_cards.get(sample_name)
-        if card:
-            if card.is_expanded:
-                card.collapse()
-                self._expanded_card = None
+        # Col 0: Mostra
+        name_item = QTableWidgetItem(name)
+        name_item.setFont(QFont("Segoe UI", 10))
+        table.setItem(row, 0, name_item)
+
+        # Col 1: ppm (Direct)
+        ppm_direct = quantification.get("concentration_ppm_direct")
+        ppm_text = f"{ppm_direct:.2f}" if ppm_direct is not None else "\u2014"
+        ppm_item = QTableWidgetItem(ppm_text)
+        ppm_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        area_doc = ((doc_rep.get("areas") or {}).get("DOC") or {}).get("total", 0)
+        ppm_item.setToolTip(f"A_DOC = {area_doc:.1f}")
+        table.setItem(row, 1, ppm_item)
+
+        # Col 2: ppm_uib
+        ppm_uib = quantification.get("concentration_ppm_uib")
+        ppm_uib_text = f"{ppm_uib:.2f}" if ppm_uib is not None else "\u2014"
+        ppm_uib_item = QTableWidgetItem(ppm_uib_text)
+        ppm_uib_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        area_uib = (doc_rep.get("areas_uib") or {}).get("total", 0)
+        ppm_uib_item.setToolTip(f"A_UIB = {area_uib:.1f}")
+        table.setItem(row, 2, ppm_uib_item)
+
+        # Col 3: SNR
+        snr_info = doc_rep.get("snr_info") or {}
+        snr_direct = snr_info.get("snr_direct", 0)
+        below_lod = quantification.get("below_lod", False)
+        below_loq = quantification.get("below_loq", False)
+        if below_lod:
+            snr_text = f"<LOD ({snr_direct:.0f})"
+            snr_item = QTableWidgetItem(snr_text)
+            snr_item.setForeground(QBrush(QColor(COLOR_ERROR)))
+        elif below_loq:
+            snr_text = f"<LOQ ({snr_direct:.0f})"
+            snr_item = QTableWidgetItem(snr_text)
+            snr_item.setForeground(QBrush(QColor(COLOR_WARNING)))
+        else:
+            snr_text = f"{snr_direct:.0f}" if snr_direct else "\u2014"
+            snr_item = QTableWidgetItem(snr_text)
+        snr_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        table.setItem(row, 3, snr_item)
+
+        # Col 4: r2 DOC
+        r2_doc = (comparison.get("doc") or {}).get("pearson", 0)
+        r2_uib = (comparison.get("doc") or {}).get("pearson_uib", 0)
+        if not comparison or not comparison.get("doc"):
+            r2_text = "\u2014"
+            r2_item = QTableWidgetItem(r2_text)
+            r2_item.setForeground(QBrush(QColor("#aaa")))
+        elif r2_doc >= 0.99:
+            r2_text = "\u2713"
+            r2_item = QTableWidgetItem(r2_text)
+            r2_item.setForeground(QBrush(QColor(COLOR_SUCCESS)))
+        else:
+            r2_text = "\u26a0"
+            r2_item = QTableWidgetItem(r2_text)
+            r2_item.setForeground(QBrush(QColor(COLOR_WARNING)))
+        r2_item.setTextAlignment(Qt.AlignCenter)
+        tip_parts = [f"r\u00b2 DOC = {r2_doc:.4f}"]
+        if r2_uib:
+            tip_parts.append(f"r\u00b2 UIB = {r2_uib:.4f}")
+        r2_item.setToolTip("\n".join(tip_parts))
+        table.setItem(row, 4, r2_item)
+
+        # Col 5: Timeout
+        timeout_info = doc_rep.get("timeout_info") or {}
+        n_timeouts = timeout_info.get("n_timeouts", 0)
+        timeout_severity = timeout_info.get("severity", "OK")
+        zone_summary = timeout_info.get("zone_summary", {})
+        sel_key = selected.get("doc", "1")
+        sel_rep = (sample_data.get("replicas", {}) or {}).get(sel_key, {})
+        composed = bool(sel_rep.get("timeout_composition"))
+
+        if n_timeouts > 0:
+            if composed:
+                to_text = "\u23f1\u2713"
+                to_color = COLOR_SUCCESS
             else:
-                card.expand()
-                self._expanded_card = sample_name
-                # Scroll to the card
-                self._scroll_area.ensureWidgetVisible(card, 50, 50)
+                # Show highest severity zone
+                zone_names = list(zone_summary.keys()) if zone_summary else []
+                zone_str = zone_names[0] if zone_names else ""
+                to_text = f"\u23f1 {zone_str}"
+                if "PIC" in str(zone_summary) or timeout_severity == "CRITICAL":
+                    to_color = COLOR_ERROR
+                elif any(z in ("HS",) for z in zone_names):
+                    to_color = COLOR_ERROR
+                elif any(z in ("BB",) for z in zone_names):
+                    to_color = COLOR_WARNING
+                else:
+                    to_color = "#888"
+            to_item = QTableWidgetItem(to_text)
+            to_item.setForeground(QBrush(QColor(to_color)))
+            zones_str = ", ".join(zone_summary.keys()) if zone_summary else "?"
+            to_item.setToolTip(
+                f"Timeouts: {n_timeouts} ({timeout_severity})\n"
+                f"Zones: {zones_str}"
+                + ("\nComposat" if composed else ""))
+        else:
+            to_item = QTableWidgetItem("")
+        to_item.setTextAlignment(Qt.AlignCenter)
+        table.setItem(row, 5, to_item)
 
-    def _on_card_data_changed(self, sample_name):
-        """Handle data change from a card (repair/compose/replica change)."""
-        # Recalculate quantification if needed
-        sample_data = self.samples_grouped.get(sample_name)
-        if not sample_data:
-            return
+        # Col 6: Pic (irregular top / saturated)
+        anomalies = doc_rep.get("anomalies", [])
+        has_irregular = (
+            has_anomaly(anomalies, "IRREGULAR_TOP_DIRECT")
+            or has_anomaly(anomalies, "IRREGULAR_TOP_UIB"))
+        is_repaired = sample_data.get("repaired", False)
+        is_saturated = doc_rep.get("uib_saturated", False)
 
-        selected = sample_data.get("selected", {})
-        doc_sel = selected.get("doc", "1")
+        if is_saturated:
+            pic_text = "SAT"
+            pic_item = QTableWidgetItem(pic_text)
+            pic_item.setForeground(QBrush(QColor(COLOR_ERROR)))
+            pic_item.setToolTip("Senyal UIB saturat")
+        elif is_repaired:
+            pic_text = "\u2713 rep"
+            pic_item = QTableWidgetItem(pic_text)
+            pic_item.setForeground(QBrush(QColor(COLOR_SUCCESS)))
+            pic_item.setToolTip("Cim irregular reparat")
+        elif has_irregular:
+            pic_text = "\u26a0 irreg"
+            pic_item = QTableWidgetItem(pic_text)
+            pic_item.setForeground(QBrush(QColor(COLOR_WARNING)))
+            pic_item.setToolTip("Cim irregular detectat")
+        else:
+            pic_item = QTableWidgetItem("")
+        pic_item.setTextAlignment(Qt.AlignCenter)
+        table.setItem(row, 6, pic_item)
 
-        if doc_sel != "none":
-            self._update_quantification(sample_name)
+        # DAD columns
+        dad_sel = selected.get("dad", selected.get("doc", "1"))
+        dad_rep_data = (sample_data.get("replicas", {}) or {}).get(dad_sel, {})
+        areas_dad = dad_rep_data.get("areas") or {}
+        snr_dad = dad_rep_data.get("snr_info_dad") or {}
 
-        # Refresh the card
-        card = self._sample_cards.get(sample_name)
-        if card:
-            card.refresh()
+        # Col 7: A254
+        a254_dict = areas_dad.get("A254") or {}
+        a254_total = a254_dict.get("total", 0) if isinstance(a254_dict, dict) else 0
+        a254_text = f"{a254_total:.0f}" if a254_total else "\u2014"
+        a254_item = QTableWidgetItem(a254_text)
+        a254_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        # Tooltip with other wavelengths
+        a220 = ((areas_dad.get("A220") or {}).get("total", 0)
+                if isinstance(areas_dad.get("A220"), dict) else 0)
+        a272 = ((areas_dad.get("A272") or {}).get("total", 0)
+                if isinstance(areas_dad.get("A272"), dict) else 0)
+        a290 = ((areas_dad.get("A290") or {}).get("total", 0)
+                if isinstance(areas_dad.get("A290"), dict) else 0)
+        a254_item.setToolTip(
+            f"A220 = {a220:.0f}\nA272 = {a272:.0f}\nA290 = {a290:.0f}")
+        table.setItem(row, 7, a254_item)
 
-        # Persist changes
-        self._save_current_analysis()
+        # Col 8: SNR_254
+        snr_254_entry = snr_dad.get("A254") or {}
+        snr_254 = (snr_254_entry.get("snr", 0)
+                   if isinstance(snr_254_entry, dict) else 0)
+        snr_254_text = f"{snr_254:.0f}" if snr_254 else "\u2014"
+        snr_254_item = QTableWidgetItem(snr_254_text)
+        snr_254_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        # Tooltip with SNR per wavelength
+        snr_tip_parts = []
+        for wl_key in ("A220", "A254", "A272", "A290", "A362"):
+            entry = snr_dad.get(wl_key) or {}
+            val = entry.get("snr", 0) if isinstance(entry, dict) else 0
+            snr_tip_parts.append(f"SNR_{wl_key} = {val:.0f}")
+        snr_254_item.setToolTip("\n".join(snr_tip_parts))
+        table.setItem(row, 8, snr_254_item)
 
-    def _on_pending_filter_changed(self):
-        """Rebuild cards when pending filter changes."""
-        if self.samples_grouped:
-            self._populate_cards()
+        # Col 9: r2_254
+        dad_comp = comparison.get("dad") or {}
+        pearson_per_wl = dad_comp.get("pearson_per_wavelength") or {}
+        r2_254 = pearson_per_wl.get("254", 0) or pearson_per_wl.get("A254", 0)
+        if not dad_comp or not pearson_per_wl:
+            r2_254_text = "\u2014"
+            r2_254_item = QTableWidgetItem(r2_254_text)
+            r2_254_item.setForeground(QBrush(QColor("#aaa")))
+        elif r2_254 >= 0.99:
+            r2_254_text = "\u2713"
+            r2_254_item = QTableWidgetItem(r2_254_text)
+            r2_254_item.setForeground(QBrush(QColor(COLOR_SUCCESS)))
+        else:
+            r2_254_text = "\u26a0"
+            r2_254_item = QTableWidgetItem(r2_254_text)
+            r2_254_item.setForeground(QBrush(QColor(COLOR_WARNING)))
+        r2_254_item.setTextAlignment(Qt.AlignCenter)
+        # Tooltip with r2 per wavelength
+        r2_tip_parts = []
+        for wl_k, wl_v in pearson_per_wl.items():
+            r2_tip_parts.append(f"r\u00b2_{wl_k} = {wl_v:.4f}")
+        r2_254_item.setToolTip("\n".join(r2_tip_parts) if r2_tip_parts else "Sense comparacio")
+        table.setItem(row, 9, r2_254_item)
+
+    def _fill_blank_row(self, table, row, name, sample_data, bg_color):
+        """Fill a BLANK row with simplified data."""
+        quantification = sample_data.get("quantification", {}) or {}
+        _, doc_rep = resolve_doc_replica(sample_data)
+
+        # Col 0: Mostra
+        name_item = QTableWidgetItem(name)
+        name_item.setBackground(QBrush(bg_color))
+        table.setItem(row, 0, name_item)
+
+        # Col 1: ppm (if available)
+        ppm = quantification.get("concentration_ppm_direct")
+        ppm_text = f"{ppm:.2f}" if ppm is not None else "\u2014"
+        ppm_item = QTableWidgetItem(ppm_text)
+        ppm_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        ppm_item.setBackground(QBrush(bg_color))
+        table.setItem(row, 1, ppm_item)
+
+        # Cols 2-9: dashes with grey background
+        for c in range(2, 10):
+            it = QTableWidgetItem("\u2014")
+            it.setTextAlignment(Qt.AlignCenter)
+            it.setForeground(QBrush(QColor("#aaa")))
+            it.setBackground(QBrush(bg_color))
+            table.setItem(row, c, it)
+
+    def _fill_control_row(self, table, row, name, bg_color):
+        """Fill a CONTROL (Neteja) row."""
+        # Col 0: Mostra
+        name_item = QTableWidgetItem(name)
+        name_item.setBackground(QBrush(bg_color))
+        table.setItem(row, 0, name_item)
+
+        # Col 1: "Neteja" label
+        label_item = QTableWidgetItem("Neteja")
+        label_item.setTextAlignment(Qt.AlignCenter)
+        label_item.setForeground(QBrush(QColor("#888")))
+        label_item.setBackground(QBrush(bg_color))
+        table.setItem(row, 1, label_item)
+
+        # Cols 2-9: dashes with grey background
+        for c in range(2, 10):
+            it = QTableWidgetItem("\u2014")
+            it.setTextAlignment(Qt.AlignCenter)
+            it.setForeground(QBrush(QColor("#aaa")))
+            it.setBackground(QBrush(bg_color))
+            table.setItem(row, c, it)
+
+    # ------------------------------------------------------------------
+    # (Card management removed -- table is read-only)
+    # ------------------------------------------------------------------
 
     # ------------------------------------------------------------------
     # Quantification recalculation
@@ -1269,6 +1586,366 @@ class AnalyzePanel(QWidget):
             save_analysis_result(processed)
         except Exception as e:
             logger.warning("Error guardant analisi: %s", e)
+
+    # ------------------------------------------------------------------
+    # Review panel (inline sample review below table)
+    # ------------------------------------------------------------------
+
+    def _on_table_row_clicked(self, index):
+        """Show review panel for clicked sample."""
+        row = index.row()
+        sample_name = self._row_sample_map.get(row)
+        if not sample_name:
+            return
+        self._show_review(sample_name)
+
+    def _show_review(self, sample_name):
+        """Display the review panel for a sample."""
+        self._review_sample = sample_name
+        sample_data = self.samples_grouped.get(sample_name)
+        if not sample_data:
+            return
+
+        self._review_panel.setVisible(True)
+
+        # Update title with navigation info
+        names = list(self._sample_row_map.keys())
+        idx = names.index(sample_name) if sample_name in names else 0
+        self._review_title.setText(
+            f"{sample_name}  ({idx + 1}/{len(names)})")
+        self._review_prev_btn.setEnabled(idx > 0)
+        self._review_next_btn.setEnabled(idx < len(names) - 1)
+
+        # Build replica combos
+        self._build_review_combos(sample_data)
+
+        # Draw chromatogram
+        self._draw_review_chromatogram(sample_data)
+
+        # Update metrics
+        self._update_review_metrics(sample_data)
+
+        # Update fractions
+        self._update_review_fractions(sample_data)
+
+        # Update anomalies
+        self._update_review_anomalies(sample_data)
+
+        # Show/hide action buttons
+        has_repair = bool(find_repair_targets(sample_name, self.samples_grouped))
+        self._review_repair_btn.setVisible(True)
+        tc = sample_data.get("timeout_composability", {})
+        has_compose = tc.get("composable", False)
+        has_timeouts = any(
+            r.get("timeout_info", {}).get("n_timeouts", 0) > 0
+            for r in sample_data.get("replicas", {}).values()
+            if isinstance(r, dict))
+        self._review_compose_btn.setVisible(has_compose or has_timeouts)
+
+        # Scroll to make review panel visible
+        self._scroll_area.ensureWidgetVisible(self._review_panel, 50, 50)
+
+    def _close_review(self):
+        """Hide the review panel."""
+        self._review_panel.setVisible(False)
+        self._review_sample = None
+
+    def _navigate_review(self, direction):
+        """Navigate to prev/next sample in review."""
+        if not self._review_sample:
+            return
+        names = list(self._sample_row_map.keys())
+        try:
+            idx = names.index(self._review_sample)
+        except ValueError:
+            return
+        new_idx = idx + direction
+        if 0 <= new_idx < len(names):
+            self._show_review(names[new_idx])
+            row = self._sample_row_map.get(names[new_idx])
+            if row is not None:
+                self._samples_table.selectRow(row)
+
+    def _build_review_combos(self, sample_data):
+        """Populate DOC and DAD replica combos."""
+        replicas = sample_data.get("replicas", {})
+        recommendation = sample_data.get("recommendation", {})
+        selected = sample_data.get("selected", {})
+
+        doc_rec = (recommendation.get("doc") or {}).get("replica", "1")
+        doc_sel = selected.get("doc", doc_rec)
+        dad_rec = (recommendation.get("dad") or {}).get("replica", "1")
+        dad_sel = selected.get("dad", dad_rec)
+
+        # DOC combo
+        self._review_doc_combo.blockSignals(True)
+        self._review_doc_combo.clear()
+        for rep_num in sorted(replicas.keys(),
+                              key=lambda x: int(x) if x.isdigit() else 999):
+            label = f"R{rep_num}"
+            rep_data = replicas.get(rep_num, {})
+            if isinstance(rep_data, dict):
+                idx = rep_data.get("injection_index")
+                if idx is not None:
+                    label += f" ({idx})"
+            if rep_num == doc_rec:
+                label += " ★"
+            self._review_doc_combo.addItem(label, rep_num)
+            if rep_num == doc_sel:
+                self._review_doc_combo.setCurrentIndex(
+                    self._review_doc_combo.count() - 1)
+        # Add "Comp" if any replica has timeout_composition
+        has_composition = any(
+            r.get("timeout_composition")
+            for r in replicas.values() if isinstance(r, dict))
+        if has_composition:
+            self._review_doc_combo.addItem("Comp", "comp")
+            if doc_sel == "comp":
+                self._review_doc_combo.setCurrentIndex(
+                    self._review_doc_combo.count() - 1)
+        self._review_doc_combo.addItem("Cap", "none")
+        if doc_sel == "none":
+            self._review_doc_combo.setCurrentIndex(
+                self._review_doc_combo.count() - 1)
+        self._review_doc_combo.blockSignals(False)
+
+        # DAD combo
+        self._review_dad_combo.blockSignals(True)
+        self._review_dad_combo.clear()
+        for rep_num in sorted(replicas.keys(),
+                              key=lambda x: int(x) if x.isdigit() else 999):
+            label = f"R{rep_num}"
+            if rep_num == dad_rec:
+                label += " ★"
+            self._review_dad_combo.addItem(label, rep_num)
+            if rep_num == dad_sel:
+                self._review_dad_combo.setCurrentIndex(
+                    self._review_dad_combo.count() - 1)
+        self._review_dad_combo.addItem("Cap", "none")
+        if dad_sel == "none":
+            self._review_dad_combo.setCurrentIndex(
+                self._review_dad_combo.count() - 1)
+        self._review_dad_combo.blockSignals(False)
+
+    def _draw_review_chromatogram(self, sample_data):
+        """Draw R1+R2 DOC chromatogram with timeout zones."""
+        if not HAS_MATPLOTLIB:
+            return
+        self._review_figure.clear()
+        ax = self._review_figure.add_subplot(111)
+
+        replicas = sample_data.get("replicas", {})
+        colors = ['#2E86AB', '#E74C3C', '#F39C12', '#27AE60']
+
+        for i, (rk, rd) in enumerate(sorted(
+                replicas.items(),
+                key=lambda x: int(x[0]) if x[0].isdigit() else 999)):
+            if not isinstance(rd, dict):
+                continue
+            t = rd.get("t_doc")
+            y = rd.get("y_doc_net")
+            if t is not None and y is not None and len(t) > 0:
+                ax.plot(t, y, label=f"R{rk}",
+                        color=colors[i % len(colors)], lw=1.0, alpha=0.8)
+
+            # Timeout zones
+            timeout_info = rd.get("timeout_info", {})
+            if timeout_info.get("n_timeouts", 0) > 0:
+                for to in timeout_info.get("timeouts", []):
+                    aff_start = to.get("affected_start_min", 0)
+                    aff_end = to.get("affected_end_min", 0)
+                    ax.axvspan(aff_start, aff_end, alpha=0.12,
+                               color=colors[i % len(colors)])
+
+        processed = self.main_window.processed_data or {}
+        method = processed.get("method", "COLUMN")
+        is_bp = "BP" in method.upper() if method else False
+        ax.set_xlim(0, 12 if is_bp else 70)
+        ax.set_xlabel("min", fontsize=8)
+        ax.set_ylabel("ppb", fontsize=8)
+        ax.tick_params(labelsize=7)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.legend(fontsize=7, loc="upper right", framealpha=0.7)
+
+        try:
+            self._review_figure.tight_layout()
+        except Exception:
+            pass
+        self._review_canvas.draw_idle()
+
+    def _update_review_metrics(self, sample_data):
+        """Update metrics label."""
+        _, doc_rep = resolve_doc_replica(sample_data)
+        quant = sample_data.get("quantification", {})
+        parts = []
+        ppm = (quant.get("concentration_ppm_direct")
+               or quant.get("concentration_ppm"))
+        if ppm:
+            parts.append(f"ppm: <b>{ppm:.2f}</b>")
+        ppm_u = quant.get("concentration_ppm_uib")
+        if ppm_u:
+            parts.append(f"UIB: <b>{ppm_u:.2f}</b>")
+        snr = (doc_rep.get("snr_info") or {}).get("snr_direct", 0)
+        if snr:
+            parts.append(f"SNR: {snr:.0f}")
+        area = ((doc_rep.get("areas") or {}).get("DOC") or {}).get("total", 0)
+        if area:
+            parts.append(f"A: {area:.0f}")
+        self._review_metrics.setText(" | ".join(parts))
+
+    def _update_review_fractions(self, sample_data):
+        """Update fractions text."""
+        _, doc_rep = resolve_doc_replica(sample_data)
+        areas = (doc_rep.get("areas") or {}).get("DOC") or {}
+        total = areas.get("total", 0) or 0
+        if total <= 0:
+            self._review_fractions.setText("")
+            return
+        parts = []
+        for frac in FRACTION_ORDER:
+            val = areas.get(frac, 0) or 0
+            pct = val / total * 100 if total > 0 else 0
+            color = FRACTION_COLORS.get(frac, "#666")
+            parts.append(
+                f"<span style='color:{color}'>{frac}</span> {pct:.0f}%")
+        self._review_fractions.setText("Fraccions: " + " · ".join(parts))
+
+    def _update_review_anomalies(self, sample_data):
+        """Update anomalies text."""
+        replicas = sample_data.get("replicas", {})
+        all_anomalies = []
+        seen = set()
+        for rk, rd in replicas.items():
+            if not isinstance(rd, dict):
+                continue
+            for a in rd.get("anomalies", []):
+                code = a.get("code") if isinstance(a, dict) else str(a)
+                if code not in seen:
+                    all_anomalies.append(a)
+                    seen.add(code)
+        if not all_anomalies:
+            self._review_anomalies.setText("")
+            return
+        classified = classify_anomalies(all_anomalies)
+        parts = []
+        for key, icon, color in [
+            ("blocker", "⛔", "#E74C3C"),
+            ("warning", "⚠", "#F39C12"),
+            ("info", "ℹ", "#3498DB"),
+        ]:
+            for a in classified.get(key, []):
+                code = a.get("code") if isinstance(a, dict) else str(a)
+                entry = ANOMALY_CATALOG.get(code, {})
+                lbl = ((a.get("label") if isinstance(a, dict) else None)
+                       or entry.get("label", code))
+                action = entry.get("action", "")
+                line = f"<span style='color:{color}'>{icon} {lbl}</span>"
+                if action:
+                    line += (f" <span style='color:#999'>"
+                             f"-> {action}</span>")
+                parts.append(line)
+        self._review_anomalies.setText("<br>".join(parts))
+
+    def _on_review_doc_changed(self):
+        """DOC replica changed in review panel."""
+        if not self._review_sample:
+            return
+        new_rep = self._review_doc_combo.currentData()
+        if new_rep is None:
+            return
+        sample_data = self.samples_grouped.get(self._review_sample, {})
+        sample_data.setdefault("selected", {})["doc"] = new_rep
+
+        if new_rep == "none":
+            sample_data["sample_valid"] = False
+        else:
+            sample_data["sample_valid"] = True
+
+        # Recalculate quantification
+        self._update_quantification(self._review_sample)
+
+        # Redraw
+        self._draw_review_chromatogram(sample_data)
+        self._update_review_metrics(sample_data)
+        self._update_review_fractions(sample_data)
+
+        # Update table row
+        row = self._sample_row_map.get(self._review_sample)
+        if row is not None:
+            _, doc_rep = resolve_doc_replica(sample_data)
+            dad_sel = (sample_data.get("selected") or {}).get("dad", "1")
+            dad_rep = (sample_data.get("replicas") or {}).get(dad_sel, {})
+            comparison = sample_data.get("comparison", {})
+            self._fill_sample_row(
+                self._samples_table, row, self._review_sample,
+                sample_data, doc_rep, dad_rep, comparison)
+
+        self._save_current_analysis()
+
+    def _on_review_dad_changed(self):
+        """DAD replica changed in review panel."""
+        if not self._review_sample:
+            return
+        new_rep = self._review_dad_combo.currentData()
+        if new_rep is None:
+            return
+        sample_data = self.samples_grouped.get(self._review_sample, {})
+        sample_data.setdefault("selected", {})["dad"] = new_rep
+
+        # Update table row
+        row = self._sample_row_map.get(self._review_sample)
+        if row is not None:
+            _, doc_rep = resolve_doc_replica(sample_data)
+            dad_sel = (sample_data.get("selected") or {}).get("dad", "1")
+            dad_rep = (sample_data.get("replicas") or {}).get(dad_sel, {})
+            comparison = sample_data.get("comparison", {})
+            self._fill_sample_row(
+                self._samples_table, row, self._review_sample,
+                sample_data, doc_rep, dad_rep, comparison)
+
+        self._save_current_analysis()
+
+    def _on_review_repair(self):
+        """Open repair dialog for current review sample."""
+        if not self._review_sample:
+            return
+        sample_data = self.samples_grouped.get(self._review_sample)
+        if not sample_data:
+            return
+        method = "COLUMN"
+        if self.main_window.processed_data:
+            method = self.main_window.processed_data.get("method", "COLUMN")
+        dialog = JaggedPeakRepairDialog(
+            self._review_sample, sample_data, method, force=True, parent=self)
+        dialog.repair_completed.connect(self._on_review_repair_done)
+        dialog.exec()
+
+    def _on_review_compose(self):
+        """Open composition dialog for current review sample."""
+        if not self._review_sample:
+            return
+        sample_data = self.samples_grouped.get(self._review_sample)
+        if not sample_data:
+            return
+        is_bp = False
+        if self.main_window.processed_data:
+            is_bp = (self.main_window.processed_data.get("method", "COLUMN")
+                     .upper() == "BP")
+        from .composition_dialog import TimeoutCompositionDialog
+        dialog = TimeoutCompositionDialog(
+            self._review_sample, sample_data, is_bp=is_bp, parent=self)
+        dialog.composition_completed.connect(self._on_review_repair_done)
+        dialog.exec()
+
+    def _on_review_repair_done(self, sample_name):
+        """After repair or compose, refresh review and table."""
+        self._update_quantification(sample_name)
+        sample_data = self.samples_grouped.get(sample_name)
+        if sample_data:
+            self._show_review(sample_name)
+        self._populate_table()
+        self._save_current_analysis()
 
     def _update_quantification(self, sample_name):
         """Recalcula la quantificacio per una mostra."""
@@ -1366,13 +2043,13 @@ class AnalyzePanel(QWidget):
         dialog.activateWindow()
 
     def _on_detail_closed(self, sample_name):
-        """Actualitza card despres de tancar el dialeg de detall."""
-        card = self._sample_cards.get(sample_name)
-        if card:
-            sample_data = self.samples_grouped.get(sample_name, {})
-            if sample_data.get("repaired"):
-                self._update_quantification(sample_name)
-            card.refresh()
+        """Actualitza taula despres de tancar el dialeg de detall."""
+        sample_data = self.samples_grouped.get(sample_name, {})
+        if sample_data.get("repaired"):
+            self._update_quantification(sample_name)
+        # Refresh the table to reflect any changes
+        if self.samples_grouped:
+            self._populate_table()
         self._detail_dialog = None
 
     # ------------------------------------------------------------------
@@ -1417,11 +2094,10 @@ class AnalyzePanel(QWidget):
         dialog.exec()
 
     def _on_repair_action(self, sample_name):
-        """Actualitza la card despres d'una accio de reparacio o composicio."""
+        """Actualitza la taula despres d'una accio de reparacio o composicio."""
         self._update_quantification(sample_name)
-        card = self._sample_cards.get(sample_name)
-        if card:
-            card.refresh()
+        if self.samples_grouped:
+            self._populate_table()
         self._save_current_analysis()
 
     # ------------------------------------------------------------------
@@ -1585,10 +2261,10 @@ class AnalyzePanel(QWidget):
                 )
 
     def _on_cat_toggle(self):
-        """Un boto de categoria ha canviat -- actualitza cards i grafics."""
+        """Un boto de categoria ha canviat -- actualitza taula i grafics."""
         self._update_cat_btn_styles()
         if self.samples_grouped:
-            self._populate_cards()
+            self._populate_table()
         self._redraw_charts()
 
     def _on_wl_changed(self):
