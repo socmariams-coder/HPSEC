@@ -2175,7 +2175,16 @@ class CalibratePanel(QWidget):
             current_delay = None
 
         if current_delay is None:
-            current_delay = 0.0
+            logger.warning(f"No s'ha pogut determinar el delay del MasterFile: {mf_path}")
+            self.delay_shift_label.setText("—")
+            self.delay_current_label.setText("No determinat")
+            self.delay_info_label.setText(
+                "⚠️ No s'ha pogut determinar el delay actual del MasterFile "
+                "(falten hores HPLC/TOC al 0-INFO)."
+            )
+            self.delay_apply_btn.setVisible(False)
+            self.delay_group.setVisible(True)
+            return
 
         self._delay_original = current_delay
 
@@ -2227,9 +2236,9 @@ class CalibratePanel(QWidget):
         # Botó correcció: visible si shift > threshold
         show_btn = (is_bp and shift_abs >= 0.5) or shift_abs > 2.0
         if show_btn:
-            new_delay = current_delay + shift_min
+            new_delay = current_delay - shift_min
             self.delay_apply_btn.setText(
-                f"Corregir delay ({shift_min:+.2f} min) i reimportar"
+                f"Corregir delay ({-shift_min:+.2f} min) i reimportar"
             )
             self.delay_apply_btn.setVisible(True)
             self.delay_apply_btn.setEnabled(True)
@@ -2244,7 +2253,7 @@ class CalibratePanel(QWidget):
 
         old_delay = self._delay_original or 0
         shift = self._delay_shift_min
-        new_delay = old_delay + shift
+        new_delay = old_delay - shift
         mf_path = self._delay_mf_path
 
         if mf_path is None:
@@ -2303,7 +2312,7 @@ class CalibratePanel(QWidget):
             )
         finally:
             self.delay_apply_btn.setText(
-                f"Corregir delay ({shift:+.2f} min) i reimportar"
+                f"Corregir delay ({-shift:+.2f} min) i reimportar"
             )
             self.delay_apply_btn.setEnabled(True)
 

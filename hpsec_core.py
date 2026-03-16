@@ -812,7 +812,8 @@ def fit_parabola(t1, y1, t2, y2, t3, y3):
         return None
 
 
-def repair_with_parabola(t, y, factor=REPAIR_FACTOR, force=False):
+def repair_with_parabola(t, y, factor=REPAIR_FACTOR, force=False,
+                         anchor_left_t=None, anchor_right_t=None):
     """
     Repair irregular peak top (jagged/batman artifact) using parabola interpolation.
 
@@ -825,7 +826,9 @@ def repair_with_parabola(t, y, factor=REPAIR_FACTOR, force=False):
     Parameters:
         t, y: time and signal arrays (peak segment)
         factor: correction factor for tangent height
-        force: if True, skip detect_irregular_top check (caller already decided repair needed)
+        force: if True, skip detect_irregular_top check
+        anchor_left_t: manual override for left anchor time (None = auto)
+        anchor_right_t: manual override for right anchor time (None = auto)
 
     Returns:
         tuple (y_repaired, repair_info, was_repaired)
@@ -849,11 +852,23 @@ def repair_with_parabola(t, y, factor=REPAIR_FACTOR, force=False):
     t_max = tangent["t_intersect"]
     y_max_theoretical = tangent["y_intersect"] * factor
 
-    # Anchor points
-    t1 = tangent["t_anchor_left"]
-    y1 = tangent["y_anchor_left"]
-    t3 = tangent["t_anchor_right"]
-    y3 = tangent["y_anchor_right"]
+    # Anchor points (manual override or auto)
+    if anchor_left_t is not None:
+        # Find closest point to manual anchor
+        idx_l = int(np.argmin(np.abs(t - anchor_left_t)))
+        t1 = float(t[idx_l])
+        y1 = float(y[idx_l])
+    else:
+        t1 = tangent["t_anchor_left"]
+        y1 = tangent["y_anchor_left"]
+
+    if anchor_right_t is not None:
+        idx_r = int(np.argmin(np.abs(t - anchor_right_t)))
+        t3 = float(t[idx_r])
+        y3 = float(y[idx_r])
+    else:
+        t3 = tangent["t_anchor_right"]
+        y3 = tangent["y_anchor_right"]
 
     # Fit parabola
     coeffs = fit_parabola(t1, y1, t_max, y_max_theoretical, t3, y3)
@@ -1857,22 +1872,30 @@ def _compose_blended(t_out, y1, y2, segments, blend_width_min, use_cosine=True):
         mask = (t_out >= seg["t_start"]) & (t_out <= seg["t_end"])
         y_out[mask] = src[mask]
 
-    # Blend at boundaries
+    # Blend at boundaries — only between segments that are both "1" or "2"
+    # (not "interp"), and clamp blend zone to segment limits
     for i in range(len(segments) - 1):
         seg_a = segments[i]
         seg_b = segments[i + 1]
         if seg_a["source"] == seg_b["source"]:
             continue
+        # Skip blend if either segment is interp
+        if seg_a["source"] not in ("1", "2") or seg_b["source"] not in ("1", "2"):
+            continue
         boundary = seg_a["t_end"]
         src_a = y1 if seg_a["source"] == "1" else y2
         src_b = y1 if seg_b["source"] == "1" else y2
 
-        blend_mask = (t_out >= boundary - hw) & (t_out <= boundary + hw)
+        # Clamp blend zone to segment limits
+        blend_start = max(boundary - hw, seg_a["t_start"])
+        blend_end = min(boundary + hw, seg_b["t_end"])
+        blend_mask = (t_out >= blend_start) & (t_out <= blend_end)
         if not np.any(blend_mask):
             continue
 
         t_blend = t_out[blend_mask]
-        phase = (t_blend - (boundary - hw)) / max(blend_width_min, 0.001)
+        actual_width = blend_end - blend_start
+        phase = (t_blend - blend_start) / max(actual_width, 0.001)
         phase = np.clip(phase, 0, 1)
         if use_cosine:
             w = 0.5 * (1 + np.cos(np.pi * phase))

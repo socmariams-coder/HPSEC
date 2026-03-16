@@ -2858,7 +2858,7 @@ def find_data_for_injection(injection, seq_path, uib_files, dad_files, dad_csv_f
                         t_uib, y_uib = downsample_to_cadence(t_uib, y_uib)
 
                     # Propagar timeout_info de Direct a UIB (mateix detector TOC)
-                    uib_timeout = result.get("direct", {}).get("timeout_info", {})
+                    uib_timeout = (result.get("direct") or {}).get("timeout_info", {})
                     result["uib"] = {
                         "path": uib_path,
                         "df": df_uib,  # df original (per referència)
@@ -4762,7 +4762,7 @@ def import_from_manifest(seq_path, manifest=None, config=None, progress_callback
                     if uib_result:
                         uib_result["manual_assignment"] = uib_info.get("manual_assignment", False)
                         # Propagar timeout_info de Direct a UIB (mateix detector TOC)
-                        direct_ti = rep_data.get("direct", {}).get("timeout_info", {})
+                        direct_ti = (rep_data.get("direct") or {}).get("timeout_info", {})
                         uib_result["timeout_info"] = direct_ti
                         uib_result["timeout_at_boundary"] = direct_ti.get("timeout_at_boundary", False)
                         rep_data["uib"] = uib_result
@@ -5151,7 +5151,7 @@ def ensure_data_loaded(imported_data, config=None, progress_callback=None):
                     if uib_result:
                         uib_result["manual_assignment"] = uib.get("manual_assignment", False)
                         # Propagar timeout_info de Direct a UIB (mateix detector TOC)
-                        direct_ti = rep_data.get("direct", {}).get("timeout_info", {})
+                        direct_ti = (rep_data.get("direct") or {}).get("timeout_info", {})
                         uib_result["timeout_info"] = direct_ti
                         uib_result["timeout_at_boundary"] = direct_ti.get("timeout_at_boundary", False)
                         rep_data["uib"] = uib_result

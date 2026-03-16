@@ -670,6 +670,11 @@ class DashboardPanel(QWidget):
             parts.append(f"Pack amb {len(seq.siblings)} siblings:")
             parts.extend(f"  {s}" for s in sibling_names)
 
+        # Twin cross-method (COLUMN <-> BP)
+        if seq.twin_seq_name:
+            pct = f" ({seq.twin_match_pct:.0f}%)" if seq.twin_match_pct > 0 else ""
+            parts.append(f"Twin: {seq.twin_seq_name}{pct}")
+
         return "\n".join(parts)
 
     def _update_table(self):

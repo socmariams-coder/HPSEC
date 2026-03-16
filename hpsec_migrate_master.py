@@ -443,13 +443,30 @@ def _create_masterfile(data: Dict, info: Dict, seq_path: str) -> tuple:
     ws_info['B8'] = info.get('hora_hplc', '')
     ws_info['A9'] = 'Hora TOC'
     ws_info['B9'] = info.get('hora_toc', '')
+    # Calcular desfase i net delay com a valors (openpyxl no avalua fórmules)
+    hora_hplc_val = info.get('hora_hplc')
+    hora_toc_val = info.get('hora_toc')
+    desfase_val = None
+    net_delay_val = None
+    if hora_hplc_val and hora_toc_val:
+        try:
+            def _to_min(t):
+                if hasattr(t, 'hour'):
+                    return t.hour * 60 + t.minute + t.second / 60
+                parts = str(t).split(':')
+                return int(parts[0]) * 60 + int(parts[1])
+            desfase_val = round(_to_min(hora_hplc_val) - _to_min(hora_toc_val), 4)
+            net_delay_val = round(FLUSH_TIME_MIN - desfase_val, 4)
+        except Exception:
+            pass
+
     ws_info['A10'] = 'Desfase (min)'
-    ws_info['B10'] = '=(B8-B9)*24*60'
+    ws_info['B10'] = desfase_val
     ws_info['A11'] = 'Flush time (min)'
     ws_info['B11'] = FLUSH_TIME_MIN
     ws_info['C11'] = '(constant)'
     ws_info['A12'] = 'Net delay (min)'
-    ws_info['B12'] = '=-B10+B11'
+    ws_info['B12'] = net_delay_val
 
     # --- 1-HPLC-SEQ ---
     ws_hplc = wb.create_sheet('1-HPLC-SEQ')

@@ -417,22 +417,65 @@ class AnalyzePanel(QWidget):
         review_layout.setContentsMargins(8, 8, 8, 8)
         review_layout.setSpacing(6)
 
-        # Navigation row
+        # Navigation + action row (tot a dalt)
         nav_row = QHBoxLayout()
-        self._review_prev_btn = QPushButton("◀ Anterior")
+        nav_row.setSpacing(4)
+
+        nav_btn_style = ("QPushButton { border: 1px solid #CED4DA; border-radius: 3px;"
+                         " padding: 4px 10px; font-size: 11px; }"
+                         "QPushButton:hover { background: #E9ECEF; }")
+        action_btn_style = ("QPushButton { border: 1px solid {c}; border-radius: 3px;"
+                            " padding: 4px 10px; font-size: 11px; color: {c}; }}"
+                            "QPushButton:hover {{ background: {bg}; }}")
+
+        self._review_prev_btn = QPushButton("\u25c0")
+        self._review_prev_btn.setStyleSheet(nav_btn_style)
+        self._review_prev_btn.setFixedWidth(32)
+        self._review_prev_btn.setToolTip("Mostra anterior")
         self._review_prev_btn.clicked.connect(lambda: self._navigate_review(-1))
         nav_row.addWidget(self._review_prev_btn)
+
+        self._review_repair_btn = QPushButton("Reparar pic")
+        self._review_repair_btn.setStyleSheet(
+            "QPushButton { border: 1px solid #E67E22; border-radius: 3px;"
+            " padding: 4px 10px; font-size: 11px; color: #E67E22; }"
+            "QPushButton:hover { background: #FEF9E7; }")
+        self._review_repair_btn.clicked.connect(self._on_review_repair)
+        nav_row.addWidget(self._review_repair_btn)
+
+        self._review_compose_btn = QPushButton("Composar")
+        self._review_compose_btn.setStyleSheet(
+            "QPushButton { border: 1px solid #3498DB; border-radius: 3px;"
+            " padding: 4px 10px; font-size: 11px; color: #3498DB; }"
+            "QPushButton:hover { background: #EBF5FB; }")
+        self._review_compose_btn.clicked.connect(self._on_review_compose)
+        nav_row.addWidget(self._review_compose_btn)
+
         self._review_title = QLabel()
         self._review_title.setAlignment(Qt.AlignCenter)
         self._review_title.setStyleSheet("font-size: 12px; font-weight: bold;")
         nav_row.addWidget(self._review_title, 1)
-        self._review_next_btn = QPushButton("Seguent ▶")
-        self._review_next_btn.clicked.connect(lambda: self._navigate_review(1))
-        nav_row.addWidget(self._review_next_btn)
-        self._review_close_btn = QPushButton("✕")
-        self._review_close_btn.setFixedSize(24, 24)
+
+        self._review_detail_btn = QPushButton("Detall")
+        self._review_detail_btn.setStyleSheet(nav_btn_style)
+        self._review_detail_btn.setToolTip("Obrir dialeg detall complet")
+        self._review_detail_btn.clicked.connect(self._on_review_detail)
+        nav_row.addWidget(self._review_detail_btn)
+
+        self._review_close_btn = QPushButton("\u2715")
+        self._review_close_btn.setStyleSheet(nav_btn_style)
+        self._review_close_btn.setFixedWidth(28)
+        self._review_close_btn.setToolTip("Tancar panel revisio")
         self._review_close_btn.clicked.connect(self._close_review)
         nav_row.addWidget(self._review_close_btn)
+
+        self._review_next_btn = QPushButton("\u25b6")
+        self._review_next_btn.setStyleSheet(nav_btn_style)
+        self._review_next_btn.setFixedWidth(32)
+        self._review_next_btn.setToolTip("Mostra seguent")
+        self._review_next_btn.clicked.connect(lambda: self._navigate_review(1))
+        nav_row.addWidget(self._review_next_btn)
+
         review_layout.addLayout(nav_row)
 
         # Chromatogram
@@ -460,6 +503,13 @@ class AnalyzePanel(QWidget):
         self._review_dad_combo.currentIndexChanged.connect(
             self._on_review_dad_changed)
         controls_row.addWidget(self._review_dad_combo)
+        self._review_show_area = QCheckBox("Area")
+        self._review_show_area.setStyleSheet("font-size: 10px;")
+        self._review_show_area.setChecked(True)
+        self._review_show_area.setToolTip("Mostrar/amagar ombrejat area integracio")
+        self._review_show_area.toggled.connect(self._on_review_area_toggled)
+        controls_row.addWidget(self._review_show_area)
+
         controls_row.addStretch()
         self._review_metrics = QLabel()
         self._review_metrics.setStyleSheet("font-size: 11px; color: #444;")
@@ -477,16 +527,7 @@ class AnalyzePanel(QWidget):
         info_row.addWidget(self._review_anomalies, 1)
         review_layout.addLayout(info_row)
 
-        # Action buttons
-        action_row = QHBoxLayout()
-        self._review_repair_btn = QPushButton("Reparar pic...")
-        self._review_repair_btn.clicked.connect(self._on_review_repair)
-        action_row.addWidget(self._review_repair_btn)
-        self._review_compose_btn = QPushButton("Composar timeout...")
-        self._review_compose_btn.clicked.connect(self._on_review_compose)
-        action_row.addWidget(self._review_compose_btn)
-        action_row.addStretch()
-        review_layout.addLayout(action_row)
+        # (Action buttons moved to nav_row at top)
 
         results_layout.addWidget(self._review_panel)
 
@@ -1727,10 +1768,13 @@ class AnalyzePanel(QWidget):
                 self._review_dad_combo.count() - 1)
         self._review_dad_combo.blockSignals(False)
 
-    def _draw_review_chromatogram(self, sample_data):
-        """Draw R1+R2 DOC chromatogram with timeout zones."""
+    def _draw_review_chromatogram(self, sample_data, show_area=None):
+        """Draw R1+R2 DOC chromatogram with timeout zones and optional area shading."""
         if not HAS_MATPLOTLIB:
             return
+        if show_area is None:
+            show_area = (hasattr(self, '_review_show_area')
+                         and self._review_show_area.isChecked())
         self._review_figure.clear()
         ax = self._review_figure.add_subplot(111)
 
@@ -1745,8 +1789,40 @@ class AnalyzePanel(QWidget):
             t = rd.get("t_doc")
             y = rd.get("y_doc_net")
             if t is not None and y is not None and len(t) > 0:
-                ax.plot(t, y, label=f"R{rk}",
-                        color=colors[i % len(colors)], lw=1.0, alpha=0.8)
+                color = colors[i % len(colors)]
+
+                # If repaired, show original as thin dotted + repaired as thick solid
+                y_orig = rd.get("y_doc_net_original")
+                is_repaired = (y_orig is not None and len(y_orig) == len(t))
+                if is_repaired:
+                    import numpy as _np
+                    y_orig_arr = _np.asarray(y_orig)
+                    y_arr = _np.asarray(y)
+                    if not _np.allclose(y_orig_arr, y_arr, atol=1e-6):
+                        ax.plot(t, y_orig, color=color, lw=0.8, ls=':',
+                                alpha=0.35, label=f"R{rk} orig")
+                        ax.plot(t, y, label=f"R{rk} rep",
+                                color=color, lw=1.5, alpha=0.9)
+                    else:
+                        is_repaired = False
+
+                if not is_repaired:
+                    ax.plot(t, y, label=f"R{rk}",
+                            color=color, lw=1.0, alpha=0.8)
+
+            # Integration area shading
+            if show_area:
+                peak_info = rd.get("peak_info") or {}
+                li = peak_info.get("peak_left_idx", 0)
+                ri = peak_info.get("peak_right_idx", 0)
+                if t is not None and y is not None and 0 < li < ri < len(t):
+                    import numpy as _np
+                    t_arr = _np.asarray(t)
+                    y_arr = _np.asarray(y)
+                    ax.fill_between(t_arr[li:ri+1], 0, y_arr[li:ri+1],
+                                    alpha=0.12, color=color, zorder=1)
+                    ax.axvline(t_arr[li], color=color, ls=':', lw=0.6, alpha=0.4)
+                    ax.axvline(t_arr[ri], color=color, ls=':', lw=0.6, alpha=0.4)
 
             # Timeout zones
             timeout_info = rd.get("timeout_info", {})
@@ -1756,6 +1832,16 @@ class AnalyzePanel(QWidget):
                     aff_end = to.get("affected_end_min", 0)
                     ax.axvspan(aff_start, aff_end, alpha=0.12,
                                color=colors[i % len(colors)])
+
+        # Draw composed signal if exists
+        selected = (sample_data.get("selected") or {}).get("doc", "1")
+        sel_rep = replicas.get(selected, {})
+        if isinstance(sel_rep, dict) and sel_rep.get("timeout_composition"):
+            t_comp = sel_rep.get("t_doc")
+            y_comp = sel_rep.get("y_doc_net")
+            if t_comp is not None and y_comp is not None and len(t_comp) > 0:
+                ax.plot(t_comp, y_comp, color="#333333", lw=1.5, ls="--",
+                        alpha=0.9, label="Compost", zorder=5)
 
         processed = self.main_window.processed_data or {}
         method = processed.get("method", "COLUMN")
@@ -1908,6 +1994,68 @@ class AnalyzePanel(QWidget):
 
     def _on_review_repair(self):
         """Open repair dialog for current review sample."""
+        self._open_dialog_with_nav("repair")
+
+    def _on_review_compose(self):
+        """Open composition dialog for current review sample."""
+        self._open_dialog_with_nav("compose")
+
+    def _open_dialog_with_nav(self, dialog_type, sample_name=None):
+        """Open repair or compose dialog with navigation between samples."""
+        if sample_name is None:
+            sample_name = self._review_sample
+        if not sample_name:
+            return
+        sample_data = self.samples_grouped.get(sample_name)
+        if not sample_data:
+            return
+
+        method = "COLUMN"
+        if self.main_window.processed_data:
+            method = self.main_window.processed_data.get("method", "COLUMN")
+        is_bp = method.upper() == "BP"
+
+        if dialog_type == "repair":
+            dialog = JaggedPeakRepairDialog(
+                sample_name, sample_data, method, force=True, parent=self)
+            dialog.repair_completed.connect(self._on_review_repair_done)
+        else:
+            from .composition_dialog import TimeoutCompositionDialog
+            dialog = TimeoutCompositionDialog(
+                sample_name, sample_data, is_bp=is_bp, parent=self)
+            dialog.composition_completed.connect(self._on_review_repair_done)
+
+        # Connect navigation
+        def _on_navigate(direction):
+            # Save any pending changes
+            if hasattr(dialog, '_any_changed') and dialog._any_changed:
+                self._on_review_repair_done(sample_name)
+            dialog.close()
+            # Find next sample
+            names = list(self._sample_row_map.keys())
+            try:
+                idx = names.index(sample_name)
+            except ValueError:
+                return
+            new_idx = idx + direction
+            if 0 <= new_idx < len(names):
+                new_name = names[new_idx]
+                self._show_review(new_name)
+                # Open same dialog type for new sample
+                self._open_dialog_with_nav(dialog_type, new_name)
+
+        dialog.navigate_requested.connect(_on_navigate)
+        dialog.exec()
+
+    def _on_review_area_toggled(self):
+        """Toggle area shading on review chromatogram."""
+        if self._review_sample:
+            sample_data = self.samples_grouped.get(self._review_sample)
+            if sample_data:
+                self._draw_review_chromatogram(sample_data)
+
+    def _on_review_detail(self):
+        """Open full SampleDetailDialog for current review sample."""
         if not self._review_sample:
             return
         sample_data = self.samples_grouped.get(self._review_sample)
@@ -1916,27 +2064,11 @@ class AnalyzePanel(QWidget):
         method = "COLUMN"
         if self.main_window.processed_data:
             method = self.main_window.processed_data.get("method", "COLUMN")
-        dialog = JaggedPeakRepairDialog(
-            self._review_sample, sample_data, method, force=True, parent=self)
-        dialog.repair_completed.connect(self._on_review_repair_done)
-        dialog.exec()
-
-    def _on_review_compose(self):
-        """Open composition dialog for current review sample."""
-        if not self._review_sample:
-            return
-        sample_data = self.samples_grouped.get(self._review_sample)
-        if not sample_data:
-            return
-        is_bp = False
-        if self.main_window.processed_data:
-            is_bp = (self.main_window.processed_data.get("method", "COLUMN")
-                     .upper() == "BP")
-        from .composition_dialog import TimeoutCompositionDialog
-        dialog = TimeoutCompositionDialog(
-            self._review_sample, sample_data, is_bp=is_bp, parent=self)
-        dialog.composition_completed.connect(self._on_review_repair_done)
-        dialog.exec()
+        from .dialogs import SampleDetailDialog
+        dialog = SampleDetailDialog(
+            self._review_sample, sample_data, method, parent=self.window())
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        dialog.show()
 
     def _on_review_repair_done(self, sample_name):
         """After repair or compose, refresh review and table."""
@@ -2672,7 +2804,7 @@ class AnalyzePanel(QWidget):
         ax.text(0.98, 0.02, f"{n} traces",
                 transform=ax.transAxes, fontsize=7, ha='right', va='bottom',
                 color='#aaa', fontfamily=_CHART_FONT)
-        ax.text(0.02, 0.02, "\U0001f50d Ampliar",
+        ax.text(0.02, 0.02, "+ Ampliar",
                 transform=ax.transAxes, fontsize=7, ha='left', va='bottom',
                 color='#446', fontfamily=_CHART_FONT,
                 bbox=dict(boxstyle='round,pad=0.3', fc='#e3ecf5', ec='#c0c0c0',
@@ -2701,7 +2833,7 @@ class AnalyzePanel(QWidget):
         ax.text(0.98, 0.02, f"{n} traces",
                 transform=ax.transAxes, fontsize=7, ha='right', va='bottom',
                 color='#aaa', fontfamily=_CHART_FONT)
-        ax.text(0.02, 0.02, "\U0001f50d Ampliar",
+        ax.text(0.02, 0.02, "+ Ampliar",
                 transform=ax.transAxes, fontsize=7, ha='left', va='bottom',
                 color='#446', fontfamily=_CHART_FONT,
                 bbox=dict(boxstyle='round,pad=0.3', fc='#e3ecf5', ec='#c0c0c0',

@@ -1530,8 +1530,15 @@ def quantify_sample(sample_result, calibration_data, mode="COLUMN", seq_date=Non
     # =========================================================================
     # QUANTIFICACIÓ DOC DIRECT
     # =========================================================================
+    # Si is_uib_only + direct_estimated_from_uib: areas["DOC"] conté àrees estimades
+    # (correctes, escalades per factor sensibilitat) → quantificar normalment.
+    # Si is_uib_only SENSE estimació (JSONs antics pre-fix): areas["DOC"] = UIB → saltar.
+    is_uib_only = sample_result.get("is_uib_only", False)
+    has_direct_estimate = sample_result.get("direct_estimated_from_uib", False)
     areas_direct = sample_result.get("areas", {}).get("DOC", {})
     area_total_direct = areas_direct.get("total", 0)
+    if is_uib_only and not has_direct_estimate:
+        area_total_direct = 0  # JSON antic: àrees UIB sense corregir
 
     if area_total_direct > 0:
         if use_global:
@@ -1581,10 +1588,12 @@ def quantify_sample(sample_result, calibration_data, mode="COLUMN", seq_date=Non
     if use_global and rf_mass_direct > 0:
         lod_area = snr_info.get("lod_direct", 0)
         loq_area = snr_info.get("loq_direct", 0)
+        # LOD/LOQ: usar formula sense intercept (l'intercept corregeix biaix,
+        # no afecta el limit de deteccio que es basat en soroll)
         if lod_area > 0:
-            result["lod_ppm"] = float(apply_formula(lod_area, rf_mass_direct))
+            result["lod_ppm"] = float(lod_area * 1000 / (rf_mass_direct * volume_uL))
         if loq_area > 0:
-            result["loq_ppm"] = float(apply_formula(loq_area, rf_mass_direct))
+            result["loq_ppm"] = float(loq_area * 1000 / (rf_mass_direct * volume_uL))
         ppm_d = result.get("concentration_ppm_direct")
         if ppm_d is not None and result["lod_ppm"]:
             result["below_lod"] = ppm_d < result["lod_ppm"]
@@ -1629,6 +1638,10 @@ def quantify_sample(sample_result, calibration_data, mode="COLUMN", seq_date=Non
                                 result["fractions_uib"][frac] = float(area_frac / rf_uib_local)
                             else:
                                 result["fractions_uib"][frac] = 0.0
+
+    # Fallback: si no hi ha Direct (is_uib_only), usar UIB com a concentration_ppm principal
+    if result["concentration_ppm"] is None and result["concentration_ppm_uib"] is not None:
+        result["concentration_ppm"] = result["concentration_ppm_uib"]
 
     return result
 
@@ -2151,6 +2164,7 @@ def analyze_sample(sample_data, calibration_data=None, config=None):
     #   - Mode DUAL amb y_doc_uib_net disponible
     #   - O mode simple però dades venen d'UIB (is_uib_only)
     is_uib_only = sample_data.get("is_uib_only", False)
+    result["is_uib_only"] = is_uib_only
 
     if is_dual and "DOC" in areas and y_doc_uib_net is not None:
         areas_uib = calcular_fraccions_temps(t_doc, y_doc_uib_net, config)
@@ -2287,6 +2301,30 @@ def analyze_sample(sample_data, calibration_data=None, config=None):
     result["is_dual"] = is_dual
     result["processed"] = True
 
+    # =========================================================================
+    # ESTIMACIÓ DIRECT DES D'UIB (is_uib_only)
+    # =========================================================================
+    # Quan no hi ha Direct, estimar el cromatograma Direct a partir del net UIB.
+    # Factor = sensibilitat_UIB / 1000 (guany instrumental: UIB amplifica per 1000/sens).
+    # Apliquem sobre y_doc_net (que conté UIB net) per generar y_doc_direct_net.
+    # Les àrees Direct (areas["DOC"]) es recalculen sobre l'estimat.
+    if is_uib_only:
+        sens = sample_data.get("uib_sensitivity") or 700
+        direct_factor = sens / 1000.0
+        y_direct_est = y_doc_net * direct_factor
+        result["y_doc_direct_net"] = y_direct_est
+        result["y_doc_uib_net"] = y_doc_net  # Preservar UIB original
+        result["direct_estimated_from_uib"] = True
+        result["direct_estimation_factor"] = direct_factor
+        # Recalcular àrees Direct sobre l'estimat
+        areas_direct_est = calcular_fraccions_temps(t_doc, y_direct_est, config)
+        result["areas"]["DOC"] = areas_direct_est
+        logger.info("is_uib_only %s: Direct estimat (factor=%.3f, sens=%d ppb), "
+                     "area_direct_est=%.0f, area_uib=%.0f",
+                     sample_data.get("name", "?"), direct_factor, sens,
+                     areas_direct_est.get("total", 0),
+                     result.get("areas_uib", {}).get("total", 0))
+
     return result
 
 
@@ -2386,6 +2424,7 @@ def _flatten_samples_for_processing(imported_data, data_mode="DUAL"):
                         flat_sample["y_doc_net"] = uib["y_net"]
                     if "baseline" in uib:
                         flat_sample["baseline"] = uib["baseline"]
+
                     flat_sample.pop("y_doc_uib", None)
                     flat_sample.pop("y_doc_uib_net", None)
                     flat_sample.pop("baseline_uib", None)
@@ -3117,6 +3156,20 @@ def analyze_sequence(imported_data, calibration_data=None, config=None, progress
                         quantification["hci_character"] = r1.get("hci_character", "")
                     sample_group["quantification"] = quantification
 
+        # Detectar composabilitat de timeouts entre rèpliques
+        rep_keys_list = sorted(replicas.keys())
+        if len(rep_keys_list) >= 2:
+            r1_ti = replicas[rep_keys_list[0]].get("timeout_info", {})
+            r2_ti = replicas[rep_keys_list[1]].get("timeout_info", {})
+            r1_has = (r1_ti.get("n_timeouts", 0) or len(r1_ti.get("timeouts", []))) > 0
+            r2_has = (r2_ti.get("n_timeouts", 0) or len(r2_ti.get("timeouts", []))) > 0
+            if r1_has and r2_has:
+                from hpsec_core import check_timeout_composability
+                run_dur = 12.0 if is_bp else 70.0
+                sample_group["timeout_composability"] = check_timeout_composability(
+                    r1_ti, r2_ti, run_duration_min=run_dur
+                )
+
         result["samples_grouped"][sample_name] = sample_group
 
     # =========================================================================
@@ -3321,6 +3374,9 @@ def save_analysis_result(analysis_data, output_path=None):
             "n_peaks_per_wl": sample.get("n_peaks_per_wl", {}),
             "is_bp": sample.get("is_bp", False),
             "is_dual": sample.get("is_dual", False),
+            "is_uib_only": sample.get("is_uib_only", False),
+            "direct_estimated_from_uib": sample.get("direct_estimated_from_uib", False),
+            "direct_estimation_factor": sample.get("direct_estimation_factor"),
             "irregular_top_direct": sample.get("irregular_top_direct"),
             "irregular_top_direct_info": sample.get("irregular_top_direct_info"),
             "bigaussian_doc": sample.get("bigaussian_doc"),
@@ -3337,6 +3393,9 @@ def save_analysis_result(analysis_data, output_path=None):
             "df_dad": df_dad_serializable,
             # --- Path Export3D per RAW export (FAIR) ---
             "dad_export3d_path": sample.get("dad_export3d_path"),
+            # --- Composició timeout (persistir si aplicada) ---
+            "timeout_composition": sample.get("timeout_composition"),
+            "y_doc_net_pre_composition": sample.get("y_doc_net_pre_composition"),
         }
 
     # Resumir mostres
@@ -3378,20 +3437,10 @@ def save_analysis_result(analysis_data, output_path=None):
                 for rep_key, rep_data in sample_data.get("replicas", {}).items():
                     grouped_entry["replicas"][rep_key] = summarize_sample(rep_data)
 
-                # Detectar composabilitat de timeouts entre rèpliques
-                rep_keys_list = sorted(grouped_entry["replicas"].keys())
-                if len(rep_keys_list) >= 2:
-                    r1_ti = grouped_entry["replicas"][rep_keys_list[0]].get("timeout_info", {})
-                    r2_ti = grouped_entry["replicas"][rep_keys_list[1]].get("timeout_info", {})
-                    r1_has = (r1_ti.get("n_timeouts", 0) or len(r1_ti.get("timeouts", []))) > 0
-                    r2_has = (r2_ti.get("n_timeouts", 0) or len(r2_ti.get("timeouts", []))) > 0
-                    if r1_has and r2_has:
-                        from hpsec_core import check_timeout_composability
-                        is_bp_method = "BP" in (analysis_data.get("method", "") or "").upper()
-                        run_dur = 12.0 if is_bp_method else 70.0
-                        grouped_entry["timeout_composability"] = check_timeout_composability(
-                            r1_ti, r2_ti, run_duration_min=run_dur
-                        )
+                # Composabilitat de timeouts (ja calculada a analyze_sequence, copiar)
+                tc = sample_data.get("timeout_composability")
+                if tc:
+                    grouped_entry["timeout_composability"] = tc
 
             result["samples_grouped"][sample_name] = grouped_entry
 
@@ -3408,7 +3457,8 @@ def save_analysis_result(analysis_data, output_path=None):
 
 def _restore_dataframes(data):
     """Converteix df_dad dicts a DataFrames i llistes a numpy arrays en dades carregades de JSON."""
-    _ARRAY_KEYS = ("t_doc", "y_doc_net", "y_doc_uib_net", "y_doc_direct_net")
+    _ARRAY_KEYS = ("t_doc", "y_doc_net", "y_doc_uib_net", "y_doc_direct_net",
+                    "y_doc_net_pre_composition")
 
     def _restore_sample(sample):
         # Restaurar df_dad: dict → DataFrame

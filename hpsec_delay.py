@@ -28,7 +28,8 @@ def read_current_delay(mf_path):
     """
     Llegeix el Net delay actual d'un MasterFile.
 
-    Prioritat: "Net delay (Suite)" (corregit) > B12 (original).
+    Prioritat: "Net delay (Suite)" (corregit) > B12 (original) > càlcul implícit
+    des de hores HPLC/TOC + flush time.
 
     Args:
         mf_path: Path al MasterFile (.xlsx)
@@ -37,6 +38,8 @@ def read_current_delay(mf_path):
         float o None: Net delay en minuts, o None si no es pot llegir
     """
     import openpyxl
+
+    FLUSH_TIME_MIN = 3.637
 
     try:
         wb = openpyxl.load_workbook(str(mf_path), read_only=True, data_only=True)
@@ -47,13 +50,16 @@ def read_current_delay(mf_path):
 
         # Buscar "Net delay (Suite)" — valor corregit per la Suite (prioritari)
         suite_delay = None
+        info = {}
         for row in range(1, ws.max_row + 1):
             key = ws.cell(row=row, column=1).value
-            if key and 'net delay (suite)' in str(key).lower():
-                val = ws.cell(row=row, column=2).value
-                if val is not None:
-                    suite_delay = float(val)
-                break
+            val = ws.cell(row=row, column=2).value
+            if key:
+                key_lower = str(key).lower()
+                if 'net delay (suite)' in key_lower:
+                    if val is not None:
+                        suite_delay = float(val)
+                info[key_lower] = val
 
         # Fallback: B12 (delay original)
         original_delay = ws['B12'].value
@@ -63,6 +69,42 @@ def read_current_delay(mf_path):
             return suite_delay
         if original_delay is not None:
             return float(original_delay)
+
+        # Últim recurs: calcular delay implícit des de hores HPLC/TOC + flush time
+        # (mateixa lògica que compute_toc_calc a hpsec_import.py)
+        hora_hplc_clock = None
+        hora_toc_clock = None
+        flush_time = FLUSH_TIME_MIN
+        for key_lower, val in info.items():
+            if 'hora hplc' in key_lower or 'hora_hplc' in key_lower:
+                hora_hplc_clock = val
+            elif 'hora toc' in key_lower or 'hora_toc' in key_lower:
+                hora_toc_clock = val
+            elif 'flush time' in key_lower or 'flush_time' in key_lower:
+                if val is not None:
+                    try:
+                        flush_time = float(val)
+                    except (ValueError, TypeError):
+                        pass
+
+        if hora_hplc_clock and hora_toc_clock:
+            try:
+                def _to_minutes(t):
+                    if hasattr(t, 'hour'):
+                        return t.hour * 60 + t.minute + t.second / 60
+                    parts = str(t).split(':')
+                    return int(parts[0]) * 60 + int(parts[1])
+
+                hplc_min = _to_minutes(hora_hplc_clock)
+                toc_min = _to_minutes(hora_toc_clock)
+                desfase_min = hplc_min - toc_min
+                implicit_delay = flush_time - desfase_min
+                logger.debug(f"Delay implícit calculat: flush={flush_time:.3f} - "
+                             f"desfase={desfase_min:.3f} = {implicit_delay:.3f} min")
+                return implicit_delay
+            except Exception as e:
+                logger.debug(f"No s'ha pogut calcular delay implícit: {e}")
+
         return None
     except Exception as e:
         logger.warning(f"Error llegint delay de {mf_path}: {e}")

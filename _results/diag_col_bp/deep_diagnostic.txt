@@ -1,0 +1,504 @@
+DIAGNOSTIC PROFUND COL vs BP
+Data: 23 SEQs, 9 parells
+
+
+================================================================================
+PARELL: 269B_SEQ (COLUMN)  <->  270_SEQ_BP (BP)
+================================================================================
+
+--- INFO BASICA ---
+  COL: 269B_SEQ
+    Volum manifest: None uL
+    Volums trobats: [400.0]
+    Net delay: None min
+    Mostres: 13 SAMPLE, 1 KHP, 4 BLANK
+    Timeouts: 33 reps, Irregulars: 34 reps
+  BP: 270_SEQ_BP
+    Volum manifest: None uL
+    Volums trobats: [100.0]
+    Net delay: None min
+    Mostres: 13 SAMPLE, 1 KHP, 4 BLANK
+    Timeouts: 6 reps, Irregulars: 17 reps
+
+--- CALIBRACIO ---
+  COL: RF_direct=None  intercept_direct=None
+       RF_uib=None  intercept_uib=None
+       fingerprint: cal=?  analysis=b44af276e0a48921
+       stale: no
+  BP: RF_direct=None  intercept_direct=None
+       RF_uib=None  intercept_uib=None
+       fingerprint: cal=?  analysis=b44af276e0a48921
+       stale: no
+
+--- KHP ---
+  COL direct: (sense KHP)
+  COL uib: (sense KHP)
+  BP direct: (sense KHP)
+  BP uib: (sense KHP)
+
+--- MOSTRES COMUNES: 13 ---
+
+  Ratio ppm: med=1.544  mean=1.524  SD=0.169  outliers=13/13
+  A254 norm: med=1.022  mean=1.017  SD=0.117
+
+  Mostra                 ppm_C   ppm_B  ratio  area_C  area_B  A254n flags
+  -------------------- ------- ------- ------ ------- ------- ------ --------------------
+  EP                      6.68    7.80  1.166     -       507    -   PPM_OUT TO_C(1) IRR_C IRR_B
+  FR2326                  4.59    5.97  1.302    1400     389  1.172 PPM_OUT TO_C(1) IRR_C IRR_B
+  FR2327                  4.36    6.06  1.390    1332     395  0.980 PPM_OUT TO_C(1) IRR_C IRR_B
+  FR2328                  3.62    5.20  1.435    1110     339  1.102 PPM_OUT TO_C(1) IRR_C IRR_B
+  FR2329                  3.57    5.52  1.544    1095     360  1.078 PPM_OUT TO_C(1) IRR_C
+  FR2330                  3.48    5.31  1.525    1067     346  1.055 PPM_OUT TO_C(1) IRR_C
+  FR2331                  3.48    5.72  1.645    1065     373  1.198 PPM_OUT TO_C(1) IRR_C
+  FR2332                  3.25    5.19  1.595     998     338  0.877 PPM_OUT TO_C(1) IRR_C IRR_B
+  FR2333                  2.86    4.84  1.693     879     316  0.989 PPM_OUT TO_C(1) IRR_C IRR_B
+  FR2334                  2.90    4.83  1.664     892     315  0.911 PPM_OUT TO_C(1) IRR_C IRR_B
+  FR2335                  2.76    5.07  1.833     851     331  0.780 PPM_OUT TO_C(1) IRR_C
+  POST O3                 4.20    6.57  1.564    1282     428  1.079 PPM_OUT TO_C(1) TO_B(1) IRR_C IRR_B
+  SP                      4.14    6.05  1.461    1266     394  0.981 PPM_OUT TO_C(1) IRR_C IRR_B
+
+--- DIAGNOSI ---
+  Concordanca: DEFICIENT (BP dona mes, med=1.544)
+
+================================================================================
+PARELL: 272_SEQ (COLUMN)  <->  271_SEQ_BP (BP)
+================================================================================
+
+--- INFO BASICA ---
+  COL: 272_SEQ
+    Volum manifest: None uL
+    Volums trobats: [100.0]
+    Net delay: None min
+    Mostres: 10 SAMPLE, 1 KHP, 3 BLANK
+    Timeouts: 27 reps, Irregulars: 23 reps
+  BP: 271_SEQ_BP
+    Volum manifest: None uL
+    Volums trobats: [100.0]
+    Net delay: None min
+    Mostres: 10 SAMPLE, 1 KHP, 3 BLANK
+    Timeouts: 4 reps, Irregulars: 17 reps
+
+--- CALIBRACIO ---
+  COL: RF_direct=None  intercept_direct=None
+       RF_uib=None  intercept_uib=None
+       fingerprint: cal=?  analysis=b44af276e0a48921
+       stale: no
+  BP: RF_direct=None  intercept_direct=None
+       RF_uib=None  intercept_uib=None
+       fingerprint: cal=?  analysis=b44af276e0a48921
+       stale: no
+
+--- KHP ---
+  COL direct: (sense KHP)
+  COL uib: (sense KHP)
+  BP direct: (sense KHP)
+  BP uib: (sense KHP)
+
+--- MOSTRES COMUNES: 10 ---
+
+  Ratio ppm: med=0.748  mean=0.735  SD=0.054  outliers=9/9
+  A254 norm: med=0.511  mean=0.634  SD=0.292
+
+  Mostra                 ppm_C   ppm_B  ratio  area_C  area_B  A254n flags
+  -------------------- ------- ------- ------ ------- ------- ------ --------------------
+  FR2349                  6.11    4.57  0.748     478     298  0.882 PPM_OUT TO_C(1) IRR_C IRR_B
+  FR2350                  5.70    4.59  0.806     447     300  0.455 PPM_OUT TO_C(1) IRR_C IRR_B
+  FR2351                  5.19    4.01  0.772     409     262  0.815 PPM_OUT TO_C(1) IRR_C IRR_B
+  FR2352                  5.40    3.72  0.688     425     243  0.566 PPM_OUT TO_C(1) IRR_C
+  FR2353                  4.43    3.44  0.776     351     225  0.370 PPM_OUT TO_C(1) IRR_C IRR_B
+  FR2354                   -      3.65    -       369     239  0.443 TO_C(1) IRR_C
+  FR2355                  4.81    3.66  0.761     380     240  0.281 PPM_OUT TO_C(1) IRR_C IRR_B
+  FR2356                  4.55    3.28  0.720     361     215  1.219 PPM_OUT TO_C(1) IRR_C IRR_B
+  FR2357                  4.60    3.37  0.731     365     221  0.923 PPM_OUT TO_C(1) IRR_C
+  FR2358                  5.07    3.11  0.613     399     204  0.384 PPM_OUT TO_C(1) IRR_C IRR_B
+
+--- DIAGNOSI ---
+  Concordanca: DEFICIENT (BP dona menys, med=0.748)
+  Biaix SISTEMATIC (SD=0.054 < 0.10, |biaix|=0.252 > 0.10)
+  -> Probable causa: calibracio, volum, o delay diferent
+
+================================================================================
+PARELL: 274_SEQ (COLUMN)  <->  273_SEQ_BP (BP)
+================================================================================
+
+--- INFO BASICA ---
+  COL: 274_SEQ
+    Volum manifest: None uL
+    Volums trobats: [100.0]
+    Net delay: None min
+    Mostres: 10 SAMPLE, 1 KHP, 3 BLANK
+    Timeouts: 27 reps, Irregulars: 17 reps
+  BP: 273_SEQ_BP
+    Volum manifest: None uL
+    Volums trobats: [100.0]
+    Net delay: None min
+    Mostres: 10 SAMPLE, 1 KHP, 3 BLANK
+    Timeouts: 4 reps, Irregulars: 8 reps
+
+--- CALIBRACIO ---
+  COL: RF_direct=None  intercept_direct=None
+       RF_uib=None  intercept_uib=None
+       fingerprint: cal=?  analysis=b44af276e0a48921
+       stale: no
+  BP: RF_direct=None  intercept_direct=None
+       RF_uib=None  intercept_uib=None
+       fingerprint: cal=?  analysis=b44af276e0a48921
+       stale: no
+
+--- KHP ---
+  COL direct: (sense KHP)
+  COL uib: (sense KHP)
+  BP direct: (sense KHP)
+  BP uib: (sense KHP)
+
+--- MOSTRES COMUNES: 10 ---
+
+  Ratio ppm: med=0.592  mean=0.596  SD=0.049  outliers=8/8
+  A254 norm: med=0.539  mean=0.576  SD=0.178
+
+  Mostra                 ppm_C   ppm_B  ratio  area_C  area_B  A254n flags
+  -------------------- ------- ------- ------ ------- ------- ------ --------------------
+  FR2395                  5.07    3.24  0.640     400     213  0.483 PPM_OUT TO_C(1) IRR_C IRR_B
+  FR2396                  6.01    4.13  0.687     471     270  0.465 PPM_OUT TO_C(1) IRR_C IRR_B
+  FR2397                   -      4.09    -       542     268  0.829 TO_C(1) IRR_C
+  FR2398                   -      3.84    -       502     252  0.451 TO_C(1) IRR_C
+  FR2399                  5.75    3.31  0.575     451     217  0.495 PPM_OUT TO_C(1)
+  FR2400                  5.44    3.35  0.616     428     220  0.266 PPM_OUT TO_C(1) IRR_C IRR_B
+  FR2401                  5.97    3.28  0.550     468     215  0.586 PPM_OUT TO_C(1) IRR_C IRR_B
+  FR2402                  5.32    2.76  0.518     419     181  0.721 PPM_OUT TO_C(1) IRR_C IRR_B
+  FR2403                  4.92    2.92  0.594     389     192  0.881 PPM_OUT TO_C(1) IRR_C
+  FR2404                  4.78    2.82  0.589     378     185  0.584 PPM_OUT TO_C(1) IRR_C
+
+--- DIAGNOSI ---
+  Concordanca: DEFICIENT (BP dona menys, med=0.592)
+  Biaix SISTEMATIC (SD=0.049 < 0.10, |biaix|=0.408 > 0.10)
+  -> Probable causa: calibracio, volum, o delay diferent
+
+================================================================================
+PARELL: 276B_SEQ (COLUMN)  <->  277_SEQ_BP (BP)
+================================================================================
+
+--- INFO BASICA ---
+  COL: 276B_SEQ
+    Volum manifest: None uL
+    Volums trobats: [400.0]
+    Net delay: None min
+    Mostres: 7 SAMPLE, 1 KHP, 3 BLANK
+    Timeouts: 20 reps, Irregulars: 6 reps
+  BP: 277_SEQ_BP
+    Volum manifest: None uL
+    Volums trobats: [100.0]
+    Net delay: None min
+    Mostres: 10 SAMPLE, 1 KHP, 3 BLANK
+    Timeouts: 4 reps, Irregulars: 8 reps
+
+--- CALIBRACIO ---
+  COL: RF_direct=None  intercept_direct=None
+       RF_uib=None  intercept_uib=None
+       fingerprint: cal=?  analysis=b44af276e0a48921
+       stale: no
+  BP: RF_direct=None  intercept_direct=None
+       RF_uib=None  intercept_uib=None
+       fingerprint: cal=?  analysis=b44af276e0a48921
+       stale: no
+
+--- KHP ---
+  COL direct: (sense KHP)
+  COL uib: (sense KHP)
+  BP direct: (sense KHP)
+  BP uib: (sense KHP)
+
+--- MOSTRES COMUNES: 7 ---
+
+  Ratio ppm: med=1.227  mean=1.229  SD=0.023  outliers=7/7
+  A254 norm: med=0.871  mean=0.849  SD=0.162
+
+  Mostra                 ppm_C   ppm_B  ratio  area_C  area_B  A254n flags
+  -------------------- ------- ------- ------ ------- ------- ------ --------------------
+  FR2515                  3.99    4.77  1.195    1221     312  0.875 PPM_OUT TO_C(1) IRR_B
+  FR2516                  3.48    4.34  1.247    1066     283  0.968 PPM_OUT TO_C(1) IRR_C
+  FR2517                  3.49    4.28  1.227    1068     280  0.871 PPM_OUT TO_C(1) IRR_C
+  FR2518                  3.42    4.24  1.240    1049     277  0.802 PPM_OUT TO_C(1) IRR_C
+  FR2519                  3.28    3.96  1.206    1007     259  0.576 PPM_OUT TO_C(1) IRR_C
+  FR2520                  3.39    4.14  1.222    1039     271  0.724 PPM_OUT TO_C(1) IRR_B
+  FR2521                  3.20    4.06  1.267     982     265  1.126 PPM_OUT TO_C(1) IRR_C IRR_B
+
+--- DIAGNOSI ---
+  Concordanca: DEFICIENT (BP dona mes, med=1.227)
+  Biaix SISTEMATIC (SD=0.023 < 0.10, |biaix|=0.227 > 0.10)
+  -> Probable causa: calibracio, volum, o delay diferent
+
+================================================================================
+PARELL: 278_SEQ (COLUMN)  <->  279B_SEQ_BP (BP)
+================================================================================
+
+--- INFO BASICA ---
+  COL: 278_SEQ
+    Volum manifest: None uL
+    Volums trobats: [400.0]
+    Net delay: None min
+    Mostres: 10 SAMPLE, 1 KHP, 3 BLANK
+    Timeouts: 27 reps, Irregulars: 10 reps
+  BP: 279B_SEQ_BP
+    Volum manifest: None uL
+    Volums trobats: [100.0]
+    Net delay: None min
+    Mostres: 10 SAMPLE, 1 KHP, 3 BLANK
+    Timeouts: 4 reps, Irregulars: 10 reps
+
+--- CALIBRACIO ---
+  COL: RF_direct=None  intercept_direct=None
+       RF_uib=None  intercept_uib=None
+       fingerprint: cal=?  analysis=b44af276e0a48921
+       stale: no
+  BP: RF_direct=None  intercept_direct=None
+       RF_uib=None  intercept_uib=None
+       fingerprint: cal=?  analysis=b44af276e0a48921
+       stale: no
+
+--- KHP ---
+  COL direct: (sense KHP)
+  COL uib: (sense KHP)
+  BP direct: (sense KHP)
+  BP uib: (sense KHP)
+
+--- MOSTRES COMUNES: 10 ---
+
+  Ratio ppm: med=1.321  mean=1.312  SD=0.099  outliers=7/8
+  A254 norm: med=0.901  mean=0.889  SD=0.141
+
+  Mostra                 ppm_C   ppm_B  ratio  area_C  area_B  A254n flags
+  -------------------- ------- ------- ------ ------- ------- ------ --------------------
+  FR2546                  3.58    3.95  1.103    1096     258  0.955 TO_C(1) TO_B(1)
+  FR2547                  3.39    4.52  1.334    1038     295  0.846 PPM_OUT TO_C(1) IRR_C
+  FR2548                  3.44    4.98  1.446    1055     325  0.988 PPM_OUT TO_C(1) IRR_C
+  FR2549                  3.31    4.36  1.321    1013     285  0.841 PPM_OUT TO_C(1) TO_B(1) IRR_C IRR_B
+  FR2550                  2.97    3.69  1.245     911     242  1.060 PPM_OUT TO_C(1) IRR_C IRR_B
+  FR2551                  3.18    4.20  1.322     975     275  1.078 PPM_OUT TO_C(1)
+  FR2552                  2.97    3.87  1.304     911     253  0.685 PPM_OUT TO_C(1) IRR_C
+  FR2553                  2.58    3.67  1.423     795     240  0.810 PPM_OUT TO_C(1) IRR_C
+  FR2554                   -      3.82    -       856     250  0.645 TO_C(1) IRR_B
+  FR2555                   -      3.68    -       900     241  0.983 TO_C(1) IRR_C IRR_B
+
+--- DIAGNOSI ---
+  Concordanca: DEFICIENT (BP dona mes, med=1.321)
+  Biaix SISTEMATIC (SD=0.099 < 0.10, |biaix|=0.321 > 0.10)
+  -> Probable causa: calibracio, volum, o delay diferent
+
+================================================================================
+PARELL: 285_SEQ (COLUMN)  <->  286_SEQ_BP (BP)
+================================================================================
+
+--- INFO BASICA ---
+  COL: 285_SEQ
+    Volum manifest: None uL
+    Volums trobats: [400.0]
+    Net delay: None min
+    Mostres: 6 SAMPLE, 1 KHP, 3 BLANK
+    Timeouts: 19 reps, Irregulars: 19 reps
+  BP: 286_SEQ_BP
+    Volum manifest: None uL
+    Volums trobats: [50.0, 100.0]
+    Net delay: None min
+    Mostres: 12 SAMPLE, 2 KHP, 5 BLANK
+    Timeouts: 5 reps, Irregulars: 4 reps
+
+--- CALIBRACIO ---
+  COL: RF_direct=None  intercept_direct=None
+       RF_uib=None  intercept_uib=None
+       fingerprint: cal=?  analysis=b44af276e0a48921
+       stale: no
+  BP: RF_direct=None  intercept_direct=None
+       RF_uib=None  intercept_uib=None
+       fingerprint: cal=?  analysis=b44af276e0a48921
+       stale: no
+
+--- KHP ---
+  COL direct: (sense KHP)
+  COL uib: (sense KHP)
+  BP direct: (sense KHP)
+  BP uib: (sense KHP)
+
+--- MOSTRES COMUNES: 6 ---
+
+  Ratio ppm: med=1.520  mean=1.744  SD=0.613  outliers=6/6
+
+  Mostra                 ppm_C   ppm_B  ratio  area_C  area_B  A254n flags
+  -------------------- ------- ------- ------ ------- ------- ------ --------------------
+  LQ0149                  4.46    7.02  1.573    1362     457    -   PPM_OUT TO_C(1) IRR_C
+  LQ0150                  4.34    6.97  1.606    1325     454    -   PPM_OUT TO_C(1) IRR_C
+  LQ0151                  4.09    5.65  1.382    1249     368    -   PPM_OUT TO_C(1) IRR_C
+  LQ0152                  1.48    2.17  1.466     464     143    -   PPM_OUT TO_C(1) IRR_C
+  LQ0153                  1.60    2.15  1.339     501     142    -   PPM_OUT TO_C(1) IRR_C IRR_B
+  LQ0154                  1.94    6.02  3.099     604     393    -   PPM_OUT TO_C(1) IRR_C IRR_B
+
+--- DIAGNOSI ---
+  Concordanca: DEFICIENT (BP dona mes, med=1.520)
+  Alta VARIABILITAT (SD=0.613 > 0.20)
+  -> Probable causa: timeouts/irregulars afecten algunes mostres
+
+================================================================================
+PARELL: 288_SEQ (COLUMN)  <->  287_SEQ_BP (BP)
+================================================================================
+
+--- INFO BASICA ---
+  COL: 288_SEQ
+    Volum manifest: None uL
+    Volums trobats: [400.0]
+    Net delay: None min
+    Mostres: 16 SAMPLE, 1 KHP, 4 BLANK
+    Timeouts: 32 reps, Irregulars: 31 reps
+  BP: 287_SEQ_BP
+    Volum manifest: None uL
+    Volums trobats: [100.0]
+    Net delay: None min
+    Mostres: 16 SAMPLE, 1 KHP, 4 BLANK
+    Timeouts: 6 reps, Irregulars: 15 reps
+
+--- CALIBRACIO ---
+  COL: RF_direct=None  intercept_direct=None
+       RF_uib=None  intercept_uib=None
+       fingerprint: cal=?  analysis=b44af276e0a48921
+       stale: no
+  BP: RF_direct=None  intercept_direct=None
+       RF_uib=None  intercept_uib=None
+       fingerprint: cal=?  analysis=b44af276e0a48921
+       stale: no
+
+--- KHP ---
+  COL direct: (sense KHP)
+  COL uib: (sense KHP)
+  BP direct: (sense KHP)
+  BP uib: (sense KHP)
+
+--- MOSTRES COMUNES: 16 ---
+
+  Ratio ppm: med=1.013  mean=1.100  SD=0.191  outliers=3/13
+  A254 norm: med=0.764  mean=0.765  SD=0.261
+
+  Mostra                 ppm_C   ppm_B  ratio  area_C  area_B  A254n flags
+  -------------------- ------- ------- ------ ------- ------- ------ --------------------
+  LQ0193                  4.65    4.77  1.025    1418     311  0.894 TO_C(1) IRR_C IRR_B
+  LQ0194                  4.53    4.59  1.013    1383     300  0.765 TO_C(1) IRR_C IRR_B
+  LQ0195                  4.69    5.09  1.084    1431     332  0.743 TO_C(1) IRR_C IRR_B
+  LQ0196                  1.35    1.72  1.274     425     114  0.318 PPM_OUT TO_C(1) IRR_C IRR_B
+  LQ0197                  1.68    2.84  1.687     525     187  1.045 PPM_OUT TO_C(1) IRR_C
+  LQ0198                  2.02    1.96  0.969     627     130  0.227 TO_C(1)
+  LQ0199                  3.90    4.26  1.091    1194     278  1.000 TO_C(1) IRR_C IRR_B
+  LQ0200                  4.08    4.09  1.002    1247     267  0.963 TO_C(1) IRR_C IRR_B
+  LQ0201                   -      3.91    -      1109     256  0.715 TO_C(1) IRR_C IRR_B
+  LQ0202                   -      3.69    -      1276     241  0.842 TO_C(1) IRR_C
+  LQ0203                   -      3.34    -      1122     219  0.654 TO_C(1) IRR_C
+  LQ0204                  3.61    4.33  1.202    1104     283  0.763 PPM_OUT TO_B(1) IRR_C
+  LQ0205                  3.48    3.45  0.989    1067     226  1.088 
+  LQ0206                  3.31    3.18  0.961    1016     209  1.107 IRR_B
+  LQ0207                  3.39    3.41  1.005    1039     223  0.354 TO_B(1) IRR_B
+  LQ0208                  3.22    3.22  0.998     988     211  0.759 
+
+--- DIAGNOSI ---
+  Concordanca: BONA (med=1.013)
+
+================================================================================
+PARELL: 290_SEQ (COLUMN)  <->  289_SEQ_BP (BP)
+================================================================================
+
+--- INFO BASICA ---
+  COL: 290_SEQ
+    Volum manifest: None uL
+    Volums trobats: [400.0]
+    Net delay: None min
+    Mostres: 3 SAMPLE, 1 KHP, 5 BLANK
+    Timeouts: 15 reps, Irregulars: 4 reps
+  BP: 289_SEQ_BP
+    Volum manifest: None uL
+    Volums trobats: [100.0]
+    Net delay: None min
+    Mostres: 3 SAMPLE, 1 KHP, 6 BLANK
+    Timeouts: 2 reps, Irregulars: 7 reps
+
+--- CALIBRACIO ---
+  COL: RF_direct=None  intercept_direct=None
+       RF_uib=None  intercept_uib=None
+       fingerprint: cal=?  analysis=b44af276e0a48921
+       stale: no
+  BP: RF_direct=None  intercept_direct=None
+       RF_uib=None  intercept_uib=None
+       fingerprint: cal=?  analysis=b44af276e0a48921
+       stale: no
+
+--- KHP ---
+  COL direct: (sense KHP)
+  COL uib: (sense KHP)
+  BP direct: (sense KHP)
+  BP uib: (sense KHP)
+
+--- MOSTRES COMUNES: 3 ---
+
+  Ratio ppm: med=0.455  mean=0.527  SD=0.110  outliers=3/3
+  A254 norm: med=0.573  mean=0.507  SD=0.284
+
+  Mostra                 ppm_C   ppm_B  ratio  area_C  area_B  A254n flags
+  -------------------- ------- ------- ------ ------- ------- ------ --------------------
+  LQ0208                  4.29    2.93  0.683    1311     192  0.573 PPM_OUT TO_C(1)
+  LQ0303                  2.91    1.33  0.455     896      89  0.131 PPM_OUT TO_C(1) IRR_C IRR_B
+  LQ0304                  2.49    1.11  0.443     769      74  0.816 PPM_OUT TO_C(1) IRR_C IRR_B
+
+--- DIAGNOSI ---
+  Concordanca: DEFICIENT (BP dona menys, med=0.455)
+
+================================================================================
+PARELL: 297B_SEQ (COLUMN)  <->  295_SEQ_BP (BP)
+================================================================================
+
+--- INFO BASICA ---
+  COL: 297B_SEQ
+    Volum manifest: None uL
+    Volums trobats: [400.0]
+    Net delay: None min
+    Mostres: 4 SAMPLE, 1 KHP, 3 BLANK
+    Timeouts: 13 reps, Irregulars: 7 reps
+  BP: 295_SEQ_BP
+    Volum manifest: None uL
+    Volums trobats: [100.0]
+    Net delay: None min
+    Mostres: 10 SAMPLE, 1 KHP, 4 BLANK
+    Timeouts: 4 reps, Irregulars: 13 reps
+
+--- CALIBRACIO ---
+  COL: RF_direct=None  intercept_direct=None
+       RF_uib=None  intercept_uib=None
+       fingerprint: cal=?  analysis=b44af276e0a48921
+       stale: no
+  BP: RF_direct=None  intercept_direct=None
+       RF_uib=None  intercept_uib=None
+       fingerprint: cal=?  analysis=b44af276e0a48921
+       stale: no
+
+--- KHP ---
+  COL direct: (sense KHP)
+  COL uib: (sense KHP)
+  BP direct: (sense KHP)
+  BP uib: (sense KHP)
+
+--- MOSTRES COMUNES: 4 ---
+
+  Ratio ppm: med=0.880  mean=0.877  SD=0.023  outliers=1/4
+  A254 norm: med=0.654  mean=0.637  SD=0.051
+
+  Mostra                 ppm_C   ppm_B  ratio  area_C  area_B  A254n flags
+  -------------------- ------- ------- ------ ------- ------- ------ --------------------
+  LQ0468                  3.62    3.15  0.872    1108     207  0.553 TO_C(1) IRR_C
+  LQ0469                  3.19    2.89  0.905     979     190  0.649 TO_C(1) TO_B(1) IRR_C
+  LQ0470                  3.11    2.62  0.842     955     172  0.658 PPM_OUT TO_C(1) IRR_C IRR_B
+  LQ0471                  3.07    2.72  0.888     942     179  0.689 TO_C(1) IRR_C IRR_B
+
+--- DIAGNOSI ---
+  Concordanca: ACCEPTABLE amb biaix (BP dona menys, med=0.880)
+  Biaix SISTEMATIC (SD=0.023 < 0.10, |biaix|=0.120 > 0.10)
+  -> Probable causa: calibracio, volum, o delay diferent
+
+================================================================================
+SEQS SENSE PARELLA
+================================================================================
+  COLUMN sense BP: ['275_SEQ', '276_SEQ', '297_SEQ']
+  BP sense COLUMN: ['268_SEQ_BP', '281_SEQ_BP']

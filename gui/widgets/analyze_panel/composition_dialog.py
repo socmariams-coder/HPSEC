@@ -56,9 +56,10 @@ FRACTION_ORDER = ["BioP", "HS", "BB", "SB", "LMW"]
 
 
 class TimeoutCompositionDialog(QDialog):
-    """Diàleg per composar cromatograma a partir de segments de dues rèpliques."""
+    """Dialeg per composar cromatograma a partir de segments de dues repliques."""
 
     composition_completed = Signal(str)  # sample_name
+    navigate_requested = Signal(int)  # direction: -1 prev, +1 next
 
     def __init__(self, sample_name, sample_data, is_bp=False, parent=None):
         super().__init__(parent)
@@ -66,9 +67,9 @@ class TimeoutCompositionDialog(QDialog):
         self.sample_data = sample_data
         self.is_bp = is_bp
 
-        self.setWindowTitle(f"Composició timeout — {sample_name}")
-        self.setMinimumSize(900, 700)
-        self.resize(1050, 800)
+        self.setWindowTitle(f"Composicio timeout — {sample_name}")
+        self.setMinimumSize(700, 500)
+        self.resize(950, 650)
 
         replicas = sample_data.get("replicas", {})
         self.rep_keys = sorted(replicas.keys())
@@ -107,71 +108,79 @@ class TimeoutCompositionDialog(QDialog):
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(4)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(3)
 
-        # --- Header ---
-        header_row = QHBoxLayout()
-        header_lbl = QLabel(
-            f"<b style='font-size:13px'>{self.sample_name}</b>"
-            f"&nbsp;&nbsp;Composició de rèpliques per timeout")
-        header_row.addWidget(header_lbl)
-        header_row.addStretch()
+        nav_s = ("QPushButton { border: 1px solid #CED4DA; border-radius: 3px;"
+                 " padding: 3px 8px; font-size: 11px; }"
+                 "QPushButton:hover { background: #E9ECEF; }")
 
-        r1k, r2k = self.rep_keys
-        c1, c2 = _SRC_COLORS["1"], _SRC_COLORS["2"]
-        legend_html = (
-            f"<span style='color:{c1}'>\u2501\u2501 R{r1k}</span>"
-            f"&nbsp;&nbsp;"
-            f"<span style='color:{c2}'>\u2501\u2501 R{r2k}</span>"
-            f"&nbsp;&nbsp;"
-            f"<span style='color:{_COMPOSED_COLOR}'>\u2509\u2509 Compost</span>")
-        legend_lbl = QLabel(legend_html)
-        legend_lbl.setStyleSheet("font-size: 10px;")
-        header_row.addWidget(legend_lbl)
-        layout.addLayout(header_row)
+        # === TOP BAR: nav + apply + method + name + close ===
+        top_row = QHBoxLayout()
+        top_row.setSpacing(4)
 
-        # Status
-        comp = self.comp_result
-        if comp.get("composable"):
-            coverage = comp.get("coverage_pct", 100)
-            unrep = comp.get("unrepairable_min", 0)
-            if coverage < 100 and unrep > 0:
-                status_text = (
-                    f"Composable ({coverage:.0f}% cobertura) — "
-                    f"solapament {unrep:.1f} min")
-            else:
-                status_text = "Composable — els timeouts no se solapen"
-            status_color = "#27AE60"
-            status_icon = "\u2714"
-        elif comp.get("overlap_zones"):
-            status_text = "Solapament massa gran — no composable"
-            status_color = "#E74C3C"
-            status_icon = "\u2718"
-        else:
-            status_text = "No composable"
-            status_color = "#E74C3C"
-            status_icon = "\u2718"
-        status_lbl = QLabel(
-            f"<span style='color:{status_color};font-size:11px'>"
-            f"{status_icon} {status_text}</span>")
-        status_lbl.setWordWrap(True)
-        layout.addWidget(status_lbl)
+        prev_btn = QPushButton("\u25c0")
+        prev_btn.setStyleSheet(nav_s)
+        prev_btn.setFixedWidth(28)
+        prev_btn.clicked.connect(lambda: self.navigate_requested.emit(-1))
+        top_row.addWidget(prev_btn)
 
-        # Method selector
+        self.apply_btn = QPushButton("Aplicar")
+        self.apply_btn.setStyleSheet(
+            "QPushButton { border: 1px solid #27AE60; border-radius: 3px;"
+            " padding: 3px 10px; font-size: 11px; color: white;"
+            " background: #27AE60; font-weight: bold; }"
+            "QPushButton:hover { background: #219A52; }")
+        self.apply_btn.clicked.connect(self._on_apply)
+        top_row.addWidget(self.apply_btn)
+
+        top_row.addWidget(QLabel("<span style='color:#ccc'>|</span>"))
+
+        # Method
+        top_row.addWidget(QLabel("<b style='font-size:10px'>Metode:</b>"))
         from hpsec_core import COMPOSE_METHODS, COMPOSE_METHOD_DEFAULT
-        method_row = QHBoxLayout()
-        method_row.addWidget(QLabel("<b style='font-size:11px'>Mètode:</b>"))
         self._method_combo = QComboBox()
-        self._method_combo.setStyleSheet("font-size: 11px; padding: 2px 6px;")
+        self._method_combo.setStyleSheet("font-size: 10px; padding: 1px 4px;")
+        self._method_combo.setMaximumWidth(200)
         for key, label in COMPOSE_METHODS.items():
             self._method_combo.addItem(label, key)
             if key == COMPOSE_METHOD_DEFAULT:
                 self._method_combo.setCurrentIndex(self._method_combo.count() - 1)
         self._method_combo.currentIndexChanged.connect(self._update_preview)
-        method_row.addWidget(self._method_combo)
-        method_row.addStretch()
-        layout.addLayout(method_row)
+        top_row.addWidget(self._method_combo)
+
+        # Status + name
+        comp = self.comp_result
+        if comp.get("composable"):
+            status_icon = "\u2714"
+            status_color = "#27AE60"
+        else:
+            status_icon = "\u2718"
+            status_color = "#E74C3C"
+
+        r1k, r2k = self.rep_keys
+        c1, c2 = _SRC_COLORS["1"], _SRC_COLORS["2"]
+        header_lbl = QLabel(
+            f"<span style='color:{status_color}'>{status_icon}</span>"
+            f" <b>{self.sample_name}</b>"
+            f" <span style='font-size:10px;color:#888'>"
+            f"<span style='color:{c1}'>R{r1k}</span>"
+            f" <span style='color:{c2}'>R{r2k}</span></span>")
+        header_lbl.setAlignment(Qt.AlignCenter)
+        top_row.addWidget(header_lbl, 1)
+
+        close_btn = QPushButton("Tancar")
+        close_btn.setStyleSheet(nav_s)
+        close_btn.clicked.connect(self.close)
+        top_row.addWidget(close_btn)
+
+        next_btn = QPushButton("\u25b6")
+        next_btn.setStyleSheet(nav_s)
+        next_btn.setFixedWidth(28)
+        next_btn.clicked.connect(lambda: self.navigate_requested.emit(1))
+        top_row.addWidget(next_btn)
+
+        layout.addLayout(top_row)
 
         # =============================================================
         # SEGMENT CONTROL BAR
@@ -232,7 +241,7 @@ class TimeoutCompositionDialog(QDialog):
             self._fig.set_facecolor('white')
             self._ax = self._fig.add_subplot(111)
             self._canvas = FigureCanvas(self._fig)
-            self._canvas.setMinimumHeight(250)
+            self._canvas.setMinimumHeight(200)
             self._canvas.setSizePolicy(
                 QSizePolicy.Expanding, QSizePolicy.Expanding)
 
@@ -241,43 +250,25 @@ class TimeoutCompositionDialog(QDialog):
                 "QToolBar { border: none; spacing: 2px; }"
                 "QToolButton { padding: 2px; }")
             layout.addWidget(self._toolbar)
-            layout.addWidget(self._canvas, stretch=55)
+            layout.addWidget(self._canvas, stretch=60)
 
             # Cursor on hover
             self._canvas.mpl_connect('motion_notify_event', self._on_mouse_move)
             self._cursor_label = QLabel("")
             self._cursor_label.setStyleSheet(
-                "font-size: 10px; color: #888; font-family: monospace;")
+                "font-size: 9px; color: #888; font-family: monospace;")
             layout.addWidget(self._cursor_label)
 
             # FRACTION BARS PLOT
-            self._bar_fig = Figure(figsize=(10, 2.8), dpi=100)
+            self._bar_fig = Figure(figsize=(10, 2), dpi=100)
             self._bar_fig.set_facecolor('white')
             self._bar_ax = self._bar_fig.add_subplot(111)
             self._bar_canvas = FigureCanvas(self._bar_fig)
-            self._bar_canvas.setMinimumHeight(180)
-            self._bar_canvas.setMaximumHeight(260)
-            layout.addWidget(self._bar_canvas, stretch=30)
+            self._bar_canvas.setMinimumHeight(120)
+            self._bar_canvas.setMaximumHeight(180)
+            layout.addWidget(self._bar_canvas, stretch=25)
 
-        # =============================================================
-        # ACTION BUTTONS
-        # =============================================================
-        btn_layout = QHBoxLayout()
-        btn_layout.addStretch()
-
-        self.apply_btn = QPushButton("Aplicar composició")
-        self.apply_btn.setStyleSheet(
-            "QPushButton { background-color: #27AE60; color: white; "
-            "font-weight: bold; padding: 8px 16px; border-radius: 4px; }"
-            "QPushButton:hover { background-color: #219A52; }")
-        self.apply_btn.clicked.connect(self._on_apply)
-        btn_layout.addWidget(self.apply_btn)
-
-        close_btn = QPushButton("Tancar")
-        close_btn.setStyleSheet("QPushButton { padding: 6px 12px; }")
-        close_btn.clicked.connect(self.close)
-        btn_layout.addWidget(close_btn)
-        layout.addLayout(btn_layout)
+        # (Action buttons are in the top bar)
 
         # Build initial segment widgets
         self._rebuild_segment_widgets()
@@ -509,17 +500,41 @@ class TimeoutCompositionDialog(QDialog):
             timeout_info_1=self.ti1, timeout_info_2=self.ti2)
 
         # Apply interpolation for "interp" segments
-        for seg in self.segments:
-            if seg.get("source") == "interp":
-                t_s, t_e = seg["t_start"], seg["t_end"]
-                mask = (t_out >= t_s) & (t_out <= t_e)
-                if np.any(mask):
-                    # Linear interpolation between boundary values
-                    idx = np.where(mask)[0]
-                    if len(idx) >= 2:
-                        y_start = y_out[max(0, idx[0] - 1)]
-                        y_end = y_out[min(len(y_out) - 1, idx[-1] + 1)]
-                        y_out[idx] = np.linspace(y_start, y_end, len(idx))
+        # Use the ORIGINAL segment sources (not compose output) for boundary values
+        for si, seg in enumerate(self.segments):
+            if seg.get("source") != "interp":
+                continue
+            t_s, t_e = seg["t_start"], seg["t_end"]
+            mask = (t_out >= t_s) & (t_out <= t_e)
+            if not np.any(mask):
+                continue
+            idx = np.where(mask)[0]
+            if len(idx) < 2:
+                continue
+
+            # Get boundary values from adjacent segments' ORIGINAL sources
+            # Left boundary: last point of previous segment
+            if si > 0:
+                prev_src = self.segments[si - 1].get("source", "1")
+                src_left = self.y1 if prev_src == "1" else (
+                    np.interp(self.t1, self.t2, self.y2) if len(self.t1) != len(self.t2)
+                    or not np.allclose(self.t1, self.t2, atol=0.001) else self.y2)
+                y_start = float(src_left[max(0, idx[0] - 1)])
+            else:
+                y_start = float(y_out[max(0, idx[0] - 1)])
+
+            # Right boundary: first point of next segment
+            if si < len(self.segments) - 1:
+                next_src = self.segments[si + 1].get("source", "1")
+                src_right = self.y1 if next_src == "1" else (
+                    np.interp(self.t1, self.t2, self.y2) if len(self.t1) != len(self.t2)
+                    or not np.allclose(self.t1, self.t2, atol=0.001) else self.y2)
+                y_end = float(src_right[min(len(src_right) - 1, idx[-1] + 1)])
+            else:
+                y_end = float(y_out[min(len(y_out) - 1, idx[-1] + 1)])
+
+            # Linear interpolation strictly within the segment
+            y_out[idx] = np.linspace(y_start, y_end, len(idx))
 
         self._composed_y = y_out
         self._composed_t = t_out
@@ -834,5 +849,14 @@ class TimeoutCompositionDialog(QDialog):
 
         logger.info(f"Composició aplicada a {self.sample_name} R{sel_key}")
 
+        # Update UI to show applied state
+        self.apply_btn.setText("Composicio aplicada")
+        self.apply_btn.setEnabled(False)
+        self.apply_btn.setStyleSheet(
+            "QPushButton { background-color: #95a5a6; color: white; "
+            "font-weight: bold; padding: 8px 16px; border-radius: 4px; }")
+
+        # Redraw chromatogram to show final result
+        self._update_preview()
+
         self.composition_completed.emit(self.sample_name)
-        self.close()

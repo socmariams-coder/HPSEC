@@ -110,6 +110,11 @@ class SequenceState:
     siblings: List[str] = field(default_factory=list)  # Paths de siblings
     is_sibling: bool = False  # True si és sibling secundari (282B, 282C...)
 
+    # Twin cross-method (COLUMN ↔ BP que analitzen les mateixes mostres)
+    twin_seq_path: str = ""    # Path de la SEQ twin (mode complementari)
+    twin_seq_name: str = ""    # Nom de la twin (ex: "288_SEQ_BP")
+    twin_match_pct: float = 0  # % de mostres coincidents (0-100)
+
     # Paths dels JSONs
     _check_data_path: str = ""
 
@@ -941,6 +946,129 @@ def _scan_single_folder(data_folder: str, group_siblings: bool = True) -> List[S
     return sequences
 
 
+def _get_sample_names_from_manifest(seq_path: str) -> set:
+    """Llegeix els noms de mostres regulars (no blancs/controls) d'un manifest."""
+    manifest_path = os.path.join(seq_path, "CHECK", "data", "import_manifest.json")
+    if not os.path.isfile(manifest_path):
+        return set()
+    try:
+        import json
+        with open(manifest_path, "r", encoding="utf-8") as f:
+            manifest = json.load(f)
+        samples = manifest.get("samples", [])
+        # samples pot ser llista o dict
+        if isinstance(samples, dict):
+            names = set(samples.keys())
+        elif isinstance(samples, list):
+            names = {s.get("name", s.get("sample_name", "")) for s in samples}
+        else:
+            return set()
+        # Filtrar blancs/controls/KHP
+        exclude = {"MQ", "MQ1", "MQ2", "NAOH", "BUFFER", "NaOH"}
+        result = set()
+        for n in names:
+            if not n:
+                continue
+            n_upper = n.upper()
+            if any(tag in n_upper for tag in ["MQ", "NAOH", "BUFFER", "KHP", "BLANC"]):
+                continue
+            if n in exclude:
+                continue
+            result.add(n)
+        return result
+    except Exception as e:
+        logger.debug("Could not read sample names from %s: %s", manifest_path, e)
+        return set()
+
+
+def _detect_twins(sequences: List[SequenceState]):
+    """
+    Detecta twins cross-method (COLUMN <-> BP) per coincidencia de mostres.
+
+    Estrategia en 2 passos:
+    1. Primer: match per num de SEQ (072_SEQ <-> 072_SEQ_BP) — fallback si no hi ha manifest
+    2. Despres: match per noms de mostres (288_SEQ <-> 287_SEQ_BP) — prioritari
+
+    Dos seqs son twins si comparteixen >= 50% de mostres regulars.
+    """
+    MIN_MATCH_PCT = 50
+
+    # Separar COLUMN i BP
+    columns = []
+    bps = []
+    for seq in sequences:
+        _, _, is_bp = _extract_seq_num_and_suffix(seq.seq_name)
+        if is_bp:
+            bps.append(seq)
+        else:
+            columns.append(seq)
+
+    if not columns or not bps:
+        return
+
+    # Pas 1: fallback per numero (seqs sense manifest)
+    col_by_num = {}
+    bp_by_num = {}
+    for s in columns:
+        num, _, _ = _extract_seq_num_and_suffix(s.seq_name)
+        if num > 0:
+            col_by_num.setdefault(num, []).append(s)
+    for s in bps:
+        num, _, _ = _extract_seq_num_and_suffix(s.seq_name)
+        if num > 0:
+            bp_by_num.setdefault(num, []).append(s)
+
+    for num in col_by_num:
+        if num in bp_by_num:
+            col_seq = col_by_num[num][0]
+            bp_seq = bp_by_num[num][0]
+            col_seq.twin_seq_path = bp_seq.seq_path
+            col_seq.twin_seq_name = bp_seq.seq_name
+            bp_seq.twin_seq_path = col_seq.seq_path
+            bp_seq.twin_seq_name = col_seq.seq_name
+            logger.debug("Twins per numero: %s <-> %s", col_seq.seq_name, bp_seq.seq_name)
+
+    # Pas 2: match per mostres (sobreescriu el fallback si millor)
+    # Carregar mostres dels manifests (cache)
+    samples_cache = {}
+    for seq in columns + bps:
+        names = _get_sample_names_from_manifest(seq.seq_path)
+        if names:
+            samples_cache[seq.seq_path] = names
+
+    # Per cada COLUMN amb manifest, buscar la millor BP
+    for col_seq in columns:
+        col_samples = samples_cache.get(col_seq.seq_path)
+        if not col_samples:
+            continue
+
+        best_bp = None
+        best_pct = 0
+        best_common = 0
+
+        for bp_seq in bps:
+            bp_samples = samples_cache.get(bp_seq.seq_path)
+            if not bp_samples:
+                continue
+            common = col_samples & bp_samples
+            min_count = min(len(col_samples), len(bp_samples))
+            match_pct = len(common) / min_count * 100 if min_count > 0 else 0
+            if match_pct >= MIN_MATCH_PCT and match_pct > best_pct:
+                best_pct = match_pct
+                best_bp = bp_seq
+                best_common = len(common)
+
+        if best_bp:
+            col_seq.twin_seq_path = best_bp.seq_path
+            col_seq.twin_seq_name = best_bp.seq_name
+            col_seq.twin_match_pct = best_pct
+            best_bp.twin_seq_path = col_seq.seq_path
+            best_bp.twin_seq_name = col_seq.seq_name
+            best_bp.twin_match_pct = best_pct
+            logger.debug("Twins per mostres: %s <-> %s (%.0f%%, %d comunes)",
+                        col_seq.seq_name, best_bp.seq_name, best_pct, best_common)
+
+
 def get_all_sequences(data_folders, group_siblings: bool = True) -> List[SequenceState]:
     """
     Obté l'estat de totes les seqüències d'una o múltiples carpetes.
@@ -966,6 +1094,9 @@ def get_all_sequences(data_folders, group_siblings: bool = True) -> List[Sequenc
             seq.source_folder = folder_name
             seq.source_path = folder
         all_seqs.extend(seqs)
+
+    # Detectar twins cross-method (COLUMN ↔ BP)
+    _detect_twins(all_seqs)
 
     # Ordenar globalment per (seq_num, is_bp)
     def _sort_key(s):

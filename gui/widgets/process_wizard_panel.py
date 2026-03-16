@@ -606,13 +606,51 @@ class ProcessWizardPanel(QWidget):
         return False
 
     def _invalidate_later_stages(self, from_idx: int):
-        """Marca les etapes posteriors com a pendents i neteja les dades."""
+        """Marca les etapes posteriors com a pendents i neteja dades + JSONs."""
         for i in range(from_idx + 1, 5):
             if self.tab_states[i] in ("ok", "warning"):
                 self.tab_states[i] = "pending"
 
         # Actualitzar títols de pestanyes
         self._update_tab_titles()
+
+        # Esborrar JSONs d'etapes posteriors del disc
+        seq_path = getattr(self.main_window, 'seq_path', None)
+        if seq_path:
+            import os
+            data_dir = os.path.join(seq_path, "CHECK", "data")
+            if os.path.isdir(data_dir):
+                json_by_stage = {
+                    1: ["calibration_result.json"],
+                    2: ["analysis_result.json"],
+                    4: ["review_result.json"],
+                }
+                for stage_idx, filenames in json_by_stage.items():
+                    if stage_idx > from_idx:
+                        for fn in filenames:
+                            fp = os.path.join(data_dir, fn)
+                            if os.path.exists(fp):
+                                try:
+                                    os.remove(fp)
+                                    logger.info("Esborrat %s (invalidat per reimportacio)", fn)
+                                except OSError as e:
+                                    logger.warning("No s'ha pogut esborrar %s: %s", fp, e)
+
+            # Siblings
+            sibling_paths = getattr(self.main_window, 'sibling_paths', [])
+            for sib_path in sibling_paths:
+                sib_data_dir = os.path.join(sib_path, "CHECK", "data")
+                if os.path.isdir(sib_data_dir):
+                    for stage_idx, filenames in json_by_stage.items():
+                        if stage_idx > from_idx:
+                            for fn in filenames:
+                                fp = os.path.join(sib_data_dir, fn)
+                                if os.path.exists(fp):
+                                    try:
+                                        os.remove(fp)
+                                        logger.info("Esborrat sibling %s/%s", os.path.basename(sib_path), fn)
+                                    except OSError:
+                                        pass
 
         # Netejar dades cached dels panels posteriors i main_window
         if from_idx < 1:  # Si reimportem, netejar calibració

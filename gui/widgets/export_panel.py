@@ -785,10 +785,34 @@ class ExportPanel(QWidget):
     # BP Consolidation
     # ------------------------------------------------------------------
 
+    def _resolve_seq_path(self, seq_path):
+        """Resol un seq_path relatiu (basename) a absolut cercant a les carpetes de dades."""
+        seq_name = os.path.basename(seq_path)
+        # 1. Provar main_window.seq_path (sempre absolut)
+        mw_path = getattr(self.main_window, "seq_path", "")
+        if mw_path and os.path.isdir(mw_path) and os.path.basename(mw_path) == seq_name:
+            return mw_path
+        # 2. Cercar a totes les carpetes de dades
+        try:
+            from hpsec_config import get_data_folders
+            for df in get_data_folders():
+                candidate = os.path.join(df, seq_name)
+                if os.path.isdir(candidate):
+                    return candidate
+        except Exception:
+            pass
+        return None
+
     def _launch_bp_discovery(self, seq_path, sample_names):
         """Llança BPDiscoveryWorker per cercar dades BP."""
         if self._bp_worker and self._bp_worker.isRunning():
             self._bp_worker.wait(2000)
+
+        # Resolve relative seq_path (analysis_result.json guarda només basename)
+        if not os.path.isabs(seq_path) or not os.path.isdir(seq_path):
+            resolved = self._resolve_seq_path(seq_path)
+            if resolved:
+                seq_path = resolved
 
         data_folder = str(Path(seq_path).parent)
         self._bp_worker = BPDiscoveryWorker(seq_path, sample_names, data_folder)

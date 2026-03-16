@@ -702,9 +702,9 @@ class SampleDetailDialog(QDialog):
         # LOD/LOQ ppm
         lod_ppm = quant.get("lod_ppm")
         loq_ppm = quant.get("loq_ppm")
-        if lod_ppm is not None:
+        if lod_ppm is not None and lod_ppm > 0:
             parts.append(f"LOD: {lod_ppm:.3f} ppm")
-        if loq_ppm is not None:
+        if loq_ppm is not None and loq_ppm > 0:
             parts.append(f"LOQ: {loq_ppm:.3f} ppm")
 
         # R² DOC

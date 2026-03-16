@@ -306,6 +306,28 @@ ANOMALY_CATALOG = {
         "action": "Informatiu — baseline estimada automàticament",
     },
 
+    # === Timeout composició ===
+    "TIMEOUT_COMPOSABLE": {
+        "severity": WarningLevel.INFO,
+        "label": "Timeouts composables",
+        "icon": "TC",
+        "description": "Les 2 rèpliques tenen timeouts a posicions diferents — composició possible",
+        "stage": "analyze",
+        "repairable": True,
+        "invalidates": False,
+        "action": "Composar rèpliques per obtenir un cromatograma net",
+    },
+    "TIMEOUT_COMPOSED": {
+        "severity": WarningLevel.INFO,
+        "label": "Timeout reparat (composició)",
+        "icon": "TC✓",
+        "description": "Cromatograma composat a partir de segments de les dues rèpliques",
+        "stage": "analyze",
+        "repairable": False,
+        "invalidates": False,
+        "action": "Informatiu — verificar visualment el resultat",
+    },
+
     # === Comparació de rèpliques ===
     "LOW_CORRELATION": {
         "severity": WarningLevel.WARNING,

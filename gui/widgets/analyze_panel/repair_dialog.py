@@ -15,7 +15,7 @@ Layout:
 
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFrame,
-    QScrollArea, QWidget, QCheckBox, QDoubleSpinBox, QSlider,
+    QScrollArea, QWidget, QCheckBox, QDoubleSpinBox,
     QMessageBox, QGridLayout, QSizePolicy
 )
 from PySide6.QtCore import Qt, Signal
@@ -52,8 +52,8 @@ def _get_signal_arrays(rep_data, signal_type, state):
     return t, y_original
 
 
-def _compute_preview(t, y, factor, is_bp):
-    """Calcula preview de reparació amb un factor donat. Retorna dict o {}."""
+def _compute_preview(t, y, factor, is_bp, anchor_left_t=None, anchor_right_t=None):
+    """Calcula preview de reparacio amb un factor donat. Retorna dict o {}."""
     from hpsec_core import (
         repair_with_parabola, detect_irregular_top,
         calc_top_smoothness, find_tangents_and_anchors
@@ -80,7 +80,8 @@ def _compute_preview(t, y, factor, is_bp):
         areas_orig = {}
 
     y_seg_rep, repair_info, was_repaired = repair_with_parabola(
-        t_seg, y_seg, factor=factor, force=True
+        t_seg, y_seg, factor=factor, force=True,
+        anchor_left_t=anchor_left_t, anchor_right_t=anchor_right_t
     )
 
     y_repaired = y.copy()
@@ -145,16 +146,20 @@ class _RepairCard(QFrame):
         layout.setContentsMargins(8, 6, 8, 6)
         layout.setSpacing(4)
 
-        # Header: checkbox + label
+        # Header: checkbox + label + state badge
         header = QHBoxLayout()
         self.checkbox = QCheckBox()
-        self.checkbox.setChecked(self.state == "needs_repair")
+        self.checkbox.setChecked(self.state in ("needs_repair", "repaired"))
         header.addWidget(self.checkbox)
 
         signal_label = self.signal_type.upper()
-        state_icons = {"needs_repair": "", "repaired": " [reparat]", "dismissed": " [descartat]"}
-        label = QLabel(f"<b>R{self.rep_key} {signal_label}</b>{state_icons.get(self.state, '')}")
+        label = QLabel(f"<b>R{self.rep_key} {signal_label}</b>")
         header.addWidget(label)
+
+        # State badge
+        self._state_badge = QLabel()
+        self._update_state_badge()
+        header.addWidget(self._state_badge)
         header.addStretch()
 
         # Params summary (updated on factor change)
@@ -165,24 +170,128 @@ class _RepairCard(QFrame):
 
         # Chart
         if HAS_MATPLOTLIB and len(self.t) > 0:
-            fig = Figure(figsize=(5, 2.2), dpi=100)
+            fig = Figure(figsize=(5, 1.8), dpi=100)
             fig.set_facecolor("#FAFAFA")
             self._ax = fig.add_subplot(111)
             self._canvas = FigureCanvas(fig)
-            self._canvas.setMinimumHeight(160)
+            self._canvas.setMinimumHeight(130)
+            self._canvas.setMaximumHeight(200)
             self._canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             layout.addWidget(self._canvas)
 
+        # Anchor controls
+        anchor_row = QHBoxLayout()
+        anchor_row.setSpacing(4)
+        anchor_row.addWidget(QLabel(
+            "<span style='font-size:10px;color:#666'>Ancoratge:</span>"))
+
+        self._anchor_left_spin = QDoubleSpinBox()
+        self._anchor_left_spin.setPrefix("E ")
+        self._anchor_left_spin.setSuffix(" min")
+        self._anchor_left_spin.setDecimals(2)
+        self._anchor_left_spin.setSingleStep(0.05)
+        self._anchor_left_spin.setStyleSheet("font-size: 10px;")
+        self._anchor_left_spin.setFixedWidth(95)
+        self._anchor_left_spin.setToolTip("Ancoratge esquerre (inici reparacio)")
+        anchor_row.addWidget(self._anchor_left_spin)
+
+        self._anchor_right_spin = QDoubleSpinBox()
+        self._anchor_right_spin.setPrefix("D ")
+        self._anchor_right_spin.setSuffix(" min")
+        self._anchor_right_spin.setDecimals(2)
+        self._anchor_right_spin.setSingleStep(0.05)
+        self._anchor_right_spin.setStyleSheet("font-size: 10px;")
+        self._anchor_right_spin.setFixedWidth(95)
+        self._anchor_right_spin.setToolTip("Ancoratge dret (fi reparacio)")
+        anchor_row.addWidget(self._anchor_right_spin)
+
+        self._anchor_auto_btn = QPushButton("Auto")
+        self._anchor_auto_btn.setStyleSheet(
+            "QPushButton { font-size: 9px; padding: 1px 6px; }")
+        self._anchor_auto_btn.setToolTip("Tornar als ancoratges automatics")
+        self._anchor_auto_btn.clicked.connect(self._reset_anchors)
+        anchor_row.addWidget(self._anchor_auto_btn)
+        anchor_row.addStretch()
+        layout.addLayout(anchor_row)
+
+        # Initialize anchor values (will be set on first preview)
+        self._anchor_left_manual = None
+        self._anchor_right_manual = None
+        self._anchor_left_spin.valueChanged.connect(self._on_anchor_changed)
+        self._anchor_right_spin.valueChanged.connect(self._on_anchor_changed)
+        self._updating_anchors = False
+
+    def _on_anchor_changed(self):
+        if self._updating_anchors:
+            return
+        self._anchor_left_manual = self._anchor_left_spin.value()
+        self._anchor_right_manual = self._anchor_right_spin.value()
+        self._update_preview(self._factor)
+
+    def _reset_anchors(self):
+        self._anchor_left_manual = None
+        self._anchor_right_manual = None
+        self._update_preview(self._factor)
+
+    def _update_state_badge(self):
+        """Update the visual state badge."""
+        if self.state == "repaired":
+            self._state_badge.setText(
+                "<span style='background:#D5F5E3; color:#27AE60; "
+                "padding:1px 6px; border-radius:3px; font-size:10px; "
+                "font-weight:bold'>REPARAT</span>")
+            self.setStyleSheet(
+                "QFrame { border: 2px solid #27AE60; border-radius: 6px;"
+                " background: #F8FFF8; }")
+        elif self.state == "dismissed":
+            self._state_badge.setText(
+                "<span style='background:#EAECEE; color:#888; "
+                "padding:1px 6px; border-radius:3px; font-size:10px'>"
+                "DESCARTAT</span>")
+            self.setStyleSheet(
+                "QFrame { border: 1px solid #CCC; border-radius: 6px;"
+                " background: #F8F8F8; }")
+        elif self.state == "needs_repair":
+            self._state_badge.setText(
+                "<span style='background:#FADBD8; color:#E74C3C; "
+                "padding:1px 6px; border-radius:3px; font-size:10px; "
+                "font-weight:bold'>PENDENT</span>")
+            self.setStyleSheet(
+                "QFrame { border: 2px solid #E74C3C; border-radius: 6px;"
+                " background: white; }")
+        else:
+            self._state_badge.setText("")
+            self.setStyleSheet(
+                "QFrame { border: 1px solid #DEE2E6; border-radius: 6px;"
+                " background: white; }")
+
     def _update_preview(self, factor):
-        """Recalcula preview amb nou factor i actualitza gràfic."""
+        """Recalcula preview amb nou factor i actualitza grafic."""
         self._factor = factor
-        self._preview = _compute_preview(self.t, self.y_original, factor, self.is_bp)
+        self._preview = _compute_preview(
+            self.t, self.y_original, factor, self.is_bp,
+            anchor_left_t=self._anchor_left_manual,
+            anchor_right_t=self._anchor_right_manual)
 
         if not self._preview or not self._ax:
             return
 
         ax = self._ax
         preview = self._preview
+
+        # Update anchor spinboxes with current values
+        ri = preview.get("repair_info", {})
+        t_al = ri.get("t_anchor_left")
+        t_ar = ri.get("t_anchor_right")
+        if t_al is not None and t_ar is not None and hasattr(self, '_anchor_left_spin'):
+            self._updating_anchors = True
+            self._anchor_left_spin.setRange(float(self.t[0]), float(self.t[-1]))
+            self._anchor_right_spin.setRange(float(self.t[0]), float(self.t[-1]))
+            if self._anchor_left_manual is None:
+                self._anchor_left_spin.setValue(t_al)
+            if self._anchor_right_manual is None:
+                self._anchor_right_spin.setValue(t_ar)
+            self._updating_anchors = False
 
         # Zoom range
         peak_idx = int(np.argmax(self.y_original))
@@ -276,7 +385,8 @@ class _RepairCard(QFrame):
 class JaggedPeakRepairDialog(QDialog):
     """Finestra de reparació multi: totes les rèpliques × senyals d'una mostra."""
 
-    repair_completed = Signal(str)  # sample_name — emès quan qualsevol reparació s'aplica
+    repair_completed = Signal(str)  # sample_name
+    navigate_requested = Signal(int)  # direction: -1 prev, +1 next
 
     def __init__(self, sample_name, sample_data, method, force=False, parent=None):
         super().__init__(parent)
@@ -295,11 +405,14 @@ class JaggedPeakRepairDialog(QDialog):
         self._targets = self._find_all_targets()
 
         n = len(self._targets)
-        self.setWindowTitle(f"Reparació Cim Irregular — {sample_name} ({n} senyals)")
-        self.setMinimumSize(600, 480)
-        # Mida adaptativa: més cards → més alt
-        h = min(900, 400 + n * 220)
-        self.resize(700, h)
+        self.setWindowTitle(f"Reparacio — {sample_name} ({n} senyals)")
+        # Mida adaptativa: 2 cards = compacte, 4 = mes gran
+        if n <= 2:
+            self.setMinimumSize(650, 350)
+            self.resize(750, 450)
+        else:
+            self.setMinimumSize(700, 450)
+            self.resize(800, 550)
         self.setModal(True)
 
         self._cards = []
@@ -351,84 +464,113 @@ class JaggedPeakRepairDialog(QDialog):
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(8)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(6)
 
-        # === HEADER ===
-        n_pending = sum(1 for _, _, s in self._targets if s == "needs_repair")
-        n_repaired = sum(1 for _, _, s in self._targets if s == "repaired")
-        n_dismissed = sum(1 for _, _, s in self._targets if s == "dismissed")
+        btn_s = ("QPushButton { border: 1px solid {c}; border-radius: 3px;"
+                 " padding: 4px 10px; font-size: 11px; color: {c}; }}"
+                 "QPushButton:hover {{ background: {bg}; }}")
+        nav_s = ("QPushButton { border: 1px solid #CED4DA; border-radius: 3px;"
+                 " padding: 4px 8px; font-size: 11px; }"
+                 "QPushButton:hover { background: #E9ECEF; }")
 
-        parts = []
-        if n_pending:
-            parts.append(f"<span style='color:#E74C3C'>{n_pending} pendents</span>")
-        if n_repaired:
-            parts.append(f"<span style='color:#27AE60'>{n_repaired} reparats</span>")
-        if n_dismissed:
-            parts.append(f"<span style='color:#95A5A6'>{n_dismissed} descartats</span>")
+        # === TOP BAR: nav + actions + factor + title ===
+        top_row = QHBoxLayout()
+        top_row.setSpacing(4)
 
-        header = QLabel(f"<b>{self.sample_name}</b> — {' | '.join(parts)}")
-        header.setStyleSheet("font-size: 13px; padding: 4px;")
-        layout.addWidget(header)
+        prev_btn = QPushButton("\u25c0")
+        prev_btn.setStyleSheet(nav_s)
+        prev_btn.setFixedWidth(28)
+        prev_btn.setToolTip("Mostra anterior")
+        prev_btn.clicked.connect(lambda: self.navigate_requested.emit(-1))
+        top_row.addWidget(prev_btn)
 
-        # === FACTOR CONTROL ===
-        factor_frame = QFrame()
-        factor_frame.setStyleSheet(
-            "QFrame { background: #F0F4F8; border: 1px solid #D0D7DE;"
-            " border-radius: 4px; padding: 6px; }"
-        )
-        factor_layout = QHBoxLayout(factor_frame)
-        factor_layout.setContentsMargins(8, 4, 8, 4)
+        apply_btn = QPushButton("Aplicar")
+        apply_btn.setStyleSheet(
+            "QPushButton { border: 1px solid #2E86AB; border-radius: 3px;"
+            " padding: 4px 10px; font-size: 11px; color: white;"
+            " background: #2E86AB; font-weight: bold; }"
+            "QPushButton:hover { background: #236B8E; }")
+        apply_btn.setToolTip("Aplicar reparacio als seleccionats")
+        apply_btn.clicked.connect(self._on_apply_selected)
+        top_row.addWidget(apply_btn)
 
-        factor_layout.addWidget(QLabel("<b>Factor correcció:</b>"))
+        undo_btn = QPushButton("Desfer")
+        undo_btn.setStyleSheet(
+            "QPushButton { border: 1px solid #E74C3C; border-radius: 3px;"
+            " padding: 4px 10px; font-size: 11px; color: #E74C3C; }"
+            "QPushButton:hover { background: #FADBD8; }")
+        undo_btn.setToolTip("Desfer reparacio dels seleccionats")
+        undo_btn.clicked.connect(self._on_undo_selected)
+        top_row.addWidget(undo_btn)
 
+        dismiss_btn = QPushButton("Descartar")
+        dismiss_btn.setStyleSheet(nav_s)
+        dismiss_btn.setToolTip("Descartar seleccionats (no reparar)")
+        dismiss_btn.clicked.connect(self._on_dismiss_selected)
+        top_row.addWidget(dismiss_btn)
+
+        top_row.addWidget(QLabel(
+            "<span style='color:#999'>|</span>"))
+
+        top_row.addWidget(QLabel(
+            "<b style='font-size:11px'>Factor:</b>"))
         self._factor_spin = QDoubleSpinBox()
         self._factor_spin.setRange(0.50, 1.20)
-        self._factor_spin.setSingleStep(0.05)
+        self._factor_spin.setSingleStep(0.1)
         self._factor_spin.setDecimals(2)
         self._factor_spin.setValue(self._factor)
-        self._factor_spin.setFixedWidth(70)
-        factor_layout.addWidget(self._factor_spin)
-
-        self._factor_slider = QSlider(Qt.Horizontal)
-        self._factor_slider.setRange(50, 120)  # *100
-        self._factor_slider.setValue(int(self._factor * 100))
-        self._factor_slider.setTickPosition(QSlider.TicksBelow)
-        self._factor_slider.setTickInterval(10)
-        factor_layout.addWidget(self._factor_slider)
-
-        # Labels min/max
-        factor_layout.addWidget(QLabel(
-            f"<span style='color:#888; font-size:10px'>"
-            f"(default: {self._default_factor})</span>"
-        ))
-
-        layout.addWidget(factor_frame)
-
-        # Connect slider ↔ spinbox
-        self._factor_slider.valueChanged.connect(self._on_slider_changed)
+        self._factor_spin.setFixedWidth(65)
+        self._factor_spin.setStyleSheet("font-size: 11px;")
         self._factor_spin.valueChanged.connect(self._on_spin_changed)
+        top_row.addWidget(self._factor_spin)
 
-        # === CARDS SCROLL AREA ===
+        self._header_label = QLabel(f"<b>{self.sample_name}</b>")
+        self._header_label.setAlignment(Qt.AlignCenter)
+        self._header_label.setStyleSheet("font-size: 12px;")
+        top_row.addWidget(self._header_label, 1)
+
+        close_btn = QPushButton("Tancar")
+        close_btn.setStyleSheet(nav_s)
+        close_btn.clicked.connect(self._on_close)
+        top_row.addWidget(close_btn)
+
+        next_btn = QPushButton("\u25b6")
+        next_btn.setStyleSheet(nav_s)
+        next_btn.setFixedWidth(28)
+        next_btn.setToolTip("Mostra seguent")
+        next_btn.clicked.connect(lambda: self.navigate_requested.emit(1))
+        top_row.addWidget(next_btn)
+
+        layout.addLayout(top_row)
+
+        # === CARDS GRID (always 4 if DUAL, 2 if DIRECT) ===
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        scroll.setMinimumHeight(120)
+        scroll.setMinimumHeight(200)
         scroll_widget = QWidget()
         self._cards_layout = QGridLayout(scroll_widget)
-        self._cards_layout.setSpacing(8)
+        self._cards_layout.setSpacing(6)
 
         replicas = self.sample_data.get("replicas", {})
+        detected_set = {(rk, st) for rk, st, _ in self._targets}
+        n_targets = len(self._targets)
+
         for i, (rep_key, signal_type, state) in enumerate(self._targets):
             rep_data = replicas.get(rep_key, {})
             t, y_original = _get_signal_arrays(rep_data, signal_type, state)
 
+            # Pre-check if anomaly detected
+            is_detected = state in ("needs_repair", "repaired")
             card = _RepairCard(
                 rep_key, signal_type, state, t, y_original,
                 self.is_bp, self._factor, parent=self
             )
-            # 2 columnes si ≥ 4 targets, sinó 1 columna
-            cols = 2 if len(self._targets) >= 4 else 1
+            card.checkbox.setChecked(is_detected)
+
+            # Grid: 2 columns always
+            cols = 2
             row_idx = i // cols
             col_idx = i % cols
             self._cards_layout.addWidget(card, row_idx, col_idx)
@@ -437,80 +579,11 @@ class JaggedPeakRepairDialog(QDialog):
         scroll.setWidget(scroll_widget)
         layout.addWidget(scroll, stretch=1)
 
-        # === BUTTONS ===
-        btn_layout = QHBoxLayout()
-
-        # Select/deselect all
-        select_all_btn = QPushButton("Seleccionar tots")
-        select_all_btn.setStyleSheet("padding: 6px 12px;")
-        select_all_btn.clicked.connect(self._select_all)
-        btn_layout.addWidget(select_all_btn)
-
-        deselect_btn = QPushButton("Cap")
-        deselect_btn.setStyleSheet("padding: 6px 12px;")
-        deselect_btn.clicked.connect(self._deselect_all)
-        btn_layout.addWidget(deselect_btn)
-
-        btn_layout.addStretch()
-
-        # Dismiss selected
-        dismiss_btn = QPushButton("Descartar seleccionats")
-        dismiss_btn.setStyleSheet(
-            "QPushButton { background: #95A5A6; color: white;"
-            " padding: 6px 14px; border-radius: 4px; }"
-            "QPushButton:hover { background: #7F8C8D; }"
-        )
-        dismiss_btn.clicked.connect(self._on_dismiss_selected)
-        btn_layout.addWidget(dismiss_btn)
-
-        # Undo selected (for repaired)
-        if n_repaired > 0:
-            undo_btn = QPushButton("Desfer seleccionats")
-            undo_btn.setStyleSheet(
-                "QPushButton { background: #E74C3C; color: white;"
-                " padding: 6px 14px; border-radius: 4px; }"
-                "QPushButton:hover { background: #C0392B; }"
-            )
-            undo_btn.clicked.connect(self._on_undo_selected)
-            btn_layout.addWidget(undo_btn)
-
-        # Apply selected
-        apply_btn = QPushButton("Aplicar seleccionats")
-        apply_btn.setStyleSheet(
-            "QPushButton { background: #2E86AB; color: white; font-weight: bold;"
-            " padding: 6px 14px; border-radius: 4px; }"
-            "QPushButton:hover { background: #236B8E; }"
-        )
-        apply_btn.clicked.connect(self._on_apply_selected)
-        btn_layout.addWidget(apply_btn)
-
-        # Close
-        close_btn = QPushButton("Tancar")
-        close_btn.setStyleSheet(
-            "QPushButton { padding: 6px 14px; border-radius: 4px;"
-            " border: 1px solid #CED4DA; }"
-            "QPushButton:hover { background: #E9ECEF; }"
-        )
-        close_btn.clicked.connect(self._on_close)
-        btn_layout.addWidget(close_btn)
-
-        layout.addLayout(btn_layout)
-
     # ------------------------------------------------------------------
     # Factor sync
     # ------------------------------------------------------------------
 
-    def _on_slider_changed(self, value):
-        new_factor = value / 100.0
-        self._factor_spin.blockSignals(True)
-        self._factor_spin.setValue(new_factor)
-        self._factor_spin.blockSignals(False)
-        self._update_all_cards(new_factor)
-
     def _on_spin_changed(self, value):
-        self._factor_slider.blockSignals(True)
-        self._factor_slider.setValue(int(value * 100))
-        self._factor_slider.blockSignals(False)
         self._update_all_cards(value)
 
     def _update_all_cards(self, factor):
@@ -706,7 +779,8 @@ class JaggedPeakRepairDialog(QDialog):
                 card.state = state
                 card.t = t
                 card.y_original = y_original
-                card.checkbox.setChecked(state == "needs_repair")
+                card.checkbox.setChecked(state in ("needs_repair", "repaired"))
+                card._update_state_badge()
                 card.update_factor(self._factor)
 
     def _on_close(self):
