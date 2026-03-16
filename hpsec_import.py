@@ -2054,16 +2054,19 @@ def parse_injections_from_masterfile(master_data, config=None):
         # Prioritat: 1) Columna explícita/heurística, 2) 0-INFO global
         # Si cap font té dades → inj_volume = None (warning emès al final)
         inj_volume = None
+        inj_volume_source = None
         if volume_col is not None:
             try:
                 vol_val = row.get(volume_col)
                 if vol_val is not None and str(vol_val).strip() not in ["", "nan"]:
                     inj_volume = float(vol_val)
+                    inj_volume_source = "masterfile_col"
             except (ValueError, TypeError):
                 pass
         # Fallback: volum de 0-INFO (comú per tota la seqüència)
         if inj_volume is None and info_volume is not None:
             inj_volume = info_volume
+            inj_volume_source = "0-INFO"
 
         # Info de set per controls (per matching amb fitxers MQ1_R1, MQ2_R1, etc.)
         # NOMÉS usar set/rep si hi ha duplicats exactes - si els noms ja són únics, fer match directe
@@ -2102,6 +2105,7 @@ def parse_injections_from_masterfile(master_data, config=None):
             "sample_name": unique_name,
             "sample_type": sample_type,
             "inj_volume": inj_volume,  # Volum d'injecció en µL (pot ser None)
+            "inj_volume_source": inj_volume_source,  # "masterfile_col", "0-INFO", o None
             "inj_location": inj_location,
             "inj_method": inj_method,
             "inj_date": inj_date,
@@ -3419,13 +3423,15 @@ def import_sequence(seq_path, config=None, progress_callback=None):
                 uib_data["y_net"] = y_uib_net
                 uib_data["baseline"] = baseline_uib
 
-            # Guardar rèplica
+            # Guardar rèplica — si rep_key ja existeix, assignar el seguent disponible
             rep_key = str(inj_num)
-            # Detectar sobreescriptura (duplicats al MasterFile)
-            if rep_key in result["samples"][sample_name]["replicas"]:
-                result["warnings"].append(
-                    f"⚠️ ATENCIÓ: '{sample_name}' rèplica {rep_key} duplicada (línia {inj['line_num']}) - revisar MasterFile"
-                )
+            existing_reps = result["samples"][sample_name]["replicas"]
+            if rep_key in existing_reps:
+                # Trobar el seguent numero lliure
+                max_rep = max(int(k) for k in existing_reps.keys() if k.isdigit())
+                rep_key = str(max_rep + 1)
+                logger.info("Replica duplicada '%s' inj %s (linia %d) -> assignada com R%s",
+                           sample_name, inj_num, inj["line_num"], rep_key)
             result["samples"][sample_name]["replicas"][rep_key] = {
                 "direct": direct_data,  # DOC Direct del MasterFile
                 "uib": uib_data,        # DOC UIB del CSV (si disponible)
@@ -3436,6 +3442,7 @@ def import_sequence(seq_path, config=None, progress_callback=None):
                     "line_num": inj["line_num"],
                     "inj_num": inj_num,
                     "inj_volume": inj.get("inj_volume"),
+                    "inj_volume_source": inj.get("inj_volume_source"),
                     "inj_location": inj.get("inj_location"),
                     "inj_method": inj.get("inj_method"),
                     "inj_date": inj.get("inj_date", ""),
@@ -4915,6 +4922,12 @@ def import_from_manifest(seq_path, manifest=None, config=None, progress_callback
                 else:
                     logger.warning("KHP %s rep %s: cap font DAD disponible (ni manifest ni 3-DAD_KHP)", sample_name, rep_num)
 
+            # Si rep_num ja existeix, assignar el seguent disponible
+            existing_reps = result["samples"][sample_name]["replicas"]
+            if rep_num in existing_reps:
+                max_rep = max((int(k) for k in existing_reps.keys() if k.isdigit()), default=0)
+                rep_num = str(max_rep + 1)
+                logger.info("Replica duplicada '%s' -> assignada com R%s", sample_name, rep_num)
             result["samples"][sample_name]["replicas"][rep_num] = rep_data
 
     # Stats
