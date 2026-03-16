@@ -3288,10 +3288,12 @@ def build_bp_continuous_dad254(result):
     if expected_delay is None:
         expected_delay = 3.637
 
-    # Cerca TOC: delay esperat ± marge (3 min cobreix drift tipic)
-    SEARCH_MARGIN = 3.0  # min
+    # Cerca TOC: delay esperat ± marge
+    # Marge 5 min: cobreix drifts grans (fins 8-9 min delay real amb esperat 3.6)
+    # Amb cadencia 10.7 min i delay esperat ~3.6: max cerca = 8.6 < 10.7 (no salta)
+    SEARCH_MARGIN = 5.0  # min
     search_min = max(0, expected_delay - SEARCH_MARGIN)
-    search_max = expected_delay + SEARCH_MARGIN
+    search_max = min(expected_delay + SEARCH_MARGIN, cadence - 1.0)  # never reach next injection
 
     for j, inj in enumerate(injs):
         nk = ''.join(c for c in inj['name'].lower() if c.isalnum())
