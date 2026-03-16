@@ -790,27 +790,6 @@ def analyze_signal(t, y, signal_type="DOC", mode="COLUMN", timeout_positions=Non
         left_idx = peak_info.get("left_idx", 0)
         right_idx = peak_info.get("right_idx", len(y_smooth) - 1)
 
-        # BP: integrar ±5 min del maxim (finestra fixa centrada al pic)
-        # en lloc dels limits detectats per find_peak_boundaries
-        if is_bp:
-            BP_INTEG_WINDOW = 5.0  # min a cada costat del maxim
-            t_peak = peak_info.get("t_max", 0.0)
-            bp_left = np.searchsorted(t, max(t[0], t_peak - BP_INTEG_WINDOW))
-            bp_right = np.searchsorted(t, min(t[-1], t_peak + BP_INTEG_WINDOW))
-            if bp_right > bp_left:
-                left_idx = int(bp_left)
-                right_idx = int(min(bp_right, len(t) - 1))
-                # Recalcular area amb la finestra fixa
-                y_integ = y_smooth[left_idx:right_idx+1]
-                t_integ = t[left_idx:right_idx+1]
-                bl_integ = np.percentile(y_integ, 20) if len(y_integ) > 5 else 0
-                area_bp = float(np.trapz(np.maximum(y_integ - bl_integ, 0), t_integ))
-                result["area"] = area_bp
-                result["t_start"] = float(t[left_idx])
-                result["t_end"] = float(t[right_idx])
-                result["_bp_fixed_window"] = True
-                result["_bp_integ_window"] = BP_INTEG_WINDOW
-
         fwhm = calculate_fwhm(t, y_smooth, peak_idx, left_idx, right_idx)
         symmetry = calculate_symmetry(t, y_smooth, peak_idx, left_idx, right_idx)
 
