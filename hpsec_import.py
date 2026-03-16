@@ -3156,6 +3156,485 @@ def _generate_import_warnings(result: dict) -> list:
     return warnings
 
 
+def build_bp_continuous_dad254(result):
+    """Build continuous DAD 254 signal for BP and compute per-injection delay.
+
+    For each injection with Export3D:
+    1. Read DAD 254 signal
+    2. Position at absolute time (HPLC injection time + relative time)
+    3. Find peak maximum
+    4. Match with TOC peak to compute real delay
+
+    Stores results in result["bp_alignment"]:
+    - dad254_continuous: {t, y} arrays
+    - toc_continuous: {t, y} arrays (from 2-TOC)
+    - per_injection: list of {name, rep, t_hplc, t_dad_peak, t_toc_peak,
+                              delay_real, dad_peak_val}
+    - n_matched: number of injections with both DAD and TOC peaks
+    - delay_median, delay_min, delay_max, delay_drift
+
+    Returns: number of injections processed.
+    """
+    samples = result.get("samples", {})
+    master_data = result.get("master_data", {})
+    seq_path = result.get("seq_path", "")
+
+    # TOC continuous
+    toc_df = master_data.get("toc")
+    if toc_df is None:
+        return 0
+    if hasattr(toc_df, 'empty') and toc_df.empty:
+        return 0
+
+    toc_col = None
+    for c in toc_df.columns:
+        if 'toc' in str(c).lower():
+            toc_col = c
+            break
+    if toc_col is None:
+        return 0
+
+    y_toc = pd.to_numeric(toc_df[toc_col], errors='coerce').values
+    dt_toc = 4.0 / 60.0
+    t_toc = np.arange(len(y_toc)) * dt_toc
+    y_toc_clean = np.nan_to_num(y_toc, nan=np.nanmedian(y_toc[~np.isnan(y_toc)])
+                                 if (~np.isnan(y_toc)).any() else 0)
+
+    # TOC t0
+    date_col = None
+    for c in toc_df.columns:
+        if 'started' in str(c).lower():
+            date_col = c
+            break
+    t0_toc = None
+    if date_col:
+        dates = pd.to_datetime(toc_df[date_col], errors='coerce')
+        valid = dates.dropna()
+        if len(valid) > 0:
+            t0_toc = valid.iloc[0]
+    if t0_toc is None:
+        return 0
+
+    # HPLC injection times
+    hplc_seq = master_data.get("hplc_seq")
+    if hplc_seq is None:
+        hplc_seq = master_data.get("seq")
+    if hplc_seq is None:
+        return 0
+
+    hplc_date_col = hplc_name_col = None
+    for c in hplc_seq.columns:
+        cl = str(c).lower()
+        if hplc_date_col is None and ('acquired' in cl or ('injection' in cl and 'date' in cl)):
+            hplc_date_col = c
+        if hplc_name_col is None and 'sample' in cl and 'name' in cl:
+            hplc_name_col = c
+    if hplc_date_col is None:
+        return 0
+
+    # Build injection list with absolute times
+    injs = []
+    for _, row in hplc_seq.iterrows():
+        try:
+            name = str(row[hplc_name_col]).strip() if hplc_name_col else ''
+            if pd.isna(name) or name == 'nan':
+                continue
+            dt_val = pd.to_datetime(row[hplc_date_col])
+            t_abs = (dt_val - t0_toc).total_seconds() / 60.0
+            is_ctrl = any(x in name.lower() for x in ['mq', 'naoh', 'blanc', 'blnc'])
+            injs.append({'name': name, 't_hplc': t_abs, 'is_control': is_ctrl})
+        except Exception:
+            pass
+
+    cadence = np.median(np.diff([i['t_hplc'] for i in injs])) if len(injs) >= 2 else 11.0
+
+    # Find Export3D files
+    e3d_dir = os.path.join(seq_path, 'Export3d')
+    if not os.path.isdir(e3d_dir):
+        return 0
+    e3d_files = sorted(os.listdir(e3d_dir))
+
+    # Process each injection
+    dad_t_all = []
+    dad_y_all = []
+    per_injection = []
+    name_counter = {}
+    search_max = cadence * 0.8
+
+    for j, inj in enumerate(injs):
+        nk = ''.join(c for c in inj['name'].lower() if c.isalnum())
+        name_counter[nk] = name_counter.get(nk, 0) + 1
+        rep = name_counter[nk]
+
+        # Find Export3D file
+        matched = None
+        for f in e3d_files:
+            fb = f.lower().replace('.csv', '')
+            fb_alnum = ''.join(c for c in fb if c.isalnum())
+            if nk in fb_alnum and (f'_r{rep}' in fb or f'_{rep}' in fb):
+                if 'uib' not in fb:
+                    matched = f
+                    break
+
+        if matched is None:
+            per_injection.append({
+                'name': inj['name'], 'rep': rep, 'inj_idx': j,
+                't_hplc': inj['t_hplc'], 'is_control': inj['is_control'],
+                'has_dad': False,
+            })
+            continue
+
+        # Read Export3D 254
+        try:
+            fpath = os.path.join(e3d_dir, matched)
+            with open(fpath, encoding='utf-16') as fh:
+                lines = fh.readlines()
+            header = lines[0].strip().split(',')
+            idx254 = next((i for i, h in enumerate(header) if '254' in h), None)
+            if idx254 is None:
+                per_injection.append({
+                    'name': inj['name'], 'rep': rep, 'inj_idx': j,
+                    't_hplc': inj['t_hplc'], 'is_control': inj['is_control'],
+                    'has_dad': False,
+                })
+                continue
+
+            times_rel, vals254 = [], []
+            for line in lines[1:]:
+                fields = line.strip().split(',')
+                if len(fields) > idx254:
+                    try:
+                        times_rel.append(float(fields[0]))
+                        vals254.append(float(fields[idx254]))
+                    except ValueError:
+                        pass
+
+            if len(times_rel) < 5:
+                continue
+
+            t_rel = np.array(times_rel)
+            y_254 = np.array(vals254)
+
+            # DAD peak
+            pk254 = np.argmax(y_254)
+            t_dad_peak_rel = float(t_rel[pk254])
+            t_dad_peak_abs = inj['t_hplc'] + t_dad_peak_rel
+            y_dad_peak = float(y_254[pk254])
+
+            # Add to continuous
+            t_abs_arr = t_rel + inj['t_hplc']
+            dad_t_all.append(t_abs_arr)
+            dad_y_all.append(y_254)
+
+            # Find TOC peak near DAD peak
+            t_toc_peak = None
+            delay_real = None
+            if not inj['is_control']:
+                search_start = max(0, int((t_dad_peak_abs - 1) / dt_toc))
+                search_end = min(len(y_toc_clean), int((t_dad_peak_abs + search_max) / dt_toc))
+                if search_end > search_start + 5:
+                    y_w = y_toc_clean[search_start:search_end]
+                    bl = np.percentile(y_w, 20)
+                    pk_local = np.argmax(y_w - bl)
+                    if y_w[pk_local] - bl > 5:
+                        t_toc_peak = (search_start + pk_local) * dt_toc
+                        delay_real = t_toc_peak - t_dad_peak_abs
+
+            per_injection.append({
+                'name': inj['name'], 'rep': rep, 'inj_idx': j,
+                't_hplc': inj['t_hplc'], 'is_control': inj['is_control'],
+                'has_dad': True,
+                't_dad_peak_rel': t_dad_peak_rel,
+                't_dad_peak_abs': t_dad_peak_abs,
+                'y_dad_peak': y_dad_peak,
+                't_toc_peak': t_toc_peak,
+                'delay_real': delay_real,
+                'file': matched,
+            })
+
+        except Exception as e:
+            logger.debug("Export3D read error %s: %s", matched, e)
+            per_injection.append({
+                'name': inj['name'], 'rep': rep, 'inj_idx': j,
+                't_hplc': inj['t_hplc'], 'is_control': inj['is_control'],
+                'has_dad': False,
+            })
+
+    # Build continuous DAD
+    if dad_t_all:
+        t_dad_cont = np.concatenate(dad_t_all)
+        y_dad_cont = np.concatenate(dad_y_all)
+        order = np.argsort(t_dad_cont)
+        t_dad_cont = t_dad_cont[order]
+        y_dad_cont = y_dad_cont[order]
+    else:
+        t_dad_cont = np.array([])
+        y_dad_cont = np.array([])
+
+    # Delay statistics
+    delays = [p['delay_real'] for p in per_injection
+              if p.get('delay_real') is not None and not p.get('is_control')]
+
+    alignment = {
+        'dad254_continuous': {'t': t_dad_cont.tolist(), 'y': y_dad_cont.tolist()},
+        'toc_continuous': {'t': t_toc.tolist(), 'y': y_toc_clean.tolist()},
+        'per_injection': per_injection,
+        'n_injections': len(injs),
+        'n_with_dad': sum(1 for p in per_injection if p.get('has_dad')),
+        'n_matched': len(delays),
+        'cadence': float(cadence),
+    }
+
+    if delays:
+        d_arr = np.array(delays)
+        alignment['delay_median'] = float(np.median(d_arr))
+        alignment['delay_min'] = float(d_arr.min())
+        alignment['delay_max'] = float(d_arr.max())
+        alignment['delay_drift'] = float(d_arr[-1] - d_arr[0])
+        alignment['delay_std'] = float(np.std(d_arr))
+
+    result['bp_alignment'] = alignment
+
+    n_processed = sum(1 for p in per_injection if p.get('has_dad'))
+    logger.info("BP DAD254 continuous: %d/%d injeccions, %d delays, "
+                "median=%.1f drift=%.1f",
+                n_processed, len(injs), len(delays),
+                alignment.get('delay_median', 0),
+                alignment.get('delay_drift', 0))
+
+    return n_processed
+
+
+def _realign_bp_by_dad254(result):
+    """Realinear assignacio TOC per BP usant pic DAD 254 com a referencia.
+
+    Per cada injeccio amb dades DAD:
+    1. Trobar t_max del pic DAD 254 (temps relatiu dins el run)
+    2. Buscar el pic TOC corresponent al continu (dins finestra de cerca)
+    3. Re-extreure les files TOC centrades al pic real
+    4. Recalcular t, y, y_net, baseline
+
+    Modifica result["samples"] in-place.
+    Returns: nombre d'injeccions realineades.
+    """
+    samples = result.get("samples", {})
+    master_data = result.get("master_data", {})
+    toc_df = master_data.get("toc")
+
+    if toc_df is None:
+        return 0
+    if hasattr(toc_df, 'empty') and toc_df.empty:
+        return 0
+
+    # Read full TOC signal
+    toc_col = None
+    for c in toc_df.columns:
+        if 'toc' in str(c).lower():
+            toc_col = c
+            break
+    if toc_col is None:
+        return 0
+
+    y_toc_full = pd.to_numeric(toc_df[toc_col], errors='coerce').values
+    dt_toc = 4.0 / 60.0  # 4 sec cadence
+    t_toc_full = np.arange(len(y_toc_full)) * dt_toc
+
+    # Get TOC timestamps for absolute time mapping
+    date_col = None
+    for c in toc_df.columns:
+        if 'started' in str(c).lower():
+            date_col = c
+            break
+
+    t0_toc = None
+    if date_col:
+        dates = pd.to_datetime(toc_df[date_col], errors='coerce')
+        valid = dates.dropna()
+        if len(valid) > 0:
+            t0_toc = valid.iloc[0]
+
+    if t0_toc is None:
+        return 0
+
+    # HPLC injection times
+    hplc_seq = master_data.get("hplc_seq") or master_data.get("seq")
+    if hplc_seq is None:
+        return 0
+
+    hplc_date_col = None
+    hplc_name_col = None
+    for c in hplc_seq.columns:
+        cl = str(c).lower()
+        if hplc_date_col is None and ('acquired' in cl or ('injection' in cl and 'date' in cl)):
+            hplc_date_col = c
+        if hplc_name_col is None and 'sample' in cl and 'name' in cl:
+            hplc_name_col = c
+
+    if hplc_date_col is None:
+        return 0
+
+    # Build injection time lookup: sample_name + rep -> t_hplc_abs
+    hplc_times = {}
+    name_counter = {}
+    for _, row in hplc_seq.iterrows():
+        try:
+            name = str(row[hplc_name_col]).strip() if hplc_name_col else ''
+            if pd.isna(name) or name == 'nan':
+                continue
+            dt_val = pd.to_datetime(row[hplc_date_col])
+            t_abs = (dt_val - t0_toc).total_seconds() / 60.0
+            nk = name.lower().replace(' ', '').replace('-', '')
+            name_counter[nk] = name_counter.get(nk, 0) + 1
+            hplc_times[(name, str(name_counter[nk]))] = t_abs
+        except Exception:
+            pass
+
+    cadence = None
+    t_list = sorted(hplc_times.values())
+    if len(t_list) >= 2:
+        cadence = np.median(np.diff(t_list))
+
+    if cadence is None or cadence <= 0:
+        return 0
+
+    # Integration window around peak
+    INTEG_BEFORE = 5.0  # min before peak
+    INTEG_AFTER = 5.0   # min after peak
+    SEARCH_MAX = cadence * 0.8  # don't search beyond next injection
+
+    n_realigned = 0
+    name_counter2 = {}
+
+    for sample_name, sample_data in samples.items():
+        for rep_key, rep_data in sample_data.get("replicas", {}).items():
+            if not isinstance(rep_data, dict):
+                continue
+
+            # Need DAD data for this injection
+            dad = rep_data.get("dad")
+            if dad is None:
+                continue
+            df_dad = dad.get("df") if isinstance(dad, dict) else dad
+            if df_dad is None:
+                continue
+
+            # Find DAD 254 peak time (relative to injection start)
+            try:
+                if isinstance(df_dad, pd.DataFrame):
+                    col254 = None
+                    for c in df_dad.columns:
+                        if '254' in str(c):
+                            col254 = c
+                            break
+                    if col254 is None:
+                        continue
+                    time_col = None
+                    for c in df_dad.columns:
+                        if 'time' in str(c).lower():
+                            time_col = c
+                            break
+                    if time_col is None:
+                        continue
+                    t_dad = pd.to_numeric(df_dad[time_col], errors='coerce').values
+                    y_dad = pd.to_numeric(df_dad[col254], errors='coerce').values
+                elif isinstance(df_dad, dict):
+                    # Dict format with column keys
+                    t_dad_key = next((k for k in df_dad.keys() if 'time' in str(k).lower()), None)
+                    col254_key = next((k for k in df_dad.keys() if '254' in str(k)), None)
+                    if t_dad_key is None or col254_key is None:
+                        continue
+                    t_dad = np.asarray(df_dad[t_dad_key], dtype=float)
+                    y_dad = np.asarray(df_dad[col254_key], dtype=float)
+                else:
+                    continue
+
+                valid_mask = ~np.isnan(t_dad) & ~np.isnan(y_dad)
+                if valid_mask.sum() < 5:
+                    continue
+                t_dad = t_dad[valid_mask]
+                y_dad = y_dad[valid_mask]
+
+                # DAD 254 peak (relative time)
+                pk254_idx = np.argmax(y_dad)
+                t_dad_peak_rel = float(t_dad[pk254_idx])
+
+            except Exception:
+                continue
+
+            # Get HPLC injection absolute time
+            nk = sample_name.lower().replace(' ', '').replace('-', '')
+            name_counter2[nk] = name_counter2.get(nk, 0) + 1
+            rep_count = name_counter2[nk]
+            t_hplc = hplc_times.get((sample_name, str(rep_count)))
+            if t_hplc is None:
+                # Try original name
+                orig = sample_data.get("original_name", sample_name)
+                nk2 = orig.lower().replace(' ', '').replace('-', '')
+                t_hplc = hplc_times.get((orig, str(rep_count)))
+
+            if t_hplc is None:
+                continue
+
+            # DAD peak absolute time
+            t_dad_peak_abs = t_hplc + t_dad_peak_rel
+
+            # Search TOC peak: from DAD peak to DAD peak + SEARCH_MAX
+            search_start_idx = max(0, int((t_dad_peak_abs - 1) / dt_toc))
+            search_end_idx = min(len(y_toc_full), int((t_dad_peak_abs + SEARCH_MAX) / dt_toc))
+
+            if search_end_idx <= search_start_idx + 5:
+                continue
+
+            y_search = y_toc_full[search_start_idx:search_end_idx]
+            y_search_clean = np.nan_to_num(y_search, nan=np.nanmedian(y_search[~np.isnan(y_search)]) if (~np.isnan(y_search)).any() else 0)
+
+            if len(y_search_clean) < 5:
+                continue
+
+            bl = np.percentile(y_search_clean, 20)
+            pk_idx_local = np.argmax(y_search_clean - bl)
+            t_toc_peak_abs = (search_start_idx + pk_idx_local) * dt_toc
+
+            # Integration window centered on TOC peak
+            integ_start_idx = max(0, int((t_toc_peak_abs - INTEG_BEFORE) / dt_toc))
+            integ_end_idx = min(len(y_toc_full), int((t_toc_peak_abs + INTEG_AFTER) / dt_toc))
+
+            if integ_end_idx <= integ_start_idx + 5:
+                continue
+
+            # Extract new t, y for this injection
+            y_new = y_toc_full[integ_start_idx:integ_end_idx].copy()
+            t_new_abs = t_toc_full[integ_start_idx:integ_end_idx]
+            # Convert to relative time (0 = start of window)
+            t_new_rel = t_new_abs - t_new_abs[0]
+
+            # Baseline and net
+            y_new_clean = np.nan_to_num(y_new, nan=np.nanmedian(y_new[~np.isnan(y_new)]) if (~np.isnan(y_new)).any() else 0)
+            baseline_new = float(np.percentile(y_new_clean, 20))
+            y_new_net = y_new_clean - baseline_new
+
+            # Update rep_data direct signal
+            direct = rep_data.get("direct")
+            if direct is None:
+                direct = {}
+                rep_data["direct"] = direct
+
+            direct["t"] = t_new_rel
+            direct["y"] = y_new_clean
+            direct["y_net"] = y_new_net
+            direct["baseline"] = baseline_new
+            direct["_aligned_by_dad254"] = True
+            direct["_dad_peak_rel"] = t_dad_peak_rel
+            direct["_toc_peak_abs"] = t_toc_peak_abs
+            direct["_delay_real"] = float(t_toc_peak_abs - t_dad_peak_abs)
+            direct["row_start"] = integ_start_idx
+            direct["row_end"] = integ_end_idx
+
+            n_realigned += 1
+
+    return n_realigned
+
+
 def import_sequence(seq_path, config=None, progress_callback=None):
     """
     FASE 1: Importar dades RAW d'una seqüència (v2).
@@ -3788,6 +4267,21 @@ def import_sequence(seq_path, config=None, progress_callback=None):
                 f"{'...' if len(postrun_samples) > 3 else ''} - revisar manualment"
             )
             result["postrun_samples"] = postrun_samples
+
+        # === BP: Reconstruir continu DAD 254 i calcular delays reals ===
+        if result["method"] == "BP":
+            try:
+                # Guardar toc_df temporalment per build_bp_continuous_dad254
+                if toc_df is not None:
+                    result["master_data"]["toc"] = toc_df
+                n_dad = build_bp_continuous_dad254(result)
+                if n_dad > 0:
+                    align = result.get("bp_alignment", {})
+                    logger.info("BP alignment: %d/%d inj amb DAD, delay med=%.1f drift=%.1f",
+                                align.get('n_with_dad', 0), align.get('n_injections', 0),
+                                align.get('delay_median', 0), align.get('delay_drift', 0))
+            except Exception as e_bp:
+                logger.warning("BP DAD254 analysis failed: %s", e_bp)
 
         result["success"] = True
         report_progress(100, "Importació completada")
