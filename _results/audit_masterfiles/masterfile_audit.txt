@@ -1,0 +1,163 @@
+AUDIT MASTERFILES
+============================================================
+
+Total: 175
+Necessiten accio: 138
+Delay falta: 132
+Volum discrepant: 16
+
+============================================================
+DELAY FALTA (132 SEQs)
+============================================================
+  072_SEQ                   (COLUMN) hplc=10:31:32  toc=10:30:00  vol=400.0uL  inj=27
+  073B_SEQ_BP               (BP    ) hplc=10:31:32  toc=10:30:00  vol=100.0uL  inj=13
+  073_SEQ                   (COLUMN) hplc=10:31:32  toc=10:30:00  vol=400.0uL  inj=16
+  074B_SEQ_BP               (BP    ) hplc=10:31:32  toc=10:30:00  vol=100.0uL  inj=15
+  074_SEQ                   (COLUMN) hplc=10:31:32  toc=10:30:00  vol=400.0uL  inj=19
+  075B_SEQ_BP               (BP    ) hplc=10:31:32  toc=10:30:00  vol=100.0uL  inj=20
+  075_SEQ                   (COLUMN) hplc=10:31:32  toc=10:30:00  vol=400.0uL  inj=17
+  076_SEQ                   (COLUMN) hplc=10:31:32  toc=10:30:00  vol=400.0uL  inj=21
+  077_SEQ                   (COLUMN) hplc=10:31:32  toc=nan  vol=400.0uL  inj=17
+  079_SEQ                   (COLUMN) hplc=10:31:32  toc=10:30:00  vol=400.0uL  inj=4
+  080_SEQ                   (COLUMN) hplc=10:31:32  toc=10:30:00  vol=400.0uL  inj=12
+  112_SEQ                   (COLUMN) hplc=08:56:38  toc=08:51:00  vol=400.0uL  inj=18
+  118_SEQ                   (COLUMN) hplc=08:56:38  toc=08:51:00  vol=400.0uL  inj=24
+  121_SEQ                   (COLUMN) hplc=08:56:38  toc=08:51:00  vol=400.0uL  inj=18
+  122_SEQ                   (COLUMN) hplc=08:56:38  toc=08:51:00  vol=400.0uL  inj=14
+  124_SEQ                   (COLUMN) hplc=08:56:38  toc=08:51:00  vol=400.0uL  inj=7
+  125_SEQ                   (COLUMN) hplc=11:18:29  toc=10:10:00  vol=400.0uL  inj=18
+  126_SEQ                   (COLUMN) hplc=11:18:29  toc=10:10:00  vol=400.0uL  inj=7
+  127B_SEQ                  (COLUMN) hplc=11:18:29  toc=10:10:00  vol=400.0uL  inj=16
+  127_SEQ                   (COLUMN) hplc=11:18:29  toc=10:10:00  vol=400.0uL  inj=12
+  128_SEQ_CAL               (UNKNOWN) hplc=08:56:38  toc=08:51:00  vol=400.0uL  inj=4
+  129_SEQ_CAL               (UNKNOWN) hplc=08:56:38  toc=08:51:00  vol=400.0uL  inj=3
+  130_SEQ                   (COLUMN) hplc=08:56:38  toc=08:51:00  vol=400.0uL  inj=5
+  136_SEQ                   (COLUMN) hplc=08:56:38  toc=08:51:00  vol=400.0uL  inj=22
+  137_SEQ                   (COLUMN) hplc=08:56:38  toc=08:51:00  vol=400.0uL  inj=13
+  138_SEQ                   (COLUMN) hplc=08:56:38  toc=08:51:00  vol=400.0uL  inj=11
+  139_SEQ                   (COLUMN) hplc=08:56:38  toc=08:51:00  vol=400.0uL  inj=21
+  140_SEQ                   (COLUMN) hplc=08:56:38  toc=08:51:00  vol=400.0uL  inj=27
+  141_SEQ                   (COLUMN) hplc=08:56:38  toc=08:51:00  vol=400.0uL  inj=10
+  142_SEQ                   (COLUMN) hplc=08:56:38  toc=08:51:00  vol=400.0uL  inj=5
+  143_SEQ                   (COLUMN) hplc=08:56:38  toc=08:51:00  vol=400.0uL  inj=14
+  144B_SEQ                  (COLUMN) hplc=08:56:38  toc=08:51:00  vol=400.0uL  inj=7
+  144_SEQ                   (COLUMN) hplc=08:56:38  toc=08:51:00  vol=400.0uL  inj=12
+  147_SEQ                   (COLUMN) hplc=08:56:38  toc=08:51:00  vol=400.0uL  inj=17
+  150_SEQ                   (COLUMN) hplc=18:51:00  toc=18:52:03  vol=400.0uL  inj=23
+  153_SEQ_CAL               (UNKNOWN) hplc=18:51:00  toc=nan  vol=400.0uL  inj=14
+  160_SEQ                   (COLUMN) hplc=18:51:00  toc=18:52:03  vol=400.0uL  inj=21
+  161_SEQ                   (COLUMN) hplc=18:51:00  toc=18:52:03  vol=400.0uL  inj=19
+  164_SEQ                   (COLUMN) hplc=18:51:00  toc=18:52:03  vol=400.0uL  inj=14
+  166_SEQ                   (COLUMN) hplc=18:51:00  toc=18:52:03  vol=400.0uL  inj=25
+  168_SEQ                   (COLUMN) hplc=18:51:00  toc=18:52:03  vol=400.0uL  inj=19
+  169_SEQ_BP                (BP    ) hplc=18:51:00  toc=18:52:03  vol=100.0uL  inj=12
+  174_SEQ                   (COLUMN) hplc=18:51:00  toc=18:52:03  vol=400.0uL  inj=32
+  175_SEQ                   (COLUMN) hplc=18:51:00  toc=18:52:03  vol=400.0uL  inj=16
+  176_SEQ                   (COLUMN) hplc=18:51:00  toc=18:52:03  vol=400.0uL  inj=13
+  177_SEQ                   (COLUMN) hplc=18:51:00  toc=18:52:03  vol=400.0uL  inj=14
+  179_SEQ                   (COLUMN) hplc=18:51:00  toc=18:52:03  vol=400.0uL  inj=8
+  180_SEQ                   (COLUMN) hplc=18:51:00  toc=18:52:03  vol=400.0uL  inj=13
+  182_SEQ                   (COLUMN) hplc=18:51:00  toc=18:52:03  vol=400.0uL  inj=18
+  183_SEQ                   (COLUMN) hplc=18:51:00  toc=18:52:03  vol=400.0uL  inj=12
+  184_SEQ                   (COLUMN) hplc=18:51:00  toc=18:52:03  vol=400.0uL  inj=12
+  185_SEQ                   (COLUMN) hplc=18:51:00  toc=18:52:03  vol=400.0uL  inj=8
+  186B_SEQ                  (COLUMN) hplc=18:51:00  toc=18:52:03  vol=400.0uL  inj=16
+  186_SEQ                   (COLUMN) hplc=18:51:00  toc=18:52:03  vol=400.0uL  inj=15
+  187_SEQ                   (COLUMN) hplc=18:51:00  toc=18:52:03  vol=400.0uL  inj=28
+  188_SEQ                   (COLUMN) hplc=18:51:00  toc=18:52:03  vol=400.0uL  inj=13
+  190_SEQ                   (COLUMN) hplc=18:51:00  toc=18:52:03  vol=400.0uL  inj=9
+  191_SEQ                   (COLUMN) hplc=18:51:00  toc=18:52:03  vol=400.0uL  inj=8
+  192_SEQ                   (COLUMN) hplc=18:51:00  toc=18:52:03  vol=400.0uL  inj=13
+  194_SEQ                   (COLUMN) hplc=18:51:00  toc=18:52:03  vol=400.0uL  inj=14
+  195_SEQ                   (COLUMN) hplc=18:51:00  toc=18:52:03  vol=400.0uL  inj=12
+  196_SEQ                   (COLUMN) hplc=18:51:00  toc=nan  vol=400.0uL  inj=1
+  199_SEQ                   (COLUMN) hplc=18:51:00  toc=18:52:03  vol=400.0uL  inj=9
+  200_SEQ                   (COLUMN) hplc=18:51:00  toc=18:52:03  vol=400.0uL  inj=21
+  201_SEQ                   (COLUMN) hplc=18:51:00  toc=18:52:03  vol=400.0uL  inj=28
+  203_SEQ                   (COLUMN) hplc=nan  toc=18:52:03  vol=400.0uL  inj=7
+  204_SEQ                   (COLUMN) hplc=nan  toc=18:52:03  vol=400.0uL  inj=9
+  205_SEQ_BP_CAL            (BP    ) hplc=18:51:00  toc=18:52:03  vol=400.0uL  inj=17
+  206_SEQ_CAL               (UNKNOWN) hplc=18:51:00  toc=18:52:03  vol=400.0uL  inj=16
+  209B_SEQ                  (COLUMN) hplc=18:51:00  toc=18:52:03  vol=400.0uL  inj=4
+  209_SEQ                   (COLUMN) hplc=18:51:00  toc=18:52:03  vol=400.0uL  inj=13
+  210_SEQ                   (COLUMN) hplc=18:51:00  toc=18:52:03  vol=400.0uL  inj=4
+  212_SEQ                   (COLUMN) hplc=18:02:00  toc=18:46:03  vol=400.0uL  inj=10
+  213_SEQ                   (COLUMN) hplc=18:02:00  toc=18:46:03  vol=400.0uL  inj=20
+  216_SEQ                   (COLUMN) hplc=18:02:00  toc=18:46:03  vol=400.0uL  inj=24
+  218_SEQ                   (COLUMN) hplc=18:02:00  toc=18:46:03  vol=400.0uL  inj=31
+  219_SEQ                   (COLUMN) hplc=18:02:00  toc=18:46:03  vol=400.0uL  inj=17
+  221_SEQ_BP                (BP    ) hplc=14:36:00  toc=14:27:00  vol=100.0uL  inj=14
+  222_SEQ                   (COLUMN) hplc=14:36:00  toc=14:27:00  vol=400.0uL  inj=12
+  223_SEQ                   (COLUMN) hplc=11:50:00  toc=11:40:00  vol=400.0uL  inj=14
+  224_SEQ                   (COLUMN) hplc=11:50:00  toc=11:40:00  vol=400.0uL  inj=5
+  225_SEQ_BP                (BP    ) hplc=11:50:00  toc=11:40:00  vol=100.0uL  inj=10
+  227_SEQ                   (COLUMN) hplc=11:50:00  toc=11:40:00  vol=400.0uL  inj=7
+  228_SEQ                   (COLUMN) hplc=11:50:00  toc=11:40:00  vol=400.0uL  inj=24
+  230_SEQ                   (COLUMN) hplc=11:50:00  toc=11:40:00  vol=400.0uL  inj=34
+  232_SEQ                   (COLUMN) hplc=11:50:00  toc=11:40:00  vol=400.0uL  inj=12
+  233_SEQ                   (COLUMN) hplc=11:50:00  toc=11:40:00  vol=400.0uL  inj=11
+  234_SEQ                   (COLUMN) hplc=11:50:00  toc=nan  vol=400.0uL  inj=33
+  236B_SEQ                  (COLUMN) hplc=11:50:00  toc=11:40:00  vol=400.0uL  inj=2
+  236_SEQ                   (COLUMN) hplc=11:50:00  toc=11:40:00  vol=400.0uL  inj=17
+  239B_SEQ                  (COLUMN) hplc=11:34:00  toc=11:33:00  vol=400.0uL  inj=5
+  239_SEQ                   (COLUMN) hplc=11:34:00  toc=11:33:00  vol=400.0uL  inj=12
+  244_SEQ                   (COLUMN) hplc=11:34:00  toc=11:33:00  vol=400.0uL  inj=5
+  246_SEQ                   (COLUMN) hplc=09:21:00  toc=12:00:00  vol=400.0uL  inj=33
+  248_SEQ                   (COLUMN) hplc=09:21:00  toc=12:00:00  vol=400.0uL  inj=5
+  249B_SEQ                  (COLUMN) hplc=09:21:00  toc=12:00:00  vol=400.0uL  inj=7
+  249C_SEQ                  (COLUMN) hplc=09:21:00  toc=12:00:00  vol=400.0uL  inj=2
+  250_SEQ                   (COLUMN) hplc=09:21:00  toc=12:00:00  vol=400.0uL  inj=14
+  256B_SEQ                  (COLUMN) hplc=08:58:00  toc=08:57:00  vol=400.0uL  inj=30
+  256_SEQ                   (COLUMN) hplc=16:06:00  toc=16:05:00  vol=400.0uL  inj=9
+  257_SEQ                   (COLUMN) hplc=12:31:00  toc=12:30:00  vol=400.0uL  inj=32
+  258_SEQ                   (COLUMN) hplc=10:11:00  toc=10:09:00  vol=400.0uL  inj=28
+  261B_SEQ_BP               (BP    ) hplc=13:57:00  toc=13:56:00  vol=100.0uL  inj=14
+  261C_SEQ_BP               (BP    ) hplc=16:44:00  toc=16:43:00  vol=100.0uL  inj=14
+  261D_SEQ_BP               (BP    ) hplc=11:00:00  toc=10:59:00  vol=100.0uL  inj=0
+  262B_SEQ                  (COLUMN) hplc=10:51:00  toc=10:48:00  vol=400.0uL  inj=11
+  262_SEQ                   (COLUMN) hplc=11:47:00  toc=11:44:00  vol=400.0uL  inj=14
+  265_SEQ                   (COLUMN) hplc=14:37:00  toc=14:37:00  vol=400.0uL  inj=4
+  266_SEQ                   (COLUMN) hplc=11:49:00  toc=11:49:00  vol=400.0uL  inj=33
+  267_SEQ                   (COLUMN) hplc=21:26:00  toc=21:26:00  vol=400.0uL  inj=31
+  269B_SEQ                  (COLUMN) hplc=15:08:00  toc=15:07:00  vol=400.0uL  inj=36
+  272_SEQ                   (COLUMN) hplc=12:38:00  toc=12:37:00  vol=400.0uL  inj=29
+  274_SEQ                   (COLUMN) hplc=13:06:00  toc=13:05:00  vol=400.0uL  inj=29
+  275_SEQ                   (COLUMN) hplc=15:22:00  toc=15:21:00  vol=400.0uL  inj=29
+  276B_SEQ                  (COLUMN) hplc=10:04:00  toc=11:03:00  vol=400.0uL  inj=22
+  276_SEQ                   (COLUMN) hplc=14:45:00  toc=15:44:00  vol=400.0uL  inj=13
+  277_SEQ_BP                (BP    ) hplc=15:26:00  toc=16:25:00  vol=100.0uL  inj=29
+  278_SEQ                   (COLUMN) hplc=14:38:00  toc=14:38:00  vol=400.0uL  inj=29
+  282B_SEQ                  (COLUMN) hplc=13:18:00  toc=13:17:00  vol=400.0uL  inj=19
+  282_SEQ                   (COLUMN) hplc=12:12:00  toc=12:11:00  vol=400.0uL  inj=19
+  283_SEQ                   (COLUMN) hplc=14:31:00  toc=14:30:00  vol=400.0uL  inj=20
+  285_SEQ                   (COLUMN) hplc=15:09:00  toc=15:06:00  vol=400.0uL  inj=21
+  287_SEQ_BP                (BP    ) hplc=10:37:00  toc=10:37:00  vol=100.0uL  inj=42
+  288_SEQ                   (COLUMN) hplc=13:20:00  toc=13:19:00  vol=400.0uL  inj=42
+  289_SEQ_BP                (BP    ) hplc=13:42:00  toc=13:42:00  vol=100.0uL  inj=19
+  290_SEQ                   (COLUMN) hplc=09:53:00  toc=09:53:00  vol=400.0uL  inj=17
+  291_SEQ                   (COLUMN) hplc=12:59:00  toc=12:59:00  vol=400.0uL  inj=19
+  292_SEQ_CAL_BP            (BP    ) hplc=14:40:00  toc=14:40:00  vol=100.0uL  inj=17
+  293_SEQ_CAL               (UNKNOWN) hplc=10:10:00  toc=10:10:00  vol=400.0uL  inj=16
+  295_SEQ_BP                (BP    ) hplc=13:41:00  toc=13:41:00  vol=100.0uL  inj=29
+  297B_SEQ                  (COLUMN) hplc=14:45:00  toc=14:45:00  vol=400.0uL  inj=15
+  297_SEQ                   (COLUMN) hplc=12:14:00  toc=12:14:00  vol=400.0uL  inj=20
+
+============================================================
+VOLUM DISCREPANT (16 SEQs)
+============================================================
+  077B_SEQ_BP               (BP    ) col13 multiple: [np.int64(100), np.int64(400)]
+  108_SEQ_BP_CAL            (BP    ) col13 multiple: [np.int64(100), np.int64(200), np.int64(300), np.int64(400)]
+  109B_SEQ_BP               (BP    ) col13 multiple: [np.int64(100), np.int64(400)]
+  111_SEQ_BP_CAL            (BP    ) col13 multiple: [np.int64(50), np.int64(100), np.int64(400)]
+  154_SEQ_BP                (BP    ) col13 multiple: [np.int64(200), np.int64(300), np.int64(400)]
+  256B_SEQ                  (COLUMN) 0-INFO=400 vs col13=100
+  256_SEQ                   (COLUMN) 0-INFO=400 vs col13=100
+  257_SEQ                   (COLUMN) 0-INFO=400 vs col13=100
+  258_SEQ                   (COLUMN) 0-INFO=400 vs col13=100
+  262B_SEQ                  (COLUMN) 0-INFO=400 vs col13=100
+  262_SEQ                   (COLUMN) 0-INFO=400 vs col13=100
+  265_SEQ                   (COLUMN) 0-INFO=400 vs col13=100
+  266_SEQ                   (COLUMN) 0-INFO=400 vs col13=100
+  272_SEQ                   (COLUMN) 0-INFO=400 vs col13=100
+  274_SEQ                   (COLUMN) 0-INFO=400 vs col13=100
+  286_SEQ_BP                (BP    ) col13 multiple: [np.int64(50), np.int64(100)]
