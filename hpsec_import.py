@@ -3405,6 +3405,118 @@ def build_bp_continuous_dad254(result):
     return n_processed
 
 
+def _relocate_bp_windows(result, toc_df):
+    """Recolocar finestres DOC per BP centrades al pic TOC real.
+
+    Usa bp_alignment.per_injection per saber on és el pic TOC real
+    de cada injecció. Reextreu les dades DOC amb la mateixa mida
+    de finestra (~10 min) però centrada al pic.
+
+    Modifica result["samples"] in-place.
+    Returns: nombre d'injeccions recolocades.
+    """
+    align = result.get("bp_alignment", {})
+    per_inj = align.get("per_injection", [])
+    samples = result.get("samples", {})
+
+    if not per_inj or toc_df is None:
+        return 0
+
+    # Build lookup: (name, rep) -> t_toc_peak (absolute TOC time)
+    peak_lookup = {}
+    for p in per_inj:
+        if p.get("t_toc_peak") is not None and not p.get("is_control"):
+            name = p["name"]
+            rep = p["rep"]
+            peak_lookup[(name, rep)] = p["t_toc_peak"]
+
+    if not peak_lookup:
+        return 0
+
+    dt_toc = 4.0 / 60.0  # 4 sec cadence
+    cadence = align.get("cadence", 11.0)
+    half_window_rows = int((cadence * 0.45) / dt_toc)  # ~45% cadence each side
+
+    n_relocated = 0
+    name_counter = {}
+
+    for sample_name, sample_data in samples.items():
+        for rep_key, rep_data in sample_data.get("replicas", {}).items():
+            if not isinstance(rep_data, dict):
+                continue
+            direct = rep_data.get("direct")
+            if direct is None or direct.get("t") is None:
+                continue
+
+            # Map to alignment data
+            nk = sample_name.lower().replace(' ', '').replace('-', '')
+            name_counter[nk] = name_counter.get(nk, 0) + 1
+            rep_num = name_counter[nk]
+
+            t_toc_peak = peak_lookup.get((sample_name, rep_num))
+            if t_toc_peak is None:
+                # Try original name
+                orig = sample_data.get("original_name", sample_name)
+                t_toc_peak = peak_lookup.get((orig, rep_num))
+
+            if t_toc_peak is None:
+                continue
+
+            # Calculate new row range centered on peak
+            peak_row = int(t_toc_peak / dt_toc) + 8  # +8 for header offset
+            new_row_start = max(8, peak_row - half_window_rows)
+            new_row_end = peak_row + half_window_rows
+
+            old_row_start = direct.get("row_start", 0)
+            old_row_end = direct.get("row_end", 0)
+
+            # Skip if the shift is tiny (<10 rows = <0.7 min)
+            old_center = (old_row_start + old_row_end) / 2
+            new_center = (new_row_start + new_row_end) / 2
+            if abs(new_center - old_center) < 10:
+                continue
+
+            # Re-extract DOC from MasterFile
+            try:
+                df_doc = extract_doc_from_masterfile(
+                    toc_df, new_row_start, new_row_end,
+                    detect_timeouts=False, max_duration_min=20.0)
+
+                if df_doc is None or df_doc.empty:
+                    continue
+
+                t_new = df_doc["time (min)"].values
+                y_new = df_doc["DOC"].values
+
+                if len(t_new) < 10:
+                    continue
+
+                # Baseline and y_net
+                mode = "BP"
+                baseline_new = get_baseline_value(t_new, y_new, mode=mode)
+                y_net_new = y_new - baseline_new
+
+                # Update direct data
+                direct["t"] = t_new
+                direct["y"] = y_new
+                direct["y_net"] = y_net_new
+                direct["baseline"] = baseline_new
+                direct["row_start"] = new_row_start
+                direct["row_end"] = new_row_end
+                direct["_relocated"] = True
+                direct["_old_row_start"] = old_row_start
+                direct["_old_row_end"] = old_row_end
+                direct["_toc_peak_abs"] = t_toc_peak
+                direct["_shift_rows"] = int(new_center - old_center)
+
+                n_relocated += 1
+
+            except Exception as e:
+                logger.debug("Relocate failed for %s R%s: %s", sample_name, rep_key, e)
+
+    return n_relocated
+
+
 def _realign_bp_by_dad254(result):
     """Realinear assignacio TOC per BP usant pic DAD 254 com a referencia.
 
@@ -4280,6 +4392,11 @@ def import_sequence(seq_path, config=None, progress_callback=None):
                     logger.info("BP alignment: %d/%d inj amb DAD, delay med=%.1f drift=%.1f",
                                 align.get('n_with_dad', 0), align.get('n_injections', 0),
                                 align.get('delay_median', 0), align.get('delay_drift', 0))
+
+                    # Recolocar finestres DOC centrades al pic TOC real
+                    n_relocated = _relocate_bp_windows(result, toc_df)
+                    if n_relocated > 0:
+                        logger.info("BP: %d injeccions recolocades al pic real", n_relocated)
             except Exception as e_bp:
                 logger.warning("BP DAD254 analysis failed: %s", e_bp)
 
