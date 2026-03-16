@@ -3259,7 +3259,39 @@ def build_bp_continuous_dad254(result):
     dad_y_all = []
     per_injection = []
     name_counter = {}
-    search_max = cadence * 0.8
+    # Delay esperat: del 0-INFO o calculat des de hores HPLC/TOC
+    info = master_data.get("info", {})
+    expected_delay = None
+    for key, val in info.items():
+        if 'net delay' in str(key).lower() and 'suite' not in str(key).lower():
+            try:
+                v = float(val)
+                if not np.isnan(v):
+                    expected_delay = v
+            except (ValueError, TypeError):
+                pass
+    if expected_delay is None:
+        hora_hplc = hora_toc = None
+        for key, val in info.items():
+            kl = str(key).lower()
+            if 'hora hplc' in kl: hora_hplc = val
+            elif 'hora toc' in kl: hora_toc = val
+        if hora_hplc and hora_toc:
+            try:
+                def _to_min(t):
+                    if hasattr(t, 'hour'):
+                        return t.hour * 60 + t.minute + t.second / 60
+                    return sum(int(p)*m for p, m in zip(str(t).split(':'), [60, 1]))
+                expected_delay = 3.637 - (_to_min(hora_hplc) - _to_min(hora_toc))
+            except Exception:
+                pass
+    if expected_delay is None:
+        expected_delay = 3.637
+
+    # Cerca TOC: delay esperat ± marge (3 min cobreix drift tipic)
+    SEARCH_MARGIN = 3.0  # min
+    search_min = max(0, expected_delay - SEARCH_MARGIN)
+    search_max = expected_delay + SEARCH_MARGIN
 
     for j, inj in enumerate(injs):
         nk = ''.join(c for c in inj['name'].lower() if c.isalnum())
@@ -3330,7 +3362,7 @@ def build_bp_continuous_dad254(result):
             t_toc_peak = None
             delay_real = None
             if not inj['is_control']:
-                search_start = max(0, int((t_dad_peak_abs - 1) / dt_toc))
+                search_start = max(0, int((t_dad_peak_abs + search_min) / dt_toc))
                 search_end = min(len(y_toc_clean), int((t_dad_peak_abs + search_max) / dt_toc))
                 if search_end > search_start + 5:
                     y_w = y_toc_clean[search_start:search_end]
@@ -3422,13 +3454,17 @@ def _relocate_bp_windows(result, toc_df):
     if not per_inj or toc_df is None:
         return 0
 
-    # Build lookup: (name, rep) -> t_toc_peak (absolute TOC time)
+    # Build lookup: (normalized_name, rep) -> t_toc_peak (absolute TOC time)
+    # Normalize: remove spaces, dashes, lowercase, to match samples dict keys
+    def _norm(s):
+        return ''.join(c for c in s.lower() if c.isalnum())
+
     peak_lookup = {}
     for p in per_inj:
         if p.get("t_toc_peak") is not None and not p.get("is_control"):
-            name = p["name"]
+            name_norm = _norm(p["name"])
             rep = p["rep"]
-            peak_lookup[(name, rep)] = p["t_toc_peak"]
+            peak_lookup[(name_norm, rep)] = p["t_toc_peak"]
 
     if not peak_lookup:
         return 0
@@ -3449,15 +3485,15 @@ def _relocate_bp_windows(result, toc_df):
                 continue
 
             # Map to alignment data
-            nk = sample_name.lower().replace(' ', '').replace('-', '')
+            nk = _norm(sample_name)
             name_counter[nk] = name_counter.get(nk, 0) + 1
             rep_num = name_counter[nk]
 
-            t_toc_peak = peak_lookup.get((sample_name, rep_num))
+            t_toc_peak = peak_lookup.get((nk, rep_num))
             if t_toc_peak is None:
                 # Try original name
                 orig = sample_data.get("original_name", sample_name)
-                t_toc_peak = peak_lookup.get((orig, rep_num))
+                t_toc_peak = peak_lookup.get((_norm(orig), rep_num))
 
             if t_toc_peak is None:
                 continue
