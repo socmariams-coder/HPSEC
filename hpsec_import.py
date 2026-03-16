@@ -2794,10 +2794,21 @@ def find_data_for_injection(injection, seq_path, uib_files, dad_files, dad_csv_f
                     row_end = None
 
         if row_start is not None and row_end is not None and row_start > 0:
+            # Per BP: ampliar finestra ±5 min (75 files a 4s cadencia)
+            # per permetre que l'analyze trobi el pic real si el delay varia
+            is_bp_mode = (method or "").upper() == "BP"
+            if is_bp_mode:
+                margin_rows = int(5.0 * 60 / 4)  # 5 min * 60s / 4s = 75 rows
+                row_start_expanded = max(8, row_start - margin_rows)  # min 8 (header)
+                row_end_expanded = row_end + margin_rows
+            else:
+                row_start_expanded = row_start
+                row_end_expanded = row_end
+
             # Extreure DOC Direct (sense detecció timeout local — ve de seq_timeouts)
             max_dur = config.get("max_duration_min", 80.0)
             df_doc = extract_doc_from_masterfile(
-                toc_df, row_start, row_end, detect_timeouts=False,
+                toc_df, row_start_expanded, row_end_expanded, detect_timeouts=False,
                 max_duration_min=max_dur
             )
 
@@ -4915,6 +4926,12 @@ def _load_doc_direct(toc_df, row_start, row_end, mode, config, seq_timeouts=None
     if toc_df is None or row_start is None or row_end is None:
         return None
     try:
+        # Per BP: ampliar finestra ±5 min per permetre alineacio per pic
+        if mode == "BP":
+            margin_rows = int(5.0 * 60 / 4)  # 75 rows
+            row_start = max(8, row_start - margin_rows)
+            row_end = row_end + margin_rows
+
         max_dur = config.get("max_duration_min", 80.0)
         df_doc = extract_doc_from_masterfile(
             toc_df, row_start, row_end,
