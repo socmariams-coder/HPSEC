@@ -465,6 +465,7 @@ class CalibratePanel(QWidget):
 
         # Dispatch: ordre nou (sense summary, replica_selection)
         for fn in [self._update_compact_header, self._update_delay_diagnostic,
+                   self._update_toc_alignment,
                    self._update_graphs, self._update_metrics_table,
                    self._update_validation, self._update_history]:
             try:
@@ -549,6 +550,46 @@ class CalibratePanel(QWidget):
 
         # === DELAY DIAGNOSTIC ===
         self._build_delay_diagnostic_section(content_layout)
+
+        # === TOC ALIGNMENT (BP only) ===
+        self._toc_align_group = QGroupBox("Assignació TOC — DAD 254")
+        self._toc_align_group.setVisible(False)
+        self._toc_align_group.setStyleSheet(
+            "QGroupBox { font-weight: bold; color: #1A5276; border: 2px solid #2E86AB; "
+            "border-radius: 6px; margin-top: 8px; padding-top: 12px; }"
+            "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; }")
+        toc_align_layout = QVBoxLayout(self._toc_align_group)
+
+        # Info label
+        self._toc_align_info = QLabel()
+        self._toc_align_info.setWordWrap(True)
+        self._toc_align_info.setStyleSheet("font-size: 11px; padding: 4px;")
+        toc_align_layout.addWidget(self._toc_align_info)
+
+        # Chart
+        try:
+            from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+            from matplotlib.backends.backend_qtagg import NavigationToolbar2QT
+            from matplotlib.figure import Figure
+            self._toc_align_figure = Figure(figsize=(10, 4), dpi=100)
+            self._toc_align_figure.set_facecolor('#FAFAFA')
+            self._toc_align_canvas = FigureCanvas(self._toc_align_figure)
+            self._toc_align_canvas.setMinimumHeight(300)
+            self._toc_align_toolbar = NavigationToolbar2QT(self._toc_align_canvas,
+                                                            self._toc_align_group)
+            toc_align_layout.addWidget(self._toc_align_toolbar)
+            toc_align_layout.addWidget(self._toc_align_canvas)
+            self._has_toc_align_chart = True
+        except ImportError:
+            self._has_toc_align_chart = False
+
+        # Delay per injection table
+        self._toc_align_table = QLabel()
+        self._toc_align_table.setStyleSheet("font-size: 10px; font-family: monospace; padding: 4px;")
+        self._toc_align_table.setWordWrap(True)
+        toc_align_layout.addWidget(self._toc_align_table)
+
+        content_layout.addWidget(self._toc_align_group)
 
         # === CALIBRATION LINE (primer — referència visual principal) ===
         self.cal_line_group = QGroupBox("Recta de calibració")
@@ -2128,6 +2169,115 @@ class CalibratePanel(QWidget):
         self._delay_shift_min = 0  # Shift detectat del KHP
 
         parent_layout.addWidget(self.delay_group)
+
+    def _update_toc_alignment(self, result):
+        """Show TOC+DAD254 alignment for BP sequences."""
+        imported = self.main_window.imported_data
+        if not imported:
+            self._toc_align_group.setVisible(False)
+            return
+
+        method = imported.get("method", "COLUMN")
+        if method != "BP":
+            self._toc_align_group.setVisible(False)
+            return
+
+        align = imported.get("bp_alignment")
+        if not align:
+            self._toc_align_group.setVisible(False)
+            return
+
+        self._toc_align_group.setVisible(True)
+
+        # Info
+        n_inj = align.get("n_injections", 0)
+        n_dad = align.get("n_with_dad", 0)
+        n_matched = align.get("n_matched", 0)
+        delay_med = align.get("delay_median", 0)
+        delay_min = align.get("delay_min", 0)
+        delay_max = align.get("delay_max", 0)
+        drift = align.get("delay_drift", 0)
+
+        # Count relocated
+        n_relocated = sum(1 for s in imported.get("samples", {}).values()
+                          for r in s.get("replicas", {}).values()
+                          if isinstance(r, dict) and (r.get("direct") or {}).get("_relocated"))
+
+        info_parts = [
+            f"<b>{n_inj}</b> injeccions, <b>{n_dad}</b> amb DAD 254, <b>{n_matched}</b> delays calculats",
+            f"Delay real: mediana <b>{delay_med:.1f}</b> min (rang {delay_min:.1f}-{delay_max:.1f}, drift {drift:+.1f})",
+            f"<b>{n_relocated}</b> injeccions recolocades al pic real",
+        ]
+        if abs(drift) > 2:
+            info_parts.append(
+                f"<span style='color:#E74C3C'>⚠ Drift significatiu ({drift:+.1f} min) — "
+                f"els timeouts afecten el delay</span>")
+        self._toc_align_info.setText("<br>".join(info_parts))
+
+        # Chart: TOC + DAD superposats
+        if self._has_toc_align_chart:
+            import numpy as np
+            self._toc_align_figure.clear()
+            ax = self._toc_align_figure.add_subplot(111)
+
+            # TOC continuous
+            toc_data = align.get("toc_continuous", {})
+            t_toc = np.array(toc_data.get("t", []))
+            y_toc = np.array(toc_data.get("y", []))
+
+            if len(t_toc) > 0:
+                ax.plot(t_toc, y_toc, 'b-', lw=0.4, alpha=0.7, label='TOC (ppb)')
+                ax.set_ylabel('TOC (ppb)', color='blue')
+
+            # DAD 254 continuous
+            dad_data = align.get("dad254_continuous", {})
+            t_dad = np.array(dad_data.get("t", []))
+            y_dad = np.array(dad_data.get("y", []))
+
+            if len(t_dad) > 0:
+                ax2 = ax.twinx()
+                ax2.plot(t_dad, y_dad, 'g-', lw=0.4, alpha=0.6, label='DAD 254 (mAU)')
+                ax2.set_ylabel('DAD 254 (mAU)', color='green')
+
+            # Mark injection positions
+            per_inj = align.get("per_injection", [])
+            for p in per_inj:
+                t_hplc = p.get("t_hplc", 0)
+                if p.get("is_control"):
+                    ax.axvline(t_hplc, color='#95A5A6', ls=':', lw=0.3, alpha=0.3)
+                elif p.get("t_toc_peak") is not None:
+                    # Draw line at TOC peak
+                    ax.axvline(p["t_toc_peak"], color='#E74C3C', ls=':', lw=0.5, alpha=0.4)
+                if p.get("t_dad_peak_abs") is not None and not p.get("is_control"):
+                    if len(t_dad) > 0:
+                        ax2.axvline(p["t_dad_peak_abs"], color='#27AE60', ls=':', lw=0.5, alpha=0.3)
+
+            ax.set_xlabel('min (des de inici TOC)')
+            ax.set_title(f'TOC (blau) + DAD 254 (verd) — {n_matched} delays calculats, drift {drift:+.1f} min',
+                         fontsize=9)
+            ax.spines['top'].set_visible(False)
+
+            try:
+                self._toc_align_figure.tight_layout()
+            except Exception:
+                pass
+            self._toc_align_canvas.draw_idle()
+
+        # Delay table
+        per_inj = align.get("per_injection", [])
+        lines = []
+        for p in per_inj:
+            if p.get("is_control"):
+                continue
+            name = p.get("name", "?")[:10]
+            delay = p.get("delay_real")
+            d_str = f"{delay:.1f}" if delay is not None else "-"
+            dad_val = p.get("y_dad_peak", 0)
+            d_val = f"{dad_val:.1f}" if dad_val else "-"
+            lines.append(f"Inj {p.get('inj_idx', 0)+1:2d} {name:>10}  delay={d_str:>5}  A254={d_val:>6}")
+
+        if lines:
+            self._toc_align_table.setText("\n".join(lines))
 
     def _update_delay_diagnostic(self, result):
         """Actualitza la secció de diagnòstic delay."""
