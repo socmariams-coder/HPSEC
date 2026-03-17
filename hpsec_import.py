@@ -3514,6 +3514,32 @@ def _relocate_bp_windows(result, toc_df):
             if abs(new_center - old_center) < 10:
                 continue
 
+            # Anti-overlap: check new window doesn't overlap with other replicas
+            # of the same sample or adjacent samples
+            overlap_found = False
+            for other_name, other_data in samples.items():
+                for other_rk, other_rd in other_data.get("replicas", {}).items():
+                    if other_name == sample_name and other_rk == rep_key:
+                        continue
+                    od = other_rd.get("direct") or {} if isinstance(other_rd, dict) else {}
+                    ors = od.get("row_start", 0)
+                    ore = od.get("row_end", 0)
+                    if ors <= 0 or ore <= 0:
+                        continue
+                    # Check overlap
+                    if new_row_start <= ore and ors <= new_row_end:
+                        overlap = min(new_row_end, ore) - max(new_row_start, ors)
+                        if overlap > 5:  # more than ~20 sec overlap
+                            overlap_found = True
+                            logger.debug("Relocate %s R%s: overlap %d rows with %s R%s, skipping",
+                                        sample_name, rep_key, overlap, other_name, other_rk)
+                            break
+                if overlap_found:
+                    break
+
+            if overlap_found:
+                continue
+
             # Re-extract DOC from MasterFile
             try:
                 df_doc = extract_doc_from_masterfile(
@@ -3975,8 +4001,9 @@ def import_sequence(seq_path, config=None, progress_callback=None):
         if _needs_regen:
             logger.info("4-TOC_CALC existent amb timestamps arrodonits, regenerant...")
 
-        # Si 4-TOC_CALC no existeix, és buit, o té timestamps degradats → calcular
-        if _needs_regen or toc_calc_df is None or (hasattr(toc_calc_df, 'empty') and toc_calc_df.empty):
+        # SEMPRE recalcular 4-TOC_CALC a partir de les hores HPLC/TOC
+        # El 4-TOC_CALC del MasterFile pot tenir un delay antic o incorrecte
+        if True:
             if toc_df is not None:
                 result["warnings"].append(
                     "4-TOC_CALC no trobat al MasterFile, calculant automàticament..."
