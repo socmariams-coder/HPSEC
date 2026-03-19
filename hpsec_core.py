@@ -2938,9 +2938,16 @@ def get_baseline_value(t, y, mode="COLUMN", config=None):
     n = len(y)
 
     if mode.upper() == "BP":
-        end_pct = baseline_cfg.get("bp_end_pct", 20)
-        n_points = max(10, int(n * end_pct / 100))
-        baseline_data = y[-n_points:]
+        # BP amb finestres centrades: baseline del mínim entre inici i final
+        pct = baseline_cfg.get("bp_start_pct", 15)
+        n_pts = max(10, int(n * pct / 100))
+        bl_start = y[:n_pts]
+        bl_end = y[-n_pts:]
+        # Agafar la zona amb mediana més baixa (menys contaminada pel pic)
+        if np.median(bl_start) <= np.median(bl_end):
+            baseline_data = bl_start
+        else:
+            baseline_data = bl_end
     else:
         start_pct = baseline_cfg.get("column_start_pct", 15)
         n_points = max(10, int(n * start_pct / 100))

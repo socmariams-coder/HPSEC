@@ -546,6 +546,9 @@ class CalibrationLineView(QWidget):
         # Secció resum (sense SEQ_CAL carregada)
         self._build_summary_section()
 
+        # Secció alineació TOC+DAD (inicialment oculta)
+        self._build_alignment_section()
+
         # Secció regressió (inicialment oculta)
         self._build_regression_section()
 
@@ -553,6 +556,224 @@ class CalibrationLineView(QWidget):
         self._build_apply_section()
 
         self._main_layout.addStretch()
+
+    # ------------------------------------------------------------------
+    # Alignment section (TOC+DAD254 continu + delay per injecció)
+    # ------------------------------------------------------------------
+
+    def _build_alignment_section(self):
+        """Secció alineació: TOC+DAD254 superposats + delay per injecció."""
+        self._align_group = QGroupBox("Alineació TOC — DAD 254")
+        self._align_group.setVisible(False)
+        self._align_group.setStyleSheet(
+            "QGroupBox { font-weight: bold; color: #1A5276; border: 1px solid #AED6F1; "
+            "border-radius: 4px; margin-top: 6px; padding-top: 10px; }"
+            "QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 3px; }")
+        align_layout = QVBoxLayout(self._align_group)
+
+        # Info label
+        self._align_info = QLabel()
+        self._align_info.setWordWrap(True)
+        self._align_info.setStyleSheet("font-size: 11px; padding: 2px;")
+        align_layout.addWidget(self._align_info)
+
+        # Chart
+        try:
+            from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+            from matplotlib.figure import Figure
+            self._align_figure = Figure(figsize=(10, 3.5), dpi=100)
+            self._align_figure.set_facecolor('#FAFAFA')
+            self._align_canvas = FigureCanvas(self._align_figure)
+            self._align_canvas.setMinimumHeight(250)
+            align_layout.addWidget(self._align_canvas)
+            self._has_align_chart = True
+        except ImportError:
+            self._has_align_chart = False
+
+        # Delay table
+        self._align_delay_table = QLabel()
+        self._align_delay_table.setStyleSheet(
+            "font-size: 10px; font-family: monospace; padding: 2px;")
+        self._align_delay_table.setWordWrap(True)
+        align_layout.addWidget(self._align_delay_table)
+
+        self._main_layout.addWidget(self._align_group)
+
+    def _update_alignment(self, imported_data):
+        """Actualitza la secció d'alineació amb dades de la SEQ_CAL importada."""
+        if not imported_data:
+            self._align_group.setVisible(False)
+            return
+
+        import numpy as np
+
+        align = imported_data.get("bp_alignment")
+        method = imported_data.get("method", "COLUMN")
+        is_bp = method.upper() == "BP"
+
+        # Per COLUMN: construir alineació si no existeix
+        if not align and not is_bp:
+            # Intentar construir TOC+DAD continu per COLUMN
+            align = self._build_column_alignment(imported_data)
+
+        if not align:
+            self._align_group.setVisible(False)
+            return
+
+        self._align_group.setVisible(True)
+
+        per_inj = align.get("per_injection", [])
+        n_inj = align.get("n_injections", 0)
+        n_matched = align.get("n_matched", 0)
+        delay_med = align.get("delay_median", 0)
+        delay_min = align.get("delay_min", 0)
+        delay_max = align.get("delay_max", 0)
+        drift = align.get("delay_drift", 0)
+        toc_timeouts = align.get("toc_timeouts", [])
+        delay_blocks = align.get("delay_blocks", [])
+
+        info = (f"<b>{n_inj}</b> injeccions, <b>{n_matched}</b> delays calculats, "
+                f"<b>{len(toc_timeouts)}</b> timeouts<br>"
+                f"Delay: mediana <b>{delay_med:.1f}</b> min "
+                f"(rang {delay_min:.1f}–{delay_max:.1f}, drift {drift:+.1f})")
+        if abs(drift) > 2:
+            info += (f"<br><span style='color:#E67E22'>Drift significatiu: "
+                     f"{drift:+.1f} min — els timeouts desplacen el delay</span>")
+        self._align_info.setText(info)
+
+        # Dibuixar gràfic: 2 subplots
+        if self._has_align_chart:
+            toc_data = align.get("toc_continuous", {})
+            dad_data = align.get("dad254_continuous", {})
+            t_toc = np.array(toc_data.get("t", []))
+            y_toc = np.array(toc_data.get("y", []))
+            t_dad = np.array(dad_data.get("t", []))
+            y_dad = np.array(dad_data.get("y", []))
+
+            # Recollir KHP cromatogrames Direct vs UIB
+            samples = imported_data.get("samples", {})
+            khp_chroms = []
+            for sn, sd in samples.items():
+                if 'khp' not in sn.lower():
+                    continue
+                for rk, rd in sorted(sd.get("replicas", {}).items()):
+                    direct = rd.get("direct", {})
+                    uib = rd.get("uib", {})
+                    t_d = direct.get("t") if isinstance(direct, dict) else None
+                    y_d = direct.get("y_net", direct.get("y")) if isinstance(direct, dict) else None
+                    t_u = uib.get("t") if isinstance(uib, dict) else None
+                    y_u = uib.get("y_net", uib.get("y")) if isinstance(uib, dict) else None
+                    if t_d is not None and len(t_d) > 5:
+                        khp_chroms.append({
+                            "name": sn, "rep": rk,
+                            "t_d": np.array(t_d), "y_d": np.array(y_d) if y_d is not None else None,
+                            "t_u": np.array(t_u) if t_u is not None else None,
+                            "y_u": np.array(y_u) if y_u is not None else None,
+                        })
+
+            has_uib = any(k.get("y_u") is not None and len(k["y_u"]) > 5 for k in khp_chroms)
+            n_subplots = 1 + (1 if khp_chroms else 0)
+
+            self._align_figure.clear()
+
+            # Subplot 1: TOC + DAD continu
+            ax = self._align_figure.add_subplot(n_subplots, 1, 1)
+
+            if len(t_toc) > 0:
+                ax.plot(t_toc, y_toc, 'b-', lw=0.3, alpha=0.7)
+                ax.set_ylabel('TOC (ppb)', color='blue', fontsize=8)
+
+            if len(t_dad) > 0:
+                ax2 = ax.twinx()
+                ax2.plot(t_dad, y_dad, 'g-', lw=0.2, alpha=0.5)
+                ax2.set_ylabel('DAD 254 (mAU)', color='green', fontsize=8)
+
+            for to in toc_timeouts:
+                ax.axvline(to['t_min'], c='red', lw=0.4, ls='--', alpha=0.3)
+
+            for p in per_inj:
+                if not p.get('is_control', False) and 'khp' in p.get('name', '').lower():
+                    ax.axvline(p['t_hplc'], c='#E74C3C', lw=0.8, ls=':', alpha=0.5)
+
+            mode_str = "BP" if is_bp else "COLUMN"
+            ax.set_title(f'TOC (blau) + DAD 254 (verd) | {mode_str} | '
+                        f'delay {delay_med:.1f} min, drift {drift:+.1f}',
+                        fontsize=8)
+            ax.spines['top'].set_visible(False)
+            ax.grid(True, alpha=0.1)
+
+            # Subplot 2: KHP cromatogrames Direct (blau) vs UIB (verd)
+            if khp_chroms:
+                ax_khp = self._align_figure.add_subplot(n_subplots, 1, 2)
+                colors_d = ['#1565C0', '#1976D2', '#1E88E5', '#2196F3', '#42A5F5',
+                            '#64B5F6', '#90CAF9', '#BBDEFB']
+                colors_u = ['#2E7D32', '#388E3C', '#43A047', '#4CAF50', '#66BB6A',
+                            '#81C784', '#A5D6A7', '#C8E6C9']
+
+                for i, k in enumerate(khp_chroms):
+                    cd = colors_d[i % len(colors_d)]
+                    cu = colors_u[i % len(colors_u)]
+                    label_d = f'{k["name"][:6]} R{k["rep"]} D'
+                    ax_khp.plot(k["t_d"], k["y_d"], color=cd, lw=0.8, alpha=0.7,
+                               label=label_d)
+                    if k.get("y_u") is not None and len(k["y_u"]) > 5:
+                        label_u = f'{k["name"][:6]} R{k["rep"]} U'
+                        ax_khp.plot(k["t_u"], k["y_u"], color=cu, lw=0.8,
+                                   alpha=0.7, ls='--', label=label_u)
+
+                ax_khp.axhline(0, c='k', lw=0.3, alpha=0.3)
+                uib_str = " + UIB (verd --)" if has_uib else ""
+                ax_khp.set_title(f'KHP: Direct (blau){uib_str}', fontsize=8)
+                ax_khp.set_xlabel('min', fontsize=8)
+                ax_khp.set_ylabel('ppb', fontsize=8)
+                ax_khp.legend(fontsize=6, loc='upper right', ncol=2)
+                ax_khp.grid(True, alpha=0.1)
+                if is_bp:
+                    ax_khp.set_xlim(0, 10)
+
+            try:
+                self._align_figure.tight_layout()
+            except Exception:
+                pass
+            self._align_canvas.draw_idle()
+
+        # Taula delays (3 columnes)
+        lines = []
+        for p in per_inj:
+            if p.get('is_control'):
+                continue
+            name = p.get('name', '?')[:12]
+            d = p.get('delay_real')
+            d_str = f"{d:.1f}" if d is not None else "  -"
+            lines.append(f"{name:>12} {d_str:>5}")
+
+        if lines:
+            n = len(lines)
+            cols = 3
+            rows = (n + cols - 1) // cols
+            table_lines = []
+            for r in range(rows):
+                parts = []
+                for c in range(cols):
+                    idx = r + c * rows
+                    if idx < n:
+                        parts.append(lines[idx])
+                table_lines.append("  |  ".join(parts))
+            self._align_delay_table.setText("\n".join(table_lines))
+
+    def _build_column_alignment(self, imported_data):
+        """Construeix alineació TOC+DAD254 per COLUMN (com build_bp_continuous_dad254)."""
+        try:
+            from hpsec_import import build_bp_continuous_dad254
+            # Necessitem master_data.toc — pot no estar disponible
+            md = imported_data.get("master_data", {})
+            if md and md.get("toc") is not None:
+                n = build_bp_continuous_dad254(imported_data)
+                if n > 0:
+                    return imported_data.get("bp_alignment")
+        except Exception as e:
+            logger.debug("_build_column_alignment failed: %s", e)
+        return None
 
     # ------------------------------------------------------------------
     # Summary section (sense SEQ_CAL carregada)
@@ -1110,10 +1331,11 @@ class CalibrationLineView(QWidget):
         self._message_label.setText(
             f"<div style='text-align:center; padding:40px;'>"
             f"<span style='font-size:14px; color:#2980B9;'>"
-            f"⏳ Processant {seq_name}...</span></div>"
+            f"Processant {seq_name}...</span></div>"
         )
         self._message_label.setVisible(True)
         self._summary_group.setVisible(False)
+        self._align_group.setVisible(False)
         self.seq_cal_group.setVisible(False)
         self.seq_cal_apply_group.setVisible(False)
 
@@ -1121,10 +1343,11 @@ class CalibrationLineView(QWidget):
         """Mostra missatge d'error."""
         self._message_label.setText(
             f"<div style='text-align:center; padding:20px;'>"
-            f"<span style='font-size:14px; color:#E74C3C;'>❌ {msg}</span></div>"
+            f"<span style='font-size:14px; color:#E74C3C;'>{msg}</span></div>"
         )
         self._message_label.setVisible(True)
         self._summary_group.setVisible(False)
+        self._align_group.setVisible(False)
         self.seq_cal_group.setVisible(False)
         self.seq_cal_apply_group.setVisible(False)
 
@@ -1139,6 +1362,9 @@ class CalibrationLineView(QWidget):
         self._imported_data = imported_data
         self._message_label.setVisible(False)
         self._summary_group.setVisible(False)
+
+        # Alineació TOC+DAD254
+        self._update_alignment(imported_data)
 
         entries = seq_cal_data.get('entries', [])
         method = seq_cal_data.get('method', 'COLUMN')
