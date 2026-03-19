@@ -554,10 +554,16 @@ class ProcessWizardPanel(QWidget):
             # Netejar dades pre-carregades perquè reimporti realment del MasterFile
             self.main_window.imported_data = None
             self.import_panel._run_import(force_reimport=force_redo)
-        elif current_idx == 1:  # Calibrar
+        elif current_idx == 1:  # Calibrar/Verificar
+            # Si és refer, forçar recàrrega completa des del MasterFile
+            if force_redo and self.main_window.imported_data:
+                self.main_window.imported_data["data_deferred"] = True
             if hasattr(self.calibrate_panel, '_run_calibrate'):
                 self.calibrate_panel._run_calibrate()
         elif current_idx == 2:  # Analitzar
+            # Si és refer, forçar recàrrega completa des del MasterFile
+            if force_redo and self.main_window.imported_data:
+                self.main_window.imported_data["data_deferred"] = True
             if hasattr(self.analyze_panel, '_run_analyze'):
                 self.analyze_panel._run_analyze()
         elif current_idx == 3:  # Comparar (passiu, no action)
@@ -1030,6 +1036,17 @@ class ProcessWizardPanel(QWidget):
                 body.setTextInteractionFlags(Qt.TextSelectableByMouse)
                 note_fl.addWidget(body)
 
+                # Botó esborrar
+                del_btn = QPushButton("Esborrar")
+                del_btn.setFixedWidth(60)
+                del_btn.setStyleSheet("font-size: 9px; color: #999; padding: 1px 4px;")
+                note_ts = note.get("timestamp", "")
+                note_rev = note.get("reviewer", "")
+                del_btn.clicked.connect(
+                    lambda checked=False, _ts=note_ts, _rev=note_rev, _dlg=dialog:
+                        self._delete_note(_ts, _rev, _dlg))
+                note_fl.addWidget(del_btn)
+
                 notes_layout.addWidget(note_frame)
 
             notes_layout.addStretch()
@@ -1161,6 +1178,57 @@ class ProcessWizardPanel(QWidget):
 
         except Exception as e:
             QMessageBox.warning(self, "Error", f"No s'ha pogut guardar la nota: {e}")
+
+    def _delete_note(self, timestamp, reviewer, dialog=None):
+        """Esborra una nota per timestamp+reviewer de tots els JSONs."""
+        import json
+
+        seq_path = self.main_window.seq_path
+        if not seq_path:
+            return
+
+        data_path = Path(seq_path) / "CHECK" / "data"
+
+        # Esborrar dels JSONs d'etapa
+        for filename in ["import_manifest.json", "calibration_result.json", "analysis_result.json"]:
+            json_file = data_path / filename
+            if json_file.exists():
+                try:
+                    with open(json_file, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                    notes = data.get("user_notes", [])
+                    original_len = len(notes)
+                    notes = [n for n in notes
+                             if not (n.get("timestamp") == timestamp and n.get("reviewer") == reviewer)]
+                    if len(notes) < original_len:
+                        data["user_notes"] = notes
+                        with open(json_file, 'w', encoding='utf-8') as f:
+                            json.dump(data, f, indent=2, ensure_ascii=False, default=str)
+                except Exception:
+                    pass
+
+        # Esborrar del fitxer general
+        notes_file = data_path / "user_notes.json"
+        if notes_file.exists():
+            try:
+                with open(notes_file, 'r', encoding='utf-8') as f:
+                    notes_data = json.load(f)
+                notes = notes_data.get("notes", [])
+                notes_data["notes"] = [n for n in notes
+                                       if not (n.get("timestamp") == timestamp and n.get("reviewer") == reviewer)]
+                with open(notes_file, 'w', encoding='utf-8') as f:
+                    json.dump(notes_data, f, indent=2, ensure_ascii=False, default=str)
+            except Exception:
+                pass
+
+        self._update_note_btn()
+        # Reobrir diàleg per refrescar
+        if dialog:
+            try:
+                dialog.close()
+            except Exception:
+                pass
+        self._on_add_note()
 
     def _save_warnings_confirmation(self, stage_idx: int, reviewer: str, user_note: str = "", mark_as_ok: bool = True):
         """Guarda la revisió d'avisos al JSON corresponent."""

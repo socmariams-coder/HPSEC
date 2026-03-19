@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QPushButton, QGroupBox,
     QGridLayout, QFrame, QHBoxLayout, QTableWidget, QTableWidgetItem,
     QHeaderView, QSplitter, QScrollArea, QSizePolicy, QComboBox,
-    QCheckBox
+    QCheckBox, QDoubleSpinBox, QSlider
 )
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont, QColor
@@ -114,6 +114,19 @@ class CalibratePanel(QWidget):
             self.calibration_line_graph.clear()
         if hasattr(self, 'cal_line_group'):
             self.cal_line_group.setVisible(False)
+        # Reset TOC alignment (BP)
+        if hasattr(self, '_toc_align_group'):
+            self._toc_align_group.setVisible(False)
+        self._bp_align_cache = None
+        self._bp_delay_original = None
+        self._bp_delay_current = None
+        if hasattr(self, '_toc_align_figure'):
+            self._toc_align_figure.clear()
+            self._toc_align_canvas.draw_idle()
+        if hasattr(self, '_toc_align_table'):
+            self._toc_align_table.setText("")
+        if hasattr(self, '_toc_align_info'):
+            self._toc_align_info.setText("")
 
     def showEvent(self, event):
         """Quan el panel es mostra, comprovar si hi ha calibració existent."""
@@ -566,7 +579,55 @@ class CalibratePanel(QWidget):
         self._toc_align_info.setStyleSheet("font-size: 11px; padding: 4px;")
         toc_align_layout.addWidget(self._toc_align_info)
 
-        # Chart
+        # --- Controls: delay slider compacte (sota el gràfic) ---
+        slider_row = QHBoxLayout()
+        slider_row.setSpacing(6)
+        slider_row.addWidget(QLabel("<b>Delay:</b>"))
+
+        self._toc_delay_spin = QDoubleSpinBox()
+        self._toc_delay_spin.setRange(-5.0, 20.0)
+        self._toc_delay_spin.setSingleStep(0.1)
+        self._toc_delay_spin.setDecimals(1)
+        self._toc_delay_spin.setSuffix(" min")
+        self._toc_delay_spin.setFixedWidth(90)
+        slider_row.addWidget(self._toc_delay_spin)
+
+        self._toc_delay_slider = QSlider(Qt.Horizontal)
+        self._toc_delay_slider.setRange(-50, 200)  # -5.0 to 20.0 min in 0.1 steps
+        self._toc_delay_slider.setTickPosition(QSlider.TicksBelow)
+        self._toc_delay_slider.setTickInterval(10)
+        slider_row.addWidget(self._toc_delay_slider, 1)  # stretch
+
+        self._toc_delay_impact = QLabel("")
+        self._toc_delay_impact.setStyleSheet("font-size: 11px; color: #555;")
+        self._toc_delay_impact.setFixedWidth(180)
+        slider_row.addWidget(self._toc_delay_impact)
+
+        self._toc_delay_reset_btn = QPushButton("Reset")
+        self._toc_delay_reset_btn.setFixedWidth(50)
+        self._toc_delay_reset_btn.setToolTip("Tornar al delay del MasterFile")
+        slider_row.addWidget(self._toc_delay_reset_btn)
+
+        self._toc_delay_apply_btn = QPushButton("Reimportar")
+        self._toc_delay_apply_btn.setStyleSheet(
+            "QPushButton { background-color: #E67E22; color: white; "
+            "font-weight: bold; padding: 4px 10px; border-radius: 4px; }"
+            "QPushButton:hover { background-color: #D35400; }")
+        self._toc_delay_apply_btn.setVisible(False)
+        slider_row.addWidget(self._toc_delay_apply_btn)
+
+        # Connect slider controls
+        self._toc_delay_slider.valueChanged.connect(self._on_toc_delay_slider_changed)
+        self._toc_delay_spin.valueChanged.connect(self._on_toc_delay_spin_changed)
+        self._toc_delay_reset_btn.clicked.connect(self._on_toc_delay_reset)
+        self._toc_delay_apply_btn.clicked.connect(self._on_toc_delay_apply)
+
+        # Cache for alignment data (populated by _update_toc_alignment)
+        self._bp_align_cache = None
+        self._bp_delay_original = None  # delay from MasterFile
+        self._bp_delay_current = None
+
+        # Chart (primer) + slider (a sota) + taula (final)
         try:
             from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
             from matplotlib.backends.backend_qtagg import NavigationToolbar2QT
@@ -582,6 +643,9 @@ class CalibratePanel(QWidget):
             self._has_toc_align_chart = True
         except ImportError:
             self._has_toc_align_chart = False
+
+        # Slider a sota del gràfic (compacte, mateixa amplada)
+        toc_align_layout.addLayout(slider_row)
 
         # Delay per injection table
         self._toc_align_table = QLabel()
@@ -2171,7 +2235,7 @@ class CalibratePanel(QWidget):
         parent_layout.addWidget(self.delay_group)
 
     def _update_toc_alignment(self, result):
-        """Show TOC+DAD254 alignment for BP sequences."""
+        """Show TOC+DAD254 alignment for BP sequences with interactive slider."""
         imported = self.main_window.imported_data
         if not imported:
             self._toc_align_group.setVisible(False)
@@ -2194,90 +2258,368 @@ class CalibratePanel(QWidget):
         n_dad = align.get("n_with_dad", 0)
         n_matched = align.get("n_matched", 0)
         delay_med = align.get("delay_median", 0)
-        delay_min = align.get("delay_min", 0)
-        delay_max = align.get("delay_max", 0)
+        delay_min_val = align.get("delay_min", 0)
+        delay_max_val = align.get("delay_max", 0)
         drift = align.get("delay_drift", 0)
+        n_timeouts = len(align.get("toc_timeouts", []))
 
-        # Count relocated
-        n_relocated = sum(1 for s in imported.get("samples", {}).values()
-                          for r in s.get("replicas", {}).values()
-                          if isinstance(r, dict) and (r.get("direct") or {}).get("_relocated"))
+        delay_blocks = align.get('delay_blocks', [])
+        n_blocks = len(delay_blocks)
 
         info_parts = [
-            f"<b>{n_inj}</b> injeccions, <b>{n_dad}</b> amb DAD 254, <b>{n_matched}</b> delays calculats",
-            f"Delay real: mediana <b>{delay_med:.1f}</b> min (rang {delay_min:.1f}-{delay_max:.1f}, drift {drift:+.1f})",
-            f"<b>{n_relocated}</b> injeccions recolocades al pic real",
+            f"<b>{n_inj}</b> injeccions, <b>{n_dad}</b> amb DAD 254, "
+            f"<b>{n_matched}</b> delays, "
+            f"<b>{n_timeouts}</b> timeouts, <b>{n_blocks}</b> blocs",
+            f"Delay mediana: <b>{delay_med:.1f}</b> min "
+            f"(rang {delay_min_val:.1f}–{delay_max_val:.1f})",
         ]
-        if abs(drift) > 2:
-            info_parts.append(
-                f"<span style='color:#E74C3C'>⚠ Drift significatiu ({drift:+.1f} min) — "
-                f"els timeouts afecten el delay</span>")
+        if delay_blocks:
+            blk_info = " | ".join(
+                f"B{i+1}: {db['delay_median']:.1f}±{db['delay_std']:.2f} ({db['n_inj']}inj)"
+                for i, db in enumerate(delay_blocks)
+            )
+            info_parts.append(f"<span style='font-size:10px'>Blocs: {blk_info}</span>")
         self._toc_align_info.setText("<br>".join(info_parts))
 
-        # Chart: TOC + DAD superposats
-        if self._has_toc_align_chart:
-            import numpy as np
-            self._toc_align_figure.clear()
-            ax = self._toc_align_figure.add_subplot(111)
+        # Cache alignment data for slider interaction
+        import numpy as np
+        toc_data = align.get("toc_continuous", {})
+        dad_data = align.get("dad254_continuous", {})
+        t_toc = np.array(toc_data.get("t", []))
+        y_toc = np.array(toc_data.get("y", []))
+        t_dad = np.array(dad_data.get("t", []))
+        y_dad = np.array(dad_data.get("y", []))
 
-            # TOC continuous
-            toc_data = align.get("toc_continuous", {})
-            t_toc = np.array(toc_data.get("t", []))
-            y_toc = np.array(toc_data.get("y", []))
-
-            if len(t_toc) > 0:
-                ax.plot(t_toc, y_toc, 'b-', lw=0.4, alpha=0.7, label='TOC (ppb)')
-                ax.set_ylabel('TOC (ppb)', color='blue')
-
-            # DAD 254 continuous
-            dad_data = align.get("dad254_continuous", {})
-            t_dad = np.array(dad_data.get("t", []))
-            y_dad = np.array(dad_data.get("y", []))
-
-            if len(t_dad) > 0:
-                ax2 = ax.twinx()
-                ax2.plot(t_dad, y_dad, 'g-', lw=0.4, alpha=0.6, label='DAD 254 (mAU)')
-                ax2.set_ylabel('DAD 254 (mAU)', color='green')
-
-            # Mark injection positions
-            per_inj = align.get("per_injection", [])
-            for p in per_inj:
-                t_hplc = p.get("t_hplc", 0)
-                if p.get("is_control"):
-                    ax.axvline(t_hplc, color='#95A5A6', ls=':', lw=0.3, alpha=0.3)
-                elif p.get("t_toc_peak") is not None:
-                    # Draw line at TOC peak
-                    ax.axvline(p["t_toc_peak"], color='#E74C3C', ls=':', lw=0.5, alpha=0.4)
-                if p.get("t_dad_peak_abs") is not None and not p.get("is_control"):
-                    if len(t_dad) > 0:
-                        ax2.axvline(p["t_dad_peak_abs"], color='#27AE60', ls=':', lw=0.5, alpha=0.3)
-
-            ax.set_xlabel('min (des de inici TOC)')
-            ax.set_title(f'TOC (blau) + DAD 254 (verd) — {n_matched} delays calculats, drift {drift:+.1f} min',
-                         fontsize=9)
-            ax.spines['top'].set_visible(False)
-
+        # Read MasterFile delay for reference
+        mf_delay = None
+        imported_data = self.main_window.imported_data or {}
+        mf_path = imported_data.get("master_file")
+        if not mf_path:
+            seq_path = self.main_window.seq_path
+            if seq_path:
+                candidates = list(Path(seq_path).glob("*MasterFile*.xlsx"))
+                candidates = [c for c in candidates if 'backup' not in c.name.lower()]
+                if candidates:
+                    mf_path = str(candidates[0])
+        if mf_path:
             try:
-                self._toc_align_figure.tight_layout()
+                from hpsec_delay import read_current_delay
+                mf_delay = read_current_delay(mf_path)
             except Exception:
                 pass
-            self._toc_align_canvas.draw_idle()
 
-        # Delay table
+        # Build per-injection info sorted by HPLC time
         per_inj = align.get("per_injection", [])
-        lines = []
+        inj_list = []
         for p in per_inj:
-            if p.get("is_control"):
+            inj_list.append({
+                'name': p.get('name', '?'),
+                't_hplc': p.get('t_hplc', 0),
+                'is_control': p.get('is_control', False),
+                'delay_real': p.get('delay_real'),
+                'y_dad_peak': p.get('y_dad_peak', 0),
+                't_dad_peak_rel': p.get('t_dad_peak_rel'),
+            })
+        inj_list.sort(key=lambda x: x['t_hplc'])
+
+        delay_blocks = align.get('delay_blocks', [])
+
+        self._bp_align_cache = {
+            't_toc': t_toc,
+            'y_toc': y_toc,
+            't_dad': t_dad,
+            'y_dad': y_dad,
+            'per_injection': inj_list,
+            'toc_timeouts': align.get('toc_timeouts', []),
+            'delay_blocks': delay_blocks,
+            'cadence': align.get('cadence', 11.0),
+            'mf_path': mf_path,
+            'n_matched': n_matched,
+            'drift': drift,
+        }
+        self._bp_delay_original = mf_delay if mf_delay is not None else delay_med
+        self._bp_delay_current = 0.0  # offset addicional (0 = alineació automàtica per bloc)
+        self._bp_align_cache['_base_delay'] = 0.0
+
+        # Slider com a offset (0 = alineació automàtica ok, ±X per ajustar)
+        self._toc_delay_spin.blockSignals(True)
+        self._toc_delay_slider.blockSignals(True)
+        self._toc_delay_spin.setRange(-5.0, 5.0)
+        self._toc_delay_spin.setValue(0.0)
+        self._toc_delay_spin.setSuffix(" min offset")
+        self._toc_delay_slider.setRange(-50, 50)  # ±5 min
+        self._toc_delay_slider.setValue(0)
+        self._toc_delay_spin.blockSignals(False)
+        self._toc_delay_slider.blockSignals(False)
+
+        # Apply button hidden unless offset ≠ 0
+        self._toc_delay_apply_btn.setVisible(False)
+        self._update_toc_delay_impact()
+
+        # Draw full chart
+        self._draw_toc_alignment_chart()
+
+        # Delay table (compact)
+        lines = []
+        for p in inj_list:
+            if p['is_control']:
                 continue
-            name = p.get("name", "?")[:10]
-            delay = p.get("delay_real")
-            d_str = f"{delay:.1f}" if delay is not None else "-"
-            dad_val = p.get("y_dad_peak", 0)
-            d_val = f"{dad_val:.1f}" if dad_val else "-"
-            lines.append(f"Inj {p.get('inj_idx', 0)+1:2d} {name:>10}  delay={d_str:>5}  A254={d_val:>6}")
+            name = p['name'][:12]
+            d = p['delay_real']
+            d_str = f"{d:.1f}" if d is not None else "  -"
+            lines.append(f"{name:>12}  {d_str:>4}")
 
         if lines:
-            self._toc_align_table.setText("\n".join(lines))
+            # 3 columnes per aprofitar espai
+            n = len(lines)
+            cols = 3
+            rows = (n + cols - 1) // cols
+            table_lines = []
+            for r in range(rows):
+                parts = []
+                for c in range(cols):
+                    idx = r + c * rows
+                    if idx < n:
+                        parts.append(lines[idx])
+                table_lines.append("  |  ".join(parts))
+            self._toc_align_table.setText("\n".join(table_lines))
+
+    def _draw_toc_alignment_chart(self):
+        """Draw TOC+DAD chart with per-block delay alignment.
+
+        Mode: per-bloc (defecte) — cada segment TOC entre timeouts es desplaça
+        pel delay del seu bloc. El slider afegeix un offset global addicional.
+        """
+        if not self._has_toc_align_chart or self._bp_align_cache is None:
+            return
+
+        import numpy as np
+        cache = self._bp_align_cache
+        t_toc = cache['t_toc']
+        y_toc = cache['y_toc']
+        t_dad = cache['t_dad']
+        y_dad = cache['y_dad']
+        global_offset = (self._bp_delay_current or 0) - (cache.get('_base_delay') or self._bp_delay_current or 0)
+        inj_list = cache['per_injection']
+        cadence = cache['cadence']
+        toc_timeouts = cache.get('toc_timeouts', [])
+        delay_blocks = cache.get('delay_blocks', [])
+
+        if not inj_list:
+            return
+
+        # Window
+        first_t = inj_list[0]['t_hplc']
+        last_t = inj_list[-1]['t_hplc']
+        win_start = max(0, first_t - 2)
+        win_end = last_t + cadence + 10
+
+        self._toc_align_figure.clear()
+        ax = self._toc_align_figure.add_subplot(111)
+
+        # --- TOC per blocs: cada segment desplaçat pel delay del seu bloc ---
+        if len(t_toc) > 0 and delay_blocks:
+            # Construir llista de segments TOC amb el delay del bloc
+            to_times = sorted([to['t_min'] for to in toc_timeouts])
+            # Blocs: definits per timeouts
+            seg_edges = [0.0] + to_times + [t_toc[-1] + 1]
+            block_idx = 0
+
+            for s in range(len(seg_edges) - 1):
+                seg_start = seg_edges[s]
+                seg_end = seg_edges[s + 1]
+
+                # Trobar el delay_block per aquest segment
+                block_delay = self._bp_delay_current or 0  # fallback
+                for db in delay_blocks:
+                    db_start = db['t_start']
+                    db_end = db['t_end'] if db['t_end'] is not None else 1e9
+                    # Si el segment cau dins aquest bloc
+                    seg_mid = (seg_start + seg_end) / 2
+                    if db_start <= seg_mid < db_end:
+                        block_delay = db['delay_median']
+                        break
+
+                total_shift = block_delay + global_offset
+                mask = (t_toc >= seg_start) & (t_toc < seg_end)
+                if not mask.any():
+                    continue
+                t_shifted = t_toc[mask] - total_shift
+                y_seg = y_toc[mask]
+
+                # Filtrar per finestra visible
+                vis = (t_shifted >= win_start) & (t_shifted <= win_end)
+                if vis.any():
+                    ax.plot(t_shifted[vis], y_seg[vis], 'b-', lw=0.5, alpha=0.7)
+
+            ax.set_ylabel('DOC (ppb)', color='blue')
+        elif len(t_toc) > 0:
+            # Fallback: delay global únic
+            delay = self._bp_delay_current or 0
+            t_shifted = t_toc - delay
+            mask = (t_shifted >= win_start) & (t_shifted <= win_end)
+            if mask.any():
+                ax.plot(t_shifted[mask], y_toc[mask], 'b-', lw=0.5, alpha=0.7)
+            ax.set_ylabel('DOC (ppb)', color='blue')
+
+        # DAD fix (eix HPLC)
+        if len(t_dad) > 0:
+            ax2 = ax.twinx()
+            mask_d = (t_dad >= win_start) & (t_dad <= win_end)
+            if mask_d.any():
+                ax2.plot(t_dad[mask_d], y_dad[mask_d], 'g-', lw=0.5,
+                         alpha=0.6, label='DAD 254 (mAU)')
+            ax2.set_ylabel('DAD 254 (mAU)', color='green')
+
+        # Timeouts: línies verticals vermelles (al temps HPLC equivalent)
+        for i_to, to in enumerate(toc_timeouts):
+            # El timeout passa a t_toc = to['t_min']. Quin bloc?
+            block_delay = self._bp_delay_current or 0
+            for db in delay_blocks:
+                db_start = db['t_start']
+                db_end = db['t_end'] if db['t_end'] is not None else 1e9
+                if db_start <= to['t_min'] < db_end:
+                    block_delay = db['delay_median']
+                    break
+            t_to_hplc = to['t_min'] - block_delay - global_offset
+            if win_start <= t_to_hplc <= win_end:
+                ax.axvline(t_to_hplc, color='#E74C3C', ls='--', lw=0.8,
+                           alpha=0.5, zorder=5)
+                # Etiqueta només cada 3 timeouts per no saturar
+                if i_to % 3 == 0:
+                    ax.annotate(f"TO",
+                                (t_to_hplc + 0.3, ax.get_ylim()[1] * 0.02),
+                                fontsize=5, color='#E74C3C', alpha=0.6)
+
+        # Bandes d'injecció HPLC
+        cmap = __import__('matplotlib').colormaps['tab20']
+        y_lims = ax.get_ylim()
+        y_top = y_lims[1] if y_lims[1] > 0 else 100
+
+        for i, inj in enumerate(inj_list):
+            t_start = inj['t_hplc']
+            t_end = (inj_list[i + 1]['t_hplc'] if i + 1 < len(inj_list)
+                     else t_start + cadence)
+
+            if t_end < win_start or t_start > win_end:
+                continue
+
+            is_ctrl = inj['is_control']
+            is_khp = 'khp' in inj['name'].lower()
+
+            if is_ctrl:
+                color, alpha = '#95A5A6', 0.04
+            elif is_khp:
+                color, alpha = '#E74C3C', 0.12
+            else:
+                color, alpha = cmap(i % 20), 0.07
+
+            ax.axvspan(max(t_start, win_start), min(t_end, win_end),
+                       alpha=alpha, color=color, zorder=0)
+
+            t_mid = (t_start + t_end) / 2
+            if win_start <= t_mid <= win_end:
+                sname = inj['name'][:6]
+                label = f"{i+1}:{sname}"
+                lc = ('#E74C3C' if is_khp else '#95A5A6' if is_ctrl else '#333')
+                ax.annotate(label, (t_mid, y_top * 0.97),
+                            fontsize=5, rotation=90, va='top', ha='center',
+                            color=lc, alpha=0.8,
+                            fontweight='bold' if is_khp else 'normal')
+
+        ax.set_xlim(win_start, win_end)
+        ax.set_xlabel('min (temps HPLC)')
+
+        # Títol amb info de blocs
+        n_blocks = len(delay_blocks)
+        if delay_blocks:
+            d_range = f"{min(db['delay_median'] for db in delay_blocks):.1f}–{max(db['delay_median'] for db in delay_blocks):.1f}"
+        else:
+            d_range = "?"
+        ax.set_title(
+            f'Blau=DOC (alineat per bloc) | Verd=DAD 254 | '
+            f'{n_blocks} blocs, delay {d_range} min',
+            fontsize=8)
+        ax.spines['top'].set_visible(False)
+
+        try:
+            self._toc_align_figure.tight_layout()
+        except Exception:
+            pass
+        self._toc_align_canvas.draw_idle()
+
+    # --- Slider event handlers ---
+
+    def _on_toc_delay_slider_changed(self, value):
+        """Slider moved — update spinbox and redraw."""
+        delay = value / 10.0
+        self._toc_delay_spin.blockSignals(True)
+        self._toc_delay_spin.setValue(delay)
+        self._toc_delay_spin.blockSignals(False)
+        self._bp_delay_current = delay
+        self._draw_toc_alignment_chart()
+        self._update_toc_delay_impact()
+
+    def _on_toc_delay_spin_changed(self, value):
+        """Spinbox changed — update slider and redraw."""
+        self._toc_delay_slider.blockSignals(True)
+        self._toc_delay_slider.setValue(int(value * 10))
+        self._toc_delay_slider.blockSignals(False)
+        self._bp_delay_current = value
+        self._draw_toc_alignment_chart()
+        self._update_toc_delay_impact()
+
+    def _on_toc_delay_reset(self):
+        """Reset slider to MasterFile delay."""
+        if self._bp_delay_original is not None:
+            self._toc_delay_spin.setValue(self._bp_delay_original)
+
+    def _update_toc_delay_impact(self):
+        """Update impact label showing offset state."""
+        offset = self._bp_delay_current or 0
+        if abs(offset) < 0.05:
+            self._toc_delay_impact.setText("Alineació automàtica ✓")
+            self._toc_delay_apply_btn.setVisible(False)
+        else:
+            self._toc_delay_impact.setText(f"Offset manual: {offset:+.1f} min")
+            self._toc_delay_apply_btn.setVisible(True)
+            self._toc_delay_apply_btn.setEnabled(True)
+
+    def _on_toc_delay_apply(self):
+        """Apply the slider delay to the MasterFile and reimport."""
+        from PySide6.QtWidgets import QMessageBox
+        cache = self._bp_align_cache
+        if cache is None or not cache.get('mf_path'):
+            return
+
+        new_delay = self._bp_delay_current
+        old_delay = self._bp_delay_original
+
+        reply = QMessageBox.question(
+            self, "Aplicar delay",
+            f"Canviar el delay de {old_delay:.1f} a {new_delay:.1f} min?\n\n"
+            f"  • S'escriurà 'Net delay (Suite)' al 0-INFO\n"
+            f"  • Es regenerarà el 4-TOC_CALC\n"
+            f"  • Es reimportarà la seqüència\n\n"
+            f"(Es crea backup automàtic del MasterFile)",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        try:
+            from hpsec_delay import update_masterfile_delay
+            res = update_masterfile_delay(cache['mf_path'], new_delay)
+            if res.get('success'):
+                self._bp_delay_original = new_delay
+                self._update_toc_delay_impact()
+                self.delay_corrected.emit()
+            else:
+                QMessageBox.warning(self, "Error",
+                                    f"No s'ha pogut actualitzar: {res.get('error', '?')}")
+        except Exception as e:
+            QMessageBox.warning(self, "Error", str(e))
 
     def _update_delay_diagnostic(self, result):
         """Actualitza la secció de diagnòstic delay."""

@@ -66,10 +66,11 @@ class CalSeqWorker(QThread):
     finished = Signal(dict)
     error = Signal(str)
 
-    def __init__(self, seq_path, config=None):
+    def __init__(self, seq_path, config=None, force_reimport=False):
         super().__init__()
         self.seq_path = seq_path
         self.config = config
+        self.force_reimport = force_reimport
 
     def run(self):
         try:
@@ -86,22 +87,31 @@ class CalSeqWorker(QThread):
             progress_cb(0, f"Processant {seq_name}...")
 
             # Pas 1: Import
-            manifest = load_manifest(self.seq_path)
-            if manifest:
-                progress_cb(5, "Importat des del manifest...")
-                imported_data = import_from_manifest(
-                    self.seq_path, manifest=manifest,
-                    config=self.config,
-                    progress_callback=lambda p, m: progress_cb(5 + int(p * 0.3), m),
-                    load_data=True,
-                )
-            else:
-                progress_cb(5, "Importat des del sistema de fitxers...")
+            if self.force_reimport:
+                # Reimportar des de zero (ignora manifest)
+                progress_cb(5, "Reimportant des del MasterFile...")
                 imported_data = import_sequence(
                     self.seq_path,
                     config=self.config,
                     progress_callback=lambda p, m: progress_cb(5 + int(p * 0.3), m),
                 )
+            else:
+                manifest = load_manifest(self.seq_path)
+                if manifest:
+                    progress_cb(5, "Importat des del manifest...")
+                    imported_data = import_from_manifest(
+                        self.seq_path, manifest=manifest,
+                        config=self.config,
+                        progress_callback=lambda p, m: progress_cb(5 + int(p * 0.3), m),
+                        load_data=True,
+                    )
+                else:
+                    progress_cb(5, "Importat des del sistema de fitxers...")
+                    imported_data = import_sequence(
+                        self.seq_path,
+                        config=self.config,
+                        progress_callback=lambda p, m: progress_cb(5 + int(p * 0.3), m),
+                    )
 
             if not imported_data or not imported_data.get("success"):
                 self.error.emit(
@@ -157,11 +167,10 @@ class CalSeqWorker(QThread):
 
 
 class GlobalCalibrationPanel(QWidget):
-    """Panell de calibració global — vista única amb regressió des de SEQ_CAL.
+    """Panell de calibració global amb mini-dashboard de SEQ_CALs.
 
-    Les SEQ_CAL arriben des del Dashboard. CalSeqWorker importa + calibra,
-    i la CalibrationLineView mostra la regressió amb scatter, residuals,
-    comparació amb la calibració vigent, i secció d'aplicar.
+    Mini-dashboard a dalt: llista totes les SEQ_CAL, permet processar/reprocessar.
+    CalibrationLineView a baix: regressió, scatter, aplicar.
     """
 
     def __init__(self, main_window):
@@ -169,72 +178,234 @@ class GlobalCalibrationPanel(QWidget):
         self.main_window = main_window
         self._active_seq_path = None
         self._result_cache = {}
+        self._batch_queue = []
         self._setup_ui()
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 8, 12, 8)
+        layout.setContentsMargins(8, 6, 8, 6)
+        layout.setSpacing(4)
 
-        # Header: títol + botó PDF
-        header = QHBoxLayout()
-        title = QLabel("Calibració Global")
-        title.setFont(QFont("Segoe UI", 16, QFont.Bold))
-        header.addWidget(title)
+        # === MINI-DASHBOARD SEQ_CAL ===
+        dash_header = QHBoxLayout()
+        dash_header.addWidget(QLabel("<b>Seqüències de calibració</b>"))
+        dash_header.addStretch()
 
-        subtitle = QLabel(
-            "Regressió des de SEQ_CAL · Aplicar calibració"
-        )
-        subtitle.setFont(QFont("Segoe UI", 9))
-        subtitle.setStyleSheet("color: #666;")
-        header.addWidget(subtitle)
+        self._btn_refresh = QPushButton("Actualitzar")
+        self._btn_refresh.setFixedWidth(80)
+        self._btn_refresh.setStyleSheet("font-size: 11px;")
+        self._btn_refresh.clicked.connect(self._refresh_cal_list)
+        dash_header.addWidget(self._btn_refresh)
 
-        header.addStretch()
-        layout.addLayout(header)
+        self._btn_process = QPushButton("Processar")
+        self._btn_process.setStyleSheet(
+            "QPushButton { background-color: #4A90A4; color: white; "
+            "font-weight: bold; padding: 3px 10px; border-radius: 3px; font-size: 11px; }"
+            "QPushButton:hover { background-color: #3A7A8E; }")
+        self._btn_process.setToolTip("Processar la SEQ_CAL seleccionada")
+        self._btn_process.clicked.connect(self._on_process_selected)
+        dash_header.addWidget(self._btn_process)
 
-        # Barra de progrés (per CalSeqWorker)
+        self._btn_reprocess = QPushButton("Reprocessar")
+        self._btn_reprocess.setStyleSheet(
+            "QPushButton { background-color: #E67E22; color: white; "
+            "font-weight: bold; padding: 3px 10px; border-radius: 3px; font-size: 11px; }"
+            "QPushButton:hover { background-color: #D35400; }")
+        self._btn_reprocess.setToolTip("Reimportar des de zero (MasterFile) i reprocessar")
+        self._btn_reprocess.clicked.connect(self._on_reprocess_selected)
+        dash_header.addWidget(self._btn_reprocess)
+
+        layout.addLayout(dash_header)
+
+        # Taula SEQ_CAL
+        self._cal_table = QTableWidget()
+        self._cal_table.setColumnCount(8)
+        self._cal_table.setHorizontalHeaderLabels([
+            "Nom", "Mètode", "Data", "Estat", "Inj", "KHP", "Conc", "Vol"])
+        self._cal_table.horizontalHeader().setStretchLastSection(False)
+        self._cal_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        for i in range(1, 8):
+            self._cal_table.horizontalHeader().setSectionResizeMode(
+                i, QHeaderView.ResizeMode.ResizeToContents)
+        self._cal_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self._cal_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self._cal_table.setMaximumHeight(140)
+        self._cal_table.setAlternatingRowColors(True)
+        self._cal_table.verticalHeader().setVisible(False)
+        self._cal_table.setStyleSheet("QTableWidget { font-size: 11px; }")
+        self._cal_table.doubleClicked.connect(self._on_cal_table_dblclick)
+        layout.addWidget(self._cal_table)
+
+        self._cal_seq_list = []  # [{path, name, method, ...}]
+
+        # Barra de progrés
         self._progress_bar = QProgressBar()
         self._progress_bar.setVisible(False)
         self._progress_bar.setTextVisible(True)
-        self._progress_bar.setStyleSheet("""
-            QProgressBar { border: 1px solid #bdc3c7; border-radius: 4px;
-                           text-align: center; height: 22px; }
-            QProgressBar::chunk { background-color: #2980B9; border-radius: 3px; }
-        """)
+        self._progress_bar.setStyleSheet(
+            "QProgressBar { border: 1px solid #bdc3c7; border-radius: 3px; "
+            "text-align: center; height: 18px; }"
+            "QProgressBar::chunk { background-color: #2980B9; border-radius: 2px; }")
         layout.addWidget(self._progress_bar)
 
         self._progress_label = QLabel("")
         self._progress_label.setVisible(False)
-        self._progress_label.setStyleSheet("color: #2980B9; font-style: italic;")
+        self._progress_label.setStyleSheet("color: #2980B9; font-style: italic; font-size: 11px;")
         layout.addWidget(self._progress_label)
 
-        # Vista principal: CalibrationLineView (sense tabs)
+        # === CALIBRATION LINE VIEW ===
         self.cal_view = CalibrationLineView(self)
         layout.addWidget(self.cal_view, 1)
 
-        # Worker (un sol actiu)
+        # Worker
         self._cal_worker = None
         self._summary_shown = False
+        self._force_reimport = False
+
+    # ------------------------------------------------------------------
+    # Mini-dashboard
+    # ------------------------------------------------------------------
+
+    def _refresh_cal_list(self):
+        """Escaneja carpetes de dades i pobla la taula de SEQ_CALs."""
+        from hpsec_config import get_data_folders
+        from gui.models.sequence_state import get_all_sequences
+        import json as _json
+
+        folders = get_data_folders()
+        all_seqs = get_all_sequences(folders)
+
+        self._cal_seq_list = []
+        for seq in all_seqs:
+            if "_CAL" not in seq.seq_name.upper():
+                continue
+            # Info del MasterFile/manifest
+            check_dir = os.path.join(seq.seq_path, "CHECK", "data")
+            has_cal = os.path.exists(os.path.join(check_dir, "calibration_result.json"))
+            has_manifest = os.path.exists(os.path.join(check_dir, "import_manifest.json"))
+
+            n_khp = seq.n_khp
+            n_inj = seq.n_inj_master
+            method = seq.method or ("BP" if "BP" in seq.seq_name.upper() else "COLUMN")
+            date = seq.seq_date or ""
+
+            # Volum i concentracions del calibration_result si existeix
+            vol = ""
+            concs = ""
+            if has_cal:
+                try:
+                    with open(os.path.join(check_dir, "calibration_result.json"),
+                              'r', encoding='utf-8') as f:
+                        cr = _json.load(f)
+                    cals = cr.get('calibrations', [])
+                    if cals:
+                        vols = set(c.get('volume_uL', 0) for c in cals if c.get('volume_uL'))
+                        vol = "/".join(str(int(v)) for v in sorted(vols))
+                        cs = sorted(set(c.get('conc_ppm', 0) for c in cals if c.get('conc_ppm', 0) > 0))
+                        concs = ", ".join(f"{c:g}" for c in cs)
+                except Exception:
+                    pass
+
+            status = "\u2713" if has_cal else ("\u25d0" if has_manifest else "\u25cb")
+
+            self._cal_seq_list.append({
+                'path': seq.seq_path, 'name': seq.seq_name,
+                'method': method, 'date': date, 'status': status,
+                'n_inj': n_inj, 'n_khp': n_khp, 'concs': concs, 'vol': vol,
+                'processed': has_cal,
+            })
+
+        self._populate_cal_table()
+
+    def _populate_cal_table(self):
+        self._cal_table.setRowCount(len(self._cal_seq_list))
+        for i, s in enumerate(self._cal_seq_list):
+            self._cal_table.setItem(i, 0, QTableWidgetItem(s['name']))
+
+            m_item = QTableWidgetItem(s['method'])
+            m_item.setForeground(QColor('#C0392B' if s['method'] == 'BP' else '#2E86C1'))
+            self._cal_table.setItem(i, 1, m_item)
+
+            self._cal_table.setItem(i, 2, QTableWidgetItem(str(s['date'])[:10]))
+
+            st_item = QTableWidgetItem(s['status'])
+            if s['status'] == '\u2713':
+                st_item.setForeground(QColor('#27AE60'))
+            self._cal_table.setItem(i, 3, st_item)
+
+            self._cal_table.setItem(i, 4, QTableWidgetItem(str(s['n_inj']) if s['n_inj'] else ""))
+            self._cal_table.setItem(i, 5, QTableWidgetItem(str(s['n_khp']) if s['n_khp'] else ""))
+            self._cal_table.setItem(i, 6, QTableWidgetItem(s['concs']))
+            self._cal_table.setItem(i, 7, QTableWidgetItem(s['vol']))
+
+    def _get_selected_cal_path(self):
+        rows = self._cal_table.selectionModel().selectedRows()
+        if not rows:
+            return None
+        row = rows[0].row()
+        if row < len(self._cal_seq_list):
+            return self._cal_seq_list[row]['path']
+        return None
+
+    def _on_cal_table_dblclick(self, index):
+        """Doble clic: processar la SEQ_CAL."""
+        path = self._get_selected_cal_path()
+        if path:
+            self._force_reimport = False
+            self.load_seq_cal(path)
+
+    def _on_process_selected(self):
+        """Botó Processar: processa la SEQ_CAL seleccionada (usa cache si disponible)."""
+        path = self._get_selected_cal_path()
+        if not path:
+            QMessageBox.information(self, "Info", "Selecciona una SEQ_CAL a la taula.")
+            return
+        self._force_reimport = False
+        self.load_seq_cal(path)
+
+    def _on_reprocess_selected(self):
+        """Botó Reprocessar: reimporta des de zero (ignora manifest i cache)."""
+        path = self._get_selected_cal_path()
+        if not path:
+            QMessageBox.information(self, "Info", "Selecciona una SEQ_CAL a la taula.")
+            return
+        seq_name = os.path.basename(path)
+        reply = QMessageBox.question(
+            self, "Reprocessar",
+            f"Reimportar {seq_name} des del MasterFile i reprocessar?\n\n"
+            "Això ignora el manifest existent i reimporta tot de zero.",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if reply != QMessageBox.Yes:
+            return
+        # Invalidar cache
+        if path in self._result_cache:
+            del self._result_cache[path]
+        self._force_reimport = True
+        self._start_cal_worker(path)
+
+    # ------------------------------------------------------------------
+    # showEvent / load
+    # ------------------------------------------------------------------
 
     def showEvent(self, event):
-        """Mostra summary si no hi ha SEQ_CAL carregada."""
+        """Pobla mini-dashboard i mostra summary."""
         super().showEvent(event)
+        self._refresh_cal_list()
         if self._active_seq_path is None and not self._summary_shown:
             self.cal_view.show_summary()
             self._summary_shown = True
 
     def load_seq_cal(self, seq_path):
-        """Carrega una SEQ_CAL des del Dashboard."""
+        """Carrega una SEQ_CAL."""
         self._active_seq_path = seq_path
         seq_name = os.path.basename(seq_path)
         logger.info(f"load_seq_cal: {seq_name}")
 
-        # Comprovar cache
-        if seq_path in self._result_cache:
+        if not self._force_reimport and seq_path in self._result_cache:
             logger.info(f"  Cache hit per {seq_name}")
             self._on_worker_finished(self._result_cache[seq_path], from_cache=True)
             return
 
-        # Processar
         self._start_cal_worker(seq_path)
 
     def _start_cal_worker(self, seq_path):
@@ -245,7 +416,6 @@ class GlobalCalibrationPanel(QWidget):
 
         seq_name = os.path.basename(seq_path)
 
-        # Mostrar progrés
         self._progress_bar.setVisible(True)
         self._progress_bar.setValue(0)
         self._progress_label.setVisible(True)
@@ -253,11 +423,12 @@ class GlobalCalibrationPanel(QWidget):
 
         self.cal_view.show_processing_message(seq_name)
 
-        self._cal_worker = CalSeqWorker(seq_path)
+        self._cal_worker = CalSeqWorker(seq_path, force_reimport=self._force_reimport)
         self._cal_worker.progress.connect(self._on_worker_progress)
         self._cal_worker.finished.connect(self._on_worker_finished)
         self._cal_worker.error.connect(self._on_worker_error)
         self._cal_worker.start()
+        self._force_reimport = False
 
     def _on_worker_progress(self, pct, msg):
         """Actualitza barra de progrés."""

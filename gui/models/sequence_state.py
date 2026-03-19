@@ -410,8 +410,94 @@ class SequenceState:
             if self.is_bp_stale:
                 self.review_warnings.append(f"BP {self.review_bp_name} actualitzada")
 
+        # Fallback: si no hi ha manifest, llegir inventari del MasterFile
+        if self.n_samples == 0 and self.n_inj_master == 0:
+            self._read_inventory_from_masterfile()
+
         # Construir notes unificades per al dashboard
         self._build_dashboard_notes()
+
+    def _read_inventory_from_masterfile(self):
+        """Llegeix inventari bàsic del MasterFile (1-HPLC-SEQ) sense importar."""
+        import glob
+        try:
+            # Trobar MasterFile
+            candidates = glob.glob(os.path.join(self.seq_path, "*MasterFile*.xlsx"))
+            candidates = [c for c in candidates if 'backup' not in c.lower() and '~$' not in c]
+            if not candidates:
+                return
+
+            import pandas as pd
+            mf_path = candidates[0]
+            xl = pd.ExcelFile(mf_path, engine='openpyxl')
+
+            if '1-HPLC-SEQ' not in xl.sheet_names and '1-HPLC_SEQ' not in xl.sheet_names:
+                return
+            sheet = '1-HPLC-SEQ' if '1-HPLC-SEQ' in xl.sheet_names else '1-HPLC_SEQ'
+            hplc = pd.read_excel(xl, sheet_name=sheet, header=0, engine='openpyxl')
+
+            # Trobar columna de noms
+            name_col = None
+            for c in hplc.columns:
+                if 'sample' in str(c).lower() and 'name' in str(c).lower():
+                    name_col = c
+                    break
+            if name_col is None:
+                return
+
+            names = []
+            for _, row in hplc.iterrows():
+                n = str(row[name_col]).strip()
+                if pd.isna(n) or n == 'nan' or not n:
+                    continue
+                names.append(n)
+
+            self.n_inj_master = len(names)
+
+            # Classificar per nom
+            khp_patterns = ['khp', 'kph']
+            mq_patterns = ['mq', 'blanc', 'blnc', 'blank']
+            ctrl_patterns = ['naoh', 'buffer']
+
+            n_khp = n_blank = n_ctrl = n_sample = 0
+            unique_samples = set()
+            for n in names:
+                nl = n.lower()
+                if any(p in nl for p in khp_patterns):
+                    n_khp += 1
+                elif any(p in nl for p in mq_patterns):
+                    n_blank += 1
+                elif any(p in nl for p in ctrl_patterns):
+                    n_ctrl += 1
+                else:
+                    n_sample += 1
+                    unique_samples.add(nl)
+
+            # Dividir per 2 (rèpliques) per estimar mostres úniques
+            self.n_khp = max(1, n_khp // 2) if n_khp > 0 else 0
+            self.n_blank = max(1, n_blank // 2) if n_blank > 0 else 0
+            self.n_control = max(1, n_ctrl // 2) if n_ctrl > 0 else 0
+            self.n_samples = len(unique_samples)
+
+            # Method
+            if not self.method:
+                self.method = "BP" if "BP" in self.seq_name.upper() else "COLUMN"
+
+            # Data
+            if not self.seq_date:
+                date_col = None
+                for c in hplc.columns:
+                    cl = str(c).lower()
+                    if 'acquired' in cl or ('injection' in cl and 'date' in cl):
+                        date_col = c
+                        break
+                if date_col:
+                    first_date = pd.to_datetime(hplc[date_col].iloc[0], errors='coerce')
+                    if pd.notna(first_date):
+                        self.seq_date = first_date.strftime("%d/%m/%y")
+
+        except Exception as e:
+            logger.debug("_read_inventory_from_masterfile %s: %s", self.seq_name, e)
 
     def _build_dashboard_notes(self):
         """

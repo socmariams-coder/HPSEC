@@ -2249,6 +2249,8 @@ def compute_toc_calc(master_data, toc_df):
         o None si no es pot calcular.
     """
     FLUSH_TIME_MIN = 3.637
+    warnings = []
+    warnings_structured = []
 
     # 1. Obtenir HPLC-SEQ amb timestamps
     df_seq = master_data.get("hplc_seq")
@@ -3195,12 +3197,10 @@ def build_bp_continuous_dad254(result):
         return 0
 
     y_toc = pd.to_numeric(toc_df[toc_col], errors='coerce').values
-    dt_toc = 4.0 / 60.0
-    t_toc = np.arange(len(y_toc)) * dt_toc
     y_toc_clean = np.nan_to_num(y_toc, nan=np.nanmedian(y_toc[~np.isnan(y_toc)])
                                  if (~np.isnan(y_toc)).any() else 0)
 
-    # TOC t0
+    # TOC t0 i timestamps reals (NO arange uniforme!)
     date_col = None
     for c in toc_df.columns:
         if 'started' in str(c).lower():
@@ -3214,6 +3214,29 @@ def build_bp_continuous_dad254(result):
             t0_toc = valid.iloc[0]
     if t0_toc is None:
         return 0
+
+    # Eix temporal TOC basat en timestamps REALS (minuts des de t0_toc)
+    # Inclou els gaps dels timeouts — CRÍTIC per alinear amb t_hplc (també rellotge)
+    toc_dates = pd.to_datetime(toc_df[date_col], errors='coerce')
+    t_toc_real = (toc_dates - t0_toc).dt.total_seconds().values / 60.0
+    # Omplir NaT amb interpolació lineal
+    nan_mask = np.isnan(t_toc_real)
+    if nan_mask.any() and not nan_mask.all():
+        good = ~nan_mask
+        t_toc_real[nan_mask] = np.interp(
+            np.where(nan_mask)[0], np.where(good)[0], t_toc_real[good])
+    t_toc = t_toc_real  # temps rellotge, usat per tot
+
+    # Detectar timeouts: gaps > 30s entre mesures consecutives (normal = 4s)
+    dt_sec = np.diff(t_toc) * 60.0
+    timeout_indices = np.where(dt_sec > 30)[0]
+    toc_timeouts = []
+    for ti in timeout_indices:
+        toc_timeouts.append({
+            'row': int(ti),
+            't_min': float(t_toc[ti]),
+            'gap_sec': float(dt_sec[ti]),
+        })
 
     # HPLC injection times
     hplc_seq = master_data.get("hplc_seq")
@@ -3360,18 +3383,23 @@ def build_bp_continuous_dad254(result):
             dad_t_all.append(t_abs_arr)
             dad_y_all.append(y_254)
 
-            # Find TOC peak near DAD peak
+            # Find TOC peak near DAD peak (usant temps RELLOTGE)
             t_toc_peak = None
             delay_real = None
+            toc_peak_row = None
             if not inj['is_control']:
-                search_start = max(0, int((t_dad_peak_abs + search_min) / dt_toc))
-                search_end = min(len(y_toc_clean), int((t_dad_peak_abs + search_max) / dt_toc))
-                if search_end > search_start + 5:
-                    y_w = y_toc_clean[search_start:search_end]
+                # Buscar per temps real: t_toc és rellotge, t_dad_peak_abs també
+                t_search_lo = t_dad_peak_abs + search_min
+                t_search_hi = t_dad_peak_abs + search_max
+                search_mask = (t_toc >= t_search_lo) & (t_toc <= t_search_hi)
+                search_idx = np.where(search_mask)[0]
+                if len(search_idx) > 5:
+                    y_w = y_toc_clean[search_idx]
                     bl = np.percentile(y_w, 20)
                     pk_local = np.argmax(y_w - bl)
                     if y_w[pk_local] - bl > 5:
-                        t_toc_peak = (search_start + pk_local) * dt_toc
+                        toc_peak_row = int(search_idx[pk_local])
+                        t_toc_peak = float(t_toc[toc_peak_row])
                         delay_real = t_toc_peak - t_dad_peak_abs
 
             per_injection.append({
@@ -3382,6 +3410,7 @@ def build_bp_continuous_dad254(result):
                 't_dad_peak_abs': t_dad_peak_abs,
                 'y_dad_peak': y_dad_peak,
                 't_toc_peak': t_toc_peak,
+                'toc_peak_row': toc_peak_row,
                 'delay_real': delay_real,
                 'file': matched,
             })
@@ -3409,10 +3438,38 @@ def build_bp_continuous_dad254(result):
     delays = [p['delay_real'] for p in per_injection
               if p.get('delay_real') is not None and not p.get('is_control')]
 
+    # --- Delay per bloc (entre timeouts consecutius) ---
+    # Dins un bloc el delay hauria de ser quasi constant
+    timeout_times = sorted([to['t_min'] for to in toc_timeouts])
+    block_edges = [0.0] + timeout_times + [1e9]
+    delay_blocks = []
+    for b in range(len(block_edges) - 1):
+        b_start = block_edges[b]
+        b_end = block_edges[b + 1]
+        block_delays = []
+        for p in per_injection:
+            dr = p.get('delay_real')
+            if dr is None or p.get('is_control'):
+                continue
+            # Posició del pic TOC (temps rellotge)
+            t_toc_pk = p.get('t_toc_peak', p['t_hplc'] + dr)
+            if b_start <= t_toc_pk < b_end:
+                block_delays.append(dr)
+        if block_delays:
+            delay_blocks.append({
+                't_start': float(b_start),
+                't_end': float(b_end) if b_end < 1e8 else None,
+                'delay_median': float(np.median(block_delays)),
+                'delay_std': float(np.std(block_delays)) if len(block_delays) > 1 else 0,
+                'n_inj': len(block_delays),
+            })
+
     alignment = {
         'dad254_continuous': {'t': t_dad_cont.tolist(), 'y': y_dad_cont.tolist()},
         'toc_continuous': {'t': t_toc.tolist(), 'y': y_toc_clean.tolist()},
         'per_injection': per_injection,
+        'toc_timeouts': toc_timeouts,
+        'delay_blocks': delay_blocks,
         'n_injections': len(injs),
         'n_with_dad': sum(1 for p in per_injection if p.get('has_dad')),
         'n_matched': len(delays),
@@ -3437,6 +3494,272 @@ def build_bp_continuous_dad254(result):
                 alignment.get('delay_drift', 0))
 
     return n_processed
+
+
+def reassign_bp_by_dad254(result, toc_df, config=None):
+    """Reassignar finestres DOC per BP usant delays reals calculats per DAD254.
+
+    Estrategia:
+    1. Per cada injeccio amb DAD: el delay real (pic DAD254 → pic TOC) ja esta calculat
+       a bp_alignment.per_injection[i].delay_real
+    2. Per injeccions sense DAD: interpolar delay des de les veines
+    3. Amb el delay per injeccio, calcular el temps absolut del pic TOC esperat
+    4. Definir fronteres entre injeccions al punt mig entre pics consecutius
+       (no finestres independents → zero solapaments)
+    5. Re-extreure DOC amb les noves fronteres
+
+    Modifica result["samples"] in-place.
+    Returns: nombre d'injeccions reassignades.
+    """
+    align = result.get("bp_alignment")
+    if not align:
+        return 0
+
+    per_inj = align.get("per_injection", [])
+    if not per_inj:
+        return 0
+
+    samples = result.get("samples", {})
+    method = result.get("method", "BP")
+
+    if toc_df is None:
+        return 0
+    if hasattr(toc_df, 'empty') and toc_df.empty:
+        return 0
+
+    # -- 1. Obtenir delays per totes les injeccions (reals + interpolats) --
+    # Ordenar per temps HPLC
+    inj_sorted = sorted(per_inj, key=lambda x: x.get('t_hplc', 0))
+
+    # Recollir delays reals (no-controls amb delay calculat)
+    known_delays = []  # (index, t_hplc, delay_real)
+    for i, p in enumerate(inj_sorted):
+        dr = p.get('delay_real')
+        if dr is not None and not p.get('is_control', False):
+            known_delays.append((i, p['t_hplc'], dr))
+
+    if not known_delays:
+        logger.warning("reassign_bp_by_dad254: cap delay real disponible")
+        return 0
+
+    # Interpolar delays per a totes les injeccions
+    delays_all = [None] * len(inj_sorted)
+    for idx, t, d in known_delays:
+        delays_all[idx] = d
+
+    # Interpolar buits (lineal entre veïns coneguts, extrapolar als extrems)
+    known_t = np.array([x[1] for x in known_delays])
+    known_d = np.array([x[2] for x in known_delays])
+    for i, p in enumerate(inj_sorted):
+        if delays_all[i] is None:
+            # Interpolar/extrapolar
+            delays_all[i] = float(np.interp(p['t_hplc'], known_t, known_d))
+
+    # -- 2. Calcular posicions esperades dels pics TOC (temps absolut) --
+    # t_toc_peak_expected = t_hplc + t_dad_peak_rel + delay
+    # Per injeccions sense DAD, usar el centre de la finestra nominal
+    toc_peak_times = []
+    for i, p in enumerate(inj_sorted):
+        t_dad_rel = p.get('t_dad_peak_rel')
+        if t_dad_rel is not None:
+            # Posicio exacta: temps HPLC + pic DAD relatiu + delay
+            t_peak = p['t_hplc'] + t_dad_rel + delays_all[i]
+        else:
+            # Estimacio: centre de la finestra nominal
+            # pic DAD tipic a ~2.5 min (BP) → usar mediana dels coneguts
+            median_dad_rel = np.median([
+                pp.get('t_dad_peak_rel', 2.5) for pp in inj_sorted
+                if pp.get('t_dad_peak_rel') is not None
+            ]) if any(pp.get('t_dad_peak_rel') for pp in inj_sorted) else 2.5
+            t_peak = p['t_hplc'] + median_dad_rel + delays_all[i]
+        toc_peak_times.append(t_peak)
+
+    # -- 3. Definir fronteres entre injeccions --
+    # Frontera entre inj[i] i inj[i+1] = punt mig entre pics consecutius
+    # Conversió temps→row usant timestamps REALS del TOC (no cadència uniforme)
+    TOC_DATA_START_ROW = 8
+    n_toc_rows = len(toc_df)
+
+    # Construir array de temps reals del TOC per fer searchsorted
+    toc_date_col = None
+    for c in toc_df.columns:
+        if 'started' in str(c).lower():
+            toc_date_col = c
+            break
+    toc_dates = pd.to_datetime(toc_df[toc_date_col], errors='coerce')
+    toc_t0 = toc_dates.dropna().iloc[0]
+    t_toc_arr = (toc_dates - toc_t0).dt.total_seconds().values / 60.0
+    # Omplir NaT
+    nan_m = np.isnan(t_toc_arr)
+    if nan_m.any() and not nan_m.all():
+        gd = ~nan_m
+        t_toc_arr[nan_m] = np.interp(np.where(nan_m)[0], np.where(gd)[0], t_toc_arr[gd])
+
+    def _time_to_row(t_min):
+        """Convertir temps rellotge (min) → TOC_Row (Excel 1-indexed)."""
+        idx = int(np.searchsorted(t_toc_arr, t_min))
+        idx = max(0, min(idx, n_toc_rows - 1))
+        return idx + TOC_DATA_START_ROW
+
+    # Finestra fixa centrada al pic: -3 min abans, +5 min després
+    # Així el pic cau sempre a t≈3 min dins la finestra (8 min total)
+    BP_PRE_PEAK_MIN = 3.0   # marge abans del pic
+    BP_POST_PEAK_MIN = 5.0  # marge després del pic
+
+    # Timeouts per ajustar inici de finestra
+    toc_to_times = sorted(align.get('toc_timeouts', []), key=lambda x: x['t_min'])
+
+    boundaries = []  # (row_start, row_end) per cada injeccio en TOC_Row (1-indexed)
+    for i in range(len(inj_sorted)):
+        t_peak = toc_peak_times[i]
+        t_start = max(0, t_peak - BP_PRE_PEAK_MIN)
+        t_end = t_peak + BP_POST_PEAK_MIN
+
+        # Si hi ha timeout dins la zona pre-peak, començar després del timeout
+        for to in toc_to_times:
+            t_to_end = to['t_min'] + to['gap_sec'] / 60.0
+            if t_start < t_to_end < t_peak:
+                t_start = t_to_end + 0.1  # just després del gap
+
+        # Si hi ha timeout dins la zona post-peak, acabar abans del timeout
+        for to in toc_to_times:
+            if t_peak < to['t_min'] < t_end:
+                t_end = to['t_min'] - 0.1  # just abans del gap
+
+        row_start = _time_to_row(t_start)
+        row_end = _time_to_row(t_end)
+        boundaries.append((row_start, row_end))
+
+    # Eliminar solapaments d'1 fila a les fronteres (exclusiu: N.end = N+1.start - 1)
+    for i in range(len(boundaries) - 1):
+        if boundaries[i][1] >= boundaries[i + 1][0]:
+            boundaries[i] = (boundaries[i][0], boundaries[i + 1][0] - 1)
+
+    # -- 4. Re-extreure DOC per cada injeccio --
+    from hpsec_config import get_config
+    cfg = config or get_config()
+    max_dur = cfg.get("max_duration_min", 80.0)
+
+    seq_timeouts = result.get("seq_timeouts", [])
+    is_bp = method.upper() == "BP"
+
+    n_reassigned = 0
+    # Mapa: (sample_name, rep_idx) → index a inj_sorted
+    # Construir lookup: match per nom + ordre de rèplica
+    name_counter = {}
+    for sample_name, sample_data in samples.items():
+        for rep_key in sorted(sample_data.get("replicas", {}).keys()):
+            nk = ''.join(c for c in sample_name.lower() if c.isalnum())
+            name_counter[nk] = name_counter.get(nk, 0) + 1
+            rep_count = name_counter[nk]
+
+            # Trobar la injeccio corresponent a inj_sorted
+            matched_idx = None
+            for idx, p in enumerate(inj_sorted):
+                p_nk = ''.join(c for c in p['name'].lower() if c.isalnum())
+                if p_nk == nk and p.get('rep', 0) == rep_count:
+                    matched_idx = idx
+                    break
+            # Fallback: match per nom i posició
+            if matched_idx is None:
+                count = 0
+                for idx, p in enumerate(inj_sorted):
+                    p_nk = ''.join(c for c in p['name'].lower() if c.isalnum())
+                    if p_nk == nk:
+                        count += 1
+                        if count == rep_count:
+                            matched_idx = idx
+                            break
+
+            if matched_idx is None:
+                continue
+
+            row_start, row_end = boundaries[matched_idx]
+            if row_start >= row_end:
+                continue
+
+            # Re-extreure DOC
+            try:
+                df_doc = extract_doc_from_masterfile(
+                    toc_df, row_start, row_end,
+                    detect_timeouts=False, max_duration_min=max_dur)
+
+                if df_doc.empty:
+                    continue
+
+                t_direct = df_doc["time (min)"].values
+                y_direct = df_doc["DOC"].values
+
+                from hpsec_core import get_baseline_value, map_timeouts_to_injection
+                baseline = get_baseline_value(t_direct, y_direct, mode="BP")
+                y_net = y_direct - baseline
+
+                timeout_info = map_timeouts_to_injection(
+                    seq_timeouts, row_start, row_end,
+                    t_rel=t_direct, is_bp=is_bp)
+
+                rep_data = sample_data["replicas"][rep_key]
+                direct = rep_data.get("direct")
+                if direct is None:
+                    direct = {}
+                    rep_data["direct"] = direct
+
+                # Guardar dades antigues per traçabilitat
+                old_rs = direct.get("row_start")
+                old_re = direct.get("row_end")
+
+                direct["t"] = t_direct
+                direct["y"] = y_direct
+                direct["y_net"] = y_net
+                direct["baseline"] = baseline
+                direct["row_start"] = row_start
+                direct["row_end"] = row_end
+                direct["path"] = "MasterFile:2-TOC"
+                direct["timeout_info"] = timeout_info
+                direct["_reassigned_by_dad254"] = True
+                direct["_delay_used"] = delays_all[matched_idx]
+                direct["_toc_peak_expected"] = toc_peak_times[matched_idx]
+                if old_rs is not None:
+                    direct["_old_row_start"] = old_rs
+                    direct["_old_row_end"] = old_re
+
+                n_reassigned += 1
+
+            except Exception as e:
+                logger.debug("reassign_bp_by_dad254: error %s R%s: %s",
+                             sample_name, rep_key, e)
+
+    # Post-processing: ajustar injeccions NO reassignades per evitar solapaments
+    # (ex: última MQ amb rang enorme que solapa amb les reassignades)
+    if n_reassigned > 0:
+        # Recollir totes les assignacions reassignades
+        reassigned_ranges = []
+        for sn, sd in samples.items():
+            for rk, rd in sd.get("replicas", {}).items():
+                d = rd.get("direct")
+                if d and d.get("_reassigned_by_dad254") and d.get("row_start"):
+                    reassigned_ranges.append((d["row_start"], d["row_end"]))
+        reassigned_ranges.sort()
+
+        # Per cada injeccio NO reassignada, ajustar si solapa
+        for sn, sd in samples.items():
+            for rk, rd in sd.get("replicas", {}).items():
+                d = rd.get("direct")
+                if not d or d.get("_reassigned_by_dad254") or not d.get("row_start"):
+                    continue
+                rs, re_val = d["row_start"], d["row_end"]
+                for r_rs, r_re in reassigned_ranges:
+                    if rs < r_re and re_val > r_rs:  # overlap
+                        # Ajustar start si cal
+                        if rs < r_re and rs >= r_rs:
+                            d["row_start"] = r_re + 1
+                        # Ajustar end si cal
+                        if re_val > r_rs and re_val <= r_re:
+                            d["row_end"] = r_rs - 1
+
+    logger.info("reassign_bp_by_dad254: %d/%d injeccions reassignades",
+                n_reassigned, len(inj_sorted))
+    return n_reassigned
 
 
 def _relocate_bp_windows(result, toc_df):
@@ -4458,10 +4781,11 @@ def import_sequence(seq_path, config=None, progress_callback=None):
                                 align.get('n_with_dad', 0), align.get('n_injections', 0),
                                 align.get('delay_median', 0), align.get('delay_drift', 0))
 
-                    # Recolocar finestres DOC centrades al pic TOC real
-                    n_relocated = _relocate_bp_windows(result, toc_df)
-                    if n_relocated > 0:
-                        logger.info("BP: %d injeccions recolocades al pic real", n_relocated)
+                    # Reassignar finestres per pic DAD254 (fronteres al punt mig)
+                    n_reassigned = reassign_bp_by_dad254(result, toc_df)
+                    if n_reassigned > 0:
+                        logger.info("BP reassignment: %d injeccions reassignades per DAD254",
+                                    n_reassigned)
             except Exception as e_bp:
                 logger.warning("BP DAD254 analysis failed: %s", e_bp)
 
@@ -5954,6 +6278,47 @@ def ensure_data_loaded(imported_data, config=None, progress_callback=None):
                     rep_data["dad"] = dad_result
                     rep_data["dad_source"] = dad_src
                     rep_data["has_data"] = True
+
+    # BP: construir bp_alignment + reassignar finestres per DAD254
+    if mode == "BP" and toc_df is not None and not imported_data.get("bp_alignment"):
+        report_progress(92, "Alineant BP per DAD254...")
+        try:
+            # build_bp_continuous_dad254 necessita master_data amb toc i hplc_seq
+            if not imported_data.get("master_data"):
+                imported_data["master_data"] = {}
+            imported_data["master_data"]["toc"] = toc_df
+            # Llegir HPLC seq si no present
+            if not imported_data["master_data"].get("hplc_seq"):
+                try:
+                    with pd.ExcelFile(master_path, engine="openpyxl") as xl:
+                        for sn in xl.sheet_names:
+                            if 'hplc' in sn.lower() and 'seq' in sn.lower():
+                                imported_data["master_data"]["hplc_seq"] = pd.read_excel(
+                                    xl, sheet_name=sn, header=0, engine="openpyxl")
+                                break
+                except Exception:
+                    pass
+            # Llegir info si no present
+            if not imported_data["master_data"].get("info"):
+                try:
+                    with pd.ExcelFile(master_path, engine="openpyxl") as xl:
+                        if "0-INFO" in xl.sheet_names:
+                            info_df = pd.read_excel(xl, sheet_name="0-INFO",
+                                                    header=None, engine="openpyxl")
+                            info_dict = {}
+                            for _, row in info_df.iterrows():
+                                if pd.notna(row.iloc[0]) and pd.notna(row.iloc[1]):
+                                    info_dict[str(row.iloc[0])] = row.iloc[1]
+                            imported_data["master_data"]["info"] = info_dict
+                except Exception:
+                    pass
+
+            n_dad = build_bp_continuous_dad254(imported_data)
+            if n_dad > 0:
+                n_reassigned = reassign_bp_by_dad254(imported_data, toc_df, config)
+                logger.info("ensure_data_loaded BP: %d DAD, %d reassigned", n_dad, n_reassigned)
+        except Exception as e:
+            logger.warning("ensure_data_loaded: BP alignment failed: %s", e)
 
     # Alliberar 2-TOC DataFrame (les dades DOC ja estan extretes a rep_data["direct"]["t"/"y"])
     if imported_data.get("master_data") and imported_data["master_data"].get("toc") is not None:

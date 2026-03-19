@@ -44,6 +44,21 @@ class CalibrateWorker(QThread):
                         2 + int(pct * 0.15), msg  # 2-17% del total
                     ),
                 )
+            # BP: regenerar bp_alignment si no present (ex: refer sobre SEQ ja importada)
+            elif (self.imported_data
+                  and self.imported_data.get("method", "").upper() == "BP"
+                  and not self.imported_data.get("bp_alignment")):
+                from hpsec_import import ensure_data_loaded
+                progress_cb(2, "Alineant BP per DAD254...")
+                # Forçar data_deferred per que ensure_data_loaded processi
+                self.imported_data["data_deferred"] = True
+                ensure_data_loaded(
+                    self.imported_data,
+                    config=self.config,
+                    progress_callback=lambda pct, msg: progress_cb(
+                        2 + int(pct * 0.15), msg
+                    ),
+                )
 
             result = calibrate_from_import(
                 self.imported_data,

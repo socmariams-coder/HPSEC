@@ -1621,12 +1621,15 @@ class AnalyzePanel(QWidget):
         try:
             processed = self.main_window.processed_data
             if not processed:
+                logger.warning("_save_current_analysis: processed_data is None — NO ES GUARDA")
                 return
             processed["samples_grouped"] = self.samples_grouped
             from hpsec_analyze import save_analysis_result
             save_analysis_result(processed)
+            logger.info("_save_current_analysis: guardat OK")
         except Exception as e:
             logger.warning("Error guardant analisi: %s", e)
+            import traceback; traceback.print_exc()
 
     # ------------------------------------------------------------------
     # Review panel (inline sample review below table)
@@ -1811,18 +1814,40 @@ class AnalyzePanel(QWidget):
                             color=color, lw=1.0, alpha=0.8)
 
             # Integration area shading
-            if show_area:
-                peak_info = rd.get("peak_info") or {}
-                li = peak_info.get("peak_left_idx", 0)
-                ri = peak_info.get("peak_right_idx", 0)
-                if t is not None and y is not None and 0 < li < ri < len(t):
-                    import numpy as _np
-                    t_arr = _np.asarray(t)
-                    y_arr = _np.asarray(y)
-                    ax.fill_between(t_arr[li:ri+1], 0, y_arr[li:ri+1],
+            if t is not None and y is not None and len(t) > 10:
+                import numpy as _np
+                from hpsec_core import find_peak_boundaries as _fpb
+                t_arr = _np.asarray(t, dtype=float)
+                y_arr = _np.asarray(y, dtype=float)
+                y_pos = _np.maximum(y_arr, 0)
+
+                processed = self.main_window.processed_data or {}
+                _method = processed.get("method", "COLUMN")
+                _is_bp = "BP" in _method.upper() if _method else False
+
+                if _is_bp:
+                    # BP: trapezoid complet (el que quantifica la Suite)
+                    ax.fill_between(t_arr, 0, y_pos,
                                     alpha=0.12, color=color, zorder=1)
-                    ax.axvline(t_arr[li], color=color, ls=':', lw=0.6, alpha=0.4)
-                    ax.axvline(t_arr[ri], color=color, ls=':', lw=0.6, alpha=0.4)
+                else:
+                    # COLUMN: fraccions colorades
+                    try:
+                        from hpsec_config import get_config as _gc
+                        _cfg = _gc()
+                        _fracs = {fn: (fi["start"], fi["end"])
+                                  for fn, fi in _cfg.get_all_fractions()}
+                    except Exception:
+                        _fracs = {"BioP": (10.8, 18), "HS": (18, 23),
+                                  "BB": (23, 26), "SB": (26, 32), "LMW": (32, 70)}
+                    _fcolors = {"BioP": "#E74C3C", "HS": "#F39C12",
+                                "BB": "#27AE60", "SB": "#3498DB", "LMW": "#95A5A6"}
+                    for fn, (t0, t1) in _fracs.items():
+                        mask = (t_arr >= t0) & (t_arr <= t1)
+                        if mask.any():
+                            fc = _fcolors.get(fn, "#CCC")
+                            ax.fill_between(t_arr[mask], 0, y_pos[mask],
+                                            alpha=0.10, color=fc, zorder=1)
+                            ax.axvline(t0, color=fc, ls='--', lw=0.3, alpha=0.3)
 
             # Timeout zones
             timeout_info = rd.get("timeout_info", {})
@@ -1994,6 +2019,7 @@ class AnalyzePanel(QWidget):
 
     def _on_review_repair(self):
         """Open repair dialog for current review sample."""
+        logger.info("_on_review_repair: _review_sample=%s", self._review_sample)
         self._open_dialog_with_nav("repair")
 
     def _on_review_compose(self):
@@ -2005,10 +2031,15 @@ class AnalyzePanel(QWidget):
         if sample_name is None:
             sample_name = self._review_sample
         if not sample_name:
+            logger.warning("_open_dialog_with_nav: no sample_name (review_sample=%s)", self._review_sample)
             return
         sample_data = self.samples_grouped.get(sample_name)
         if not sample_data:
+            logger.warning("_open_dialog_with_nav: sample '%s' not in samples_grouped (keys=%s)",
+                          sample_name, list(self.samples_grouped.keys())[:5])
             return
+        logger.info("_open_dialog_with_nav: %s type=%s replicas=%s",
+                    sample_name, dialog_type, list(sample_data.get("replicas", {}).keys()))
 
         method = "COLUMN"
         if self.main_window.processed_data:
@@ -2016,6 +2047,20 @@ class AnalyzePanel(QWidget):
         is_bp = method.upper() == "BP"
 
         if dialog_type == "repair":
+            # Verificar que hi ha dades DOC a les rèpliques
+            has_data = False
+            for rk, rd in sample_data.get("replicas", {}).items():
+                if isinstance(rd, dict):
+                    t_doc = rd.get("t_doc")
+                    if t_doc is not None and len(t_doc) > 0:
+                        has_data = True
+                        break
+            if not has_data:
+                from PySide6.QtWidgets import QMessageBox
+                QMessageBox.information(self, "Reparar pic",
+                    f"No hi ha dades de cromatograma per {sample_name}.\n"
+                    "Pot ser que calgui reprocessar (Verificar + Analitzar).")
+                return
             dialog = JaggedPeakRepairDialog(
                 sample_name, sample_data, method, force=True, parent=self)
             dialog.repair_completed.connect(self._on_review_repair_done)

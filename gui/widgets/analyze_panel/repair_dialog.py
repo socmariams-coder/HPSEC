@@ -127,7 +127,7 @@ class _RepairCard(QFrame):
 
         self.setFrameStyle(QFrame.StyledPanel | QFrame.Plain)
         self.setStyleSheet(
-            "QFrame { border: 1px solid #DEE2E6; border-radius: 6px;"
+            "QFrame { border: 1px solid #E8E8E8; border-radius: 4px;"
             " background: white; }"
         )
 
@@ -211,6 +211,15 @@ class _RepairCard(QFrame):
         self._anchor_auto_btn.setToolTip("Tornar als ancoratges automatics")
         self._anchor_auto_btn.clicked.connect(self._reset_anchors)
         anchor_row.addWidget(self._anchor_auto_btn)
+
+        self._anchor_copy_btn = QPushButton("Copiar a les altres")
+        self._anchor_copy_btn.setStyleSheet(
+            "QPushButton { font-size: 9px; padding: 1px 6px; color: #2E86AB; }")
+        self._anchor_copy_btn.setToolTip(
+            "Copia aquests ancoratges a totes les altres cards")
+        anchor_row.addWidget(self._anchor_copy_btn)
+        # Connected from parent dialog (needs access to other cards)
+
         anchor_row.addStretch()
         layout.addLayout(anchor_row)
 
@@ -234,36 +243,25 @@ class _RepairCard(QFrame):
         self._update_preview(self._factor)
 
     def _update_state_badge(self):
-        """Update the visual state badge."""
+        """Update the visual state badge (minimal style)."""
+        def _ss(border, bg):
+            return (f"QFrame {{ border: 1px solid {border}; border-radius: 4px;"
+                    f" background: {bg}; }}")
+        def _badge(c, text):
+            return (f"<span style='color:{c}; font-size:10px; font-weight:bold'>"
+                    f"{text}</span>")
         if self.state == "repaired":
-            self._state_badge.setText(
-                "<span style='background:#D5F5E3; color:#27AE60; "
-                "padding:1px 6px; border-radius:3px; font-size:10px; "
-                "font-weight:bold'>REPARAT</span>")
-            self.setStyleSheet(
-                "QFrame { border: 2px solid #27AE60; border-radius: 6px;"
-                " background: #F8FFF8; }")
+            self._state_badge.setText(_badge('#5B9F5B', '\u2713 reparat'))
+            self.setStyleSheet(_ss('#B5D8B5', '#FCFEFC'))
         elif self.state == "dismissed":
-            self._state_badge.setText(
-                "<span style='background:#EAECEE; color:#888; "
-                "padding:1px 6px; border-radius:3px; font-size:10px'>"
-                "DESCARTAT</span>")
-            self.setStyleSheet(
-                "QFrame { border: 1px solid #CCC; border-radius: 6px;"
-                " background: #F8F8F8; }")
+            self._state_badge.setText(_badge('#999', 'descartat'))
+            self.setStyleSheet(_ss('#DDD', '#FAFAFA'))
         elif self.state == "needs_repair":
-            self._state_badge.setText(
-                "<span style='background:#FADBD8; color:#E74C3C; "
-                "padding:1px 6px; border-radius:3px; font-size:10px; "
-                "font-weight:bold'>PENDENT</span>")
-            self.setStyleSheet(
-                "QFrame { border: 2px solid #E74C3C; border-radius: 6px;"
-                " background: white; }")
+            self._state_badge.setText(_badge('#C0392B', 'pendent'))
+            self.setStyleSheet(_ss('#E0C4C0', 'white'))
         else:
             self._state_badge.setText("")
-            self.setStyleSheet(
-                "QFrame { border: 1px solid #DEE2E6; border-radius: 6px;"
-                " background: white; }")
+            self.setStyleSheet(_ss('#DEE2E6', 'white'))
 
     def _update_preview(self, factor):
         """Recalcula preview amb nou factor i actualitza grafic."""
@@ -487,19 +485,16 @@ class JaggedPeakRepairDialog(QDialog):
 
         apply_btn = QPushButton("Aplicar")
         apply_btn.setStyleSheet(
-            "QPushButton { border: 1px solid #2E86AB; border-radius: 3px;"
+            "QPushButton { border: 1px solid #4A90A4; border-radius: 3px;"
             " padding: 4px 10px; font-size: 11px; color: white;"
-            " background: #2E86AB; font-weight: bold; }"
-            "QPushButton:hover { background: #236B8E; }")
+            " background: #4A90A4; font-weight: bold; }"
+            "QPushButton:hover { background: #3A7A8E; }")
         apply_btn.setToolTip("Aplicar reparacio als seleccionats")
         apply_btn.clicked.connect(self._on_apply_selected)
         top_row.addWidget(apply_btn)
 
         undo_btn = QPushButton("Desfer")
-        undo_btn.setStyleSheet(
-            "QPushButton { border: 1px solid #E74C3C; border-radius: 3px;"
-            " padding: 4px 10px; font-size: 11px; color: #E74C3C; }"
-            "QPushButton:hover { background: #FADBD8; }")
+        undo_btn.setStyleSheet(nav_s)
         undo_btn.setToolTip("Desfer reparacio dels seleccionats")
         undo_btn.clicked.connect(self._on_undo_selected)
         top_row.addWidget(undo_btn)
@@ -576,12 +571,34 @@ class JaggedPeakRepairDialog(QDialog):
             self._cards_layout.addWidget(card, row_idx, col_idx)
             self._cards.append(card)
 
+        # Connectar "Copiar a les altres" de cada card
+        for card in self._cards:
+            card._anchor_copy_btn.clicked.connect(
+                lambda checked=False, c=card: self._copy_anchors_from(c))
+
         scroll.setWidget(scroll_widget)
         layout.addWidget(scroll, stretch=1)
 
     # ------------------------------------------------------------------
     # Factor sync
     # ------------------------------------------------------------------
+
+    def _copy_anchors_from(self, source_card):
+        """Copia anchors d'una card a totes les altres."""
+        left = source_card._anchor_left_spin.value()
+        right = source_card._anchor_right_spin.value()
+        n_copied = 0
+        for card in self._cards:
+            if card is source_card:
+                continue
+            card._updating_anchors = True
+            card._anchor_left_spin.setValue(left)
+            card._anchor_right_spin.setValue(right)
+            card._updating_anchors = False
+            card._anchor_left_manual = left
+            card._anchor_right_manual = right
+            card._update_preview(card._factor)
+            n_copied += 1
 
     def _on_spin_changed(self, value):
         self._update_all_cards(value)
@@ -637,9 +654,17 @@ class JaggedPeakRepairDialog(QDialog):
                 anom_key = f"IRREGULAR_TOP_{card.signal_type.upper()}"
                 unmark_dismissed(anomalies, anom_key)
 
-            result = repair_irregular_top_in_replica(
-                rep_data, signal=card.signal_type, factor=self._factor
-            )
+            # Passar anchors manuals si l'usuari els ha modificat
+            repair_kwargs = {
+                "signal": card.signal_type,
+                "factor": self._factor,
+            }
+            if hasattr(card, '_anchor_left_manual') and card._anchor_left_manual is not None:
+                repair_kwargs["anchor_left_t"] = card._anchor_left_manual
+            if hasattr(card, '_anchor_right_manual') and card._anchor_right_manual is not None:
+                repair_kwargs["anchor_right_t"] = card._anchor_right_manual
+
+            result = repair_irregular_top_in_replica(rep_data, **repair_kwargs)
 
             if result.get("repaired"):
                 n_ok += 1

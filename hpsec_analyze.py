@@ -1261,7 +1261,8 @@ def _recommend_replica_multi(replicas_dict, pairwise_comparisons, mode="COLUMN")
     return {"doc": doc_result, "dad": dad_result}
 
 
-def repair_irregular_top_in_replica(sample_result, signal="direct", factor=None):
+def repair_irregular_top_in_replica(sample_result, signal="direct", factor=None,
+                                    anchor_left_t=None, anchor_right_t=None):
     """
     Repara cim irregular (jagged/batman) en una rèplica usant repair_with_parabola().
 
@@ -1322,6 +1323,10 @@ def repair_irregular_top_in_replica(sample_result, signal="direct", factor=None)
     repair_kwargs = {"force": True}
     if factor is not None:
         repair_kwargs["factor"] = factor
+    if anchor_left_t is not None:
+        repair_kwargs["anchor_left_t"] = anchor_left_t
+    if anchor_right_t is not None:
+        repair_kwargs["anchor_right_t"] = anchor_right_t
     y_seg_repaired, repair_info, was_repaired = repair_with_parabola(
         t_seg, y_seg, **repair_kwargs
     )
@@ -1765,7 +1770,9 @@ def analyze_sample(sample_data, calibration_data=None, config=None):
     # Aplicar shifts d'alineació (si disponibles, venen de calibrate)
     # El shift és translació temporal - NO invalida la correcció de baseline.
     # S'aplica shift a TOTS els senyals (raw i net) per mantenir coherència.
-    if calibration_data:
+    # EXCEPCIÓ BP: les finestres ja estan alineades per reassign_bp_by_dad254,
+    # el shift DOC-DAD no s'ha d'aplicar (ja incorporat a les finestres).
+    if calibration_data and not is_bp:
         shift_uib = calibration_data.get("shift_uib") or calibration_data.get("shift_min_u") or 0.0
         shift_direct = calibration_data.get("shift_direct") or calibration_data.get("shift_min") or 0.0
 
