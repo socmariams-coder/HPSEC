@@ -405,7 +405,7 @@ class DashboardPanel(QWidget):
         # Filtre Estat
         filter_layout.addWidget(QLabel("Estat:"))
         self.filter_estat = QComboBox()
-        self.filter_estat.addItems(["Tots", "Pendent", "En curs", "Complet", "Error", "CAL"])
+        self.filter_estat.addItems(["Tots", "Pendent", "En curs", "Complet", "Error"])
         self.filter_estat.setMinimumWidth(90)
         self.filter_estat.currentTextChanged.connect(self._apply_filter)
         filter_layout.addWidget(self.filter_estat)
@@ -634,10 +634,6 @@ class DashboardPanel(QWidget):
                 )
                 if not has_error:
                     continue
-            elif filter_estat == "CAL":
-                if "_CAL" not in seq.seq_name.upper():
-                    continue
-
             self.filtered_sequences.append(seq)
 
         self._update_table()
@@ -684,11 +680,15 @@ class DashboardPanel(QWidget):
         self.table.setRowCount(0)
 
         for seq in self.filtered_sequences:
+            # SEQ_CAL van al panel de calibració, no al dashboard
+            if "_CAL" in seq.seq_name.upper():
+                continue
+
             row = self.table.rowCount()
             self.table.insertRow(row)
 
-            is_cal = "_CAL" in seq.seq_name.upper()
-            cal_bg = QColor(COLOR_CAL_BG) if is_cal else None
+            is_cal = False
+            cal_bg = None
 
             # Col CHECK: checkbox
             item_check = QTableWidgetItem()
