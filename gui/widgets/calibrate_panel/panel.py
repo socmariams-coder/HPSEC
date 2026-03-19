@@ -673,6 +673,7 @@ class CalibratePanel(QWidget):
         self.graphs_group.setVisible(False)
         graphs_layout = QVBoxLayout(self.graphs_group)
         self.replica_graphs = KHPReplicaGraphWidget()
+        self.replica_graphs.baseline_adjusted.connect(self._on_baseline_adjusted)
         graphs_layout.addWidget(self.replica_graphs)
         content_layout.addWidget(self.graphs_group)
 
@@ -1502,6 +1503,56 @@ class CalibratePanel(QWidget):
             self.replica_graphs.plot_replicas(direct_list, uib_list if uib_list else None)
         else:
             self.graphs_group.setVisible(False)
+
+    def _on_baseline_adjusted(self, replica_idx, new_baseline):
+        """Recalcula àrea KHP amb la nova baseline i refresca gràfics i mètriques."""
+        import numpy as np
+        from hpsec_core import find_peak_boundaries
+
+        # Accedir a les dades de la rèplica
+        replicas = self.replica_graphs._replicas_data
+        if replica_idx >= len(replicas):
+            return
+
+        rep = replicas[replica_idx]
+        t = np.asarray(rep.get('t_doc', []), dtype=float)
+        y_doc = np.asarray(rep.get('y_doc', []), dtype=float)
+        old_bl = rep.get('baseline_level', 0)
+
+        if len(t) < 10:
+            return
+
+        # Recalcular y_net amb nova baseline
+        # y_doc és net (ja restada baseline anterior), recuperar raw
+        y_raw = y_doc + old_bl
+        y_net_new = y_raw - new_baseline
+
+        # Recalcular àrea amb trapezoid + marge
+        pk = int(np.argmax(y_net_new))
+        try:
+            li, ri = find_peak_boundaries(t, y_net_new, pk)
+        except Exception:
+            li, ri = 0, len(t) - 1
+        width = ri - li
+        margin = max(3, int(width * 0.2))
+        li_w = max(0, li - margin)
+        ri_w = min(len(t) - 1, ri + margin)
+        new_area = float(np.trapezoid(np.maximum(y_net_new[li_w:ri_w+1], 0), t[li_w:ri_w+1]))
+
+        # Actualitzar dades de la rèplica
+        rep['y_doc'] = y_net_new.tolist()
+        rep['baseline_level'] = new_baseline
+        rep['area'] = new_area
+        rep['peak_left_idx'] = li
+        rep['peak_right_idx'] = ri
+        rep['_baseline_manual'] = True
+
+        logger.info(f"Baseline ajustada replica {replica_idx}: "
+                    f"bl {old_bl:.1f} -> {new_baseline:.1f}, area {new_area:.1f}")
+
+        # Refrescar gràfics
+        if hasattr(self, 'calibration_data') and self.calibration_data:
+            self._update_graphs(self.calibration_data)
 
     # =========================================================================
     # METRICS TABLE (amb anomaly sub-rows i checkbox outlier)
