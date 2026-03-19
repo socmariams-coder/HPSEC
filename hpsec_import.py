@@ -3601,10 +3601,12 @@ def reassign_bp_by_dad254(result, toc_df, config=None):
         idx = max(0, min(idx, n_toc_rows - 1))
         return idx + TOC_DATA_START_ROW
 
-    # Finestra fixa centrada al pic: -3 min abans, +5 min després
-    # Així el pic cau sempre a t≈3 min dins la finestra (8 min total)
-    BP_PRE_PEAK_MIN = 3.0   # marge abans del pic
-    BP_POST_PEAK_MIN = 5.0  # marge després del pic
+    # Finestra generosa centrada al pic: captura pic complet + baseline
+    # Pre: 4 min (baseline neta + inici pic)
+    # Post: 7 min (cua completa + baseline post-pic)
+    # L'àrea real es determina per find_peak_boundaries + trapezoid (no la finestra)
+    BP_PRE_PEAK_MIN = 4.0
+    BP_POST_PEAK_MIN = 7.0
 
     # Timeouts per ajustar inici de finestra
     toc_to_times = sorted(align.get('toc_timeouts', []), key=lambda x: x['t_min'])

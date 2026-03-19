@@ -2818,11 +2818,11 @@ def baseline_stats_windowed(t, y, method="column", timeout_positions=None, confi
     # Seleccionar finestres segons mètode
     # NOTA (2026-02-03): COLUMN usa 0-10 min (pre-peak), evitant zones amb peaks
     if method.lower() == "bp":
-        # BP: finestra centrada al pic (pic a t≈3 min, finestra 0-8 min)
-        # Baseline pre-peak (t<1) o post-peak (últims 2 min), la més neta
-        t_max_val = float(t[-1]) if len(t) > 0 else 8.0
+        # BP: finestra centrada al pic (pic a t≈4 min, finestra 0-11 min)
+        # Baseline pre-peak (t<2) o post-peak (últims 2 min), la més neta
+        t_max_val = float(t[-1]) if len(t) > 0 else 11.0
         windows = [
-            {"start": 0.0, "end": 1.0, "name": "pre-peak"},
+            {"start": 0.0, "end": 2.0, "name": "pre-peak"},
             {"start": max(0, t_max_val - 2.0), "end": t_max_val, "name": "post-peak"},
         ]
     else:
