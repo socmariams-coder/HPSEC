@@ -215,6 +215,15 @@ class GlobalCalibrationPanel(QWidget):
         self._btn_reprocess.clicked.connect(self._on_reprocess_selected)
         dash_header.addWidget(self._btn_reprocess)
 
+        self._btn_combine = QPushButton("Combinar")
+        self._btn_combine.setStyleSheet(
+            "QPushButton { background-color: #27AE60; color: white; "
+            "font-weight: bold; padding: 3px 10px; border-radius: 3px; font-size: 11px; }"
+            "QPushButton:hover { background-color: #1E8449; }")
+        self._btn_combine.setToolTip("Combinar SEQ_CALs seleccionades en una sola regressió")
+        self._btn_combine.clicked.connect(self._on_combine_selected)
+        dash_header.addWidget(self._btn_combine)
+
         layout.addLayout(dash_header)
 
         # Taula SEQ_CAL
@@ -228,7 +237,7 @@ class GlobalCalibrationPanel(QWidget):
             self._cal_table.horizontalHeader().setSectionResizeMode(
                 i, QHeaderView.ResizeMode.ResizeToContents)
         self._cal_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self._cal_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self._cal_table.setSelectionMode(QTableWidget.SelectionMode.MultiSelection)
         self._cal_table.setMaximumHeight(140)
         self._cal_table.setAlternatingRowColors(True)
         self._cal_table.verticalHeader().setVisible(False)
@@ -339,6 +348,7 @@ class GlobalCalibrationPanel(QWidget):
             self._cal_table.setItem(i, 7, QTableWidgetItem(s['vol']))
 
     def _get_selected_cal_path(self):
+        """Retorna el path de la primera SEQ_CAL seleccionada."""
         rows = self._cal_table.selectionModel().selectedRows()
         if not rows:
             return None
@@ -346,6 +356,16 @@ class GlobalCalibrationPanel(QWidget):
         if row < len(self._cal_seq_list):
             return self._cal_seq_list[row]['path']
         return None
+
+    def _get_selected_cal_paths(self):
+        """Retorna llista de paths de totes les SEQ_CAL seleccionades."""
+        rows = self._cal_table.selectionModel().selectedRows()
+        paths = []
+        for idx in rows:
+            row = idx.row()
+            if row < len(self._cal_seq_list):
+                paths.append(self._cal_seq_list[row]['path'])
+        return paths
 
     def _on_cal_table_dblclick(self, index):
         """Doble clic: processar la SEQ_CAL."""
@@ -362,6 +382,95 @@ class GlobalCalibrationPanel(QWidget):
             return
         self._force_reimport = False
         self.load_seq_cal(path)
+
+    def _on_combine_selected(self):
+        """Combinar múltiples SEQ_CALs: processar totes i ajuntar punts."""
+        paths = self._get_selected_cal_paths()
+        if len(paths) < 2:
+            QMessageBox.information(self, "Info",
+                "Selecciona almenys 2 SEQ_CALs a la taula per combinar.\n"
+                "(Usa Ctrl+clic per selecció múltiple)")
+            return
+
+        names = [os.path.basename(p) for p in paths]
+        logger.info(f"Combinar SEQ_CALs: {names}")
+
+        # Processar les que no estan al cache
+        self._combine_paths = paths
+        self._combine_pending = [p for p in paths if p not in self._result_cache]
+        self._combine_done = []
+
+        if self._combine_pending:
+            # Processar la primera pendent
+            self._start_cal_worker(self._combine_pending[0])
+        else:
+            # Totes al cache — combinar directament
+            self._do_combine()
+
+    def _do_combine(self):
+        """Combina resultats de múltiples SEQ_CALs i passa a CalibrationLineView."""
+        if not hasattr(self, '_combine_paths'):
+            return
+
+        paths = self._combine_paths
+        all_entries_direct = []
+        all_entries_uib = []
+        methods = set()
+        imported_list = []
+
+        for path in paths:
+            result = self._result_cache.get(path)
+            if not result:
+                continue
+            seq_cal_data = result.get('seq_cal_data', {})
+            seq_name = result.get('seq_name', os.path.basename(path))
+            method = seq_cal_data.get('method', 'COLUMN')
+            methods.add(method)
+
+            # Taguejar cada entry amb la SEQ d'origen
+            for entry in seq_cal_data.get('entries_direct', []):
+                entry['_source_seq'] = seq_name
+                entry['_source_method'] = method
+                all_entries_direct.append(entry)
+
+            for entry in seq_cal_data.get('entries_uib', []):
+                entry['_source_seq'] = seq_name
+                entry['_source_method'] = method
+                all_entries_uib.append(entry)
+
+            if result.get('imported_data'):
+                imported_list.append(result['imported_data'])
+
+        if not all_entries_direct and not all_entries_uib:
+            QMessageBox.warning(self, "Error", "Cap entrada KHP trobada a les SEQs seleccionades.")
+            return
+
+        # Construir seq_cal_data combinat
+        combined = {
+            'entries': all_entries_direct or all_entries_uib,
+            'entries_direct': all_entries_direct,
+            'entries_uib': all_entries_uib,
+            'method': '+'.join(sorted(methods)),
+            'concs': sorted(set(e.get('conc_ppm', 0) for e in (all_entries_direct or all_entries_uib))),
+            'signal': 'direct' if all_entries_direct else 'uib',
+            'has_direct': bool(all_entries_direct),
+            'has_uib': bool(all_entries_uib),
+            '_combined': True,
+            '_source_seqs': [os.path.basename(p) for p in paths],
+        }
+
+        names = [os.path.basename(p) for p in paths]
+        combo_name = " + ".join(names)
+
+        self.cal_view.load_seq_cal_data(
+            combo_name, paths[0], combined,
+            imported_data=imported_list[0] if imported_list else None,
+        )
+
+        self.main_window.set_status(f"Combinat: {combo_name}", 5000)
+
+        # Netejar
+        del self._combine_paths
 
     def _on_reprocess_selected(self):
         """Botó Reprocessar: reimporta des de zero (ignora manifest i cache)."""
@@ -436,7 +545,7 @@ class GlobalCalibrationPanel(QWidget):
         self._progress_label.setText(msg)
 
     def _on_worker_finished(self, result, from_cache=False):
-        """Worker completat: passar dades a CalibrationLineView."""
+        """Worker completat: passar dades a CalibrationLineView o continuar batch."""
         self._progress_bar.setVisible(False)
         self._progress_label.setVisible(False)
 
@@ -448,7 +557,22 @@ class GlobalCalibrationPanel(QWidget):
         if not from_cache and seq_path:
             self._result_cache[seq_path] = result
 
-        # Passar dades a la vista
+        # Si estem en mode combinació, continuar amb la següent o combinar
+        if hasattr(self, '_combine_pending') and self._combine_pending:
+            # Treure la que acabem de processar
+            if seq_path in self._combine_pending:
+                self._combine_pending.remove(seq_path)
+
+            if self._combine_pending:
+                # Processar la següent
+                self._start_cal_worker(self._combine_pending[0])
+                return
+            else:
+                # Totes processades — combinar
+                self._do_combine()
+                return
+
+        # Mode normal: passar a la vista
         seq_cal_data = result.get("seq_cal_data")
         calib_result = result.get("calib_result")
         imported_data = result.get("imported_data")
