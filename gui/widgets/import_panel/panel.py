@@ -482,24 +482,55 @@ class ImportPanel(QWidget):
         })
 
     def _show_sibling_results(self, results_by_path):
-        """Mostra resultats de N siblings en una vista unificada."""
-        # Mostrar la taula del primari (la vista actual ja funciona bé per 1 SEQ)
+        """Mostra resultats de N siblings en una vista unificada amb TOTES les injeccions."""
+        from hpsec_import import generate_import_manifest
+
+        self._init_results_state()
+
+        # Combinar injeccions de totes les SEQs
+        all_injections = []
+        all_warnings = []
+
+        for path, result in results_by_path.items():
+            seq_name = os.path.basename(path)
+            if result.get("data_deferred"):
+                manifest = self._load_saved_manifest(result)
+            else:
+                manifest = generate_import_manifest(result)
+
+            samples = manifest.get("samples", [])
+            seq_info = manifest.get("sequence", {})
+            self._data_mode = seq_info.get("data_mode", "DUAL")
+
+            injections = self._build_injection_list(samples)
+            # Taguejar amb la SEQ d'origen
+            for inj in injections:
+                inj["_source_seq"] = seq_name
+            all_injections.extend(injections)
+
+            all_warnings.extend([w for w in result.get("warnings", []) if "w" in str(w).lower()])
+
+        self._import_warnings = all_warnings
+
+        # Processar orfes del primari
         primary_path = self.main_window.seq_path
         if primary_path in results_by_path:
-            self._show_results(results_by_path[primary_path])
-        else:
-            self._show_results(next(iter(results_by_path.values())))
+            primary_result = results_by_path[primary_path]
+            if primary_result.get("data_deferred"):
+                manifest = self._load_saved_manifest(primary_result)
+            else:
+                manifest = generate_import_manifest(primary_result)
+            samples = manifest.get("samples", [])
+            self._process_orphan_files(manifest, samples, primary_result)
 
-        # Actualitzar barra d'info amb recompte total de totes les carpetes
-        total_samples = 0
-        total_inj = 0
-        for result in results_by_path.values():
-            samples = result.get("samples", {})
-            total_samples += len(samples)
-            for s in samples.values():
-                total_inj += len(s.get("replicas", {}))
+        self._setup_table_columns()
+        self._populate_table(all_injections)
+        self._update_warnings()
 
+        # Barra d'info
         n = len(results_by_path)
+        total_samples = len(set(inj["sample_name"] for inj in all_injections))
+        total_inj = len(all_injections)
         names = [os.path.basename(p) for p in results_by_path]
         self.total_label.setText(
             f"Pack [{n} carpetes]: {total_samples} mostres, {total_inj} injeccions"
