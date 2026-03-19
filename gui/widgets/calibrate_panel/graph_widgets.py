@@ -5,7 +5,11 @@ HPSEC Suite - Calibrate Graph Widgets
 Widgets de visualització per calibració KHP.
 """
 
-from PySide6.QtWidgets import QWidget, QVBoxLayout
+from PySide6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QDialog, QLabel,
+    QDoubleSpinBox, QSlider, QPushButton, QSizePolicy,
+)
+from PySide6.QtCore import Qt, Signal
 
 import matplotlib
 matplotlib.use('QtAgg')
@@ -22,18 +26,54 @@ except ImportError:
 
 
 class KHPReplicaGraphWidget(QWidget):
-    """Widget que mostra gràfics de KHP per rèplica: DOC Direct+UIB+254nm unificats."""
+    """Widget que mostra gràfics de KHP per rèplica: DOC Direct+UIB+254nm unificats.
+    Doble clic obre diàleg d'ajust de baseline."""
+
+    baseline_adjusted = Signal(int, float)  # (replica_index, new_baseline)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.figure = Figure(figsize=(10, 3.5), dpi=100)
         self.canvas = FigureCanvas(self.figure)
+        self.canvas.mpl_connect('button_press_event', self._on_click)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.canvas)
 
         self.setMinimumHeight(250)
+        self._replicas_data = []  # guardar per baseline dialog
+
+    def _on_click(self, event):
+        """Doble clic obre diàleg baseline per la rèplica clicada."""
+        if event.dblclick and event.inaxes and self._replicas_data:
+            # Trobar quina rèplica (subplot)
+            axes = self.figure.get_axes()
+            for i, ax in enumerate(axes):
+                if event.inaxes == ax and i < len(self._replicas_data):
+                    rep = self._replicas_data[i]
+                    t_doc = rep.get('t_doc')
+                    y_doc_raw = rep.get('y_doc_raw', rep.get('y_doc'))
+                    bl = rep.get('baseline_level', 0)
+                    li = rep.get('peak_left_idx', 0)
+                    ri = rep.get('peak_right_idx')
+                    name = rep.get('khp_name', rep.get('name', f'KHP'))
+                    rep_num = rep.get('replica', i + 1)
+
+                    if t_doc is not None and y_doc_raw is not None:
+                        # y_doc al gràfic és net (ja restada baseline)
+                        # Per raw necessitem sumar baseline
+                        y_raw = np.asarray(y_doc_raw) + bl if bl else np.asarray(y_doc_raw)
+
+                        dlg = BaselineAdjustDialog(
+                            name, rep_num, t_doc, y_raw, bl,
+                            peak_left_idx=li,
+                            peak_right_idx=ri,
+                            parent=self)
+                        dlg.baseline_changed.connect(
+                            lambda new_bl, idx=i: self.baseline_adjusted.emit(idx, new_bl))
+                        dlg.exec()
+                    break
 
     def plot_replicas(self, replicas_direct, replicas_uib=None):
         """
@@ -44,6 +84,7 @@ class KHPReplicaGraphWidget(QWidget):
             replicas_uib: Lista de dicts amb dades UIB per cada rèplica (opcional)
         """
         self.figure.clear()
+        self._replicas_data = list(replicas_direct) if replicas_direct else []
 
         if not replicas_direct:
             ax = self.figure.add_subplot(111)
@@ -89,14 +130,31 @@ class KHPReplicaGraphWidget(QWidget):
         # --- Direct DOC curve ---
         ax.plot(t_doc, y_doc, color=color_direct, linewidth=1.2, label='Direct')
 
-        # Shaded integrated area (Direct)
+        # Shaded integrated area (Direct) — trapezoid amb marge
         li = rep_direct.get('peak_left_idx', 0)
         ri = rep_direct.get('peak_right_idx', len(t_doc) - 1)
         if 0 <= li < ri < len(t_doc):
-            ax.fill_between(t_doc[li:ri+1], 0, y_doc[li:ri+1],
-                           alpha=0.15, color=color_direct)
-            ax.axvline(t_doc[li], color=color_direct, linestyle=':', linewidth=0.8, alpha=0.5)
-            ax.axvline(t_doc[ri], color=color_direct, linestyle=':', linewidth=0.8, alpha=0.5)
+            # Àrea amb marge (el que realment s'integra)
+            width = ri - li
+            margin = max(3, int(width * 0.2))
+            li_wide = max(0, li - margin)
+            ri_wide = min(len(t_doc) - 1, ri + margin)
+            ax.fill_between(t_doc[li_wide:ri_wide+1], 0,
+                           np.maximum(y_doc[li_wide:ri_wide+1], 0),
+                           alpha=0.12, color=color_direct)
+            # Límits tangent (referència)
+            ax.axvline(t_doc[li], color=color_direct, linestyle=':', linewidth=0.6, alpha=0.4)
+            ax.axvline(t_doc[ri], color=color_direct, linestyle=':', linewidth=0.6, alpha=0.4)
+            # Límits reals integració (marge)
+            ax.axvline(t_doc[li_wide], color=color_direct, linestyle='-', linewidth=0.8, alpha=0.3)
+            ax.axvline(t_doc[ri_wide], color=color_direct, linestyle='-', linewidth=0.8, alpha=0.3)
+
+        # Baseline (línia horitzontal)
+        bl = rep_direct.get('baseline_level', 0)
+        if bl != 0:
+            ax.axhline(0, color='k', linewidth=0.3, alpha=0.3)  # zero (net)
+            # Anotar valor baseline
+            ax.annotate(f'bl={bl:.0f}', (t_doc[0], 1), fontsize=6, color='#999', alpha=0.6)
 
         # Cim irregular: show original if repaired
         if rep_direct.get('irregular_top_repaired', rep_direct.get('batman_repaired')) and rep_direct.get('y_doc_repaired') is not None:
@@ -721,3 +779,152 @@ class HistoryBarWidget(QWidget):
         self._bar_real_indices = []
         self._selected_idx = -1
         self.canvas.draw()
+
+
+class BaselineAdjustDialog(QDialog):
+    """Diàleg per ajustar la baseline d'un KHP amb slider + preview."""
+
+    baseline_changed = Signal(float)  # nou valor de baseline
+
+    def __init__(self, name, rep, t_raw, y_raw, baseline_current,
+                 peak_left_idx=0, peak_right_idx=None, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"Baseline — {name} R{rep}")
+        self.setMinimumSize(700, 450)
+        self.setModal(True)
+
+        self._t = np.asarray(t_raw, dtype=float)
+        self._y_raw = np.asarray(y_raw, dtype=float)
+        self._bl_original = float(baseline_current)
+        self._bl_current = self._bl_original
+        self._li = peak_left_idx
+        self._ri = peak_right_idx if peak_right_idx else len(self._t) - 1
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 8, 8, 8)
+
+        # Gràfic
+        self._fig = Figure(figsize=(8, 3.5), dpi=100)
+        self._fig.set_facecolor('#FAFAFA')
+        self._canvas = FigureCanvas(self._fig)
+        self._canvas.setMinimumHeight(280)
+        layout.addWidget(self._canvas)
+
+        # Slider baseline
+        slider_row = QHBoxLayout()
+        slider_row.addWidget(QLabel("<b>Baseline:</b>"))
+
+        self._bl_spin = QDoubleSpinBox()
+        self._bl_spin.setRange(self._y_raw.min() - 10, self._y_raw.max())
+        self._bl_spin.setSingleStep(0.5)
+        self._bl_spin.setDecimals(1)
+        self._bl_spin.setSuffix(" ppb")
+        self._bl_spin.setValue(self._bl_current)
+        self._bl_spin.setFixedWidth(100)
+        slider_row.addWidget(self._bl_spin)
+
+        self._bl_slider = QSlider(Qt.Horizontal)
+        self._bl_slider.setRange(int((self._y_raw.min() - 10) * 10),
+                                  int(self._y_raw.max() * 10))
+        self._bl_slider.setValue(int(self._bl_current * 10))
+        slider_row.addWidget(self._bl_slider, 1)
+
+        self._area_label = QLabel("")
+        self._area_label.setFixedWidth(120)
+        self._area_label.setStyleSheet("font-size: 11px; font-weight: bold;")
+        slider_row.addWidget(self._area_label)
+
+        reset_btn = QPushButton("Reset")
+        reset_btn.setFixedWidth(50)
+        reset_btn.clicked.connect(self._on_reset)
+        slider_row.addWidget(reset_btn)
+
+        layout.addLayout(slider_row)
+
+        # Botons
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(self.reject)
+        btn_row.addWidget(cancel_btn)
+        apply_btn = QPushButton("Aplicar")
+        apply_btn.setStyleSheet(
+            "QPushButton { background: #4A90A4; color: white; font-weight: bold; "
+            "padding: 4px 14px; border-radius: 3px; }"
+            "QPushButton:hover { background: #3A7A8E; }")
+        apply_btn.clicked.connect(self._on_apply)
+        btn_row.addWidget(apply_btn)
+        layout.addLayout(btn_row)
+
+        # Connects
+        self._bl_slider.valueChanged.connect(self._on_slider)
+        self._bl_spin.valueChanged.connect(self._on_spin)
+
+        self._draw()
+
+    def _on_slider(self, value):
+        bl = value / 10.0
+        self._bl_spin.blockSignals(True)
+        self._bl_spin.setValue(bl)
+        self._bl_spin.blockSignals(False)
+        self._bl_current = bl
+        self._draw()
+
+    def _on_spin(self, value):
+        self._bl_slider.blockSignals(True)
+        self._bl_slider.setValue(int(value * 10))
+        self._bl_slider.blockSignals(False)
+        self._bl_current = value
+        self._draw()
+
+    def _on_reset(self):
+        self._bl_spin.setValue(self._bl_original)
+
+    def _on_apply(self):
+        self.baseline_changed.emit(self._bl_current)
+        self.accept()
+
+    def _draw(self):
+        self._fig.clear()
+        ax = self._fig.add_subplot(111)
+
+        t = self._t
+        y_raw = self._y_raw
+        bl = self._bl_current
+        y_net = y_raw - bl
+
+        # Raw amb baseline
+        ax.plot(t, y_raw, color='#999', lw=0.5, alpha=0.5, label='raw')
+        ax.axhline(bl, color='#E67E22', lw=1.2, ls='--', alpha=0.7,
+                   label=f'baseline={bl:.1f}')
+        ax.axhline(self._bl_original, color='#CCC', lw=0.5, ls=':', alpha=0.5)
+
+        # Net
+        ax.plot(t, y_net, color='#1565C0', lw=1, alpha=0.8, label='net')
+        ax.axhline(0, color='k', lw=0.3, alpha=0.3)
+
+        # Àrea integrada (trapezoid amb marge)
+        li, ri = self._li, self._ri
+        width = ri - li
+        margin = max(3, int(width * 0.2))
+        li_w = max(0, li - margin)
+        ri_w = min(len(t) - 1, ri + margin)
+
+        y_pos = np.maximum(y_net[li_w:ri_w+1], 0)
+        ax.fill_between(t[li_w:ri_w+1], 0, y_pos, alpha=0.15, color='#1565C0')
+        ax.axvline(t[li], color='#27AE60', lw=0.6, ls=':', alpha=0.5)
+        ax.axvline(t[ri], color='#27AE60', lw=0.6, ls=':', alpha=0.5)
+
+        area = float(np.trapezoid(y_pos, t[li_w:ri_w+1]))
+        self._area_label.setText(f"Area: {area:.1f}")
+
+        ax.set_xlabel('min', fontsize=8)
+        ax.set_ylabel('ppb', fontsize=8)
+        ax.legend(fontsize=7, loc='upper right')
+        ax.grid(True, alpha=0.1)
+
+        try:
+            self._fig.tight_layout()
+        except Exception:
+            pass
+        self._canvas.draw_idle()

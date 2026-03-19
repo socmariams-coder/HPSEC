@@ -2969,16 +2969,26 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
 
             left_b, right_b = find_peak_boundaries(
                 t_doc, y_for_bounds, selected_idx, bl_val, is_bp=is_bp_chromato)
-            area = float(trapezoid(y_doc_net[left_b:right_b+1], t_doc[left_b:right_b+1]))
+
+            # Ampliar límits amb marge (+20%) per capturar cues del pic (trapezoid)
+            width = right_b - left_b
+            margin = max(3, int(width * 0.2))
+            left_wide = max(0, left_b - margin)
+            right_wide = min(len(t_doc) - 1, right_b + margin)
+            area = float(trapezoid(
+                np.maximum(y_doc_net[left_wide:right_wide+1], 0),
+                t_doc[left_wide:right_wide+1]))
 
             peak_info = {
                 'valid': True,
                 'peak_idx': int(selected_idx),
                 't_max': float(t_doc[selected_idx]),
-                't_start': float(t_doc[left_b]),
-                't_end': float(t_doc[right_b]),
-                'left_idx': left_b,
-                'right_idx': right_b,
+                't_start': float(t_doc[left_wide]),
+                't_end': float(t_doc[right_wide]),
+                'left_idx': left_wide,
+                'right_idx': right_wide,
+                'peak_left_idx': left_b,
+                'peak_right_idx': right_b,
                 'area': area,
                 'height': float(y_doc_net[selected_idx]),
                 'baseline_level': bl_val,
@@ -3028,10 +3038,16 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
     limits_expanded = not expansion['original_valid']
 
     if limits_expanded:
-        # Expansió ha ampliat els límits — usar els nous
+        # Expansió ha ampliat els límits — usar els nous amb marge trapezoid
         left_idx = expansion['left_idx']
         right_idx = expansion['right_idx']
-        new_area = float(trapezoid(y_doc_net[left_idx:right_idx+1], t_doc[left_idx:right_idx+1]))
+        width = right_idx - left_idx
+        margin = max(3, int(width * 0.2))
+        left_idx = max(0, left_idx - margin)
+        right_idx = min(len(t_doc) - 1, right_idx + margin)
+        new_area = float(trapezoid(
+            np.maximum(y_doc_net[left_idx:right_idx+1], 0),
+            t_doc[left_idx:right_idx+1]))
         peak_info['area'] = new_area
         peak_info['left_idx'] = left_idx
         peak_info['right_idx'] = right_idx
