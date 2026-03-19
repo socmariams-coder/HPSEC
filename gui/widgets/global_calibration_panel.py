@@ -422,7 +422,10 @@ class GlobalCalibrationPanel(QWidget):
             result = self._result_cache.get(path)
             if not result:
                 continue
-            seq_cal_data = result.get('seq_cal_data', {})
+            seq_cal_data = result.get('seq_cal_data')
+            if not seq_cal_data:
+                logger.warning(f"_do_combine: {os.path.basename(path)} sense seq_cal_data, ignorant")
+                continue
             seq_name = result.get('seq_name', os.path.basename(path))
             method = seq_cal_data.get('method', 'COLUMN')
             methods.add(method)
