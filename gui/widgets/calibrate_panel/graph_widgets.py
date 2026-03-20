@@ -130,24 +130,19 @@ class KHPReplicaGraphWidget(QWidget):
         # --- Direct DOC curve ---
         ax.plot(t_doc, y_doc, color=color_direct, linewidth=1.2, label='Direct')
 
-        # Shaded integrated area (Direct) — trapezoid amb marge
+        # Shaded integrated area (Direct) — fins a baseline
         li = rep_direct.get('peak_left_idx', 0)
         ri = rep_direct.get('peak_right_idx', len(t_doc) - 1)
-        if 0 <= li < ri < len(t_doc):
-            # Àrea amb marge (el que realment s'integra)
-            width = ri - li
-            margin = max(3, int(width * 0.2))
-            li_wide = max(0, li - margin)
-            ri_wide = min(len(t_doc) - 1, ri + margin)
-            ax.fill_between(t_doc[li_wide:ri_wide+1], 0,
-                           np.maximum(y_doc[li_wide:ri_wide+1], 0),
+        # Usar left_idx/right_idx (límits reals d'integració, fins a baseline)
+        li_real = rep_direct.get('left_idx', li)
+        ri_real = rep_direct.get('right_idx', ri)
+        if 0 <= li_real < ri_real < len(t_doc):
+            ax.fill_between(t_doc[li_real:ri_real+1], 0,
+                           np.maximum(y_doc[li_real:ri_real+1], 0),
                            alpha=0.12, color=color_direct)
-            # Límits tangent (referència)
-            ax.axvline(t_doc[li], color=color_direct, linestyle=':', linewidth=0.6, alpha=0.4)
-            ax.axvline(t_doc[ri], color=color_direct, linestyle=':', linewidth=0.6, alpha=0.4)
-            # Límits reals integració (marge)
-            ax.axvline(t_doc[li_wide], color=color_direct, linestyle='-', linewidth=0.8, alpha=0.3)
-            ax.axvline(t_doc[ri_wide], color=color_direct, linestyle='-', linewidth=0.8, alpha=0.3)
+            # Límits integració
+            ax.axvline(t_doc[li_real], color=color_direct, linestyle='-', linewidth=0.8, alpha=0.4)
+            ax.axvline(t_doc[ri_real], color=color_direct, linestyle='-', linewidth=0.8, alpha=0.4)
 
         # Baseline (línia horitzontal)
         bl = rep_direct.get('baseline_level', 0)
