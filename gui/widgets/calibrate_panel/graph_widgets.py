@@ -260,7 +260,7 @@ class KHPReplicaGraphWidget(QWidget):
 
         # Create inset axes (lower-right corner)
         try:
-            axins = ax.inset_axes([0.55, 0.02, 0.43, 0.45])  # [x, y, width, height]
+            axins = ax.inset_axes([0.55, 0.15, 0.43, 0.45])  # [x, y, width, height]
         except AttributeError:
             return  # matplotlib < 3.0
 
