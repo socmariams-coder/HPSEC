@@ -1487,8 +1487,18 @@ class CalibrationLineView(QWidget):
         self._seq_name = seq_name
         self._seq_path = seq_path
         self._imported_data = imported_data
+        self._is_combined = seq_cal_data.get('_combined', False)
+        self._source_seqs = seq_cal_data.get('_source_seqs', [seq_name])
         self._message_label.setVisible(False)
         self._summary_group.setVisible(False)
+        self.seq_cal_group.setVisible(False)
+        self.seq_cal_apply_group.setVisible(False)
+
+        # Reset estat anterior
+        self._seq_cal_regression = None
+        self._seq_cal_excluded = set()
+        self._cal_applied_per_signal = {}
+        self._cal_applied_signals = set()
 
         # Alineació TOC+DAD254
         self._update_alignment(imported_data)
@@ -1496,13 +1506,6 @@ class CalibrationLineView(QWidget):
         entries = seq_cal_data.get('entries', [])
         method = seq_cal_data.get('method', 'COLUMN')
         concs = seq_cal_data.get('concs', [])
-
-        if not entries:
-            self.show_error_message(f"SEQ_CAL {seq_name} sense entrades vàlides.")
-            return
-
-        self._cal_applied_per_signal = {}
-        self._cal_applied_signals = set()
 
         self._seq_cal_entries = entries
         self._seq_cal_entries_direct = seq_cal_data.get('entries_direct', [])
@@ -3021,8 +3024,13 @@ class CalibrationLineView(QWidget):
     def _populate_apply_section(self):
         """Omple la secció aplicar amb dades de la regressió actual."""
         if not self._seq_cal_regression or not self._seq_cal_regression.get('success'):
+            logger.warning(f"_populate_apply_section: regressio no disponible "
+                          f"(reg={self._seq_cal_regression is not None}, "
+                          f"success={self._seq_cal_regression.get('success') if self._seq_cal_regression else 'N/A'})")
             self.seq_cal_apply_group.setVisible(False)
             return
+        logger.info(f"_populate_apply_section: rf={self._seq_cal_regression.get('rf_mass_cal'):.1f} "
+                   f"combined={getattr(self, '_is_combined', False)}")
 
         reg = self._seq_cal_regression
         rf_new = reg.get('rf_mass_cal', 0)
