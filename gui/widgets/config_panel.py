@@ -528,8 +528,10 @@ class ConfigPanel(QWidget):
         self.data_folders_list = QListWidget()
         self.data_folders_list.setMaximumHeight(100)
         self.data_folders_list.setToolTip("Llista de carpetes amb seqüències HPSEC")
-        # Registrar com a widget especial (NO amb clau puntejada)
-        self._widgets["__data_folders_list__"] = self.data_folders_list
+        # Registrar amb clau puntejada per a que key.split('.')[0] = 'paths'
+        # i la detecció de canvis a _get_changed_sections() classifiqui correctament
+        # com a secció 'paths' (IMMEDIATE_SECTIONS). Bug #20 P1.
+        self._widgets["paths.data_folders"] = self.data_folders_list
         g.addWidget(self.data_folders_list, 0, 1)
 
         # Botons afegir/eliminar

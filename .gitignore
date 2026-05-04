@@ -40,15 +40,17 @@ _OBSOLET/
 _DEV/
 PROVES/
 
-# Temporary analysis scripts (not part of main product)
-analyze_*.py
-compare_*.py
-explore_*.py
-debug_*.py
-check_*.py
-extract_*.py
-create_*.py
-cleanup_*.py
+# Temporary analysis scripts (not part of main product) — only at repo root
+# Anchored with leading / per no capturar fitxers del codi font (ex: gui/widgets/compare_panel.py).
+# Bug #20 P2b.
+/analyze_*.py
+/compare_*.py
+/explore_*.py
+/debug_*.py
+/check_*.py
+/extract_*.py
+/create_*.py
+/cleanup_*.py
 
 # Development logs
 recalibrate_log_*.txt

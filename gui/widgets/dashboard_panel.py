@@ -312,8 +312,12 @@ class BatchWorker(QThread):
 
                 self.seq_completed.emit(seq.seq_name, ok, f"{phase_name}: {msg}")
 
-                if not ok and phase != Phase.CALIBRATE:
-                    # Verificar pot fallar sense KHP — no és blocker
+                if not ok:
+                    # CALIBRATE en pipeline multi-fase pot fallar sense KHP — no és blocker.
+                    # Però si CALIBRATE és l'única fase demanada, una fallada SÍ és real
+                    # (sinó el comptador Correctes seria fals). Bug #20 P2a.
+                    if phase == Phase.CALIBRATE and len(self.phases) > 1:
+                        continue  # no aturar pipeline, continuar amb ANALYZE
                     seq_ok = False
                     break  # Saltar fases restants per aquesta SEQ
 
