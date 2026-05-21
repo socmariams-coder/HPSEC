@@ -52,8 +52,16 @@ from hpsec_core import (
     calculate_symmetry,
     fit_bigaussian,
     repair_with_parabola,
+    expand_with_cap,
     TIMEOUT_CONFIG
 )
+
+# Cap màxim d'expansió límits integració KHP (minuts ±).
+# Talla just abans del pic de sistema (COL ~37 min, BP ~7 min) i garanteix
+# que la cua real del pic s'integra (BP fins ~6 min, COL fins ~30 min).
+# Verificat 2026-05-12: slope passa de ~760 (cap=0/tangent pur) a ~800 (cap=4),
+# R²=0.998 estable. Caps >6 inflen falsament la slope per drift baseline.
+KHP_INTEGRATION_CAP_MIN = 4.0
 
 # Import funcions d'identificació des de hpsec_import (Single Source of Truth)
 from hpsec_import import is_khp, extract_khp_conc, obtenir_seq
@@ -1122,14 +1130,27 @@ def requantify_analysis_json(json_path, new_rf_direct, new_intercept_direct,
         if sg.get("analysis_type") == "light":
             continue
 
+        # v2.2.0: si quantification és None (pipeline separat,
+        # do_quantify=False), inicialitzar dict buit per que es pugui omplir.
         quantification = sg.get("quantification")
-        if not quantification:
-            continue
+        if quantification is None:
+            quantification = {
+                "concentration_ppm": None,
+                "concentration_ppm_direct": None,
+                "concentration_ppm_uib": None,
+                "fractions": {},
+                "fractions_uib": {},
+                "valid": True,
+            }
+            sg["quantification"] = quantification
 
         # Obtenir rèplica seleccionada per llegir àrees i volum
         selected = sg.get("selected", {})
         doc_rep_key = selected.get("doc", "1")
-        if doc_rep_key == "none":
+        # v2.2.0: tractar "none" i "Cap" com a exclusió explícita
+        if doc_rep_key in ("none", "Cap", None, ""):
+            quantification["valid"] = False
+            quantification["reason"] = "Rèplica explícitament exclosa"
             continue
 
         replicas = sg.get("replicas", {})
@@ -1272,7 +1293,7 @@ def invalidate_quantification_json(json_path):
 
 
 def fit_calibration_from_history(calibrations, mode="COLUMN", signal="direct",
-                                  model="intercept"):
+                                  model="intercept", per_replica=True):
     """
     Regressió lineal sobre dades KHP: Area = rf_mass_cal * ug_DOC + intercept.
 
@@ -1281,6 +1302,8 @@ def fit_calibration_from_history(calibrations, mode="COLUMN", signal="direct",
         mode: "COLUMN", "BP", o "ALL" (unificada COL+BP)
         signal: "direct", "uib", o "254"
         model: "intercept" (lliure) o "origin" (intercept=0)
+        per_replica: Si True (default), tractar cada rèplica com un punt independent
+                     (n=2x). Si False, agregar per condició (compatibilitat antiga).
 
     Returns:
         dict: rf_mass_cal, intercept, r2, n_points, points[], residuals_rms, success
@@ -1303,7 +1326,38 @@ def fit_calibration_from_history(calibrations, mode="COLUMN", signal="direct",
         if conc <= 0 or vol <= 0:
             continue
 
-        # Àrea segons senyal (amb fallback a 'area' genèric)
+        ug_doc = conc * vol / 1000.0  # µg DOC injectat
+        common = {
+            'seq_name': cal.get('seq_name', ''),
+            'date': cal.get('date', ''),
+            'mode': cal_mode,
+            'conc_ppm': conc,
+            'volume_uL': vol,
+            'ug_doc': ug_doc,
+        }
+
+        # === Mode per_replica: un punt per cada rèplica vàlida ===
+        if per_replica and signal.lower() == 'direct':
+            replicas_info = cal.get('replicas_info', [])
+            if replicas_info:
+                for rep in replicas_info:
+                    # Saltar rèpliques outlier individualment
+                    if rep.get('is_outlier', False):
+                        continue
+                    rep_area = rep.get('area', 0)
+                    if rep_area <= 0:
+                        continue
+                    filtered.append({
+                        **common,
+                        'replica_num': rep.get('replica_num'),
+                        'area': rep_area,
+                        'rf_mass': rep_area / ug_doc if ug_doc > 0 else 0,
+                        'is_outlier': False,
+                        'is_replica_point': True,
+                    })
+                continue  # ja afegit per rèplica, passa al següent cal
+
+        # === Fallback / mode agregat: 1 punt per condició ===
         if signal.lower() == 'uib':
             area = cal.get('area_u', 0) or cal.get('area', 0)
         elif signal.lower() == '254':
@@ -1314,18 +1368,13 @@ def fit_calibration_from_history(calibrations, mode="COLUMN", signal="direct",
         if area <= 0:
             continue
 
-        ug_doc = conc * vol / 1000.0  # µg DOC injectat
         filtered.append({
-            'seq_name': cal.get('seq_name', ''),
-            'date': cal.get('date', ''),
-            'mode': cal_mode,
-            'conc_ppm': conc,
-            'volume_uL': vol,
-            'ug_doc': ug_doc,
+            **common,
             'area': area,
             'std_area': cal.get('std_area', 0),
             'rf_mass': area / ug_doc if ug_doc > 0 else 0,
             'is_outlier': cal.get('is_outlier', False),
+            'is_replica_point': False,
         })
 
     if len(filtered) < 2:
@@ -2955,51 +3004,59 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
         if selected_idx is not None:
             bl_val = float(np.median(y_doc_net[:20])) if len(y_doc_net) > 20 else 0.0
 
-            # Pre-repair: detectar cim irregular en finestra ±5 min (±3 BP)
+            # Pre-repair: intentar reparar el cim sempre (force=True) en KHP.
+            # En KHP el pic és gaussià pur, així que qualsevol artefacte (dents)
+            # és error de detector i la paràbola dóna la millor estimació.
+            # Pels pics nets, repair_with_parabola és no-op (paràbola per sota senyal).
             half_w = 3.0 if is_bp_chromato else 5.0
             seg_mask = (t_doc >= t_doc[selected_idx] - half_w) & (t_doc <= t_doc[selected_idx] + half_w)
             y_for_bounds = y_doc_net
             if np.sum(seg_mask) > 20:
                 irr_info = detect_irregular_top(t_doc[seg_mask], y_doc_net[seg_mask])
-                if irr_info.get('is_irregular_top', False):
-                    y_seg_rep, _, was_rep = repair_with_parabola(t_doc[seg_mask], y_doc_net[seg_mask])
-                    if was_rep:
-                        y_for_bounds = y_doc_net.copy()
-                        y_for_bounds[seg_mask] = y_seg_rep
+                # Si auto-detect ho marca, repair garantida; sinó intent amb force=True
+                force_repair = irr_info.get('is_irregular_top', False)
+                y_seg_rep, _, was_rep = repair_with_parabola(
+                    t_doc[seg_mask], y_doc_net[seg_mask], force=force_repair)
+                if not was_rep and not force_repair:
+                    # Provar amb force=True per pics dubtosos (subtils)
+                    y_seg_rep2, _, was_rep2 = repair_with_parabola(
+                        t_doc[seg_mask], y_doc_net[seg_mask], force=True)
+                    if was_rep2:
+                        y_seg_rep = y_seg_rep2
+                        was_rep = True
+                if was_rep:
+                    y_for_bounds = y_doc_net.copy()
+                    y_for_bounds[seg_mask] = y_seg_rep
 
             left_b, right_b = find_peak_boundaries(
                 t_doc, y_for_bounds, selected_idx, bl_val, is_bp=is_bp_chromato)
 
-            # Ampliar límits fins que el senyal torni a baseline (trapezoid complet)
-            bl_threshold = max(1.0, abs(bl_val) * 0.05)  # 5% de baseline o 1 ppb
-            # Esquerra: buscar primer punt on y > threshold (des de l'inici cap al pic)
-            left_wide = left_b
-            for j in range(left_b - 1, -1, -1):
-                if y_doc_net[j] <= bl_threshold:
-                    left_wide = j
-                    break
-            else:
-                left_wide = 0
-            # Dreta: buscar últim punt on y > threshold (des del pic cap al final)
-            right_wide = right_b
-            for j in range(right_b + 1, len(y_doc_net)):
-                if y_doc_net[j] <= bl_threshold:
-                    right_wide = j
-                    break
-            else:
-                right_wide = len(y_doc_net) - 1
+            # Expansió controlada amb cap de ±KHP_INTEGRATION_CAP_MIN.
+            # El cap final del flux (al bloc cap consistent més avall) re-aplica
+            # això per garantir que ALTRES branches (detect_main_peak fallback,
+            # limits_expanded, irregular_top_repair) també n'aprofitin.
+            left_b, right_b = expand_with_cap(
+                t_doc, y_doc_net, left_b, right_b,
+                baseline_level=bl_val,
+                cap_min=KHP_INTEGRATION_CAP_MIN,
+            )
+
+            # Integrar sobre senyal reparat (si hi havia reparació) — d'aquesta forma
+            # la calibració no s'afecta per artefactes detectables (cim irregular).
+            # NOTA: y_for_bounds == y_doc_net si no hi va haver reparació.
+            y_for_area = y_for_bounds
             area = float(trapezoid(
-                np.maximum(y_doc_net[left_wide:right_wide+1], 0),
-                t_doc[left_wide:right_wide+1]))
+                np.maximum(y_for_area[left_b:right_b+1], 0),
+                t_doc[left_b:right_b+1]))
 
             peak_info = {
                 'valid': True,
                 'peak_idx': int(selected_idx),
                 't_max': float(t_doc[selected_idx]),
-                't_start': float(t_doc[left_wide]),
-                't_end': float(t_doc[right_wide]),
-                'left_idx': left_wide,
-                'right_idx': right_wide,
+                't_start': float(t_doc[left_b]),
+                't_end': float(t_doc[right_b]),
+                'left_idx': left_b,
+                'right_idx': right_b,
                 'peak_left_idx': left_b,
                 'peak_right_idx': right_b,
                 'area': area,
@@ -3040,29 +3097,28 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
     original_left_idx = left_idx
     original_right_idx = right_idx
 
+    # Cap d'expansió reduit a 4 min (revisió 2026-05-11): caps anteriors
+    # (6 BP / 10 COL) capturaven cua sistèmica i zones LMW espúries.
+    # Amb cap 4 min, slope passa de ~760 a ~800 (coherent amb caps tangent).
     expansion = expand_integration_limits_to_baseline(
         t_doc, y_doc_net, left_idx, right_idx, peak_idx,
         baseline_threshold_pct=15,
         min_width_minutes=1.0,
-        max_width_minutes=6.0 if is_bp_chromato else 10.0,
+        max_width_minutes=4.0,
         is_bp=is_bp_chromato
     )
 
     limits_expanded = not expansion['original_valid']
 
     if limits_expanded:
-        # Expansió ha ampliat els límits — estendre fins a baseline
+        # Aplicar els límits ampliats per calculate_integration_limits.
+        # NOTA: anteriorment hi havia un bucle d'expansió addicional "fins primer
+        # punt sota 1 ppb" que estenia molt més enllà del pic principal i agafava
+        # zona LMW sistèmica. Eliminat — el comportament correcte és integrar
+        # només el pic principal amb els límits que ja retorna calculate_integration_limits
+        # (que inclou max_width caps de 6 BP / 10 COL min).
         left_idx = expansion['left_idx']
         right_idx = expansion['right_idx']
-        bl_thr = max(1.0, abs(bl_stats.get("mean", 0)) * 0.05)
-        for j in range(left_idx - 1, -1, -1):
-            if y_doc_net[j] <= bl_thr:
-                left_idx = j
-                break
-        for j in range(right_idx + 1, len(y_doc_net)):
-            if y_doc_net[j] <= bl_thr:
-                right_idx = j
-                break
         new_area = float(trapezoid(
             np.maximum(y_doc_net[left_idx:right_idx+1], 0),
             t_doc[left_idx:right_idx+1]))
@@ -3142,6 +3198,30 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
                 peak_info['area_repaired'] = area_repaired
         except Exception:
             irregular_top_repaired = False
+
+    # === Cap final d'integració KHP (±KHP_INTEGRATION_CAP_MIN) ===
+    # Garanteix que TOTS els branches (selected_idx, detect_main_peak fallback,
+    # limits_expanded, irregular_top_repaired) acaben amb la mateixa política
+    # d'expansió. Sense aquest pas, el cap del branch selected_idx pot ser
+    # sobreescrit per re-càlculs posteriors (calculate_integration_limits o
+    # irregular_top repair) que retornen límits tangent purs sense cap.
+    _y_for_cap = y_doc_net_repaired if irregular_top_repaired else y_doc_net
+    _bl_for_cap = bl_stats.get('mean', 0.0)
+    left_idx, right_idx = expand_with_cap(
+        t_doc, _y_for_cap, left_idx, right_idx,
+        baseline_level=_bl_for_cap,
+        cap_min=KHP_INTEGRATION_CAP_MIN,
+    )
+    peak_info['left_idx'] = left_idx
+    peak_info['right_idx'] = right_idx
+    peak_info['t_start'] = float(t_doc[left_idx])
+    peak_info['t_end'] = float(t_doc[right_idx])
+    _final_area = float(trapezoid(
+        np.maximum(_y_for_cap[left_idx:right_idx+1] - _bl_for_cap, 0),
+        t_doc[left_idx:right_idx+1]))
+    peak_info['area'] = _final_area
+    if irregular_top_repaired:
+        peak_info['area_repaired'] = _final_area
 
     # DAD 254nm: ratio DOC/254
     a254_doc_ratio = peak_info['area'] / a254_area if a254_area > 0 else 0.0
@@ -3281,12 +3361,49 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
         bigaussian_254 = {"r2": 0, "status": "ERROR", "error": str(e)}
 
     # Anomalia R² bigaussiana (qualitat de la forma del pic)
+    # Dos llindars:
+    #   R² < 0.85 OR status==INVALID OR asimetria > 3 → KHP_PEAK_NON_GAUSSIAN (BLOCKER)
+    #   0.85 ≤ R² < 0.95 → KHP_BIGAUSSIAN_LOW (WARNING)
     if bigaussian_doc and bigaussian_doc.get("status") not in ("ERROR", None):
         r2_bg = bigaussian_doc.get("r2", 0)
-        if r2_bg < 0.95:
+        bg_status = bigaussian_doc.get("status", "")
+        bg_asym = bigaussian_doc.get("asymmetry", 1.0) or 1.0
+        is_non_gaussian = (
+            bg_status == "INVALID"
+            or r2_bg < 0.85
+            or bg_asym > 3.0
+            or bg_asym < 0.33
+        )
+        if is_non_gaussian:
+            calibration_anomalies.append(create_anomaly(
+                "KHP_PEAK_NON_GAUSSIAN",
+                details={
+                    "r2": r2_bg, "status": bg_status, "asymmetry": bg_asym,
+                    "thresholds": {"r2_min": 0.85, "asym_max": 3.0, "asym_min": 0.33},
+                },
+                sample=sample_label,
+            ))
+        elif r2_bg < 0.95:
             calibration_anomalies.append(create_anomaly(
                 "KHP_BIGAUSSIAN_LOW",
                 details={"r2": r2_bg, "threshold": 0.95},
+                sample=sample_label,
+            ))
+
+    # Detecció saturació DOC per forma del pic (clipping/plateau)
+    # Aplica a senyal Direct (UIB ja s'ha verificat al principi de la funció)
+    if doc_source != "uib" and peak_idx is not None:
+        from hpsec_core import detect_peak_clipping
+        doc_clipping = detect_peak_clipping(t_doc, y_doc_net, peak_idx)
+        if doc_clipping.get("is_saturated"):
+            calibration_anomalies.append(create_anomaly(
+                "KHP_DOC_SATURATED",
+                details={
+                    "plateau_ratio": doc_clipping.get("plateau_ratio", 0),
+                    "plateau_width_pts": doc_clipping.get("plateau_width_pts", 0),
+                    "fwhm_pts": doc_clipping.get("fwhm_pts", 0),
+                    "y_max_observed": doc_clipping.get("y_max_observed", 0),
+                },
                 sample=sample_label,
             ))
 
@@ -4765,6 +4882,53 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
 
         # Comparar rèpliques
         comparison = compare_replicas(replicas)
+
+        # === Auto-detecció replica outlier per RSD alta ===
+        # Si dues rèpliques difereixen > 25% en àrea i NO ja són outliers per
+        # altres causes, marcar la d'àrea allunyada del consens com KHP_REPLICA_OUTLIER.
+        # Criteri d'identificació de l'outlier:
+        #   1) Si una té bigauss INVALID/baix R², és outlier (ja s'haurà marcat)
+        #   2) Sinó, la d'àrea més baixa (probablement deformada)
+        if len(replicas) >= 2 and comparison.get('comparable'):
+            diff_pct = comparison.get('diff_area_pct', 0)
+            RSD_THRESHOLD_PCT = 25.0
+            if diff_pct > RSD_THRESHOLD_PCT:
+                # Trobar quina rèplica és l'outlier
+                rep_areas = [(i, r.get('area', 0), r) for i, r in enumerate(replicas)]
+                # Si alguna té blocker (NON_GAUSSIAN, DOC_SATURATED, etc.) → ja és outlier
+                already_blocker = []
+                for i, _, r in rep_areas:
+                    has_blk = any(
+                        a.get('severity') == 'blocker'
+                        for a in r.get('calibration_anomalies', [])
+                        if isinstance(a, dict)
+                    )
+                    if has_blk:
+                        already_blocker.append(i)
+
+                if already_blocker:
+                    # Ja marcades — no afegir res addicional
+                    pass
+                else:
+                    # Cap blocker preexistent — marcar la d'àrea més allunyada
+                    # de la mediana (típicament la més baixa)
+                    median_area = float(np.median([a for _, a, _ in rep_areas]))
+                    deviations = [(abs(a - median_area), i, r) for i, a, r in rep_areas]
+                    deviations.sort(reverse=True)  # major desviació primer
+                    _, outlier_idx, outlier_rep = deviations[0]
+                    sample_label = f"{outlier_rep.get('name', 'KHP')}_R{outlier_rep.get('replica_num', outlier_idx+1)}"
+                    outlier_rep.setdefault('calibration_anomalies', []).append(
+                        create_anomaly(
+                            "KHP_REPLICA_OUTLIER",
+                            details={
+                                "diff_area_pct": float(diff_pct),
+                                "threshold_pct": RSD_THRESHOLD_PCT,
+                                "outlier_area": float(outlier_rep.get('area', 0)),
+                                "median_area": median_area,
+                            },
+                            sample=sample_label,
+                        )
+                    )
 
         # Nom: sempre "KHP" (el patró), els números són atributs (conc, vol)
         group_name = "KHP"

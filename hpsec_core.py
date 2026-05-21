@@ -2111,6 +2111,45 @@ def find_peak_boundaries(t, y, peak_idx, baseline_level=None, threshold_pct=5.0,
     return int(left_idx), int(right_idx)
 
 
+def expand_with_cap(t, y, left_idx, right_idx, baseline_level,
+                    cap_min=4.0, thr_min=1.0, thr_fraction=0.05):
+    """
+    Expandeix [left_idx, right_idx] cap als costats fins que el senyal cau
+    sota baseline+threshold, AMB UN CAP MÀXIM de ±cap_min minuts.
+
+    Pensada per aplicar-se DESPRÉS de find_peak_boundaries() (tangent pur)
+    per capturar la cua real del pic sense agafar drift de baseline ni el
+    pic de sistema que apareix a t≈35-40 min (COL) o t≈7-8 min (BP).
+
+    Args:
+        t: Array de temps (minuts)
+        y: Array de senyal
+        left_idx, right_idx: Límits inicials (típicament de find_peak_boundaries)
+        baseline_level: Nivell de baseline (per calcular threshold)
+        cap_min: Màxim minuts d'extensió per costat (default 4.0)
+        thr_min: Threshold mínim absolut (default 1.0)
+        thr_fraction: Threshold com a fracció de |baseline| (default 0.05)
+
+    Returns:
+        tuple(left_idx, right_idx): Límits expandits
+    """
+    t = np.asarray(t, dtype=float)
+    y = np.asarray(y, dtype=float)
+    n = len(y)
+    if n < 5 or right_idx <= left_idx:
+        return int(left_idx), int(right_idx)
+    yn = y - baseline_level
+    thr = max(thr_min, abs(baseline_level) * thr_fraction)
+    cap_l_t = float(t[left_idx]) - cap_min
+    cap_r_t = float(t[right_idx]) + cap_min
+    l = int(left_idx); r = int(right_idx)
+    while l > 0 and yn[l-1] > thr and t[l-1] >= cap_l_t:
+        l -= 1
+    while r < n - 1 and yn[r+1] > thr and t[r+1] <= cap_r_t:
+        r += 1
+    return l, r
+
+
 def _find_peak_boundaries_threshold(t, y, peak_idx, baseline_level, threshold_pct=5.0):
     """
     Fallback: troba límits per threshold (mètode antic).
