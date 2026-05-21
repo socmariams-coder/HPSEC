@@ -326,13 +326,6 @@ class AnalyzePanel(QWidget):
         sel_layout.addStretch()
         results_layout.addWidget(sel_frame)
 
-        # === QC SEQÜÈNCIA (v2.2.0: expandida per defecte, primera secció) ===
-        self._qc_collapsible = self._build_collapsible_section(
-            "QC Sequencia", collapsed=False)
-        self._qc_tab = SequenceQCTab(main_window=self.main_window)
-        self._qc_collapsible["content_layout"].addWidget(self._qc_tab)
-        results_layout.addWidget(self._qc_collapsible["frame"])
-
         # === CHARTS SECTION ===
         # v2.2.0: bar charts DOC/DAD reubicats al pas Quantificar.
         # Mantenim els canvas instanciats (referencies en altres mètodes)
@@ -610,6 +603,13 @@ class AnalyzePanel(QWidget):
         self._main_splitter.setStretchFactor(1, 65)
         results_layout.addWidget(self._main_splitter, 1)
 
+        # === QC SEQÜÈNCIA (sota el split — collapsible, col·lapsat per defecte) ===
+        self._qc_collapsible = self._build_collapsible_section(
+            "QC Sequencia", collapsed=True)
+        self._qc_tab = SequenceQCTab(main_window=self.main_window)
+        self._qc_collapsible["content_layout"].addWidget(self._qc_tab)
+        results_layout.addWidget(self._qc_collapsible["frame"])
+
         layout.addWidget(self.results_frame, 1)
 
         # Completar scroll area
@@ -709,70 +709,31 @@ class AnalyzePanel(QWidget):
         self.status_indicator.setText("")
 
     def _build_table_with_group_headers(self):
-        """Creates the sample table with DOC/DAD group header labels above.
+        """Creates the minimal sample list (Mostra | R\u00e8plica DOC | R\u00e8plica DAD).
 
-        v2.2.0: columnes ppm/ppm\u1d64\u1d62\u1d47 substitu\u00efdes per "R\u00e8plica DOC" amb radio
-        inline (R1/R2/Comp/Cap). Afegida col "R\u00e8plica DAD" abans d'A254.
-        Quantificaci\u00f3 es fa al pas 4 (Quantificar).
+        v2.2.0+: la taula es redueix a una llista de selecci\u00f3 amb radios
+        in-line per r\u00e8plica DOC/DAD. Tota la resta d'informaci\u00f3 (SNR, r\u00b2,
+        anomalies, fraccions, A254...) viu al panell de revisi\u00f3 a la dreta.
         """
-        # --- Group header row ---
-        header_row = QHBoxLayout()
-        header_row.setContentsMargins(0, 0, 0, 0)
-        header_row.setSpacing(0)
-
-        # Spacer for "Mostra" column (col 0) -- approximate width
-        mostra_spacer = QLabel("")
-        mostra_spacer.setMinimumWidth(140)
-        mostra_spacer.setMaximumWidth(200)
-        header_row.addWidget(mostra_spacer)
-
-        doc_label = QLabel("DOC")
-        doc_label.setAlignment(Qt.AlignCenter)
-        doc_label.setStyleSheet(
-            "font-weight: bold; font-size: 11px; color: #1A5276;"
-            " background: #EBF5FB; border: 1px solid #D4E6F1;"
-            " border-radius: 3px; padding: 3px 0; margin: 0 1px;")
-        header_row.addWidget(doc_label, 5)  # cols 1-5: Sel, SNR, r\u00b2, Timeout, Pic
-
-        dad_label = QLabel("DAD")
-        dad_label.setAlignment(Qt.AlignCenter)
-        dad_label.setStyleSheet(
-            "font-weight: bold; font-size: 11px; color: #7D6608;"
-            " background: #FEF9E7; border: 1px solid #F9E79F;"
-            " border-radius: 3px; padding: 3px 0; margin: 0 1px;")
-        header_row.addWidget(dad_label, 4)  # cols 6-9: Sel, A254, SNR\u2082\u2085\u2084, r\u00b2\u2082\u2085\u2084
-
-        # Small spacer for scrollbar area
-        sb_spacer = QLabel("")
-        sb_spacer.setFixedWidth(16)
-        header_row.addWidget(sb_spacer)
-
-        self._table_container_layout.addLayout(header_row)
-
         # --- Table ---
         self._samples_table = QTableWidget()
-        self._samples_table.setColumnCount(10)
+        self._samples_table.setColumnCount(3)
         self._samples_table.setHorizontalHeaderLabels([
-            "Mostra",
-            "R\u00e8plica", "SNR", "r\u00b2", "Timeout", "Pic",
-            "R\u00e8plica", "A254", "SNR\u2082\u2085\u2084", "r\u00b2\u2082\u2085\u2084",
+            "Mostra", "R\u00e8plica DOC", "R\u00e8plica DAD",
         ])
 
         configure_table_style(self._samples_table)
         self._samples_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self._samples_table.setSelectionMode(QAbstractItemView.SingleSelection)
 
-        # Column sizing: cols 1 i 6 (radios) m\u00e9s amples; resta ajustada a contingut
         header = self._samples_table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.Stretch)
-        for col in range(1, 10):
-            header.setSectionResizeMode(col, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
 
         self._samples_table.setColumnWidth(0, 160)
-        self._samples_table.setColumnWidth(1, 130)  # Sel DOC
-        self._samples_table.setColumnWidth(6, 110)  # Sel DAD
-        for col in (2, 3, 4, 5, 7, 8, 9):
-            self._samples_table.setColumnWidth(col, 60)
+        self._samples_table.setColumnWidth(1, 130)
+        self._samples_table.setColumnWidth(2, 110)
 
         # Files m\u00e9s altes per encabir els botons toggle (~28 px)
         self._samples_table.verticalHeader().setDefaultSectionSize(30)
@@ -1461,8 +1422,8 @@ class AnalyzePanel(QWidget):
             sep_item.setFont(sep_font)
             sep_item.setForeground(QBrush(QColor("#7f8c8d")))
             table.setItem(row, 0, sep_item)
-            table.setSpan(row, 0, 1, 10)
-            for c in range(10):
+            table.setSpan(row, 0, 1, 3)
+            for c in range(3):
                 it = table.item(row, c) or QTableWidgetItem("")
                 it.setBackground(QBrush(sep_bg))
                 table.setItem(row, c, it)
@@ -1486,8 +1447,8 @@ class AnalyzePanel(QWidget):
             sep_item.setFont(sep_font)
             sep_item.setForeground(QBrush(QColor("#888")))
             table.setItem(row, 0, sep_item)
-            table.setSpan(row, 0, 1, 10)
-            for c in range(10):
+            table.setSpan(row, 0, 1, 3)
+            for c in range(3):
                 it = table.item(row, c) or QTableWidgetItem("")
                 it.setBackground(QBrush(QColor("#E8E8E8")))
                 table.setItem(row, c, it)
@@ -1615,20 +1576,40 @@ class AnalyzePanel(QWidget):
 
     def _fill_sample_row(self, table, row, name, sample_data,
                          doc_rep, dad_rep, comparison):
-        """Fill one regular sample row in the table.
+        """Fill one regular sample row — Mostra | Rèplica DOC | Rèplica DAD.
 
-        v2.2.0: cols 1 i 6 ara s\u00f3n widgets radio inline per seleccionar
-        r\u00e8plica DOC/DAD (R1, R2, Comp, Cap).
+        v2.2.0+: la taula és una llista de selecció amb radios in-line.
+        Tota la resta d'info (SNR, r², anomalies, fraccions, A254…) viu al
+        panell de revisió a la dreta.
         """
         selected = sample_data.get("selected", {}) or {}
+        replicas_dict = sample_data.get("replicas", {}) or {}
 
-        # Col 0: Mostra
+        # Col 0: Mostra (amb tooltip resum d'info que abans tenia col·lumna pròpia)
         name_item = QTableWidgetItem(name)
         name_item.setFont(QFont("Segoe UI", 10))
+        tip_parts = []
+        snr = (doc_rep.get("snr_info") or {}).get("snr_direct", 0)
+        if snr:
+            tip_parts.append(f"SNR DOC = {snr:.0f}")
+        r2_doc = (comparison.get("doc") or {}).get("pearson")
+        if r2_doc is not None:
+            tip_parts.append(f"r² DOC = {r2_doc:.3f}")
+        if doc_rep.get("uib_saturated"):
+            tip_parts.append("⚠ UIB saturat")
+        n_to = (doc_rep.get("timeout_info") or {}).get("n_timeouts", 0)
+        if n_to:
+            tip_parts.append(f"timeouts: {n_to}")
+        anomalies = doc_rep.get("anomalies", [])
+        if has_anomaly(anomalies, "IRREGULAR_TOP_DIRECT") or has_anomaly(anomalies, "IRREGULAR_TOP_UIB"):
+            tip_parts.append("⚠ cim irregular")
+        if sample_data.get("repaired"):
+            tip_parts.append("✓ reparat")
+        if tip_parts:
+            name_item.setToolTip("\n".join(tip_parts))
         table.setItem(row, 0, name_item)
 
-        # Col 1: R\u00e8plica DOC (widget amb botons toggle R1/R2/Comp/Cap)
-        replicas_dict = sample_data.get("replicas", {}) or {}
+        # Col 1: Rèplica DOC (widget amb botons toggle R1/R2/Comp/Cap)
         doc_sel = selected.get("doc", "1")
         tc = sample_data.get("timeout_composability", {}) or {}
         doc_strip = self._create_replica_strip(
@@ -1636,212 +1617,43 @@ class AnalyzePanel(QWidget):
             allow_comp=bool(tc.get("composable")))
         table.setCellWidget(row, 1, doc_strip)
 
-        # Col 2: SNR
-        snr_info = doc_rep.get("snr_info") or {}
-        snr_direct = snr_info.get("snr_direct", 0)
-        snr_text = f"{snr_direct:.0f}" if snr_direct else "\u2014"
-        snr_item = QTableWidgetItem(snr_text)
-        snr_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        table.setItem(row, 2, snr_item)
-
-        # Col 3: r\u00b2 DOC
-        r2_doc = (comparison.get("doc") or {}).get("pearson", 0)
-        r2_uib = (comparison.get("doc") or {}).get("pearson_uib", 0)
-        if not comparison or not comparison.get("doc"):
-            r2_text = "\u2014"
-            r2_item = QTableWidgetItem(r2_text)
-            r2_item.setForeground(QBrush(QColor("#aaa")))
-        elif r2_doc >= 0.99:
-            r2_text = "\u2713"
-            r2_item = QTableWidgetItem(r2_text)
-            r2_item.setForeground(QBrush(QColor(COLOR_SUCCESS)))
-        else:
-            r2_text = "\u26a0"
-            r2_item = QTableWidgetItem(r2_text)
-            r2_item.setForeground(QBrush(QColor(COLOR_WARNING)))
-        r2_item.setTextAlignment(Qt.AlignCenter)
-        tip_parts = [f"r\u00b2 DOC = {r2_doc:.4f}"]
-        if r2_uib:
-            tip_parts.append(f"r\u00b2 UIB = {r2_uib:.4f}")
-        r2_item.setToolTip("\n".join(tip_parts))
-        table.setItem(row, 3, r2_item)
-
-        # Col 4: Timeout
-        timeout_info = doc_rep.get("timeout_info") or {}
-        n_timeouts = timeout_info.get("n_timeouts", 0)
-        timeout_severity = timeout_info.get("severity", "OK")
-        zone_summary = timeout_info.get("zone_summary", {})
-        sel_key = selected.get("doc", "1")
-        sel_rep = (sample_data.get("replicas", {}) or {}).get(sel_key, {})
-        composed = bool(sel_rep.get("timeout_composition"))
-
-        if n_timeouts > 0:
-            if composed:
-                to_text = "\u23f1\u2713"
-                to_color = COLOR_SUCCESS
-            else:
-                zone_names = list(zone_summary.keys()) if zone_summary else []
-                zone_str = zone_names[0] if zone_names else ""
-                to_text = f"\u23f1 {zone_str}"
-                if "PIC" in str(zone_summary) or timeout_severity == "CRITICAL":
-                    to_color = COLOR_ERROR
-                elif any(z in ("HS",) for z in zone_names):
-                    to_color = COLOR_ERROR
-                elif any(z in ("BB",) for z in zone_names):
-                    to_color = COLOR_WARNING
-                else:
-                    to_color = "#888"
-            to_item = QTableWidgetItem(to_text)
-            to_item.setForeground(QBrush(QColor(to_color)))
-            zones_str = ", ".join(zone_summary.keys()) if zone_summary else "?"
-            to_item.setToolTip(
-                f"Timeouts: {n_timeouts} ({timeout_severity})\n"
-                f"Zones: {zones_str}"
-                + ("\nComposat" if composed else ""))
-        else:
-            to_item = QTableWidgetItem("")
-        to_item.setTextAlignment(Qt.AlignCenter)
-        table.setItem(row, 4, to_item)
-
-        # Col 5: Pic (irregular top / saturated)
-        anomalies = doc_rep.get("anomalies", [])
-        has_irregular = (
-            has_anomaly(anomalies, "IRREGULAR_TOP_DIRECT")
-            or has_anomaly(anomalies, "IRREGULAR_TOP_UIB"))
-        is_repaired = sample_data.get("repaired", False)
-        is_saturated = doc_rep.get("uib_saturated", False)
-
-        if is_saturated:
-            pic_text = "SAT"
-            pic_item = QTableWidgetItem(pic_text)
-            pic_item.setForeground(QBrush(QColor(COLOR_ERROR)))
-            pic_item.setToolTip("Senyal UIB saturat")
-        elif is_repaired:
-            pic_text = "\u2713 rep"
-            pic_item = QTableWidgetItem(pic_text)
-            pic_item.setForeground(QBrush(QColor(COLOR_SUCCESS)))
-            pic_item.setToolTip("Cim irregular reparat")
-        elif has_irregular:
-            pic_text = "\u26a0 irreg"
-            pic_item = QTableWidgetItem(pic_text)
-            pic_item.setForeground(QBrush(QColor(COLOR_WARNING)))
-            pic_item.setToolTip("Cim irregular detectat")
-        else:
-            pic_item = QTableWidgetItem("")
-        pic_item.setTextAlignment(Qt.AlignCenter)
-        table.setItem(row, 5, pic_item)
-
-        # Col 6: Rèplica DAD (widget radio R1/R2/Cap)
+        # Col 2: Rèplica DAD (widget radio R1/R2/Cap)
         dad_sel = selected.get("dad", selected.get("doc", "1"))
         dad_strip = self._create_replica_strip(
             name, "dad", replicas_dict, dad_sel, allow_comp=False)
-        table.setCellWidget(row, 6, dad_strip)
-
-        # Data DAD (per cols 7, 8, 9)
-        dad_rep_data = (sample_data.get("replicas", {}) or {}).get(dad_sel, {})
-        areas_dad = dad_rep_data.get("areas") or {}
-        snr_dad = dad_rep_data.get("snr_info_dad") or {}
-
-        # Col 7: A254
-        a254_dict = areas_dad.get("A254") or {}
-        a254_total = a254_dict.get("total", 0) if isinstance(a254_dict, dict) else 0
-        a254_text = f"{a254_total:.0f}" if a254_total else "\u2014"
-        a254_item = QTableWidgetItem(a254_text)
-        a254_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        # Tooltip with other wavelengths
-        a220 = ((areas_dad.get("A220") or {}).get("total", 0)
-                if isinstance(areas_dad.get("A220"), dict) else 0)
-        a272 = ((areas_dad.get("A272") or {}).get("total", 0)
-                if isinstance(areas_dad.get("A272"), dict) else 0)
-        a290 = ((areas_dad.get("A290") or {}).get("total", 0)
-                if isinstance(areas_dad.get("A290"), dict) else 0)
-        a254_item.setToolTip(
-            f"A220 = {a220:.0f}\nA272 = {a272:.0f}\nA290 = {a290:.0f}")
-        table.setItem(row, 7, a254_item)
-
-        # Col 8: SNR_254
-        snr_254_entry = snr_dad.get("A254") or {}
-        snr_254 = (snr_254_entry.get("snr", 0)
-                   if isinstance(snr_254_entry, dict) else 0)
-        snr_254_text = f"{snr_254:.0f}" if snr_254 else "\u2014"
-        snr_254_item = QTableWidgetItem(snr_254_text)
-        snr_254_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        # Tooltip with SNR per wavelength
-        snr_tip_parts = []
-        for wl_key in ("A220", "A254", "A272", "A290", "A362"):
-            entry = snr_dad.get(wl_key) or {}
-            val = entry.get("snr", 0) if isinstance(entry, dict) else 0
-            snr_tip_parts.append(f"SNR_{wl_key} = {val:.0f}")
-        snr_254_item.setToolTip("\n".join(snr_tip_parts))
-        table.setItem(row, 8, snr_254_item)
-
-        # Col 9: r2_254
-        dad_comp = comparison.get("dad") or {}
-        pearson_per_wl = dad_comp.get("pearson_per_wavelength") or {}
-        r2_254 = pearson_per_wl.get("254", 0) or pearson_per_wl.get("A254", 0)
-        if not dad_comp or not pearson_per_wl:
-            r2_254_text = "\u2014"
-            r2_254_item = QTableWidgetItem(r2_254_text)
-            r2_254_item.setForeground(QBrush(QColor("#aaa")))
-        elif r2_254 >= 0.99:
-            r2_254_text = "\u2713"
-            r2_254_item = QTableWidgetItem(r2_254_text)
-            r2_254_item.setForeground(QBrush(QColor(COLOR_SUCCESS)))
-        else:
-            r2_254_text = "\u26a0"
-            r2_254_item = QTableWidgetItem(r2_254_text)
-            r2_254_item.setForeground(QBrush(QColor(COLOR_WARNING)))
-        r2_254_item.setTextAlignment(Qt.AlignCenter)
-        # Tooltip with r2 per wavelength
-        r2_tip_parts = []
-        for wl_k, wl_v in pearson_per_wl.items():
-            r2_tip_parts.append(f"r\u00b2_{wl_k} = {wl_v:.4f}")
-        r2_254_item.setToolTip("\n".join(r2_tip_parts) if r2_tip_parts else "Sense comparacio")
-        table.setItem(row, 9, r2_254_item)
+        table.setCellWidget(row, 2, dad_strip)
 
     def _fill_blank_row(self, table, row, name, sample_data, bg_color):
-        """Fill a BLANK row with simplified data (v2.2.0: sense ppm)."""
-        # Col 0: Mostra
+        """Fill a BLANK row — only name + 'Blanc' label (v2.2.0+ 3-col layout)."""
         name_item = QTableWidgetItem(name)
         name_item.setBackground(QBrush(bg_color))
         table.setItem(row, 0, name_item)
 
-        # Col 1: "Blanc" label (no radio)
         label_item = QTableWidgetItem("Blanc")
         label_item.setTextAlignment(Qt.AlignCenter)
         label_item.setForeground(QBrush(QColor("#888")))
         label_item.setBackground(QBrush(bg_color))
         table.setItem(row, 1, label_item)
 
-        # Cols 2-9: dashes with grey background
-        for c in range(2, 10):
-            it = QTableWidgetItem("\u2014")
-            it.setTextAlignment(Qt.AlignCenter)
-            it.setForeground(QBrush(QColor("#aaa")))
-            it.setBackground(QBrush(bg_color))
-            table.setItem(row, c, it)
+        empty = QTableWidgetItem("")
+        empty.setBackground(QBrush(bg_color))
+        table.setItem(row, 2, empty)
 
     def _fill_control_row(self, table, row, name, bg_color):
-        """Fill a CONTROL (Neteja) row."""
-        # Col 0: Mostra
+        """Fill a CONTROL (Neteja) row (v2.2.0+ 3-col layout)."""
         name_item = QTableWidgetItem(name)
         name_item.setBackground(QBrush(bg_color))
         table.setItem(row, 0, name_item)
 
-        # Col 1: "Neteja" label
         label_item = QTableWidgetItem("Neteja")
         label_item.setTextAlignment(Qt.AlignCenter)
         label_item.setForeground(QBrush(QColor("#888")))
         label_item.setBackground(QBrush(bg_color))
         table.setItem(row, 1, label_item)
 
-        # Cols 2-9: dashes with grey background
-        for c in range(2, 10):
-            it = QTableWidgetItem("\u2014")
-            it.setTextAlignment(Qt.AlignCenter)
-            it.setForeground(QBrush(QColor("#aaa")))
-            it.setBackground(QBrush(bg_color))
-            table.setItem(row, c, it)
+        empty = QTableWidgetItem("")
+        empty.setBackground(QBrush(bg_color))
+        table.setItem(row, 2, empty)
 
     # ------------------------------------------------------------------
     # (Card management removed -- table is read-only)
@@ -2262,15 +2074,22 @@ class AnalyzePanel(QWidget):
     def _update_review_metrics(self, sample_data):
         """Update metrics label."""
         _, doc_rep = resolve_doc_replica(sample_data)
-        quant = sample_data.get("quantification", {})
+        quant = sample_data.get("quantification", {}) or {}
         parts = []
-        ppm = (quant.get("concentration_ppm_direct")
-               or quant.get("concentration_ppm"))
-        if ppm:
-            parts.append(f"ppm: <b>{ppm:.2f}</b>")
-        ppm_u = quant.get("concentration_ppm_uib")
-        if ppm_u:
-            parts.append(f"UIB: <b>{ppm_u:.2f}</b>")
+        # v2.2.0+: si la quantificació està pendent, no mostrar ppm
+        # (encara no s'ha aplicat la recta de calibració al pas Quantificar).
+        processed = self.main_window.processed_data or {}
+        quant_pending = bool(processed.get("quantification_pending"))
+        if not quant_pending:
+            ppm = (quant.get("concentration_ppm_direct")
+                   or quant.get("concentration_ppm"))
+            if ppm:
+                parts.append(f"ppm: <b>{ppm:.2f}</b>")
+            ppm_u = quant.get("concentration_ppm_uib")
+            if ppm_u:
+                parts.append(f"UIB: <b>{ppm_u:.2f}</b>")
+        else:
+            parts.append("<i style='color:#888'>ppm pendent</i>")
         snr = (doc_rep.get("snr_info") or {}).get("snr_direct", 0)
         if snr:
             parts.append(f"SNR: {snr:.0f}")
