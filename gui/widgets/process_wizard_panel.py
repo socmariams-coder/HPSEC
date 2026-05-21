@@ -1877,7 +1877,8 @@ class ProcessWizardPanel(QWidget):
         import json
         from pathlib import Path
 
-        states = ["pending", "pending", "pending", "pending", "pending"]
+        # v2.2.0: 6 fases (Importar / Verificar / Analitzar / Quantificar / Comparar / Exportar)
+        states = ["pending"] * 6
 
         try:
             data_path = Path(seq_path) / "CHECK" / "data"
@@ -1888,7 +1889,7 @@ class ProcessWizardPanel(QWidget):
                 0: ("import_manifest.json", ["warnings"]),
                 1: ("calibration_result.json", ["warnings", "khp_warnings"]),
                 2: ("analysis_result.json", ["warnings", "anomalies"]),
-                4: ("review_result.json", []),
+                5: ("review_result.json", []),  # v2.2.0: Exportar és tab 5
             }
 
             for idx, (filename, warning_fields) in json_files.items():
@@ -1933,9 +1934,33 @@ class ProcessWizardPanel(QWidget):
         except Exception as e:
             logger.warning(f"Error detectant etapes: {e}")
 
-        # Comparar (index 3) és passiu: auto-ok si anàlisi completada
+        # v2.2.0: Quantificar (idx 3) — derivat de analysis_result.quantification_pending
         if states[2] in ("ok", "warning"):
-            states[3] = "ok"
+            try:
+                ana_path = data_path / "analysis_result.json"
+                if ana_path.exists():
+                    with open(ana_path, 'r', encoding='utf-8') as f:
+                        ana_data = json.load(f)
+                    pending = ana_data.get("quantification_pending")
+                    if pending is False:
+                        states[3] = "ok"
+                    elif pending is True:
+                        states[3] = "pending"
+                    else:
+                        # Legacy: cap flag. Positive signal = alguna mostra té concentration_ppm_direct
+                        samples_grouped = ana_data.get("samples_grouped", {})
+                        any_quant = any(
+                            isinstance(sg, dict) and sg.get("quantification")
+                            and sg["quantification"].get("concentration_ppm_direct") is not None
+                            for sg in samples_grouped.values()
+                        )
+                        states[3] = "ok" if any_quant else "pending"
+            except Exception as e:
+                logger.warning(f"Error detectant quantify state: {e}")
+
+        # Comparar (index 4) és passiu: auto-ok si anàlisi completada
+        if states[2] in ("ok", "warning"):
+            states[4] = "ok"
 
         # Marcar primera etapa pendent com a "current"
         for i, state in enumerate(states):
@@ -1958,7 +1983,7 @@ class ProcessWizardPanel(QWidget):
             all_states.append(states)
 
         if not all_states:
-            return ["pending", "pending", "pending", "pending", "pending"]
+            return ["pending"] * 6  # v2.2.0: 6 fases
 
         # Per cada etapa, agafar el pitjor estat
         priority = {"pending": 0, "current": 1, "warning": 2, "ok": 3}
