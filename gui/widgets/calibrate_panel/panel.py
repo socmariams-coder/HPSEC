@@ -705,6 +705,8 @@ class CalibratePanel(QWidget):
         self.metrics_table.setMaximumHeight(350)
         self.metrics_table.setSelectionMode(QTableWidget.ExtendedSelection)
         self.metrics_table.setSelectionBehavior(QTableWidget.SelectItems)
+        # Doble-click sobre fila → diàleg detall + reparació
+        self.metrics_table.cellDoubleClicked.connect(self._on_metrics_row_double_clicked)
         metrics_layout.addWidget(self.metrics_table)
 
         content_layout.addWidget(self.metrics_group)
@@ -1676,7 +1678,10 @@ class CalibratePanel(QWidget):
             display_name = filename
             if '_R' in filename:
                 display_name = 'R' + filename.split('_R')[-1].split('.')[0].split('_')[0]
-            self.metrics_table.setItem(row, 0, QTableWidgetItem(display_name))
+            item_rep = QTableWidgetItem(display_name)
+            # Guardar referència al dict khp per doble-click
+            item_rep.setData(Qt.UserRole, khp)
+            self.metrics_table.setItem(row, 0, item_rep)
 
             # Col 1: Senyal
             self.metrics_table.setItem(row, 1, QTableWidgetItem(signal))
@@ -1874,6 +1879,73 @@ class CalibratePanel(QWidget):
                         self.metrics_table.setItem(sub_row, c, filler)
                     # Span col 1 across visible area
                     self.metrics_table.setSpan(sub_row, 1, 1, 11)
+
+    def _on_metrics_row_double_clicked(self, row: int, _col: int):
+        """Obre el diàleg de detall + reparació quan es fa doble-click a una fila."""
+        # Recuperar khp guardat al col 0
+        item_rep = self.metrics_table.item(row, 0)
+        if item_rep is None:
+            return
+        khp = item_rep.data(Qt.UserRole)
+        if not isinstance(khp, dict):
+            return
+
+        from .khp_detail_dialog import KHPDetailDialog
+        signal = (khp.get('_signal') or 'Direct').lower()
+        dialog = KHPDetailDialog(khp, signal=signal, parent=self)
+        # Connectar senyals
+        dialog.outlier_toggled.connect(self._on_detail_outlier_toggled)
+        dialog.repair_applied.connect(self._on_detail_repair_applied)
+        dialog.exec()
+
+    def _on_detail_outlier_toggled(self, replica_num: int, signal: str, is_outlier: bool):
+        """Sincronitza el checkbox de la taula amb el toggle del diàleg."""
+        state = 2 if is_outlier else 0  # Qt.Checked = 2, Qt.Unchecked = 0
+        self._on_metrics_outlier_toggled(replica_num, signal, state)
+
+    def _on_detail_repair_applied(self, replica_num: int, signal: str, repaired_data: dict):
+        """Aplica una reparació manual a una rèplica i recarrega calibracions."""
+        try:
+            from hpsec_calibrate import load_local_calibrations, save_local_calibrations
+            import os
+
+            seq_path = self.main_window.seq_path
+            if not seq_path:
+                return
+
+            calibrations = load_local_calibrations(seq_path)
+            seq_name = os.path.basename(seq_path)
+            new_area = float(repaired_data.get('new_area', 0))
+
+            for cal in calibrations:
+                if cal.get('seq_name') != seq_name:
+                    continue
+                replicas_info = cal.get('replicas_info', [])
+                for rep in replicas_info:
+                    if rep.get('replica_num') == replica_num:
+                        rep['area'] = new_area
+                        rep['manual_repair'] = True
+                        rep['manual_repair_info'] = {
+                            'new_area': new_area,
+                            'left_idx': repaired_data.get('new_left_idx'),
+                            'right_idx': repaired_data.get('new_right_idx'),
+                        }
+                        # Si hi havia anomalia NON_GAUSSIAN, ja es manté com a info
+                        # però la rèplica deixa de ser outlier (l'usuari la repara)
+                        rep['is_outlier'] = False
+            save_local_calibrations(seq_path, calibrations)
+            # Notificar que la taula s'ha de recarregar (amb dades actualitzades)
+            # Mantenim flux similar a _on_metrics_outlier_toggled
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.information(
+                self, "Reparació guardada",
+                f"Àrea de R{replica_num} actualitzada a {new_area:.2f}.\n"
+                "Recalcula la calibració per propagar el canvi."
+            )
+        except Exception as exc:
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "Reparació",
+                f"No s'ha pogut guardar la reparació: {exc}")
 
     def _on_metrics_outlier_toggled(self, replica_num, signal_type, state):
         """Handler quan canvia el checkbox outlier a la taula de mètriques."""
