@@ -46,11 +46,14 @@ class AnalyzeWorker(QThread):
                     ),
                 )
 
+            # v2.2.0: pipeline separat — Analitzar només qualitatiu,
+            # Quantificar es fa al pas 4 (panel separat).
             result = analyze_sequence(
                 self.imported_data,
                 self.calibration_data,
                 config=self.config,
-                progress_callback=progress_cb
+                progress_callback=progress_cb,
+                do_quantify=False,
             )
             self.finished.emit(result)
 
@@ -111,11 +114,13 @@ class SiblingAnalyzeWorker(QThread):
 
                 try:
                     from hpsec_analyze import save_analysis_result
+                    # v2.2.0: pipeline separat (do_quantify=False per siblings també)
                     result = analyze_sequence(
                         imported,
                         calibrated,
                         config=self.config,
-                        progress_callback=progress_cb
+                        progress_callback=progress_cb,
+                        do_quantify=False,
                     )
                     # Guardar JSON individual per cada sibling
                     if result and result.get("success"):

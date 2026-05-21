@@ -4325,6 +4325,17 @@ def _ana_draw_page1_summary(pdf, data, seq_name):
 
     fig.text(0.5, 0.775, f"Generat: {date_str}", ha='center', va='top',
              fontsize=9, color=COLORS["text_secondary"])
+
+    # v2.2.0: avís si la quantificació encara està pendent
+    if data.get("quantification_pending"):
+        fig.text(0.5, 0.755,
+                 "⚠ QUANTIFICACIÓ PENDENT — les columnes ppm es mostren buides.\n"
+                 "Genera el report després d'aplicar la recta al pas Quantificar.",
+                 ha='center', va='top',
+                 fontsize=9, color="#c0392b", style='italic',
+                 bbox=dict(boxstyle='round,pad=0.4', facecolor='#fdecea',
+                           edgecolor='#c0392b', linewidth=0.8))
+
     fig.add_artist(plt.Line2D([0.1, 0.9], [0.75, 0.75],
                               color=COLORS["primary"], linewidth=2,
                               transform=fig.transFigure))

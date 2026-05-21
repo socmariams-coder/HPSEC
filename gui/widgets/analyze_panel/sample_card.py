@@ -2,6 +2,13 @@
 HPSEC Suite - SampleCard widget for AnalyzePanel
 =================================================
 
+⚠️ DEPRECATED (v2.2.0) ⚠️
+Aquest fitxer no s'importa des d'enlloc al codebase. El refactor v2.2.0
+va eliminar el model de cards expandibles a favor d'una taula amb radio
+toggles inline (`_create_replica_strip`) + split layout 35/65 amb review
+panel central. Es manté el fitxer per consulta històrica/migració però es
+pot eliminar sense impacte funcional.
+
 Compact/expandable card per mostra. Substitueix la taula QTableWidget.
 - Mode compacte: una fila amb icona estat + nom + ppm + R2 + HCI + hints
 - Mode expandit: cromatograma + selectors replica + reparacio + fraccions + anomalies

@@ -1017,6 +1017,30 @@ class ExportPanel(QWidget):
                 QMessageBox.warning(self, "Avís", "No s'ha trobat el path de la seqüència.")
             return
 
+        # v2.2.0: avisar si la quantificació encara està pendent
+        if processed_data.get("quantification_pending"):
+            if silent:
+                # En mode silent (auto-trigger), no procedim sense quantificar
+                logger.warning("_run_generate: quantification pending, skip silent export")
+                return
+            reply = QMessageBox.question(
+                self, "Quantificació pendent",
+                "L'anàlisi no ha aplicat encara la recta de calibració.\n\n"
+                "Els resultats exportats tindran ppm = '—' (valors buits).\n\n"
+                "Vols continuar igualment, o anar primer al pas Quantificar?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel)
+            if reply != QMessageBox.StandardButton.Yes:
+                # Saltar a Quantificar si està disponible
+                wizard = getattr(self.main_window, '_main_wizard', None) \
+                         or getattr(self.main_window, 'process_wizard', None)
+                if wizard and hasattr(wizard, 'tab_widget'):
+                    try:
+                        wizard.tab_widget.setCurrentIndex(3)  # Quantificar
+                    except Exception:
+                        pass
+                return
+
         method = processed_data.get("method", "COLUMN")
         calibration_data = self.main_window.calibration_data
 

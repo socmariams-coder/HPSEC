@@ -16,7 +16,8 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QHeaderView, QComboBox, QTableWidget, QTableWidgetItem,
     QFrame, QAbstractItemView, QProgressBar, QMessageBox, QDialog,
-    QGroupBox, QGridLayout, QCheckBox, QScrollArea, QSizePolicy
+    QGroupBox, QGridLayout, QCheckBox, QScrollArea, QSizePolicy,
+    QSplitter, QTabWidget
 )
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QBrush, QFont
@@ -325,15 +326,18 @@ class AnalyzePanel(QWidget):
         sel_layout.addStretch()
         results_layout.addWidget(sel_frame)
 
-        # === QC MINIATURES (collapsible) ===
+        # === QC SEQÜÈNCIA (v2.2.0: expandida per defecte, primera secció) ===
         self._qc_collapsible = self._build_collapsible_section(
-            "QC Sequencia", collapsed=True)
+            "QC Sequencia", collapsed=False)
         self._qc_tab = SequenceQCTab(main_window=self.main_window)
         self._qc_collapsible["content_layout"].addWidget(self._qc_tab)
         results_layout.addWidget(self._qc_collapsible["frame"])
 
         # === CHARTS SECTION ===
-        self._charts_visible = True
+        # v2.2.0: bar charts DOC/DAD reubicats al pas Quantificar.
+        # Mantenim els canvas instanciats (referencies en altres mètodes)
+        # però la secció es manté oculta permanentment a Analitzar.
+        self._charts_visible = False
         self._charts_initialized = False
         self.charts_section = QFrame()
         self.charts_section.setVisible(False)
@@ -400,16 +404,17 @@ class AnalyzePanel(QWidget):
         results_layout.addWidget(self._stats_label)
 
         # === TABLE WITH GROUP HEADERS ===
+        # v2.2.0: la taula s'incorpora a un QSplitter horitzontal junt amb
+        # el review panel (s'afegeix al final del setup_ui).
         self._table_container = QWidget()
         self._table_container_layout = QVBoxLayout(self._table_container)
         self._table_container_layout.setContentsMargins(0, 0, 0, 0)
         self._table_container_layout.setSpacing(0)
         self._build_table_with_group_headers()
-        results_layout.addWidget(self._table_container)
 
-        # === REVIEW PANEL (shown on row click) ===
+        # === REVIEW PANEL (v2.2.0: sempre visible com a panell central de la dreta) ===
         self._review_panel = QFrame()
-        self._review_panel.setVisible(False)
+        self._review_panel.setVisible(True)  # v2.2.0: sempre visible al split
         self._review_panel.setStyleSheet(
             "QFrame { border: 1px solid #DEE2E6; border-radius: 6px;"
             " background: white; }")
@@ -467,6 +472,8 @@ class AnalyzePanel(QWidget):
         self._review_close_btn.setFixedWidth(28)
         self._review_close_btn.setToolTip("Tancar panel revisio")
         self._review_close_btn.clicked.connect(self._close_review)
+        # v2.2.0: panell sempre visible al split \u2014 amagar bot\u00f3 close
+        self._review_close_btn.setVisible(False)
         nav_row.addWidget(self._review_close_btn)
 
         self._review_next_btn = QPushButton("\u25b6")
@@ -478,7 +485,19 @@ class AnalyzePanel(QWidget):
 
         review_layout.addLayout(nav_row)
 
-        # Chromatogram
+        # === TAB WIDGET (v2.2.0): Cromatograma | Comparar R1↔R2 ===
+        self._review_tabs = QTabWidget()
+        self._review_tabs.setDocumentMode(True)
+        self._review_tabs.setStyleSheet(
+            "QTabBar::tab { padding: 4px 12px; font-size: 11px; }"
+            "QTabBar::tab:selected { font-weight: bold; }")
+
+        # ---- Tab 1: Cromatograma (vista actual) ----
+        tab_chroma = QWidget()
+        tab_chroma_layout = QVBoxLayout(tab_chroma)
+        tab_chroma_layout.setContentsMargins(0, 4, 0, 0)
+        tab_chroma_layout.setSpacing(6)
+
         if HAS_MATPLOTLIB:
             self._review_figure = Figure(figsize=(8, 3), dpi=100)
             self._review_figure.set_facecolor("#FAFAFA")
@@ -486,10 +505,10 @@ class AnalyzePanel(QWidget):
             self._review_canvas.setMinimumHeight(250)
             self._review_toolbar = NavigationToolbar2QT(
                 self._review_canvas, self._review_panel)
-            review_layout.addWidget(self._review_toolbar)
-            review_layout.addWidget(self._review_canvas)
+            tab_chroma_layout.addWidget(self._review_toolbar)
+            tab_chroma_layout.addWidget(self._review_canvas)
 
-        # Controls row
+        # Controls row (DOC/DAD combos + Area checkbox + metrics)
         controls_row = QHBoxLayout()
         controls_row.addWidget(QLabel("<b>DOC:</b>"))
         self._review_doc_combo = QComboBox()
@@ -514,7 +533,7 @@ class AnalyzePanel(QWidget):
         self._review_metrics = QLabel()
         self._review_metrics.setStyleSheet("font-size: 11px; color: #444;")
         controls_row.addWidget(self._review_metrics)
-        review_layout.addLayout(controls_row)
+        tab_chroma_layout.addLayout(controls_row)
 
         # Fractions + anomalies row
         info_row = QHBoxLayout()
@@ -525,11 +544,71 @@ class AnalyzePanel(QWidget):
         self._review_anomalies.setStyleSheet("font-size: 11px;")
         self._review_anomalies.setWordWrap(True)
         info_row.addWidget(self._review_anomalies, 1)
-        review_layout.addLayout(info_row)
+        tab_chroma_layout.addLayout(info_row)
+
+        self._review_tabs.addTab(tab_chroma, "Cromatograma")
+
+        # ---- Tab 2: Comparar R1↔R2 ----
+        tab_compare = QWidget()
+        tab_compare_layout = QVBoxLayout(tab_compare)
+        tab_compare_layout.setContentsMargins(0, 4, 0, 0)
+        tab_compare_layout.setSpacing(6)
+
+        if HAS_MATPLOTLIB:
+            self._compare_figure = Figure(figsize=(8, 3.5), dpi=100)
+            self._compare_figure.set_facecolor("#FAFAFA")
+            self._compare_canvas = FigureCanvas(self._compare_figure)
+            self._compare_canvas.setMinimumHeight(280)
+            tab_compare_layout.addWidget(self._compare_canvas)
+
+        self._compare_stats = QLabel()
+        self._compare_stats.setStyleSheet(
+            "font-size: 11px; color: #444; padding: 4px;"
+            " background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 4px;")
+        self._compare_stats.setTextFormat(Qt.RichText)
+        self._compare_stats.setWordWrap(True)
+        tab_compare_layout.addWidget(self._compare_stats)
+
+        # Botons d'acció ràpida
+        compare_actions = QHBoxLayout()
+        compare_actions.addWidget(QLabel("<b>Aplicar:</b>"))
+        for key, label in [("1", "Mantenir R1"), ("2", "Mantenir R2")]:
+            btn = QPushButton(label)
+            btn.setStyleSheet(
+                "QPushButton { font-size: 11px; padding: 4px 10px;"
+                " border: 1px solid #2E86AB; border-radius: 3px;"
+                " color: #2E86AB; background: white; }"
+                "QPushButton:hover { background: #EBF5FB; }")
+            btn.clicked.connect(
+                lambda checked, k=key: self._apply_compare_action(k))
+            compare_actions.addWidget(btn)
+        compare_actions.addStretch()
+        tab_compare_layout.addLayout(compare_actions)
+        tab_compare_layout.addStretch()
+
+        self._review_tabs.addTab(tab_compare, "Comparar R1↔R2")
+        self._review_compare_tab_idx = 1  # per habilitar/deshabilitar després
+
+        review_layout.addWidget(self._review_tabs, 1)
 
         # (Action buttons moved to nav_row at top)
 
-        results_layout.addWidget(self._review_panel)
+        # === SPLIT 35/65: TAULA (esquerra) | REVIEW PANEL (dreta) ===
+        # v2.2.0: vista doble simultània per maximitzar comoditat.
+        self._main_splitter = QSplitter(Qt.Horizontal)
+        self._main_splitter.setChildrenCollapsible(False)
+        self._main_splitter.setHandleWidth(4)
+        self._main_splitter.setStyleSheet(
+            "QSplitter::handle { background: #E0E0E0; }"
+            "QSplitter::handle:hover { background: #ADB5BD; }"
+        )
+        self._main_splitter.addWidget(self._table_container)
+        self._main_splitter.addWidget(self._review_panel)
+        # Ratio inicial 35/65
+        self._main_splitter.setSizes([350, 650])
+        self._main_splitter.setStretchFactor(0, 35)
+        self._main_splitter.setStretchFactor(1, 65)
+        results_layout.addWidget(self._main_splitter, 1)
 
         layout.addWidget(self.results_frame, 1)
 
@@ -620,7 +699,8 @@ class AnalyzePanel(QWidget):
         self.progress_frame.setVisible(False)
         self.progress_bar.setValue(0)
         self.results_frame.setVisible(False)
-        self._review_panel.setVisible(False)
+        # v2.2.0: review_panel és sempre visible al split — no ocultar
+        # al reset (el splitter es manté ocult perquè results_frame ho fa)
         self.charts_section.setVisible(False)
         self._qc_tab.reset()
         # comparison moved to tab Mostres
@@ -629,7 +709,12 @@ class AnalyzePanel(QWidget):
         self.status_indicator.setText("")
 
     def _build_table_with_group_headers(self):
-        """Creates the sample table with DOC/DAD group header labels above."""
+        """Creates the sample table with DOC/DAD group header labels above.
+
+        v2.2.0: columnes ppm/ppm\u1d64\u1d62\u1d47 substitu\u00efdes per "R\u00e8plica DOC" amb radio
+        inline (R1/R2/Comp/Cap). Afegida col "R\u00e8plica DAD" abans d'A254.
+        Quantificaci\u00f3 es fa al pas 4 (Quantificar).
+        """
         # --- Group header row ---
         header_row = QHBoxLayout()
         header_row.setContentsMargins(0, 0, 0, 0)
@@ -647,7 +732,7 @@ class AnalyzePanel(QWidget):
             "font-weight: bold; font-size: 11px; color: #1A5276;"
             " background: #EBF5FB; border: 1px solid #D4E6F1;"
             " border-radius: 3px; padding: 3px 0; margin: 0 1px;")
-        header_row.addWidget(doc_label, 6)  # spans 6 columns worth
+        header_row.addWidget(doc_label, 5)  # cols 1-5: Sel, SNR, r\u00b2, Timeout, Pic
 
         dad_label = QLabel("DAD")
         dad_label.setAlignment(Qt.AlignCenter)
@@ -655,7 +740,7 @@ class AnalyzePanel(QWidget):
             "font-weight: bold; font-size: 11px; color: #7D6608;"
             " background: #FEF9E7; border: 1px solid #F9E79F;"
             " border-radius: 3px; padding: 3px 0; margin: 0 1px;")
-        header_row.addWidget(dad_label, 3)  # spans 3 columns worth
+        header_row.addWidget(dad_label, 4)  # cols 6-9: Sel, A254, SNR\u2082\u2085\u2084, r\u00b2\u2082\u2085\u2084
 
         # Small spacer for scrollbar area
         sb_spacer = QLabel("")
@@ -669,41 +754,52 @@ class AnalyzePanel(QWidget):
         self._samples_table.setColumnCount(10)
         self._samples_table.setHorizontalHeaderLabels([
             "Mostra",
-            "ppm", "ppm\u1d64\u1d62\u1d47", "SNR", "r\u00b2",
-            "Timeout", "Pic",
-            "A254", "SNR\u2082\u2085\u2084", "r\u00b2\u2082\u2085\u2084",
+            "R\u00e8plica", "SNR", "r\u00b2", "Timeout", "Pic",
+            "R\u00e8plica", "A254", "SNR\u2082\u2085\u2084", "r\u00b2\u2082\u2085\u2084",
         ])
 
         configure_table_style(self._samples_table)
         self._samples_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self._samples_table.setSelectionMode(QAbstractItemView.SingleSelection)
 
-        # Column sizing
+        # Column sizing: cols 1 i 6 (radios) m\u00e9s amples; resta ajustada a contingut
         header = self._samples_table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.Stretch)
         for col in range(1, 10):
             header.setSectionResizeMode(col, QHeaderView.ResizeToContents)
 
-        # Minimum column widths for readability
         self._samples_table.setColumnWidth(0, 160)
-        for col in range(1, 10):
+        self._samples_table.setColumnWidth(1, 130)  # Sel DOC
+        self._samples_table.setColumnWidth(6, 110)  # Sel DAD
+        for col in (2, 3, 4, 5, 7, 8, 9):
             self._samples_table.setColumnWidth(col, 60)
+
+        # Files m\u00e9s altes per encabir els botons toggle (~28 px)
+        self._samples_table.verticalHeader().setDefaultSectionSize(30)
 
         self._samples_table.setMinimumHeight(200)
         self._samples_table.clicked.connect(self._on_table_row_clicked)
         self._table_container_layout.addWidget(self._samples_table)
 
     def _check_existing_analysis(self):
-        """Comprova si existeix analisi previa i la carrega automaticament."""
+        """Comprova si existeix analisi previa i la carrega automaticament.
+
+        v2.2.0: si NO hi ha anàlisi prèvia i hi ha imported_data + calibration_data
+        disponibles, dispara auto-anàlisi en background.
+        """
         seq_path = self.main_window.seq_path
         if not seq_path:
             return
         if self.samples_grouped:
             return
+        # Worker en marxa? No re-disparar
+        if self.worker and self.worker.isRunning():
+            return
 
         sibling_paths = getattr(self.main_window, 'sibling_paths', [])
         all_paths = [seq_path] + sibling_paths
 
+        loaded_any = False
         if len(all_paths) > 1:
             results = {}
             for path in all_paths:
@@ -722,13 +818,70 @@ class AnalyzePanel(QWidget):
                 base_result["is_sibling_merge"] = True
                 base_result["sibling_results"] = results
                 self._load_existing_analysis(base_result)
+                loaded_any = True
         else:
             try:
                 existing_analysis = load_analysis_result(seq_path)
                 if existing_analysis and existing_analysis.get("success"):
                     self._load_existing_analysis(existing_analysis)
+                    loaded_any = True
             except Exception as e:
                 logger.warning(f"Error comprovant analisi existent: {e}")
+
+        # v2.2.0: Background trigger lazy
+        # Si no s'ha trobat anàlisi prèvia i hi ha dades preparades, llançar auto-anàlisi
+        if not loaded_any and not self.samples_grouped:
+            self._maybe_auto_analyze()
+
+    def _maybe_auto_analyze(self):
+        """Llança auto-anàlisi en background si les dades necessàries estan disponibles.
+
+        v2.2.0: pipeline lazy — quan l'usuari arriba al tab Analitzar, si el
+        delay està fixat (Verificar completat) i hi ha import_data,
+        l'anàlisi s'executa automàticament en un thread separat. La UI no
+        es bloqueja i mostra la progress_bar normal.
+        """
+        if self.worker and self.worker.isRunning():
+            logger.debug("auto-analyze: worker already running")
+            return
+
+        seq_path = self.main_window.seq_path
+        if not seq_path:
+            logger.debug("auto-analyze: no seq_path")
+            return
+
+        # Verificar que tenim imported_data
+        imported_data = self.main_window.imported_data
+        if not imported_data:
+            # Provar de carregar des de manifest
+            try:
+                from hpsec_import import import_from_manifest
+                imported_data = import_from_manifest(seq_path)
+                if imported_data and imported_data.get('success'):
+                    self.main_window.imported_data = imported_data
+            except Exception as e:
+                logger.warning("auto-analyze: error carregant import: %s", e)
+                return
+
+        if not imported_data or not imported_data.get('success'):
+            logger.info("auto-analyze: sense imported_data — esperar Importar")
+            return
+
+        # Verificar calibration_data (delay fixat + KHP)
+        calibration_data = self.main_window.calibration_data
+        if not calibration_data and seq_path:
+            cal_json = Path(seq_path) / "CHECK" / "data" / "calibration_result.json"
+            if not cal_json.exists():
+                logger.info("auto-analyze: sense calibration_result.json — esperar Verificar")
+                return
+
+        logger.info("auto-analyze: disparant anàlisi en background per %s",
+                     self.main_window.seq_name)
+        # _run_analyze és asincron (QThread) — no bloqueja
+        try:
+            self._run_analyze()
+        except Exception as e:
+            logger.warning("auto-analyze: error disparant _run_analyze: %s", e)
 
     def _load_existing_analysis(self, result):
         """Carrega una analisi existent."""
@@ -862,7 +1015,15 @@ class AnalyzePanel(QWidget):
     # ------------------------------------------------------------------
 
     def _run_analyze(self):
-        """Executa l'analisi."""
+        """Executa l'analisi.
+
+        v2.2.0: early-return si ja s'està executant (no bloqueig UI thread).
+        """
+        # Early-return: worker actiu (v2.2.0 — abans bloquejava UI amb wait())
+        if self.worker is not None and self.worker.isRunning():
+            logger.info("_run_analyze: worker already running — skip")
+            return
+
         sibling_imported = getattr(self.main_window, 'sibling_imported', {})
         sibling_calibrated = getattr(self.main_window, 'sibling_calibrated', {})
         logger.info("_run_analyze: sibling_imported keys=%s (n=%d)",
@@ -952,8 +1113,8 @@ class AnalyzePanel(QWidget):
         self.progress_bar.setValue(0)
         self.results_frame.setVisible(False)
 
-        if self.worker is not None:
-            self.worker.wait()
+        # v2.2.0: no waitejar el worker anterior aquí — l'early-return a dalt
+        # ja ho garanteix. wait() bloquejava la UI thread fins acabar.
         self.worker = AnalyzeWorker(imported_data, calibration_data)
         self.worker.progress.connect(self._on_progress)
         self.worker.finished.connect(self._on_finished)
@@ -999,6 +1160,15 @@ class AnalyzePanel(QWidget):
 
         self._populate_charts(result)
         self._populate_sub_tabs(result)
+
+        # v2.2.0: auto-seleccionar primera mostra perquè el panel central
+        # (review) mostri contingut des del primer moment al split layout.
+        try:
+            if self.samples_grouped:
+                first_name = next(iter(self.samples_grouped.keys()))
+                self._show_review(first_name)
+        except Exception as e:
+            logger.debug("Auto-select first sample failed: %s", e)
 
         self.progress_frame.setVisible(False)
         self.status_frame.setVisible(False)
@@ -1361,55 +1531,120 @@ class AnalyzePanel(QWidget):
     # Table row fill helpers
     # ------------------------------------------------------------------
 
+    # ------------------------------------------------------------------
+    # v2.2.0: Replica selector inline (radio toggle strip per fila)
+    # ------------------------------------------------------------------
+
+    def _create_replica_strip(self, sample_name, signal, replicas_dict,
+                               current, allow_comp=True):
+        """Crea widget compacte amb botons toggle R1/R2/.../Comp/Cap.
+
+        Args:
+            sample_name: nom mostra (string)
+            signal: 'doc' o 'dad'
+            replicas_dict: dict {key: replica_data}
+            current: clau actualment seleccionada
+            allow_comp: si True, afegir bot\u00f3 'Comp' (nom\u00e9s DOC + timeout)
+        """
+        from PySide6.QtWidgets import QButtonGroup
+        container = QWidget()
+        h = QHBoxLayout(container)
+        h.setContentsMargins(2, 1, 2, 1)
+        h.setSpacing(1)
+
+        group = QButtonGroup(container)
+        group.setExclusive(True)
+        # Mantenir refer\u00e8ncia perqu\u00e8 no es destrueixi
+        if not hasattr(self, '_replica_groups'):
+            self._replica_groups = {}
+        self._replica_groups[(sample_name, signal)] = group
+
+        rep_keys = sorted([k for k in replicas_dict.keys() if k not in (None, "")])
+        options = [(k, f"R{k}") for k in rep_keys]
+        if allow_comp and signal == "doc":
+            options.append(("Comp", "Cp"))
+        # v2.2.0: clau "none" canonical (consistent amb la resta del codebase).
+        # El label es mant\u00e9 "\u2014" per claredat visual.
+        options.append(("none", "\u2014"))
+
+        btn_style = (
+            "QPushButton { font-size: 10px; padding: 2px 6px; min-width: 18px;"
+            " border: 1px solid #ced4da; border-radius: 3px;"
+            " background: white; color: #495057; }"
+            "QPushButton:hover { background: #e9ecef; }"
+            "QPushButton:checked { background: #2E86AB; color: white;"
+            " border-color: #1f6080; font-weight: bold; }")
+
+        for key, label in options:
+            btn = QPushButton(label)
+            btn.setCheckable(True)
+            btn.setFixedHeight(22)
+            btn.setStyleSheet(btn_style)
+            if str(key) == str(current):
+                btn.setChecked(True)
+            group.addButton(btn)
+            btn.toggled.connect(
+                lambda checked, s=sample_name, sig=signal, k=key:
+                self._on_replica_changed(s, sig, k) if checked else None)
+            h.addWidget(btn)
+        h.addStretch()
+        return container
+
+    def _on_replica_changed(self, sample_name, signal, replica_key):
+        """Callback quan l'usuari canvia la r\u00e8plica seleccionada per una mostra.
+
+        Actualitza el state i refresca el review panel si la mostra activa
+        \u00e9s aquesta.
+        """
+        sample_data = self.samples_grouped.get(sample_name)
+        if not sample_data:
+            return
+        selected = sample_data.setdefault("selected", {})
+        previous = selected.get(signal)
+        if str(previous) == str(replica_key):
+            return  # Sense canvi
+        selected[signal] = replica_key
+        logger.info("Selecci\u00f3 r\u00e8plica %s/%s: %s \u2192 %s",
+                    sample_name, signal, previous, replica_key)
+        # Si la mostra activa al review \u00e9s aquesta, refrescar cromatograma
+        if self._review_sample == sample_name:
+            try:
+                self._show_review(sample_name)
+            except Exception as e:
+                logger.warning("Error refresh review panel: %s", e)
+
     def _fill_sample_row(self, table, row, name, sample_data,
                          doc_rep, dad_rep, comparison):
-        """Fill one regular sample row in the table."""
+        """Fill one regular sample row in the table.
+
+        v2.2.0: cols 1 i 6 ara s\u00f3n widgets radio inline per seleccionar
+        r\u00e8plica DOC/DAD (R1, R2, Comp, Cap).
+        """
         selected = sample_data.get("selected", {}) or {}
-        quantification = sample_data.get("quantification", {}) or {}
 
         # Col 0: Mostra
         name_item = QTableWidgetItem(name)
         name_item.setFont(QFont("Segoe UI", 10))
         table.setItem(row, 0, name_item)
 
-        # Col 1: ppm (Direct)
-        ppm_direct = quantification.get("concentration_ppm_direct")
-        ppm_text = f"{ppm_direct:.2f}" if ppm_direct is not None else "\u2014"
-        ppm_item = QTableWidgetItem(ppm_text)
-        ppm_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        area_doc = ((doc_rep.get("areas") or {}).get("DOC") or {}).get("total", 0)
-        ppm_item.setToolTip(f"A_DOC = {area_doc:.1f}")
-        table.setItem(row, 1, ppm_item)
+        # Col 1: R\u00e8plica DOC (widget amb botons toggle R1/R2/Comp/Cap)
+        replicas_dict = sample_data.get("replicas", {}) or {}
+        doc_sel = selected.get("doc", "1")
+        tc = sample_data.get("timeout_composability", {}) or {}
+        doc_strip = self._create_replica_strip(
+            name, "doc", replicas_dict, doc_sel,
+            allow_comp=bool(tc.get("composable")))
+        table.setCellWidget(row, 1, doc_strip)
 
-        # Col 2: ppm_uib
-        ppm_uib = quantification.get("concentration_ppm_uib")
-        ppm_uib_text = f"{ppm_uib:.2f}" if ppm_uib is not None else "\u2014"
-        ppm_uib_item = QTableWidgetItem(ppm_uib_text)
-        ppm_uib_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        area_uib = (doc_rep.get("areas_uib") or {}).get("total", 0)
-        ppm_uib_item.setToolTip(f"A_UIB = {area_uib:.1f}")
-        table.setItem(row, 2, ppm_uib_item)
-
-        # Col 3: SNR
+        # Col 2: SNR
         snr_info = doc_rep.get("snr_info") or {}
         snr_direct = snr_info.get("snr_direct", 0)
-        below_lod = quantification.get("below_lod", False)
-        below_loq = quantification.get("below_loq", False)
-        if below_lod:
-            snr_text = f"<LOD ({snr_direct:.0f})"
-            snr_item = QTableWidgetItem(snr_text)
-            snr_item.setForeground(QBrush(QColor(COLOR_ERROR)))
-        elif below_loq:
-            snr_text = f"<LOQ ({snr_direct:.0f})"
-            snr_item = QTableWidgetItem(snr_text)
-            snr_item.setForeground(QBrush(QColor(COLOR_WARNING)))
-        else:
-            snr_text = f"{snr_direct:.0f}" if snr_direct else "\u2014"
-            snr_item = QTableWidgetItem(snr_text)
+        snr_text = f"{snr_direct:.0f}" if snr_direct else "\u2014"
+        snr_item = QTableWidgetItem(snr_text)
         snr_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        table.setItem(row, 3, snr_item)
+        table.setItem(row, 2, snr_item)
 
-        # Col 4: r2 DOC
+        # Col 3: r\u00b2 DOC
         r2_doc = (comparison.get("doc") or {}).get("pearson", 0)
         r2_uib = (comparison.get("doc") or {}).get("pearson_uib", 0)
         if not comparison or not comparison.get("doc"):
@@ -1429,9 +1664,9 @@ class AnalyzePanel(QWidget):
         if r2_uib:
             tip_parts.append(f"r\u00b2 UIB = {r2_uib:.4f}")
         r2_item.setToolTip("\n".join(tip_parts))
-        table.setItem(row, 4, r2_item)
+        table.setItem(row, 3, r2_item)
 
-        # Col 5: Timeout
+        # Col 4: Timeout
         timeout_info = doc_rep.get("timeout_info") or {}
         n_timeouts = timeout_info.get("n_timeouts", 0)
         timeout_severity = timeout_info.get("severity", "OK")
@@ -1445,7 +1680,6 @@ class AnalyzePanel(QWidget):
                 to_text = "\u23f1\u2713"
                 to_color = COLOR_SUCCESS
             else:
-                # Show highest severity zone
                 zone_names = list(zone_summary.keys()) if zone_summary else []
                 zone_str = zone_names[0] if zone_names else ""
                 to_text = f"\u23f1 {zone_str}"
@@ -1467,9 +1701,9 @@ class AnalyzePanel(QWidget):
         else:
             to_item = QTableWidgetItem("")
         to_item.setTextAlignment(Qt.AlignCenter)
-        table.setItem(row, 5, to_item)
+        table.setItem(row, 4, to_item)
 
-        # Col 6: Pic (irregular top / saturated)
+        # Col 5: Pic (irregular top / saturated)
         anomalies = doc_rep.get("anomalies", [])
         has_irregular = (
             has_anomaly(anomalies, "IRREGULAR_TOP_DIRECT")
@@ -1495,10 +1729,15 @@ class AnalyzePanel(QWidget):
         else:
             pic_item = QTableWidgetItem("")
         pic_item.setTextAlignment(Qt.AlignCenter)
-        table.setItem(row, 6, pic_item)
+        table.setItem(row, 5, pic_item)
 
-        # DAD columns
+        # Col 6: Rèplica DAD (widget radio R1/R2/Cap)
         dad_sel = selected.get("dad", selected.get("doc", "1"))
+        dad_strip = self._create_replica_strip(
+            name, "dad", replicas_dict, dad_sel, allow_comp=False)
+        table.setCellWidget(row, 6, dad_strip)
+
+        # Data DAD (per cols 7, 8, 9)
         dad_rep_data = (sample_data.get("replicas", {}) or {}).get(dad_sel, {})
         areas_dad = dad_rep_data.get("areas") or {}
         snr_dad = dad_rep_data.get("snr_info_dad") or {}
@@ -1561,22 +1800,18 @@ class AnalyzePanel(QWidget):
         table.setItem(row, 9, r2_254_item)
 
     def _fill_blank_row(self, table, row, name, sample_data, bg_color):
-        """Fill a BLANK row with simplified data."""
-        quantification = sample_data.get("quantification", {}) or {}
-        _, doc_rep = resolve_doc_replica(sample_data)
-
+        """Fill a BLANK row with simplified data (v2.2.0: sense ppm)."""
         # Col 0: Mostra
         name_item = QTableWidgetItem(name)
         name_item.setBackground(QBrush(bg_color))
         table.setItem(row, 0, name_item)
 
-        # Col 1: ppm (if available)
-        ppm = quantification.get("concentration_ppm_direct")
-        ppm_text = f"{ppm:.2f}" if ppm is not None else "\u2014"
-        ppm_item = QTableWidgetItem(ppm_text)
-        ppm_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        ppm_item.setBackground(QBrush(bg_color))
-        table.setItem(row, 1, ppm_item)
+        # Col 1: "Blanc" label (no radio)
+        label_item = QTableWidgetItem("Blanc")
+        label_item.setTextAlignment(Qt.AlignCenter)
+        label_item.setForeground(QBrush(QColor("#888")))
+        label_item.setBackground(QBrush(bg_color))
+        table.setItem(row, 1, label_item)
 
         # Cols 2-9: dashes with grey background
         for c in range(2, 10):
@@ -1617,16 +1852,31 @@ class AnalyzePanel(QWidget):
     # ------------------------------------------------------------------
 
     def _save_current_analysis(self):
-        """Guarda l'estat actual de l'analisi a JSON."""
+        """Guarda l'estat actual de l'anàlisi a JSON.
+
+        v2.2.0: NO toca la quantificació (que es fa al pas 4). Si el
+        quantification_pending estava True, ha de quedar True després
+        d'aquest save — les modificacions a Analitzar (selecció rèplica,
+        repair...) invaliden la quantificació prèvia.
+        """
         try:
             processed = self.main_window.processed_data
             if not processed:
                 logger.warning("_save_current_analysis: processed_data is None — NO ES GUARDA")
                 return
             processed["samples_grouped"] = self.samples_grouped
+            # v2.2.0: si l'usuari modifica seleccions a Analitzar, la
+            # quantificació actual queda obsoleta. Marcar pending.
+            processed["quantification_pending"] = True
+            # Invalidar quantification dels samples_grouped (sense esborrar
+            # del tot — només marcar perquè el pas Quantificar la regeneri)
+            for sg in self.samples_grouped.values():
+                if isinstance(sg, dict) and sg.get("quantification"):
+                    sg["quantification"]["valid"] = False
+                    sg["quantification"]["reason"] = "Estale (cal reaplicar recta)"
             from hpsec_analyze import save_analysis_result
             save_analysis_result(processed)
-            logger.info("_save_current_analysis: guardat OK")
+            logger.info("_save_current_analysis: guardat OK (quantification_pending=True)")
         except Exception as e:
             logger.warning("Error guardant analisi: %s", e)
             import traceback; traceback.print_exc()
@@ -1686,13 +1936,137 @@ class AnalyzePanel(QWidget):
             if isinstance(r, dict))
         self._review_compose_btn.setVisible(has_compose or has_timeouts)
 
+        # v2.2.0: actualitzar tab "Comparar R1↔R2"
+        self._update_compare_tab(sample_data)
+
         # Scroll to make review panel visible
         self._scroll_area.ensureWidgetVisible(self._review_panel, 50, 50)
 
+    # ------------------------------------------------------------------
+    # v2.2.0: Tab "Comparar R1↔R2" — overlay rèpliques + estadístiques
+    # ------------------------------------------------------------------
+
+    def _update_compare_tab(self, sample_data):
+        """Pinta el gràfic d'overlay R1 vs R2 i estadístiques de diferència."""
+        if not HAS_MATPLOTLIB or not hasattr(self, '_compare_figure'):
+            return
+
+        replicas = sample_data.get("replicas", {}) or {}
+        valid_reps = [k for k, r in replicas.items()
+                       if isinstance(r, dict) and r.get("t_doc") is not None
+                       and r.get("y_doc") is not None]
+
+        self._compare_figure.clear()
+
+        # Habilitar/deshabilitar tab segons disponibilitat
+        if len(valid_reps) < 2:
+            ax = self._compare_figure.add_subplot(111)
+            ax.text(0.5, 0.5,
+                    "Mostra amb només 1 rèplica — sense comparació",
+                    ha='center', va='center', fontsize=11, color='#888',
+                    transform=ax.transAxes)
+            ax.set_xticks([])
+            ax.set_yticks([])
+            self._compare_canvas.draw()
+            self._compare_stats.setText(
+                "<i>No es pot comparar amb una sola rèplica.</i>")
+            self._review_tabs.setTabEnabled(self._review_compare_tab_idx, False)
+            return
+
+        self._review_tabs.setTabEnabled(self._review_compare_tab_idx, True)
+
+        rep_keys = sorted(valid_reps)[:2]  # primeres 2 rèpliques
+        r1_data = replicas[rep_keys[0]]
+        r2_data = replicas[rep_keys[1]]
+
+        # === Plot 1: overlay R1+R2 ===
+        ax_top = self._compare_figure.add_subplot(2, 1, 1)
+        try:
+            import numpy as np
+            t1 = np.asarray(r1_data["t_doc"], dtype=float)
+            y1 = np.asarray(r1_data["y_doc"], dtype=float)
+            t2 = np.asarray(r2_data["t_doc"], dtype=float)
+            y2 = np.asarray(r2_data["y_doc"], dtype=float)
+            ax_top.plot(t1, y1, color="#2E86AB", linewidth=1.4,
+                        label=f"R{rep_keys[0]}", alpha=0.85)
+            ax_top.plot(t2, y2, color="#A23B72", linewidth=1.4,
+                        label=f"R{rep_keys[1]}", alpha=0.85)
+            ax_top.set_ylabel("DOC (ppb)", fontsize=9)
+            ax_top.legend(fontsize=9, loc='best')
+            ax_top.grid(True, alpha=0.3)
+            ax_top.tick_params(labelsize=8)
+        except Exception as e:
+            logger.warning("Error compare overlay: %s", e)
+
+        # === Plot 2: diferència (R1 - R2) interpolat ===
+        ax_bot = self._compare_figure.add_subplot(2, 1, 2)
+        try:
+            common_t = np.linspace(max(t1.min(), t2.min()),
+                                    min(t1.max(), t2.max()), 800)
+            y1_i = np.interp(common_t, t1, y1)
+            y2_i = np.interp(common_t, t2, y2)
+            diff = y1_i - y2_i
+            ax_bot.plot(common_t, diff, color="#666", linewidth=1.0)
+            ax_bot.fill_between(common_t, 0, diff,
+                                 where=(diff >= 0), color="#2E86AB", alpha=0.3)
+            ax_bot.fill_between(common_t, 0, diff,
+                                 where=(diff < 0), color="#A23B72", alpha=0.3)
+            ax_bot.axhline(0, color="#aaa", linewidth=0.5)
+            ax_bot.set_xlabel("t (min)", fontsize=9)
+            ax_bot.set_ylabel(f"R{rep_keys[0]} − R{rep_keys[1]}", fontsize=9)
+            ax_bot.grid(True, alpha=0.3)
+            ax_bot.tick_params(labelsize=8)
+        except Exception as e:
+            logger.warning("Error compare diff: %s", e)
+
+        self._compare_figure.tight_layout()
+        self._compare_canvas.draw()
+
+        # === Estadístiques ===
+        try:
+            comparison = sample_data.get("comparison") or {}
+            doc_comp = comparison.get("doc") or {}
+            pearson = doc_comp.get("pearson", 0)
+            rsd_area = doc_comp.get("rsd_area", None)
+            area_r1 = ((r1_data.get("areas") or {}).get("DOC") or {}).get("total", 0)
+            area_r2 = ((r2_data.get("areas") or {}).get("DOC") or {}).get("total", 0)
+            snr_r1 = (r1_data.get("snr_info") or {}).get("snr_direct", 0)
+            snr_r2 = (r2_data.get("snr_info") or {}).get("snr_direct", 0)
+
+            d_area = area_r1 - area_r2
+            d_area_pct = (d_area / area_r1 * 100) if area_r1 else 0
+
+            r2_text_color = "#28a745" if pearson >= 0.99 else "#d4a017"
+            stats_html = (
+                f"<b>Pearson r²:</b> "
+                f"<span style='color:{r2_text_color};'>{pearson:.4f}</span> · "
+                f"<b>Àrea R{rep_keys[0]}:</b> {area_r1:.1f} · "
+                f"<b>Àrea R{rep_keys[1]}:</b> {area_r2:.1f} · "
+                f"<b>Δàrea:</b> {d_area:+.1f} ({d_area_pct:+.1f}%) · "
+                f"<b>SNR:</b> R{rep_keys[0]}={snr_r1:.0f} / R{rep_keys[1]}={snr_r2:.0f}"
+            )
+            if rsd_area is not None:
+                stats_html += f" · <b>RSD:</b> {rsd_area:.2f}%"
+            self._compare_stats.setText(stats_html)
+        except Exception as e:
+            logger.debug("Error compare stats: %s", e)
+            self._compare_stats.setText(
+                "<i>Estadístiques no disponibles.</i>")
+
+    def _apply_compare_action(self, replica_key):
+        """Aplica la rèplica triada des del tab Comparar."""
+        if not self._review_sample:
+            return
+        self._on_replica_changed(self._review_sample, "doc", replica_key)
+        self._on_replica_changed(self._review_sample, "dad", replica_key)
+        # Tornar al tab Cromatograma
+        self._review_tabs.setCurrentIndex(0)
+
     def _close_review(self):
-        """Hide the review panel."""
-        self._review_panel.setVisible(False)
+        """Clear review selection (v2.2.0: panell sempre visible al split, només deselecciona)."""
         self._review_sample = None
+        # Mantenim el panell visible amb el contingut actual; només neteja l'estat
+        # de selecció. La crida explícita només es fa via accions internes/legacy.
 
     def _navigate_review(self, direction):
         """Navigate to prev/next sample in review."""
@@ -2343,7 +2717,14 @@ class AnalyzePanel(QWidget):
     # ------------------------------------------------------------------
 
     def _populate_charts(self, processed_data):
-        """Prepara dades pels grafics i mostra la seccio."""
+        """Prepara dades pels grafics i mostra la seccio.
+
+        v2.2.0: charts (DOC bars, DAD bars) reubicats al pas Quantificar.
+        Aquesta funció no fa res — es manté per backward compat amb
+        invocacions externes que encara la criden.
+        """
+        return  # v2.2.0: dead path
+        # ----------- Codi original deprecated -----------
         if not HAS_MATPLOTLIB or not processed_data:
             return
 
@@ -2382,10 +2763,12 @@ class AnalyzePanel(QWidget):
         self._chart_is_bp = is_bp
 
         self._build_sample_checkboxes(regular, blank, control, khp)
-        self.charts_section.setVisible(True)
+        # v2.2.0: charts (ppm + bars) reubicats al pas Quantificar.
+        # Mantenim charts_section invisible permanentment a Analitzar.
+        self.charts_section.setVisible(False)
 
         self._charts_initialized = True
-        self._redraw_charts()
+        # No re-dibuixar charts (no es veuen)
 
     def _build_sample_checkboxes(self, regular, blank, control, khp):
         """Registra mostres per categoria."""

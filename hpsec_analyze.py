@@ -2832,7 +2832,8 @@ def _estimate_uib_timeouts_from_sequence(result, is_bp=False):
 # =============================================================================
 # FUNCIÓ PRINCIPAL: PROCESSAR SEQÜÈNCIA
 # =============================================================================
-def analyze_sequence(imported_data, calibration_data=None, config=None, progress_callback=None):
+def analyze_sequence(imported_data, calibration_data=None, config=None,
+                     progress_callback=None, do_quantify=True):
     """
     FASE 3: Processa totes les mostres d'una seqüència.
 
@@ -2843,6 +2844,10 @@ def analyze_sequence(imported_data, calibration_data=None, config=None, progress
             - shift_direct: Shift per DOC_Direct (minuts)
         config: Configuració
         progress_callback: Funció callback per reportar progrés
+        do_quantify: Si True (default), aplica calibració (àrea → ppm) inline.
+            Si False, només qualitatiu (àrees, SNR, R², HCI, anomalies) i la
+            quantificació queda pendent. La quantificació es pot aplicar després
+            amb quantify_sequence(). [v1.7.0]
 
     Returns:
         dict amb:
@@ -2855,6 +2860,7 @@ def analyze_sequence(imported_data, calibration_data=None, config=None, progress
             - errors: Llista d'errors
             - warnings: Llista d'avisos
             - summary: Resum estadístic
+            - quantification_pending: True si do_quantify=False (Fase 4 separada)
     """
     config = config or DEFAULT_PROCESS_CONFIG
 
@@ -3101,8 +3107,10 @@ def analyze_sequence(imported_data, calibration_data=None, config=None, progress
                     _score_replica_doc(k, replicas[k])[2] for k in replica_keys)
                 sample_group["sample_valid"] = any_valid
 
-            # Quantificació (saltar si mostra no vàlida o exclosa)
-            if sample_group["sample_valid"] is False:
+            # Quantificació (saltar si mostra no vàlida, exclosa o do_quantify=False)
+            if not do_quantify:
+                sample_group["quantification"] = None
+            elif sample_group["sample_valid"] is False:
                 sample_group["quantification"] = {
                     "concentration_ppm": None,
                     "concentration_ppm_direct": None,
@@ -3142,9 +3150,11 @@ def analyze_sequence(imported_data, calibration_data=None, config=None, progress
             sample_group["repairable_replicas"] = []
             sample_group["repaired"] = False
 
-            # Quantificació (saltar si exclosa)
+            # Quantificació (saltar si exclosa o do_quantify=False)
             if r1:
-                if skip_quant:
+                if not do_quantify:
+                    sample_group["quantification"] = None
+                elif skip_quant:
                     sample_group["quantification"] = {
                         "concentration_ppm": None,
                         "concentration_ppm_direct": None,
@@ -3248,7 +3258,171 @@ def analyze_sequence(imported_data, calibration_data=None, config=None, progress
     if progress_callback:
         progress_callback("Processing complete", 100)
 
+    # Flag per consumidors: la quantificació està pendent (cal cridar quantify_sequence)
+    result["quantification_pending"] = not do_quantify
+
     return result
+
+
+# =============================================================================
+# QUANTIFY SEQUENCE — Aplica calibració a un analysis_result ja calculat
+# =============================================================================
+
+
+def quantify_sequence(analysis_result, seq_path=None, mode=None, seq_date=None,
+                      progress_callback=None):
+    """
+    FASE 4 (separada): Aplica calibració (àrea → ppm) a un analysis_result.
+
+    Permet quantificar després d'analitzar sense reprocessar cromatogrames.
+    Útil quan:
+    - L'usuari canvia la rèplica seleccionada i vol re-quantificar
+    - S'aplica una nova recta de calibració
+    - El pipeline separa Analitzar (qualitatiu) de Quantificar
+
+    Args:
+        analysis_result: Dict retornat per analyze_sequence(do_quantify=False)
+        seq_path: Path de la SEQ (per carregar calibracions actives). Si None,
+            s'usa analysis_result["seq_path"].
+        mode: "COLUMN" o "BP". Si None, s'usa analysis_result["method"].
+        seq_date: Data de la SEQ per seleccionar calibració. Si None, activa.
+        progress_callback: Funció callback per reportar progrés (msg, pct).
+
+    Returns:
+        analysis_result enriquit amb sample_group["quantification"] per cada mostra.
+        També posa result["quantification_pending"] = False.
+    """
+    if not analysis_result or not analysis_result.get("samples_grouped"):
+        logger.warning("quantify_sequence: analysis_result buit o sense samples_grouped")
+        return analysis_result
+
+    if seq_path is None:
+        seq_path = analysis_result.get("seq_path", "")
+    if mode is None:
+        method = analysis_result.get("method", "COLUMN")
+        mode = "BP" if method.upper() == "BP" else "COLUMN"
+
+    # Carregar totes les calibracions actives per aquesta SEQ
+    multi_calibrations = {}
+    if seq_path:
+        try:
+            active_cals = get_all_active_calibrations(seq_path, mode)
+            for cal in active_cals:
+                vol = cal.get("volume_uL", 0)
+                if vol > 0:
+                    multi_calibrations[vol] = cal
+        except Exception as e:
+            logger.warning("quantify_sequence: error carregant calibracions: %s", e)
+
+    def _get_sample_cal(sample):
+        if multi_calibrations:
+            inj_vol = sample.get("inj_volume")
+            if inj_vol and inj_vol in multi_calibrations:
+                return multi_calibrations[inj_vol]
+            return next(iter(multi_calibrations.values()))
+        return {}
+
+    # Patrons exclusió quantificació (PR_I, etc.)
+    try:
+        from hpsec_config import get_config
+        cfg = get_config()
+        no_quant_patterns = cfg.get("no_quantification_patterns", []) or []
+    except Exception:
+        no_quant_patterns = []
+
+    samples_grouped = analysis_result["samples_grouped"]
+    total = len(samples_grouped)
+    processed = 0
+
+    for sample_name, sample_group in samples_grouped.items():
+        processed += 1
+        if progress_callback:
+            progress_callback(f"Quantificant {sample_name}",
+                              int(processed / total * 100) if total else 100)
+
+        # Patró excloent quantificació?
+        skip_quant = any(pat.lower() in sample_name.lower() for pat in no_quant_patterns)
+        # Override per usuari (right-click → "Excloure quantificació")
+        # v2.2.0: la clau dominant al codebase és `skip_quantification`
+        if sample_group.get("skip_quantification") or sample_group.get("exclude_from_quantification"):
+            skip_quant = True
+
+        # Mostra no vàlida?
+        sample_valid = sample_group.get("sample_valid", True)
+        replicas = sample_group.get("replicas", {})
+        selected_doc = (sample_group.get("selected") or {}).get("doc")
+
+        if sample_valid is False:
+            sample_group["quantification"] = {
+                "concentration_ppm": None,
+                "concentration_ppm_direct": None,
+                "concentration_ppm_uib": None,
+                "area_total": None,
+                "valid": False,
+                "reason": "Mostra no vàlida"
+            }
+            continue
+
+        if skip_quant:
+            sample_group["quantification"] = {
+                "concentration_ppm": None,
+                "concentration_ppm_direct": None,
+                "concentration_ppm_uib": None,
+                "valid": False,
+                "reason": "Patró de referència (sense quantificació)"
+            }
+            continue
+
+        # Buscar la rèplica seleccionada
+        # v2.2.0: tractar "none"/"Cap"/None com a explicit-no-replica (usuari excloent)
+        selected_sample = None
+        if selected_doc in (None, "", "none", "Cap"):
+            sample_group["quantification"] = {
+                "concentration_ppm": None,
+                "concentration_ppm_direct": None,
+                "concentration_ppm_uib": None,
+                "valid": False,
+                "reason": "Rèplica explícitament exclosa per l'usuari"
+            }
+            continue
+
+        if selected_doc and selected_doc in replicas:
+            selected_sample = replicas[selected_doc]
+        elif replicas:
+            # Fallback: primera rèplica (només si no s'ha exclós explícitament)
+            selected_sample = next(iter(replicas.values()))
+
+        if not selected_sample:
+            sample_group["quantification"] = {
+                "concentration_ppm": None,
+                "valid": False,
+                "reason": "Sense rèplica disponible"
+            }
+            continue
+
+        sample_cal = _get_sample_cal(selected_sample)
+        quantification = quantify_sample(selected_sample, sample_cal, mode=mode,
+                                          seq_date=seq_date)
+        # HCI
+        hci = selected_sample.get("hci")
+        if hci is not None:
+            quantification["hci"] = hci
+            quantification["hci_character"] = selected_sample.get("hci_character", "")
+        sample_group["quantification"] = quantification
+
+    analysis_result["quantification_pending"] = False
+
+    # Re-estampar calibration fingerprint (nova recta aplicada)
+    try:
+        from hpsec_calibrate import compute_calibration_fingerprint
+        analysis_result["calibration_fingerprint"] = compute_calibration_fingerprint()
+    except Exception as e:
+        logger.warning("Calibration fingerprint computation failed: %s", e)
+
+    if progress_callback:
+        progress_callback("Quantificació completa", 100)
+
+    return analysis_result
 
 
 # =============================================================================
@@ -3320,6 +3494,9 @@ def save_analysis_result(analysis_data, output_path=None):
         "warning_level": analysis_data.get("warning_level", "none"),
         "config_fingerprint": analysis_data.get("config_fingerprint", ""),
         "calibration_fingerprint": analysis_data.get("calibration_fingerprint", ""),
+        # v2.2.0: flag que indica si la quantificació encara està pendent.
+        # Quan True, l'usuari ha d'anar al pas Quantificar per aplicar la recta.
+        "quantification_pending": analysis_data.get("quantification_pending", True),
         "summary": analysis_data.get("summary", {}),
         "samples": [],
         # Mostres agrupades per nom (per GUI)
@@ -3510,6 +3687,10 @@ def load_analysis_result(seq_path):
         with open(filepath, "r", encoding="utf-8") as f:
             data = json.load(f)
         _restore_dataframes(data)
+
+        # v2.2.0: resoldre seq_path a absolut (al JSON es desa com a basename)
+        if data.get("seq_path") and not os.path.isabs(data["seq_path"]):
+            data["seq_path"] = os.path.abspath(seq_path)
 
         # Normalitzar anomalies (backward compat: strings → dicts)
         for sg in data.get("samples_grouped", {}).values():
@@ -3824,6 +4005,7 @@ __all__ = [
     "compare_replicas",
     "recommend_replica",
     "quantify_sample",
+    "quantify_sequence",
     # Constants
     "REPLICA_PEARSON_THRESHOLD",
     "REPLICA_AREA_DIFF_THRESHOLD",

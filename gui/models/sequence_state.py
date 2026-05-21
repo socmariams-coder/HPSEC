@@ -30,6 +30,7 @@ class Phase(Enum):
     IMPORT = "import"
     CALIBRATE = "calibrate"
     ANALYZE = "analyze"
+    QUANTIFY = "quantify"  # NOU (v2.2.0): àrees → ppm separat de l'anàlisi
     REVIEW = "review"
     EXPORT = "export"
 
@@ -58,6 +59,7 @@ class SequenceState:
     import_status: PhaseStatus = field(default_factory=PhaseStatus)
     calibrate_status: PhaseStatus = field(default_factory=PhaseStatus)
     analyze_status: PhaseStatus = field(default_factory=PhaseStatus)
+    quantify_status: PhaseStatus = field(default_factory=PhaseStatus)  # v2.2.0
     review_status: PhaseStatus = field(default_factory=PhaseStatus)
     export_status: PhaseStatus = field(default_factory=PhaseStatus)
 
@@ -129,9 +131,56 @@ class SequenceState:
         self.import_status = self._check_phase("import_manifest.json")
         self.calibrate_status = self._check_phase("calibration_result.json")
         self.analyze_status = self._check_phase("analysis_result.json")
+        self.quantify_status = self._check_quantify()  # v2.2.0
         self.review_status = self._check_phase("review_result.json")
         self.export_status = self._check_export()
         self._extract_metadata()
+
+    def _check_quantify(self) -> PhaseStatus:
+        """Determina si la quantificació s'ha aplicat.
+
+        Mira `quantification_pending` a analysis_result.json:
+        - quantification_pending=True  → pendent (do_quantify=False)
+        - quantification_pending=False → ja quantificat (recta aplicada)
+        - Sense flag (JSONs antics legacy v<2.2) → comprovar al JSON sencer
+          si almenys una mostra té quantification!=None (positive signal).
+        """
+        if not self.analyze_status.completed:
+            return PhaseStatus(completed=False)
+
+        data = self.analyze_status.data or {}
+        pending = data.get('quantification_pending')
+        if pending is True:
+            return PhaseStatus(completed=False)
+        if pending is False:
+            # Quantificat explícitament
+            return PhaseStatus(
+                completed=True,
+                timestamp=self.analyze_status.timestamp,
+                data={}
+            )
+        # Legacy: flag absent. Necessitem positive signal — llegir JSON sencer
+        # per veure si almenys una mostra té quantification amb valors.
+        json_path = os.path.join(self._check_data_path, "analysis_result.json")
+        try:
+            with open(json_path, 'r', encoding='utf-8') as f:
+                full_data = json.load(f)
+            samples_grouped = full_data.get("samples_grouped", {})
+            any_quantified = any(
+                isinstance(sg, dict) and sg.get("quantification")
+                and sg["quantification"].get("concentration_ppm_direct") is not None
+                for sg in samples_grouped.values()
+            )
+            if any_quantified:
+                return PhaseStatus(
+                    completed=True,
+                    timestamp=self.analyze_status.timestamp,
+                    data={}
+                )
+        except Exception as e:
+            # Si no podem llegir, ser conservador: pendent
+            pass
+        return PhaseStatus(completed=False)
 
     # JSONs grans que NO cal carregar sencer per al dashboard
     _LARGE_JSONS = {"analysis_result.json"}
@@ -178,7 +227,7 @@ class SequenceState:
             data = {}
             for key in ('success', 'timestamp', 'date', 'method', 'data_mode',
                         'seq_path', 'seq_name', 'warning_level',
-                        'config_fingerprint'):
+                        'config_fingerprint', 'quantification_pending'):
                 pattern = rf'"{key}"\s*:\s*("([^"]*)"|(true|false|null|\d+[\.\d]*))'
                 m = re.search(pattern, head)
                 if m:
@@ -751,6 +800,22 @@ class SequenceState:
         return 'ok'
 
     @property
+    def quantify_state(self) -> str:
+        """Estat de la fase Quantificar (v2.2.0)."""
+        if not self.quantify_status.completed:
+            return 'pending'
+        if self.quantify_status.errors:
+            return 'error'
+        return 'ok'
+
+    @property
+    def quantify_warnings(self) -> list:
+        """Avisos a la fase Quantificar (v2.2.0)."""
+        if self.quantify_status.data:
+            return self.quantify_status.data.get('warnings', [])
+        return []
+
+    @property
     def review_state(self) -> str:
         """
         Estat de la fase Revisar per determinar color.
@@ -787,51 +852,57 @@ class SequenceState:
 
     @property
     def current_phase(self) -> Phase:
-        """Retorna la fase actual (primera no completada de les 4 principals)."""
+        """Retorna la fase actual (primera no completada de les 5 principals)."""
         if not self.import_status.completed:
             return Phase.IMPORT
         if not self.calibrate_status.completed:
             return Phase.CALIBRATE
         if not self.analyze_status.completed:
             return Phase.ANALYZE
+        if not self.quantify_status.completed:
+            return Phase.QUANTIFY
         if not self.review_status.completed:
             return Phase.REVIEW
-        # Les 4 fases principals completades
+        # Les 5 fases principals completades
         return Phase.EXPORT  # Indica que es pot exportar (opcional)
 
     @property
     def next_action(self) -> str:
         """Retorna la descripció de la següent acció."""
         phase = self.current_phase
-        # Si les 4 fases principals estan completades
+        # Si les 5 fases principals estan completades
         if self.review_status.completed:
             return "Completat"
         actions = {
             Phase.IMPORT: "Importar",
             Phase.CALIBRATE: "Verificar",
             Phase.ANALYZE: "Analitzar",
-            Phase.REVIEW: "Exportar",
+            Phase.QUANTIFY: "Quantificar",
+            Phase.REVIEW: "Comparar",
         }
         return actions.get(phase, "Completat")
 
     @property
     def progress_pct(self) -> int:
-        """Retorna el percentatge de progrés (0-100) de les 4 fases principals."""
+        """Retorna el percentatge de progrés (0-100) de les 5 fases principals."""
         completed = sum([
             self.import_status.completed,
             self.calibrate_status.completed,
             self.analyze_status.completed,
+            self.quantify_status.completed,
             self.review_status.completed,
         ])
-        return int(completed / 4 * 100)
+        return int(completed / 5 * 100)
 
     @property
     def status_icons(self) -> str:
-        """Retorna icones d'estat per les 4 fases principals."""
+        """Retorna icones d'estat per les 5 fases principals."""
         def icon(status: PhaseStatus) -> str:
             return "✓" if status.completed else "○"
 
-        return f"{icon(self.import_status)}{icon(self.calibrate_status)}{icon(self.analyze_status)}{icon(self.review_status)}"
+        return (f"{icon(self.import_status)}{icon(self.calibrate_status)}"
+                f"{icon(self.analyze_status)}{icon(self.quantify_status)}"
+                f"{icon(self.review_status)}")
 
     def can_run_phase(self, phase: Phase) -> bool:
         """Comprova si es pot executar una fase."""
@@ -841,8 +912,10 @@ class SequenceState:
             return self.import_status.completed
         if phase == Phase.ANALYZE:
             return self.calibrate_status.completed
-        if phase == Phase.REVIEW:
+        if phase == Phase.QUANTIFY:
             return self.analyze_status.completed
+        if phase == Phase.REVIEW:
+            return self.quantify_status.completed
         if phase == Phase.EXPORT:
             return self.review_status.completed
         return False
@@ -853,6 +926,7 @@ class SequenceState:
             Phase.IMPORT: self.import_status,
             Phase.CALIBRATE: self.calibrate_status,
             Phase.ANALYZE: self.analyze_status,
+            Phase.QUANTIFY: self.quantify_status,
             Phase.REVIEW: self.review_status,
             Phase.EXPORT: self.export_status
         }
@@ -865,7 +939,8 @@ class SequenceState:
         Quan es refà una fase, les posteriors queden pendents.
         Els JSONs no s'esborren (es sobreescriuran quan es refacin).
         """
-        phases = [Phase.IMPORT, Phase.CALIBRATE, Phase.ANALYZE, Phase.REVIEW, Phase.EXPORT]
+        phases = [Phase.IMPORT, Phase.CALIBRATE, Phase.ANALYZE,
+                  Phase.QUANTIFY, Phase.REVIEW, Phase.EXPORT]
         start_idx = phases.index(phase)
 
         for p in phases[start_idx:]:

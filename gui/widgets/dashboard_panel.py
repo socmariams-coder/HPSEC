@@ -63,10 +63,11 @@ COL_CTRL = 5       # Blancs i controls (MQ, NaOH, etc.)
 COL_IMPORT = 6
 COL_CAL = 7
 COL_ANA = 8
-COL_REVIEW = 9
-COL_WARNINGS = 10  # Avisos de processament (recompte + tooltip)
-COL_NOTES = 11     # Notes manuals
-NUM_COLS = 12
+COL_QUANT = 9     # Quantificar (v2.2.0)
+COL_REVIEW = 10
+COL_WARNINGS = 11 # Avisos de processament (recompte + tooltip)
+COL_NOTES = 12    # Notes manuals
+NUM_COLS = 13
 
 
 # =============================================================================
@@ -335,7 +336,7 @@ class DashboardPanel(QWidget):
     sequence_selected = Signal(str, str)
 
     # Noms de les etapes
-    STAGE_NAMES = ["Importar", "Verificar", "Analitzar", "Exportar"]
+    STAGE_NAMES = ["Importar", "Verificar", "Analitzar", "Quantificar", "Exportar"]
 
     def __init__(self, main_window):
         super().__init__()
@@ -486,7 +487,7 @@ class DashboardPanel(QWidget):
         self.table.setColumnCount(NUM_COLS)
         self.table.setHorizontalHeaderLabels([
             "", "Seqüència", "Data", "Mostres", "Ref", "Ctrl",
-            "Importar", "Verificar", "Analitzar", "Exportar",
+            "Importar", "Verificar", "Analitzar", "Quantificar", "Exportar",
             "Avisos", "Notes"
         ])
 
@@ -522,6 +523,7 @@ class DashboardPanel(QWidget):
             COL_IMPORT: 60,
             COL_CAL: 60,
             COL_ANA: 60,
+            COL_QUANT: 60,
             COL_REVIEW: 55,
             COL_WARNINGS: 50,
         }
@@ -822,11 +824,14 @@ class DashboardPanel(QWidget):
                 item_ctrl.setBackground(cal_bg)
             self.table.setItem(row, COL_CTRL, item_ctrl)
 
-            # Fases (Importar, Verificar, Analitzar, Exportar)
+            # Fases (Importar, Verificar, Analitzar, Quantificar, Exportar)
+            # Quantificar: estat reflectit segons quantify_status (cau a Exportar/Review en v2.2.0)
             phases_data = [
                 (seq.import_status, seq.import_state, "Importar", seq.import_warnings),
                 (seq.calibrate_status, seq.calibrate_state, "Verificar", seq.calibrate_warnings),
                 (seq.analyze_status, seq.analyze_state, "Analitzar", seq.analyze_warnings),
+                (seq.quantify_status, getattr(seq, 'quantify_state', 'pending'),
+                 "Quantificar", getattr(seq, 'quantify_warnings', [])),
                 (seq.review_status, seq.review_state, "Exportar", seq.review_warnings),
             ]
 
@@ -836,7 +841,7 @@ class DashboardPanel(QWidget):
                     current_phase_idx = i
                     break
 
-            phase_cols = [COL_IMPORT, COL_CAL, COL_ANA, COL_REVIEW]
+            phase_cols = [COL_IMPORT, COL_CAL, COL_ANA, COL_QUANT, COL_REVIEW]
             for col_offset, (status, state, phase_name, phase_warnings) in enumerate(phases_data):
                 col = phase_cols[col_offset]
                 item = QTableWidgetItem()
@@ -1590,6 +1595,8 @@ class DashboardPanel(QWidget):
             (seq.import_status, seq.import_state, "Importar", seq.import_warnings),
             (seq.calibrate_status, seq.calibrate_state, "Verificar", seq.calibrate_warnings),
             (seq.analyze_status, seq.analyze_state, "Analitzar", seq.analyze_warnings),
+            (seq.quantify_status, getattr(seq, 'quantify_state', 'pending'),
+             "Quantificar", getattr(seq, 'quantify_warnings', [])),
             (seq.review_status, seq.review_state, "Exportar", seq.review_warnings),
         ]
 
@@ -1599,7 +1606,7 @@ class DashboardPanel(QWidget):
                 current_phase_idx = i
                 break
 
-        phase_cols = [COL_IMPORT, COL_CAL, COL_ANA, COL_REVIEW]
+        phase_cols = [COL_IMPORT, COL_CAL, COL_ANA, COL_QUANT, COL_REVIEW]
         for col_offset, (status, state, phase_name, phase_warnings) in enumerate(phases_data):
             col = phase_cols[col_offset]
             item = QTableWidgetItem()
