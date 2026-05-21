@@ -738,9 +738,11 @@ class AnalyzePanel(QWidget):
         # Files m\u00e9s altes per encabir els botons toggle (~28 px)
         self._samples_table.verticalHeader().setDefaultSectionSize(30)
 
-        self._samples_table.setMinimumHeight(200)
+        self._samples_table.setMinimumHeight(300)
+        self._samples_table.setMinimumWidth(320)
         self._samples_table.clicked.connect(self._on_table_row_clicked)
         self._table_container_layout.addWidget(self._samples_table)
+        self._table_container.setMinimumWidth(320)
 
     def _check_existing_analysis(self):
         """Comprova si existeix analisi previa i la carrega automaticament.

@@ -70,16 +70,11 @@ class SequenceQCTab(QWidget):
         self._build_ui()
 
     def _build_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 8, 8, 8)
-
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        layout.addWidget(scroll)
-
-        self._container = QWidget()
-        self._content = QVBoxLayout(self._container)
+        # Sense QScrollArea propi: el scroll del AnalyzePanel ja s'encarrega
+        # del scroll global. Així evitem el doble scroll quan aquesta secció
+        # es desplega sota el splitter.
+        self._content = QVBoxLayout(self)
+        self._content.setContentsMargins(8, 8, 8, 8)
         self._content.setSpacing(12)
 
         # Placeholder per quan no hi ha dades
@@ -90,7 +85,6 @@ class SequenceQCTab(QWidget):
         self._content.addWidget(self._placeholder)
 
         self._content.addStretch()
-        scroll.setWidget(self._container)
 
     def populate(self, result: dict):
         """Pobla el tab amb dades d'anàlisi."""
