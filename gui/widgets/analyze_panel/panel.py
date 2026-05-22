@@ -1992,15 +1992,18 @@ class AnalyzePanel(QWidget):
                     ax.fill_between(t_arr, 0, y_pos,
                                     alpha=0.12, color=color, zorder=1)
                 else:
-                    # COLUMN: fraccions colorades
+                    # COLUMN: fraccions colorades + delimitadors interns sub-zones
                     try:
                         from hpsec_config import get_config as _gc
                         _cfg = _gc()
                         _fracs = {fn: (fi["start"], fi["end"])
                                   for fn, fi in _cfg.get_all_fractions()}
+                        _subs = _cfg.get_all_subzones()  # {sub_name: (parent, s, e)}
                     except Exception:
-                        _fracs = {"BioP": (10.8, 18), "HS": (18, 23),
-                                  "BB": (23, 26), "SB": (26, 32), "LMW": (32, 70)}
+                        _fracs = {"BioP": (12.0, 18.65), "HS": (18.65, 23.0),
+                                  "BB": (23.0, 29.0), "SB": (29.0, 32.0),
+                                  "LMW": (32.0, 78.65)}
+                        _subs = {}
                     _fcolors = {"BioP": "#E74C3C", "HS": "#F39C12",
                                 "BB": "#27AE60", "SB": "#3498DB", "LMW": "#95A5A6"}
                     for fn, (t0, t1) in _fracs.items():
@@ -2010,6 +2013,18 @@ class AnalyzePanel(QWidget):
                             ax.fill_between(t_arr[mask], 0, y_pos[mask],
                                             alpha=0.10, color=fc, zorder=1)
                             ax.axvline(t0, color=fc, ls='--', lw=0.3, alpha=0.3)
+                    # Delimitadors interns sub-zones (línies puntejades verticals
+                    # més fines, dins de la fracció parent)
+                    for sub_name, (parent_name, s_ini, s_fi) in _subs.items():
+                        if s_ini is None:
+                            continue
+                        parent_color = _fcolors.get(parent_name, "#888")
+                        # Línia a l'inici de cada sub-zona (excepte la primera
+                        # que coincideix amb l'inici del parent — ja dibuixada)
+                        parent_start = _fracs.get(parent_name, (None, None))[0]
+                        if parent_start is None or abs(s_ini - parent_start) > 0.01:
+                            ax.axvline(s_ini, color=parent_color,
+                                       ls=':', lw=0.4, alpha=0.45, zorder=2)
 
             # Timeout zones
             timeout_info = rd.get("timeout_info", {})

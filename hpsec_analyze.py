@@ -272,23 +272,45 @@ def calcular_fraccions_temps(t, y, config=None, exclude_from_total=None):
     if config is None:
         config = DEFAULT_PROCESS_CONFIG
     fractions = config.get("time_fractions", {})
+    # Carregar fraccions del config si no venen al param
+    subzones = {}  # {subzone_name: (parent, start, end)}
     if not fractions:
         try:
             from hpsec_config import get_config
             cfg = get_config()
             for fname, finfo in cfg.get_all_fractions():
                 fractions[fname] = [finfo["start"], finfo["end"]]
+            subzones = cfg.get_all_subzones()
         except Exception as e:
             logger.warning("Could not load time fractions from config: %s", e)
+    else:
+        # fractions ja injectat — provar de llegir subzones del config
+        # (no està al param 'fractions' simple, només per compatibilitat)
+        try:
+            from hpsec_config import get_config
+            subzones = get_config().get_all_subzones()
+        except Exception:
+            subzones = {}
 
-    # Calcular àrea per cada fracció
+    # Calcular àrea per cada fracció principal
     kpis = {}
-    for nom, (t_ini, t_fi) in fractions.items():
+    for nom, lim in fractions.items():
+        t_ini, t_fi = lim[0], lim[1]
         mask = (t >= t_ini) & (t < t_fi)
         if np.sum(mask) > 1:
             kpis[nom] = float(trapezoid(y_clean[mask], t[mask]))
         else:
             kpis[nom] = 0.0
+
+    # Calcular àrea per cada sub-zona (si n'hi ha)
+    for sub_nom, (parent_nom, s_ini, s_fi) in subzones.items():
+        if s_ini is None or s_fi is None:
+            continue
+        mask = (t >= s_ini) & (t < s_fi)
+        if np.sum(mask) > 1:
+            kpis[sub_nom] = float(trapezoid(y_clean[mask], t[mask]))
+        else:
+            kpis[sub_nom] = 0.0
 
     # Total operatiu: exclou fraccions indicades
     kpis["total_all"] = total_all
@@ -304,9 +326,18 @@ def calcular_fraccions_temps(t, y, config=None, exclude_from_total=None):
     if ref_total > 0:
         for nom in fractions.keys():
             kpis[f"{nom}_pct"] = 100.0 * kpis[nom] / ref_total
+        # Sub-zones: percentatge respecte el parent (no respecte total)
+        for sub_nom, (parent_nom, _s, _e) in subzones.items():
+            parent_area = kpis.get(parent_nom, 0.0)
+            if parent_area > 0:
+                kpis[f"{sub_nom}_pct"] = 100.0 * kpis[sub_nom] / parent_area
+            else:
+                kpis[f"{sub_nom}_pct"] = 0.0
     else:
         for nom in fractions.keys():
             kpis[f"{nom}_pct"] = 0.0
+        for sub_nom in subzones.keys():
+            kpis[f"{sub_nom}_pct"] = 0.0
 
     return kpis
 

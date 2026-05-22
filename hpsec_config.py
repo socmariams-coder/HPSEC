@@ -363,6 +363,42 @@ class ConfigManager:
         fractions = self.get("time_fractions", default={})
         return sorted(fractions.items(), key=lambda x: x[1]["start"])
 
+    def get_subzones(self, parent_name):
+        """Retorna les sub-zones d'una fracció principal (ordenades).
+
+        Args:
+            parent_name: nom de la fracció principal (HS, BB, etc.)
+
+        Returns:
+            list[(subzone_name, start, end)]. Llista buida si no té sub-zones.
+        """
+        fractions = self.get("time_fractions", default={})
+        parent = fractions.get(parent_name) or {}
+        subs = parent.get("subzones") or {}
+        items = [(name, info.get("start"), info.get("end"))
+                 for name, info in subs.items()]
+        return sorted(items, key=lambda x: x[1] if x[1] is not None else 0)
+
+    def get_all_subzones(self, mode=None):
+        """Retorna totes les sub-zones de totes les fraccions, indexades pel
+        nom de la subzona.
+
+        Returns:
+            dict {subzone_name: (parent_name, start, end)}.
+            Ordenats per inici. Buit si mode=BP.
+        """
+        if mode and mode.upper() == "BP":
+            return {}
+        fractions = self.get("time_fractions", default={})
+        result = {}
+        items = []
+        for parent_name, parent in fractions.items():
+            for sub_name, sub in (parent.get("subzones") or {}).items():
+                items.append((sub_name, parent_name,
+                              sub.get("start"), sub.get("end")))
+        items.sort(key=lambda x: x[2] if x[2] is not None else 0)
+        return {name: (parent, s, e) for name, parent, s, e in items}
+
     def get_selected_wavelengths(self):
         """Retorna les wavelengths seleccionades."""
         return self.get("wavelengths", "selected", default=[254])
