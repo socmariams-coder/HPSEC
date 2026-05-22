@@ -278,53 +278,14 @@ class AnalyzePanel(QWidget):
         results_layout.setContentsMargins(0, 0, 0, 0)
         results_layout.setSpacing(8)
 
-        # === SELECTOR BAR ===
-        sel_frame = QFrame()
-        sel_frame.setStyleSheet(
-            "QFrame { background: #fff; border: 1px solid #e0e0e0;"
-            " border-radius: 6px; }"
-        )
-        sel_layout = QHBoxLayout(sel_frame)
-        sel_layout.setContentsMargins(10, 6, 10, 6)
-        sel_layout.setSpacing(6)
-
+        # v2.2.0+: Selector bar (categoria Mostres/Blancs/Control + combo λ DAD)
+        # eliminat. Blancs/Controls sempre visibles a la taula amb separador.
+        # Longitud d'ona DAD fixa a 254 nm a la vista principal; resta de λ
+        # disponibles al diàleg de detall.
         self._cat_buttons = {}
         self._cat_counts = {}
         self._sample_checkboxes = []
-
-        for cat_key, label, color, checked in [
-            ("sample", "Mostres", "#2E86AB", True),
-            ("blank", "Blancs", "#95a5a6", False),
-            ("control", "Control", "#888", False),
-        ]:
-            btn = QPushButton(label)
-            btn.setCheckable(True)
-            btn.setChecked(checked)
-            btn.clicked.connect(self._on_cat_toggle)
-            self._cat_buttons[cat_key] = btn
-            sel_layout.addWidget(btn)
-
-        self._update_cat_btn_styles()
-
-        sel_layout.addWidget(QLabel(
-            "<span style='color:#ccc'>|</span>"
-        ))
-
-        sel_layout.addWidget(QLabel(
-            "<b style='font-size:11px;color:#555'>DAD:</b>"
-        ))
-        self._wl_combo = QComboBox()
-        self._wl_combo.setStyleSheet(
-            "QComboBox { font-size: 11px; padding: 2px 6px;"
-            " border: 1px solid #ccc; border-radius: 3px; }"
-        )
-        for wl in ["254", "220", "252", "272", "290", "362"]:
-            self._wl_combo.addItem(f"A{wl}", wl)
-        self._wl_combo.currentIndexChanged.connect(self._on_wl_changed)
-        sel_layout.addWidget(self._wl_combo)
-
-        sel_layout.addStretch()
-        results_layout.addWidget(sel_frame)
+        self._wl_combo = None
 
         # === CHARTS SECTION ===
         # v2.2.0: bar charts DOC/DAD reubicats al pas Quantificar.
@@ -478,55 +439,35 @@ class AnalyzePanel(QWidget):
 
         review_layout.addLayout(nav_row)
 
-        # === TAB WIDGET (v2.2.0): Cromatograma | Comparar R1↔R2 ===
-        self._review_tabs = QTabWidget()
-        self._review_tabs.setDocumentMode(True)
-        self._review_tabs.setStyleSheet(
-            "QTabBar::tab { padding: 4px 12px; font-size: 11px; }"
-            "QTabBar::tab:selected { font-weight: bold; }")
-
-        # ---- Tab 1: Cromatograma (vista actual) ----
-        tab_chroma = QWidget()
-        tab_chroma_layout = QVBoxLayout(tab_chroma)
-        tab_chroma_layout.setContentsMargins(0, 4, 0, 0)
-        tab_chroma_layout.setSpacing(6)
-
+        # === REVIEW CONTENT (single chart, no tabs) ===
+        # v2.2.0+: pestanyes Cromatograma|Comparar eliminades; el panell mostra
+        # directament el cromatograma de la mostra seleccionada amb DOC (eix Y
+        # esquerra) + DAD 254 nm (eix Y dret).
         if HAS_MATPLOTLIB:
             self._review_figure = Figure(figsize=(8, 3), dpi=100)
             self._review_figure.set_facecolor("#FAFAFA")
             self._review_canvas = FigureCanvas(self._review_figure)
-            self._review_canvas.setMinimumHeight(250)
+            self._review_canvas.setMinimumHeight(280)
             self._review_toolbar = NavigationToolbar2QT(
                 self._review_canvas, self._review_panel)
-            tab_chroma_layout.addWidget(self._review_toolbar)
-            tab_chroma_layout.addWidget(self._review_canvas)
+            review_layout.addWidget(self._review_toolbar)
+            review_layout.addWidget(self._review_canvas, 1)
 
-        # Controls row (DOC/DAD combos + Area checkbox + metrics)
+        # Controls row: només Area + metrics (sense combos DOC/DAD per defecte;
+        # la selecció ve de la taula via radios; λ fixa a 254 nm — la resta a
+        # diàleg de detall).
         controls_row = QHBoxLayout()
-        controls_row.addWidget(QLabel("<b>DOC:</b>"))
-        self._review_doc_combo = QComboBox()
-        self._review_doc_combo.setMinimumWidth(100)
-        self._review_doc_combo.currentIndexChanged.connect(
-            self._on_review_doc_changed)
-        controls_row.addWidget(self._review_doc_combo)
-        controls_row.addWidget(QLabel("<b>DAD:</b>"))
-        self._review_dad_combo = QComboBox()
-        self._review_dad_combo.setMinimumWidth(100)
-        self._review_dad_combo.currentIndexChanged.connect(
-            self._on_review_dad_changed)
-        controls_row.addWidget(self._review_dad_combo)
-        self._review_show_area = QCheckBox("Area")
+        self._review_show_area = QCheckBox("Àrea")
         self._review_show_area.setStyleSheet("font-size: 10px;")
         self._review_show_area.setChecked(True)
-        self._review_show_area.setToolTip("Mostrar/amagar ombrejat area integracio")
+        self._review_show_area.setToolTip("Mostrar/amagar ombrejat àrea integració")
         self._review_show_area.toggled.connect(self._on_review_area_toggled)
         controls_row.addWidget(self._review_show_area)
-
         controls_row.addStretch()
         self._review_metrics = QLabel()
         self._review_metrics.setStyleSheet("font-size: 11px; color: #444;")
         controls_row.addWidget(self._review_metrics)
-        tab_chroma_layout.addLayout(controls_row)
+        review_layout.addLayout(controls_row)
 
         # Fractions + anomalies row
         info_row = QHBoxLayout()
@@ -537,54 +478,14 @@ class AnalyzePanel(QWidget):
         self._review_anomalies.setStyleSheet("font-size: 11px;")
         self._review_anomalies.setWordWrap(True)
         info_row.addWidget(self._review_anomalies, 1)
-        tab_chroma_layout.addLayout(info_row)
+        review_layout.addLayout(info_row)
 
-        self._review_tabs.addTab(tab_chroma, "Cromatograma")
+        # Combos eliminats però referenciats encara per codi antic — stubs
+        # silenciosos perquè els handlers existents no peten.
+        self._review_doc_combo = None
+        self._review_dad_combo = None
+        self._review_tabs = None
 
-        # ---- Tab 2: Comparar R1↔R2 ----
-        tab_compare = QWidget()
-        tab_compare_layout = QVBoxLayout(tab_compare)
-        tab_compare_layout.setContentsMargins(0, 4, 0, 0)
-        tab_compare_layout.setSpacing(6)
-
-        if HAS_MATPLOTLIB:
-            self._compare_figure = Figure(figsize=(8, 3.5), dpi=100)
-            self._compare_figure.set_facecolor("#FAFAFA")
-            self._compare_canvas = FigureCanvas(self._compare_figure)
-            self._compare_canvas.setMinimumHeight(280)
-            tab_compare_layout.addWidget(self._compare_canvas)
-
-        self._compare_stats = QLabel()
-        self._compare_stats.setStyleSheet(
-            "font-size: 11px; color: #444; padding: 4px;"
-            " background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 4px;")
-        self._compare_stats.setTextFormat(Qt.RichText)
-        self._compare_stats.setWordWrap(True)
-        tab_compare_layout.addWidget(self._compare_stats)
-
-        # Botons d'acció ràpida
-        compare_actions = QHBoxLayout()
-        compare_actions.addWidget(QLabel("<b>Aplicar:</b>"))
-        for key, label in [("1", "Mantenir R1"), ("2", "Mantenir R2")]:
-            btn = QPushButton(label)
-            btn.setStyleSheet(
-                "QPushButton { font-size: 11px; padding: 4px 10px;"
-                " border: 1px solid #2E86AB; border-radius: 3px;"
-                " color: #2E86AB; background: white; }"
-                "QPushButton:hover { background: #EBF5FB; }")
-            btn.clicked.connect(
-                lambda checked, k=key: self._apply_compare_action(k))
-            compare_actions.addWidget(btn)
-        compare_actions.addStretch()
-        tab_compare_layout.addLayout(compare_actions)
-        tab_compare_layout.addStretch()
-
-        self._review_tabs.addTab(tab_compare, "Comparar R1↔R2")
-        self._review_compare_tab_idx = 1  # per habilitar/deshabilitar després
-
-        review_layout.addWidget(self._review_tabs, 1)
-
-        # (Action buttons moved to nav_row at top)
 
         # === SPLIT 35/65: TAULA (esquerra) | REVIEW PANEL (dreta) ===
         # v2.2.0: vista doble simultània per maximitzar comoditat.
@@ -735,8 +636,8 @@ class AnalyzePanel(QWidget):
         self._samples_table.setColumnWidth(1, 130)
         self._samples_table.setColumnWidth(2, 110)
 
-        # Files m\u00e9s altes per encabir els botons toggle (~28 px)
-        self._samples_table.verticalHeader().setDefaultSectionSize(30)
+        # Al\u00e7ada ajustada als botons compactes (20px + petit marge)
+        self._samples_table.verticalHeader().setDefaultSectionSize(24)
 
         self._samples_table.setMinimumHeight(300)
         self._samples_table.setMinimumWidth(320)
@@ -1337,6 +1238,15 @@ class AnalyzePanel(QWidget):
             import traceback
             traceback.print_exc()
             logger.error(f"Error populating table: {e}")
+            return
+        # Auto-selecció: primera mostra → poblar gràfica per defecte
+        try:
+            if not self._review_sample and self._sample_row_map:
+                first_name = next(iter(self._sample_row_map.keys()))
+                self._samples_table.selectRow(self._sample_row_map[first_name])
+                self._show_review(first_name)
+        except Exception as e:
+            logger.debug("Auto-select first sample skipped: %s", e)
 
     def _populate_table_inner(self):
         """Internal table population (wrapped for safety)."""
@@ -1345,10 +1255,9 @@ class AnalyzePanel(QWidget):
         self._sample_row_map = {}
         self._row_sample_map = {}
 
-        show_blank = (self._cat_buttons.get("blank")
-                      and self._cat_buttons["blank"].isChecked())
-        show_control = (self._cat_buttons.get("control")
-                        and self._cat_buttons["control"].isChecked())
+        # v2.2.0+: blancs i controls sempre visibles (selector eliminat)
+        show_blank = True
+        show_control = True
 
         # Separate samples by type
         sample_names = []
@@ -1530,8 +1439,11 @@ class AnalyzePanel(QWidget):
         # El label es mant\u00e9 "\u2014" per claredat visual.
         options.append(("none", "\u2014"))
 
+        # Botons compactes: alçada menor + padding intern reduït perquè el
+        # text quedi centrat sense talls. min-width 26px per assegurar que
+        # 'Cp' i '—' es vegin sencers.
         btn_style = (
-            "QPushButton { font-size: 10px; padding: 2px 6px; min-width: 18px;"
+            "QPushButton { font-size: 10px; padding: 0px 6px; min-width: 26px;"
             " border: 1px solid #ced4da; border-radius: 3px;"
             " background: white; color: #495057; }"
             "QPushButton:hover { background: #e9ecef; }"
@@ -1541,7 +1453,7 @@ class AnalyzePanel(QWidget):
         for key, label in options:
             btn = QPushButton(label)
             btn.setCheckable(True)
-            btn.setFixedHeight(22)
+            btn.setFixedHeight(20)
             btn.setStyleSheet(btn_style)
             if str(key) == str(current):
                 btn.setChecked(True)
@@ -1761,7 +1673,9 @@ class AnalyzePanel(QWidget):
     # ------------------------------------------------------------------
 
     def _update_compare_tab(self, sample_data):
-        """Pinta el gràfic d'overlay R1 vs R2 i estadístiques de diferència."""
+        """v2.2.0+: tab Comparar eliminat — funció no-op."""
+        return
+        # === codi original mantingut sota return per referència ===
         if not HAS_MATPLOTLIB or not hasattr(self, '_compare_figure'):
             return
 
@@ -1868,13 +1782,8 @@ class AnalyzePanel(QWidget):
                 "<i>Estadístiques no disponibles.</i>")
 
     def _apply_compare_action(self, replica_key):
-        """Aplica la rèplica triada des del tab Comparar."""
-        if not self._review_sample:
-            return
-        self._on_replica_changed(self._review_sample, "doc", replica_key)
-        self._on_replica_changed(self._review_sample, "dad", replica_key)
-        # Tornar al tab Cromatograma
-        self._review_tabs.setCurrentIndex(0)
+        """v2.2.0+: tab Comparar eliminat — funció no-op."""
+        return
 
     def _close_review(self):
         """Clear review selection (v2.2.0: panell sempre visible al split, només deselecciona)."""
@@ -1899,7 +1808,9 @@ class AnalyzePanel(QWidget):
                 self._samples_table.selectRow(row)
 
     def _build_review_combos(self, sample_data):
-        """Populate DOC and DAD replica combos."""
+        """v2.2.0+: combos DOC/DAD eliminats — funció no-op (selecció via radios de la taula)."""
+        return
+        # === codi original mantingut sota return per referència ===
         replicas = sample_data.get("replicas", {})
         recommendation = sample_data.get("recommendation", {})
         selected = sample_data.get("selected", {})
@@ -2061,11 +1972,60 @@ class AnalyzePanel(QWidget):
         is_bp = "BP" in method.upper() if method else False
         ax.set_xlim(0, 12 if is_bp else 70)
         ax.set_xlabel("min", fontsize=8)
-        ax.set_ylabel("ppb", fontsize=8)
-        ax.tick_params(labelsize=7)
+        ax.set_ylabel("DOC (ppb)", fontsize=8, color="#2E86AB")
+        ax.tick_params(labelsize=7, axis='y', colors="#2E86AB")
+        ax.tick_params(labelsize=7, axis='x')
         ax.spines['top'].set_visible(False)
-        ax.spines['right'].set_visible(False)
-        ax.legend(fontsize=7, loc="upper right", framealpha=0.7)
+
+        # === DAD 254 nm a eix Y secundari (dreta) ===
+        # La selecció DAD ve dels radios DOC/DAD de la taula. Si la rèplica
+        # seleccionada té DAD disponible, es plota com a línia ataronjada al
+        # twin axis. La resta de λ s'accedeixen al diàleg de detall.
+        try:
+            dad_sel = (sample_data.get("selected") or {}).get(
+                "dad", (sample_data.get("selected") or {}).get("doc", "1"))
+            dad_data = (sample_data.get("replicas") or {}).get(dad_sel, {})
+            df_dad = dad_data.get("df_dad")
+            t_dad = dad_data.get("t_dad")
+            y_254 = None
+            if df_dad is not None and hasattr(df_dad, "get"):
+                # df_dad pot ser un DataFrame amb columnes 'Time' i wavelengths
+                if hasattr(df_dad, "columns"):
+                    for col_name in ("254", "A254", 254, 254.0):
+                        if col_name in df_dad.columns:
+                            y_254 = df_dad[col_name].values
+                            if t_dad is None and "Time" in df_dad.columns:
+                                t_dad = df_dad["Time"].values
+                            break
+            if y_254 is None:
+                # Fallback: alguns formats guarden els arrays directament
+                signals_dad = dad_data.get("signals_dad") or {}
+                for k in ("254", "A254", 254):
+                    if k in signals_dad:
+                        y_254 = signals_dad[k]
+                        break
+            if y_254 is not None and t_dad is not None and len(y_254) > 0:
+                import numpy as _np
+                t_dad_arr = _np.asarray(t_dad, dtype=float)
+                y_254_arr = _np.asarray(y_254, dtype=float)
+                ax_dad = ax.twinx()
+                ax_dad.plot(t_dad_arr, y_254_arr, color="#E67E22",
+                            lw=1.0, alpha=0.8, label="DAD A254")
+                ax_dad.set_ylabel("DAD A254 (mAU)", fontsize=8, color="#E67E22")
+                ax_dad.tick_params(labelsize=7, axis='y', colors="#E67E22")
+                ax_dad.spines['top'].set_visible(False)
+                # Legenda combinada
+                lines1, labels1 = ax.get_legend_handles_labels()
+                lines2, labels2 = ax_dad.get_legend_handles_labels()
+                ax.legend(lines1 + lines2, labels1 + labels2,
+                          fontsize=7, loc="upper right", framealpha=0.7)
+            else:
+                ax.spines['right'].set_visible(False)
+                ax.legend(fontsize=7, loc="upper right", framealpha=0.7)
+        except Exception as e:
+            logger.debug("DAD twin axis skipped: %s", e)
+            ax.spines['right'].set_visible(False)
+            ax.legend(fontsize=7, loc="upper right", framealpha=0.7)
 
         try:
             self._review_figure.tight_layout()
@@ -2154,7 +2114,9 @@ class AnalyzePanel(QWidget):
         self._review_anomalies.setText("<br>".join(parts))
 
     def _on_review_doc_changed(self):
-        """DOC replica changed in review panel."""
+        """v2.2.0+: combo eliminat — no-op."""
+        return
+        # === codi original mantingut sota return ===
         if not self._review_sample:
             return
         new_rep = self._review_doc_combo.currentData()
@@ -2190,7 +2152,9 @@ class AnalyzePanel(QWidget):
         self._save_current_analysis()
 
     def _on_review_dad_changed(self):
-        """DAD replica changed in review panel."""
+        """v2.2.0+: combo eliminat — no-op."""
+        return
+        # === codi original mantingut sota return ===
         if not self._review_sample:
             return
         new_rep = self._review_dad_combo.currentData()
