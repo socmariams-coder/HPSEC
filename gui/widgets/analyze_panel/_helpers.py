@@ -543,7 +543,9 @@ def classify_sample_status(doc_rep_data, dad_rep_data, comparison,
     n_warn = len(classified["warning"])
 
     # Check LOD/LOQ from quantification
-    quantification = sample_data.get("quantification", {}) if sample_data else {}
+    # v2.2.0: quantification pot ser None quan do_quantify=False (pipeline
+    # separat). Tractar None com a dict buit per no crashejar.
+    quantification = (sample_data.get("quantification") or {}) if sample_data else {}
     below_lod = quantification.get("below_lod", False)
     below_loq = quantification.get("below_loq", False)
     lod_ppm = quantification.get("lod_ppm")
