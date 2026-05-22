@@ -453,35 +453,17 @@ class AnalyzePanel(QWidget):
             review_layout.addWidget(self._review_toolbar)
             review_layout.addWidget(self._review_canvas, 1)
 
-        # Controls row: només Area + metrics (sense combos DOC/DAD per defecte;
-        # la selecció ve de la taula via radios; λ fixa a 254 nm — la resta a
-        # diàleg de detall).
-        controls_row = QHBoxLayout()
-        self._review_show_area = QCheckBox("Àrea")
-        self._review_show_area.setStyleSheet("font-size: 10px;")
-        self._review_show_area.setChecked(True)
-        self._review_show_area.setToolTip("Mostrar/amagar ombrejat àrea integració")
-        self._review_show_area.toggled.connect(self._on_review_area_toggled)
-        controls_row.addWidget(self._review_show_area)
-        controls_row.addStretch()
+        # v2.2.0+: labels inferiors (Àrea checkbox, mètriques ppm, fraccions
+        # i anomalies) eliminats — el cromatograma queda net. La info detallada
+        # es consulta des del diàleg de detall (doble-click a la mostra).
+        # Stubs silenciosos per als handlers existents:
+        self._review_show_area = None
         self._review_metrics = QLabel()
-        self._review_metrics.setStyleSheet("font-size: 11px; color: #444;")
-        controls_row.addWidget(self._review_metrics)
-        review_layout.addLayout(controls_row)
-
-        # Fractions + anomalies row
-        info_row = QHBoxLayout()
+        self._review_metrics.setVisible(False)
         self._review_fractions = QLabel()
-        self._review_fractions.setStyleSheet("font-size: 11px; color: #555;")
-        info_row.addWidget(self._review_fractions, 1)
+        self._review_fractions.setVisible(False)
         self._review_anomalies = QLabel()
-        self._review_anomalies.setStyleSheet("font-size: 11px;")
-        self._review_anomalies.setWordWrap(True)
-        info_row.addWidget(self._review_anomalies, 1)
-        review_layout.addLayout(info_row)
-
-        # Combos eliminats però referenciats encara per codi antic — stubs
-        # silenciosos perquè els handlers existents no peten.
+        self._review_anomalies.setVisible(False)
         self._review_doc_combo = None
         self._review_dad_combo = None
         self._review_tabs = None
@@ -636,8 +618,8 @@ class AnalyzePanel(QWidget):
         self._samples_table.setColumnWidth(1, 130)
         self._samples_table.setColumnWidth(2, 110)
 
-        # Al\u00e7ada ajustada als botons compactes (20px + petit marge)
-        self._samples_table.verticalHeader().setDefaultSectionSize(24)
+        # Al\u00e7ada ajustada als botons compactes (22px + petit marge intern)
+        self._samples_table.verticalHeader().setDefaultSectionSize(28)
 
         self._samples_table.setMinimumHeight(300)
         self._samples_table.setMinimumWidth(320)
@@ -1439,11 +1421,10 @@ class AnalyzePanel(QWidget):
         # El label es mant\u00e9 "\u2014" per claredat visual.
         options.append(("none", "\u2014"))
 
-        # Botons compactes: alçada menor + padding intern reduït perquè el
-        # text quedi centrat sense talls. min-width 26px per assegurar que
-        # 'Cp' i '—' es vegin sencers.
+        # Botons compactes amb prou padding per centrar el text verticalment.
+        # min-width 28px perquè 'R1'/'R2'/'Cp'/'—' es vegin centrats i sencers.
         btn_style = (
-            "QPushButton { font-size: 10px; padding: 0px 6px; min-width: 26px;"
+            "QPushButton { font-size: 11px; padding: 2px 6px; min-width: 28px;"
             " border: 1px solid #ced4da; border-radius: 3px;"
             " background: white; color: #495057; }"
             "QPushButton:hover { background: #e9ecef; }"
@@ -1453,7 +1434,7 @@ class AnalyzePanel(QWidget):
         for key, label in options:
             btn = QPushButton(label)
             btn.setCheckable(True)
-            btn.setFixedHeight(20)
+            btn.setMinimumHeight(22)
             btn.setStyleSheet(btn_style)
             if str(key) == str(current):
                 btn.setChecked(True)
@@ -1871,12 +1852,13 @@ class AnalyzePanel(QWidget):
         self._review_dad_combo.blockSignals(False)
 
     def _draw_review_chromatogram(self, sample_data, show_area=None):
-        """Draw R1+R2 DOC chromatogram with timeout zones and optional area shading."""
+        """Draw R1+R2 DOC chromatogram with timeout zones and area shading."""
         if not HAS_MATPLOTLIB:
             return
         if show_area is None:
-            show_area = (hasattr(self, '_review_show_area')
-                         and self._review_show_area.isChecked())
+            # v2.2.0+: checkbox eliminat — sempre mostrar àrea integració
+            cb = getattr(self, '_review_show_area', None)
+            show_area = cb.isChecked() if cb is not None else True
         self._review_figure.clear()
         ax = self._review_figure.add_subplot(111)
 
@@ -1978,52 +1960,41 @@ class AnalyzePanel(QWidget):
         ax.spines['top'].set_visible(False)
 
         # === DAD 254 nm a eix Y secundari (dreta) ===
-        # La selecció DAD ve dels radios DOC/DAD de la taula. Si la rèplica
-        # seleccionada té DAD disponible, es plota com a línia ataronjada al
-        # twin axis. La resta de λ s'accedeixen al diàleg de detall.
+        # La selecció DAD ve dels radios DOC/DAD de la taula. df_dad és un
+        # DataFrame amb una columna de temps (substring 'time') i columnes
+        # per wavelength (e.g. '254 nm' o 'A254'). Mateix patró que els
+        # gràfics de la secció Charts.
+        dad_plotted = False
         try:
             dad_sel = (sample_data.get("selected") or {}).get(
                 "dad", (sample_data.get("selected") or {}).get("doc", "1"))
             dad_data = (sample_data.get("replicas") or {}).get(dad_sel, {})
             df_dad = dad_data.get("df_dad")
-            t_dad = dad_data.get("t_dad")
-            y_254 = None
-            if df_dad is not None and hasattr(df_dad, "get"):
-                # df_dad pot ser un DataFrame amb columnes 'Time' i wavelengths
-                if hasattr(df_dad, "columns"):
-                    for col_name in ("254", "A254", 254, 254.0):
-                        if col_name in df_dad.columns:
-                            y_254 = df_dad[col_name].values
-                            if t_dad is None and "Time" in df_dad.columns:
-                                t_dad = df_dad["Time"].values
-                            break
-            if y_254 is None:
-                # Fallback: alguns formats guarden els arrays directament
-                signals_dad = dad_data.get("signals_dad") or {}
-                for k in ("254", "A254", 254):
-                    if k in signals_dad:
-                        y_254 = signals_dad[k]
-                        break
-            if y_254 is not None and t_dad is not None and len(y_254) > 0:
-                import numpy as _np
-                t_dad_arr = _np.asarray(t_dad, dtype=float)
-                y_254_arr = _np.asarray(y_254, dtype=float)
-                ax_dad = ax.twinx()
-                ax_dad.plot(t_dad_arr, y_254_arr, color="#E67E22",
-                            lw=1.0, alpha=0.8, label="DAD A254")
-                ax_dad.set_ylabel("DAD A254 (mAU)", fontsize=8, color="#E67E22")
-                ax_dad.tick_params(labelsize=7, axis='y', colors="#E67E22")
-                ax_dad.spines['top'].set_visible(False)
-                # Legenda combinada
-                lines1, labels1 = ax.get_legend_handles_labels()
-                lines2, labels2 = ax_dad.get_legend_handles_labels()
-                ax.legend(lines1 + lines2, labels1 + labels2,
-                          fontsize=7, loc="upper right", framealpha=0.7)
-            else:
-                ax.spines['right'].set_visible(False)
-                ax.legend(fontsize=7, loc="upper right", framealpha=0.7)
+            if df_dad is not None and hasattr(df_dad, "columns") and not df_dad.empty:
+                t_col = next((c for c in df_dad.columns
+                              if 'time' in str(c).lower()), None)
+                wl_col = next((c for c in df_dad.columns
+                               if '254' in str(c)), None)
+                if t_col is not None and wl_col is not None:
+                    import numpy as _np
+                    t_dad_arr = _np.asarray(df_dad[t_col], dtype=float)
+                    y_254_arr = _np.asarray(df_dad[wl_col], dtype=float)
+                    ax_dad = ax.twinx()
+                    ax_dad.plot(t_dad_arr, y_254_arr, color="#E67E22",
+                                lw=1.0, alpha=0.8, label="DAD A254")
+                    ax_dad.set_ylabel("DAD A254 (mAU)", fontsize=8,
+                                       color="#E67E22")
+                    ax_dad.tick_params(labelsize=7, axis='y',
+                                        colors="#E67E22")
+                    ax_dad.spines['top'].set_visible(False)
+                    lines1, labels1 = ax.get_legend_handles_labels()
+                    lines2, labels2 = ax_dad.get_legend_handles_labels()
+                    ax.legend(lines1 + lines2, labels1 + labels2,
+                              fontsize=7, loc="upper right", framealpha=0.7)
+                    dad_plotted = True
         except Exception as e:
             logger.debug("DAD twin axis skipped: %s", e)
+        if not dad_plotted:
             ax.spines['right'].set_visible(False)
             ax.legend(fontsize=7, loc="upper right", framealpha=0.7)
 
