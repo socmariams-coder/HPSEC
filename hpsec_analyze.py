@@ -3261,6 +3261,18 @@ def analyze_sequence(imported_data, calibration_data=None, config=None,
     # Flag per consumidors: la quantificació està pendent (cal cridar quantify_sequence)
     result["quantification_pending"] = not do_quantify
 
+    # v2.2.0+: generar fitxers per mostra (CSV + JSON) per a ús extern.
+    # Es fa al final, ja amb tots els samples_grouped poblats. Tolerant a
+    # errors: cap fallada bloqueja el resultat principal.
+    try:
+        seq_path = result.get("seq_path")
+        if seq_path:
+            from hpsec_per_sample import write_all_samples
+            written = write_all_samples(result)
+            logger.info("Per-sample files generats: %d", len(written))
+    except Exception as e:
+        logger.warning("Error generant fitxers per mostra: %s", e)
+
     return result
 
 
@@ -3418,6 +3430,15 @@ def quantify_sequence(analysis_result, seq_path=None, mode=None, seq_date=None,
         analysis_result["calibration_fingerprint"] = compute_calibration_fingerprint()
     except Exception as e:
         logger.warning("Calibration fingerprint computation failed: %s", e)
+
+    # v2.2.0+: actualitzar JSONs per mostra amb la quantificació aplicada.
+    # No regenera els CSV (les àrees no canvien amb la recta).
+    try:
+        from hpsec_per_sample import update_all_quantifications
+        n = update_all_quantifications(analysis_result)
+        logger.info("Per-sample JSONs actualitzats amb ppm: %d", n)
+    except Exception as e:
+        logger.warning("Error actualitzant fitxers per mostra: %s", e)
 
     if progress_callback:
         progress_callback("Quantificació completa", 100)

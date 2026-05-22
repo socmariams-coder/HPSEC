@@ -1621,6 +1621,12 @@ class AnalyzePanel(QWidget):
             from hpsec_analyze import save_analysis_result
             save_analysis_result(processed)
             logger.info("_save_current_analysis: guardat OK (quantification_pending=True)")
+            # v2.2.0+: refrescar CSV+JSON per mostra (canvi selecció/repair/compose)
+            try:
+                from hpsec_per_sample import write_all_samples
+                write_all_samples(processed)
+            except Exception as e2:
+                logger.warning("Error refrescant fitxers per mostra: %s", e2)
         except Exception as e:
             logger.warning("Error guardant analisi: %s", e)
             import traceback; traceback.print_exc()
