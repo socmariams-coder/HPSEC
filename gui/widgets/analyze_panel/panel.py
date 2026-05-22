@@ -615,8 +615,9 @@ class AnalyzePanel(QWidget):
         header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
 
         self._samples_table.setColumnWidth(0, 160)
-        self._samples_table.setColumnWidth(1, 130)
-        self._samples_table.setColumnWidth(2, 110)
+        # Combos descriptius: amplada per encabir 'R1 [A] inj 12 ▾'
+        self._samples_table.setColumnWidth(1, 140)
+        self._samples_table.setColumnWidth(2, 130)
 
         # Al\u00e7ada ajustada als botons compactes (22px + petit marge intern)
         self._samples_table.verticalHeader().setDefaultSectionSize(28)
@@ -1390,61 +1391,92 @@ class AnalyzePanel(QWidget):
     # ------------------------------------------------------------------
 
     def _create_replica_strip(self, sample_name, signal, replicas_dict,
-                               current, allow_comp=True):
-        """Crea widget compacte amb botons toggle R1/R2/.../Comp/Cap.
+                               current, allow_comp=True, sample_data=None):
+        """Crea un QComboBox amb les rèpliques disponibles.
+
+        Format dels labels (segons context):
+            'R1 inj 5'              — sense siblings
+            'R1 [A] inj 5'          — amb siblings (mostra label A/B/…)
+            'Comp'                  — només DOC, si timeout composable
+            'Cap'                   — exclou la mostra de quantificació
+
+        La rèplica recomanada es marca en **negreta** (sense estrella).
 
         Args:
-            sample_name: nom mostra (string)
+            sample_name: nom mostra
             signal: 'doc' o 'dad'
             replicas_dict: dict {key: replica_data}
             current: clau actualment seleccionada
-            allow_comp: si True, afegir bot\u00f3 'Comp' (nom\u00e9s DOC + timeout)
+            allow_comp: si True, afegir opció 'Comp' (només DOC + timeout)
+            sample_data: dict complet de la mostra (per llegir recommendation)
         """
-        from PySide6.QtWidgets import QButtonGroup
-        container = QWidget()
-        h = QHBoxLayout(container)
-        h.setContentsMargins(2, 1, 2, 1)
-        h.setSpacing(1)
-
-        group = QButtonGroup(container)
-        group.setExclusive(True)
-        # Mantenir refer\u00e8ncia perqu\u00e8 no es destrueixi
-        if not hasattr(self, '_replica_groups'):
-            self._replica_groups = {}
-        self._replica_groups[(sample_name, signal)] = group
-
-        rep_keys = sorted([k for k in replicas_dict.keys() if k not in (None, "")])
-        options = [(k, f"R{k}") for k in rep_keys]
-        if allow_comp and signal == "doc":
-            options.append(("Comp", "Cp"))
-        # v2.2.0: clau "none" canonical (consistent amb la resta del codebase).
-        # El label es mant\u00e9 "\u2014" per claredat visual.
-        options.append(("none", "\u2014"))
-
-        # Botons compactes amb prou padding per centrar el text verticalment.
-        # min-width 28px perquè 'R1'/'R2'/'Cp'/'—' es vegin centrats i sencers.
-        btn_style = (
-            "QPushButton { font-size: 11px; padding: 2px 6px; min-width: 28px;"
+        from PySide6.QtGui import QFont
+        combo = QComboBox()
+        combo.setStyleSheet(
+            "QComboBox { font-size: 11px; padding: 2px 6px; min-width: 110px;"
             " border: 1px solid #ced4da; border-radius: 3px;"
             " background: white; color: #495057; }"
-            "QPushButton:hover { background: #e9ecef; }"
-            "QPushButton:checked { background: #2E86AB; color: white;"
-            " border-color: #1f6080; font-weight: bold; }")
+            "QComboBox:hover { border-color: #2E86AB; }"
+            "QComboBox::drop-down { border: none; width: 16px; }")
+        combo.setMinimumHeight(22)
 
-        for key, label in options:
-            btn = QPushButton(label)
-            btn.setCheckable(True)
-            btn.setMinimumHeight(22)
-            btn.setStyleSheet(btn_style)
+        rep_keys = sorted(
+            [k for k in replicas_dict.keys() if k not in (None, "")],
+            key=lambda x: (int(x) if str(x).isdigit() else 999))
+        labels = {rk: (replicas_dict[rk] or {}).get("_source_label", "")
+                  for rk in rep_keys if isinstance(replicas_dict.get(rk), dict)}
+        distinct_labels = {lab for lab in labels.values() if lab}
+        has_siblings = len(distinct_labels) > 1
+
+        # Rèplica recomanada (per negreta)
+        recommended = None
+        if sample_data:
+            recommendation = sample_data.get("recommendation") or {}
+            sig_rec = recommendation.get(signal) or {}
+            recommended = sig_rec.get("replica")
+
+        # Construir opcions: (key, display_label, is_recommended)
+        options = []
+        for rk in rep_keys:
+            rd = replicas_dict.get(rk) or {}
+            parts = [f"R{rk}"]
+            if has_siblings:
+                lab = labels.get(rk, "")
+                if lab:
+                    parts.append(f"[{lab}]")
+            idx = rd.get("injection_index")
+            if idx is not None:
+                parts.append(f"inj {idx}")
+            is_rec = (recommended is not None
+                      and str(recommended) == str(rk))
+            options.append((str(rk), " ".join(parts), is_rec))
+
+        if allow_comp and signal == "doc":
+            options.append(("Comp", "Comp", False))
+        options.append(("none", "Cap", False))
+
+        # Construir combo (bloquejant signals)
+        combo.blockSignals(True)
+        current_idx = 0
+        bold_font = QFont()
+        bold_font.setBold(True)
+        for i, (key, label, is_rec) in enumerate(options):
+            combo.addItem(label, key)
+            if is_rec:
+                combo.setItemData(i, bold_font, Qt.FontRole)
             if str(key) == str(current):
-                btn.setChecked(True)
-            group.addButton(btn)
-            btn.toggled.connect(
-                lambda checked, s=sample_name, sig=signal, k=key:
-                self._on_replica_changed(s, sig, k) if checked else None)
-            h.addWidget(btn)
-        h.addStretch()
-        return container
+                current_idx = i
+        combo.setCurrentIndex(current_idx)
+        # Si la selecció actual és la recomanada, posa negreta també al text mostrat
+        if 0 <= current_idx < len(options) and options[current_idx][2]:
+            combo.setFont(bold_font)
+        combo.blockSignals(False)
+
+        combo.currentIndexChanged.connect(
+            lambda i, s=sample_name, sig=signal, c=combo:
+            self._on_replica_changed(s, sig, c.itemData(i)))
+
+        return combo
 
     def _on_replica_changed(self, sample_name, signal, replica_key):
         """Callback quan l'usuari canvia la r\u00e8plica seleccionada per una mostra.
@@ -1452,6 +1484,8 @@ class AnalyzePanel(QWidget):
         Actualitza el state i refresca el review panel si la mostra activa
         \u00e9s aquesta.
         """
+        if replica_key is None:
+            return
         sample_data = self.samples_grouped.get(sample_name)
         if not sample_data:
             return
@@ -1504,18 +1538,20 @@ class AnalyzePanel(QWidget):
             name_item.setToolTip("\n".join(tip_parts))
         table.setItem(row, 0, name_item)
 
-        # Col 1: Rèplica DOC (widget amb botons toggle R1/R2/Comp/Cap)
+        # Col 1: Rèplica DOC (QComboBox amb opcions descriptives)
         doc_sel = selected.get("doc", "1")
         tc = sample_data.get("timeout_composability", {}) or {}
         doc_strip = self._create_replica_strip(
             name, "doc", replicas_dict, doc_sel,
-            allow_comp=bool(tc.get("composable")))
+            allow_comp=bool(tc.get("composable")),
+            sample_data=sample_data)
         table.setCellWidget(row, 1, doc_strip)
 
-        # Col 2: Rèplica DAD (widget radio R1/R2/Cap)
+        # Col 2: Rèplica DAD (QComboBox)
         dad_sel = selected.get("dad", selected.get("doc", "1"))
         dad_strip = self._create_replica_strip(
-            name, "dad", replicas_dict, dad_sel, allow_comp=False)
+            name, "dad", replicas_dict, dad_sel, allow_comp=False,
+            sample_data=sample_data)
         table.setCellWidget(row, 2, dad_strip)
 
     def _fill_blank_row(self, table, row, name, sample_data, bg_color):
