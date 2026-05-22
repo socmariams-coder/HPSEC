@@ -259,14 +259,11 @@ class TimeoutCompositionDialog(QDialog):
                 "font-size: 9px; color: #888; font-family: monospace;")
             layout.addWidget(self._cursor_label)
 
-            # FRACTION BARS PLOT
-            self._bar_fig = Figure(figsize=(10, 2), dpi=100)
-            self._bar_fig.set_facecolor('white')
-            self._bar_ax = self._bar_fig.add_subplot(111)
-            self._bar_canvas = FigureCanvas(self._bar_fig)
-            self._bar_canvas.setMinimumHeight(120)
-            self._bar_canvas.setMaximumHeight(180)
-            layout.addWidget(self._bar_canvas, stretch=25)
+            # FRACTION BARS PLOT eliminat — al pas Quantificar es veuen les
+            # àrees finals. Aquí el focus és el cromatograma compost.
+            self._bar_fig = None
+            self._bar_ax = None
+            self._bar_canvas = None
 
         # (Action buttons are in the top bar)
 
@@ -542,8 +539,7 @@ class TimeoutCompositionDialog(QDialog):
 
         if hasattr(self, '_ax'):
             self._draw_chromatogram(t_out, y_out)
-        if hasattr(self, '_bar_ax'):
-            self._draw_fraction_bars(t_out, y_out)
+        # _draw_fraction_bars eliminat (panell fraccions tret del diàleg)
 
     def _draw_chromatogram(self, t_out, y_out):
         ax = self._ax

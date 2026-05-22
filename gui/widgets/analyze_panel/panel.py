@@ -1463,13 +1463,14 @@ class AnalyzePanel(QWidget):
         for i, (key, label, is_rec) in enumerate(options):
             combo.addItem(label, key)
             if is_rec:
+                # Negreta NOMÉS a l'item dins el dropdown — el display tancat
+                # no es toca, així es veu quina és la recomanada en obrir el
+                # combo però la selecció actual no apareix en bold (l'usuari
+                # ja sap què acaba de triar).
                 combo.setItemData(i, bold_font, Qt.FontRole)
             if str(key) == str(current):
                 current_idx = i
         combo.setCurrentIndex(current_idx)
-        # Si la selecció actual és la recomanada, posa negreta també al text mostrat
-        if 0 <= current_idx < len(options) and options[current_idx][2]:
-            combo.setFont(bold_font)
         combo.blockSignals(False)
 
         combo.currentIndexChanged.connect(
