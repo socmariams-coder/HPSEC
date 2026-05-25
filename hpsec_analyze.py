@@ -3458,21 +3458,32 @@ def quantify_sequence(analysis_result, seq_path=None, mode=None, seq_date=None,
 
         # ─── v2.2.0+: quantificació per CADA rèplica vàlida + estadística ───
         # Es quantifiquen totes les rèpliques (incloent siblings: R1A, R2A,
-        # R1B, R2B…) que no tinguin anomalia bloquejant ni siguin outlier.
+        # R1B, R2B…) que NO siguin outlier i NO portin anomalia amb
+        # invalidates=True. Una anomalia 'blocker' però amb invalidates=False
+        # (e.g. IRREGULAR_TOP_DIRECT, que és reparable) NO ha de bloquejar
+        # la quantificació — la dada ja s'ha corregit al pas d'integració.
+        try:
+            from hpsec_warnings import ANOMALY_CATALOG
+        except Exception:
+            ANOMALY_CATALOG = {}
+
+        def _is_invalidating(code):
+            entry = ANOMALY_CATALOG.get(code, {})
+            return bool(entry.get("invalidates", False))
+
         per_replica = {}
         for rk, rd in replicas.items():
             if not isinstance(rd, dict):
                 continue
-            # Filtrar outliers / blockers
             if rd.get("is_outlier", False):
                 continue
             anoms = rd.get("anomalies") or []
-            has_blocker = any(
-                (a.get("severity") == "blocker") if isinstance(a, dict)
+            has_invalidating = any(
+                _is_invalidating(a.get("code")) if isinstance(a, dict)
                 else False
                 for a in anoms
             )
-            if has_blocker:
+            if has_invalidating:
                 continue
             rep_cal = _get_sample_cal(rd)
             try:
