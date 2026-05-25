@@ -818,11 +818,15 @@ class CalibratePanel(QWidget):
             seq_path = self.main_window.seq_path
             if seq_path:
                 from hpsec_import import import_from_manifest
-                self.main_window.set_status("Carregant dades d'importació...")
-                imported_data = import_from_manifest(seq_path)
+                self.main_window.set_status("Carregant manifest…")
+                # v2.2.0+: load_data=False — només metadades (instantani).
+                # CalibrateWorker farà ensure_data_loaded() al thread quan
+                # detecti data_deferred=True. Abans aquí es llegia
+                # MasterFile + CSV + Export3D al UI thread, bloquejant ~10s.
+                imported_data = import_from_manifest(seq_path, load_data=False)
                 if imported_data and imported_data.get('success'):
                     self.main_window.imported_data = imported_data
-                    self.main_window.set_status("Dades carregades", 1000)
+                    self.main_window.set_status("Manifest carregat", 1000)
 
         if not imported_data:
             from PySide6.QtWidgets import QMessageBox

@@ -700,10 +700,11 @@ class AnalyzePanel(QWidget):
         # Verificar que tenim imported_data
         imported_data = self.main_window.imported_data
         if not imported_data:
-            # Provar de carregar des de manifest
+            # Provar de carregar des de manifest (load_data=False — instantani;
+            # AnalyzeWorker farà ensure_data_loaded al thread si data_deferred)
             try:
                 from hpsec_import import import_from_manifest
-                imported_data = import_from_manifest(seq_path)
+                imported_data = import_from_manifest(seq_path, load_data=False)
                 if imported_data and imported_data.get('success'):
                     self.main_window.imported_data = imported_data
             except Exception as e:
@@ -923,9 +924,13 @@ class AnalyzePanel(QWidget):
 
         if not imported_data and seq_path:
             from hpsec_import import import_from_manifest
-            self.main_window.set_status("Carregant dades d'importacio...")
+            self.main_window.set_status("Carregant manifest…")
             try:
-                imported_data = import_from_manifest(seq_path)
+                # v2.2.0+: load_data=False — només metadades (instantani).
+                # AnalyzeWorker fa ensure_data_loaded al worker thread si
+                # detecta data_deferred=True. Abans aquí es llegia
+                # MasterFile + CSV + Export3D al UI thread.
+                imported_data = import_from_manifest(seq_path, load_data=False)
             except Exception as e:
                 logger.warning(f"Error carregant import: {e}")
                 imported_data = None
