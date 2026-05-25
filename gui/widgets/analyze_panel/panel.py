@@ -1641,10 +1641,10 @@ class AnalyzePanel(QWidget):
     def _save_current_analysis(self):
         """Guarda l'estat actual de l'anàlisi a JSON.
 
-        v2.2.0: NO toca la quantificació (que es fa al pas 4). Si el
-        quantification_pending estava True, ha de quedar True després
-        d'aquest save — les modificacions a Analitzar (selecció rèplica,
-        repair...) invaliden la quantificació prèvia.
+        v2.2.0+: marca quantification_pending=True i, si abans hi havia
+        quantificació, dispara una requantificació automàtica en background
+        (no bloqueja UI). L'usuari no ha d'anar manualment a Quantificar i
+        clicar Aplicar després de cada repair/compose.
         """
         try:
             processed = self.main_window.processed_data
@@ -1652,8 +1652,15 @@ class AnalyzePanel(QWidget):
                 logger.warning("_save_current_analysis: processed_data is None — NO ES GUARDA")
                 return
             processed["samples_grouped"] = self.samples_grouped
-            # v2.2.0: si l'usuari modifica seleccions a Analitzar, la
-            # quantificació actual queda obsoleta. Marcar pending.
+
+            # Detectar si abans hi havia quantificació aplicada (per disparar
+            # auto-requantify després). Mirar ABANS d'invalidar.
+            had_quantification = any(
+                isinstance(sg, dict)
+                and (sg.get("quantification") or {}).get("concentration_ppm_direct") is not None
+                for sg in self.samples_grouped.values()
+            )
+
             processed["quantification_pending"] = True
             # Invalidar quantification dels samples_grouped (sense esborrar
             # del tot — només marcar perquè el pas Quantificar la regeneri)
@@ -1664,15 +1671,84 @@ class AnalyzePanel(QWidget):
             from hpsec_analyze import save_analysis_result
             save_analysis_result(processed)
             logger.info("_save_current_analysis: guardat OK (quantification_pending=True)")
-            # v2.2.0+: refrescar CSV+JSON per mostra (canvi selecció/repair/compose)
+
+            # Refrescar CSV+JSON per mostra (canvi selecció/repair/compose)
             try:
                 from hpsec_per_sample import write_all_samples
                 write_all_samples(processed)
             except Exception as e2:
                 logger.warning("Error refrescant fitxers per mostra: %s", e2)
+
+            # Auto-requantify en background si abans hi havia quantificació
+            if had_quantification:
+                self._trigger_auto_requantify()
         except Exception as e:
             logger.warning("Error guardant analisi: %s", e)
             import traceback; traceback.print_exc()
+
+    def _trigger_auto_requantify(self):
+        """Llança quantify_sequence en background per regenerar ppm + estadística.
+
+        Guards:
+        - No es dispara si ja hi ha un worker auto-requantify en marxa
+          (evita pile-up amb diverses reparacions ràpides seguides).
+        - L'usuari pot seguir treballant mentre s'executa.
+        - Quan acaba, el JSON i els PER_SAMPLE/*.json queden actualitzats
+          automàticament (quantify_sequence ja crida update_all_quantifications).
+        """
+        if getattr(self, '_auto_quantify_worker', None) is not None \
+                and self._auto_quantify_worker.isRunning():
+            logger.debug("Auto-requantify: worker ja en marxa — skip")
+            return
+        try:
+            from gui.widgets.quantify_panel.worker import QuantifyWorker
+            processed = self.main_window.processed_data
+            if not processed:
+                return
+            seq_path = getattr(self.main_window, 'seq_path', None) \
+                or processed.get('seq_path')
+            method = processed.get('method', 'COLUMN')
+            mode = 'BP' if method.upper() == 'BP' else 'COLUMN'
+            self._auto_quantify_worker = QuantifyWorker(
+                processed, seq_path=seq_path, mode=mode)
+            self._auto_quantify_worker.completed.connect(
+                self._on_auto_requantify_done)
+            self._auto_quantify_worker.error.connect(
+                lambda msg: logger.warning("Auto-requantify error: %s", msg))
+            self._auto_quantify_worker.start()
+            self.main_window.set_status("Requantificant en background…", 3000)
+        except Exception as e:
+            logger.warning("Error disparant auto-requantify: %s", e)
+
+    def _on_auto_requantify_done(self, result):
+        """Callback quan l'auto-requantify acaba. Actualitza processed_data
+        i persisteix el JSON. Si el panel Quantify està visible, hauria de
+        refrescar la seva vista (gestionat pel signal quantification_completed
+        si està connectat al wizard)."""
+        self.main_window.processed_data = result
+        # Persistir el JSON actualitzat
+        try:
+            from hpsec_analyze import save_analysis_result
+            save_analysis_result(result)
+        except Exception as e:
+            logger.warning("Error persistint post auto-requantify: %s", e)
+        # Refresh QuantifyPanel si està visible
+        try:
+            wizard = getattr(self.main_window, '_main_wizard', None) \
+                or getattr(self.main_window, 'process_wizard', None)
+            if wizard and hasattr(wizard, 'quantify_panel'):
+                if wizard.quantify_panel.isVisible():
+                    wizard.quantify_panel.load(result)
+        except Exception as e:
+            logger.debug("Refresh QuantifyPanel skipped: %s", e)
+        n_quant = sum(
+            1 for sg in (result.get('samples_grouped') or {}).values()
+            if isinstance(sg, dict)
+            and (sg.get('quantification') or {}).get('concentration_ppm_direct') is not None
+        )
+        self.main_window.set_status(
+            f"Requantificat: {n_quant} mostres", 2500)
+        logger.info("Auto-requantify completat: %d mostres", n_quant)
 
     # ------------------------------------------------------------------
     # Review panel (inline sample review below table)

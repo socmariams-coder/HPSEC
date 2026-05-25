@@ -564,7 +564,8 @@ class QuantifyPanel(QWidget):
 
         # ─── Tab 1: per rèplica ───
         if HAS_MATPLOTLIB and per_rep:
-            self._draw_replica_bars(per_rep, q.get("selected_replica"))
+            self._draw_replica_bars(per_rep, sample_data=sg,
+                                     selected=q.get("selected_replica"))
         elif HAS_MATPLOTLIB:
             self._rep_figure.clear()
             ax = self._rep_figure.add_subplot(111)
@@ -606,44 +607,120 @@ class QuantifyPanel(QWidget):
         if not self._is_bp():
             self._populate_fractions_table(sg)
 
-    def _draw_replica_bars(self, per_rep: dict, selected: str = None):
+    def _draw_replica_bars(self, per_rep: dict, sample_data: dict = None,
+                            selected: str = None):
+        """Bar stacked: alçada = ppm Direct total, segments per fracció
+        (proporcionals a les àrees integrades). Marker taronja = ppm UIB.
+
+        Per BP (sense fraccions), una sola barra plena en color BB-blau.
+        """
         self._rep_figure.clear()
         ax = self._rep_figure.add_subplot(111)
 
-        keys = sorted(per_rep.keys(), key=lambda x: (int(x) if x.isdigit() else 999))
+        keys = sorted(per_rep.keys(),
+                      key=lambda x: (int(x) if str(x).isdigit() else 999))
+        if not keys:
+            ax.text(0.5, 0.5, "Sense rèpliques quantificades",
+                    ha="center", va="center", color="#888", transform=ax.transAxes)
+            ax.set_xticks([]); ax.set_yticks([])
+            self._rep_canvas.draw_idle()
+            return
+
+        # Llegir àrees de cada rèplica per derivar ppm per fracció
+        replicas_full = (sample_data or {}).get("replicas") or {}
+        is_bp = self._is_bp()
+
         labels = []
-        d_vals = []
-        u_vals = []
+        ppm_direct_total = []
+        ppm_uib_total = []
+        # Per cada fracció, llista de ppm per cada rèplica (mateix ordre que keys)
+        frac_ppm = {fn: [] for fn in FRACTION_ORDER}
+
         for k in keys:
             v = per_rep[k] or {}
-            lab = f"R{k}"
             sib = v.get("source_label", "")
-            if sib:
-                lab = f"R{k}[{sib}]"
-            labels.append(lab)
-            d_vals.append(v.get("ppm_direct") or 0)
-            u_vals.append(v.get("ppm_uib") or 0)
+            labels.append(f"R{k}[{sib}]" if sib else f"R{k}")
+            p_d = v.get("ppm_direct") or 0
+            p_u = v.get("ppm_uib") or 0
+            ppm_direct_total.append(p_d)
+            ppm_uib_total.append(p_u)
+
+            # Àrees de la rèplica per derivar ppm per fracció
+            rd = replicas_full.get(k) or {}
+            areas_doc = (rd.get("areas") or {}).get("DOC") or {}
+            total_area = areas_doc.get("total") or 0
+            for fn in FRACTION_ORDER:
+                if is_bp:
+                    # BP: cap fracció — tot el ppm va a una sola "fracció" pic
+                    frac_ppm[fn].append(p_d if fn == "BioP" else 0)
+                else:
+                    a_frac = areas_doc.get(fn) or 0
+                    if total_area > 0 and p_d > 0:
+                        frac_ppm[fn].append(p_d * a_frac / total_area)
+                    else:
+                        frac_ppm[fn].append(0)
 
         x = list(range(len(labels)))
-        w = 0.38
-        b1 = ax.bar([xi - w/2 for xi in x], d_vals, w,
-                    label="Direct", color="#2E86AB", alpha=0.85)
-        b2 = ax.bar([xi + w/2 for xi in x], u_vals, w,
-                    label="UIB", color="#A23B72", alpha=0.85)
-        # Marca la seleccionada amb un contorn més gruixut
+        w = 0.55
+
+        # Stacked bars per fracció — colors del FRACTION_COLORS
+        bottom = [0] * len(x)
+        bars_per_frac = {}
+        if is_bp:
+            # BP: una sola barra plena, no stacked
+            bars_per_frac["BP"] = ax.bar(x, ppm_direct_total, w,
+                                          color="#2E86AB", alpha=0.85,
+                                          label="DOC (BP)")
+        else:
+            for fn in FRACTION_ORDER:
+                vals = frac_ppm[fn]
+                if not any(vals):
+                    continue
+                bars = ax.bar(x, vals, w, bottom=bottom,
+                              color=FRACTION_COLORS.get(fn, "#888"),
+                              alpha=0.88, label=fn,
+                              edgecolor="white", linewidth=0.5)
+                bars_per_frac[fn] = bars
+                bottom = [b + v for b, v in zip(bottom, vals)]
+
+        # Etiqueta ppm Direct total a sobre de cada barra
+        for i, ptot in enumerate(ppm_direct_total):
+            if ptot:
+                ax.text(i, ptot * 1.02, f"{ptot:.2f}",
+                        ha="center", va="bottom", fontsize=9,
+                        fontweight="bold", color="#2c3e50")
+
+        # Marker per ppm UIB (línia horitzontal taronja al damunt de cada barra)
+        for i, pu in enumerate(ppm_uib_total):
+            if pu:
+                ax.plot([i - w/2 * 0.85, i + w/2 * 0.85], [pu, pu],
+                        color="#E67E22", lw=2.4, solid_capstyle="round",
+                        label="UIB" if i == 0 else None)
+
+        # Marca rèplica seleccionada amb un fons subtil
         if selected and str(selected) in keys:
             sel_idx = keys.index(str(selected))
-            b1[sel_idx].set_edgecolor("#1f6080")
-            b1[sel_idx].set_linewidth(2)
-            b2[sel_idx].set_edgecolor("#6d2649")
-            b2[sel_idx].set_linewidth(2)
+            ax.axvspan(sel_idx - w/2 - 0.05, sel_idx + w/2 + 0.05,
+                       alpha=0.06, color="#2E86AB", zorder=0)
+            # I etiqueta sota la barra
+            ax.text(sel_idx, -max(ppm_direct_total) * 0.05 if ppm_direct_total else 0,
+                    "★ sel", ha="center", va="top",
+                    fontsize=8, color="#2E86AB", style="italic")
 
         ax.set_xticks(x)
         ax.set_xticklabels(labels, fontsize=9)
-        ax.set_ylabel("ppm", fontsize=9)
+        ax.set_ylabel("ppm DOC", fontsize=9)
         ax.tick_params(labelsize=8)
-        ax.grid(True, axis="y", alpha=0.3)
-        ax.legend(fontsize=8, loc="upper right")
+        ax.grid(True, axis="y", alpha=0.25)
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+
+        # Llegenda compacta: fraccions principals + UIB marker
+        handles, leg_labels = ax.get_legend_handles_labels()
+        if handles:
+            ax.legend(handles, leg_labels, fontsize=7, loc="upper right",
+                      framealpha=0.85, ncol=min(len(handles), 6))
+
         try:
             self._rep_figure.tight_layout()
         except Exception:
