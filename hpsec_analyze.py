@@ -1514,11 +1514,16 @@ def quantify_sample(sample_result, calibration_data, mode="COLUMN", seq_date=Non
         "concentration_ppm": None,
         "concentration_ppm_direct": None,
         "concentration_ppm_uib": None,
+        "area_total": None,        # v2.2.0+: àrea total Direct (per traçabilitat)
+        "area_total_uib": None,
         "fractions": {},
         "fractions_uib": {},
         "calibration_source": None,
-        "rf_mass_cal_used": None,
-        "intercept": 0,
+        "rf_mass_cal_used": None,  # RF Direct
+        "rf_mass_cal_uib_used": None,  # v2.2.0+: RF UIB
+        "intercept": 0,            # Intercept Direct
+        "intercept_uib": 0,        # v2.2.0+: Intercept UIB
+        "volume_uL": None,         # v2.2.0+: volum injecció emprat
         "below_lod": False,
         "below_loq": False,
         "lod_ppm": None,
@@ -1575,6 +1580,10 @@ def quantify_sample(sample_result, calibration_data, mode="COLUMN", seq_date=Non
     area_total_direct = areas_direct.get("total", 0)
     if is_uib_only and not has_direct_estimate:
         area_total_direct = 0  # JSON antic: àrees UIB sense corregir
+
+    # Sempre exposar volum + àrea total per traçabilitat (encara que ppm sigui None)
+    result["volume_uL"] = volume_uL
+    result["area_total"] = float(area_total_direct) if area_total_direct else None
 
     if area_total_direct > 0:
         if use_global:
@@ -1641,12 +1650,16 @@ def quantify_sample(sample_result, calibration_data, mode="COLUMN", seq_date=Non
     # =========================================================================
     areas_uib = sample_result.get("areas_uib", {})
     area_total_uib = areas_uib.get("total", 0)
+    if area_total_uib:
+        result["area_total_uib"] = float(area_total_uib)
 
     if area_total_uib > 0:
         if rf_mass_uib and rf_mass_uib > 0:
             # Usar fórmula global amb intercept UIB independent
             ppm_uib = apply_formula(area_total_uib, rf_mass_uib, intercept=intercept_uib)
             result["concentration_ppm_uib"] = float(ppm_uib)
+            result["rf_mass_cal_uib_used"] = rf_mass_uib
+            result["intercept_uib"] = intercept_uib
 
             # Concentracions UIB per fracció (només COLUMN)
             if mode.upper() == "COLUMN":
@@ -3443,6 +3456,67 @@ def quantify_sequence(analysis_result, seq_path=None, mode=None, seq_date=None,
             }
             continue
 
+        # ─── v2.2.0+: quantificació per CADA rèplica vàlida + estadística ───
+        # Es quantifiquen totes les rèpliques (incloent siblings: R1A, R2A,
+        # R1B, R2B…) que no tinguin anomalia bloquejant ni siguin outlier.
+        per_replica = {}
+        for rk, rd in replicas.items():
+            if not isinstance(rd, dict):
+                continue
+            # Filtrar outliers / blockers
+            if rd.get("is_outlier", False):
+                continue
+            anoms = rd.get("anomalies") or []
+            has_blocker = any(
+                (a.get("severity") == "blocker") if isinstance(a, dict)
+                else False
+                for a in anoms
+            )
+            if has_blocker:
+                continue
+            rep_cal = _get_sample_cal(rd)
+            try:
+                q_rep = quantify_sample(rd, rep_cal, mode=mode, seq_date=seq_date)
+            except Exception as e:
+                logger.warning(
+                    "Error quantificant rèplica %s de %s: %s", rk, sample_name, e)
+                continue
+            per_replica[str(rk)] = {
+                "ppm_direct": q_rep.get("concentration_ppm_direct"),
+                "ppm_uib": q_rep.get("concentration_ppm_uib"),
+                "area_total": q_rep.get("area_total"),
+                "area_total_uib": q_rep.get("area_total_uib"),
+                "rf_mass_cal_used": q_rep.get("rf_mass_cal_used"),
+                "rf_mass_cal_uib_used": q_rep.get("rf_mass_cal_uib_used"),
+                "intercept": q_rep.get("intercept"),
+                "intercept_uib": q_rep.get("intercept_uib"),
+                "volume_uL": q_rep.get("volume_uL"),
+                "source_label": rd.get("_source_label", ""),
+                "injection_index": rd.get("injection_index"),
+            }
+
+        # Calcular estadística només amb les rèpliques vàlides
+        import statistics as _stats
+        direct_vals = [v["ppm_direct"] for v in per_replica.values()
+                       if v["ppm_direct"] is not None]
+        uib_vals = [v["ppm_uib"] for v in per_replica.values()
+                    if v["ppm_uib"] is not None]
+
+        def _stat(values):
+            if not values:
+                return {"n": 0, "mean": None, "sd": None, "rsd_pct": None}
+            n = len(values)
+            mean = sum(values) / n
+            sd = _stats.stdev(values) if n > 1 else 0.0
+            rsd = (100.0 * sd / mean) if mean else None
+            return {"n": n, "mean": mean, "sd": sd, "rsd_pct": rsd}
+
+        statistics_block = {
+            "direct": _stat(direct_vals),
+            "uib": _stat(uib_vals),
+        }
+
+        # Quantificació "final" de la mostra: la rèplica seleccionada
         sample_cal = _get_sample_cal(selected_sample)
         quantification = quantify_sample(selected_sample, sample_cal, mode=mode,
                                           seq_date=seq_date)
@@ -3451,6 +3525,13 @@ def quantify_sequence(analysis_result, seq_path=None, mode=None, seq_date=None,
         if hci is not None:
             quantification["hci"] = hci
             quantification["hci_character"] = selected_sample.get("hci_character", "")
+
+        # Compatibilitat: 'concentration_ppm_direct' és el de la seleccionada
+        # (com fins ara). Els nous camps per_replica + statistics afegeixen
+        # info per a estadística i UI.
+        quantification["per_replica"] = per_replica
+        quantification["statistics"] = statistics_block
+        quantification["selected_replica"] = str(selected_doc) if selected_doc else None
         sample_group["quantification"] = quantification
 
     analysis_result["quantification_pending"] = False

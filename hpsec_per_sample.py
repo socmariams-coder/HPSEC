@@ -299,16 +299,30 @@ def _build_metadata(sample_name, sample_data, processed_data, method):
 
     # ─── results (areas + ppm si quantificat) ───
     sel_rep_areas = (sel_rep_data.get("areas") or {}).get("DOC") or {}
-    # Fraccions: cada clau de areas["DOC"] que no sigui 'total'
+    # Fraccions: cada clau de areas["DOC"] que no sigui 'total'.
+    # Inclou tant principals (BioP/HS/BB/SB/LMW) com sub-zones (HS-1..4, BB-1..2)
+    # que calcular_fraccions_temps ja deixa al dict 'areas'.
     fractions = {k: v for k, v in sel_rep_areas.items()
                  if k not in ("total",) and isinstance(v, (int, float))}
+    # Percentatges per fracció respecte total
+    total_doc = sel_rep_areas.get("total") or 0
+    fractions_pct = {
+        f"{k}_pct": (100.0 * v / total_doc if total_doc > 0 else 0.0)
+        for k, v in fractions.items()
+    } if total_doc > 0 else {}
+
     results_block = {
         "areas_per_fraction": fractions,
+        "fractions_pct": fractions_pct,
         "area_total": sel_rep_areas.get("total"),
         "concentration_ppm": quantification.get("concentration_ppm_direct"),
         "concentration_ppm_uib": quantification.get("concentration_ppm_uib"),
         "hci": quantification.get("hci"),
         "hci_character": quantification.get("hci_character"),
+        # v2.2.0+: estadística entre rèpliques vàlides
+        "per_replica": quantification.get("per_replica") or {},
+        "statistics": quantification.get("statistics") or {},
+        "selected_replica": quantification.get("selected_replica"),
     }
 
     # ─── calibration (només si quantificat) ───
@@ -317,10 +331,12 @@ def _build_metadata(sample_name, sample_data, processed_data, method):
     if not quant_pending and quantification:
         cal_block = {
             "fingerprint": processed_data.get("calibration_fingerprint", ""),
-            "rf_mass_cal": quantification.get("rf_mass_cal"),
-            "intercept": quantification.get("intercept"),
+            "rf_mass_cal_direct": quantification.get("rf_mass_cal_used"),
+            "rf_mass_cal_uib": quantification.get("rf_mass_cal_uib_used"),
+            "intercept_direct": quantification.get("intercept"),
+            "intercept_uib": quantification.get("intercept_uib"),
             "volume_uL": quantification.get("volume_uL"),
-            "signal_scope": quantification.get("signal_scope"),
+            "calibration_source": quantification.get("calibration_source"),
         }
 
     metadata = {
@@ -460,13 +476,21 @@ def update_sample_quantification(sample_name, quantification, output_dir,
         quantification.get("concentration_ppm_uib"))
     data["results"]["hci"] = _to_jsonable(quantification.get("hci"))
     data["results"]["hci_character"] = quantification.get("hci_character")
+    # v2.2.0+: estadística entre rèpliques
+    data["results"]["per_replica"] = _to_jsonable(
+        quantification.get("per_replica") or {})
+    data["results"]["statistics"] = _to_jsonable(
+        quantification.get("statistics") or {})
+    data["results"]["selected_replica"] = quantification.get("selected_replica")
 
     data["calibration"] = _to_jsonable({
         "fingerprint": calibration_fingerprint or "",
-        "rf_mass_cal": quantification.get("rf_mass_cal"),
-        "intercept": quantification.get("intercept"),
+        "rf_mass_cal_direct": quantification.get("rf_mass_cal_used"),
+        "rf_mass_cal_uib": quantification.get("rf_mass_cal_uib_used"),
+        "intercept_direct": quantification.get("intercept"),
+        "intercept_uib": quantification.get("intercept_uib"),
         "volume_uL": quantification.get("volume_uL"),
-        "signal_scope": quantification.get("signal_scope"),
+        "calibration_source": quantification.get("calibration_source"),
     })
 
     fps = data.setdefault("fingerprints", {})
