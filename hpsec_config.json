@@ -1,10 +1,10 @@
 {
     "paths": {
         "data_folders": [
-            "C:/Users/Lequia/Desktop/Dades3"
+            "C:/Users/maria/Proyectos/Dades3"
         ],
-        "registry_folder": "C:/Users/Lequia/Desktop/Dades3/REGISTRY",
-        "maintenance_excel": "C:/Users/Lequia/Desktop/Manteniment/Registre manteniment HPLC-DAD-TOC.xlsx"
+        "registry_folder": "C:/Users/maria/Proyectos/Dades3/REGISTRY",
+        "maintenance_excel": "C:/Users/maria/Proyectos/HPSEC/Registre manteniment HPLC-DAD-TOC.xlsx"
     },
     "time_fractions": {
         "BioP": {
