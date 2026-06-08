@@ -259,6 +259,9 @@ class AnalyzePanel(QWidget):
         status_layout = QVBoxLayout(self.status_frame)
         self.status_label = QLabel()
         status_layout.addWidget(self.status_label)
+        # Afegir al layout principal: sense pare, setVisible(True) el mostrava com a
+        # finestra suelta ("finestra fantasma"). Ara apareix inline com cal.
+        layout.addWidget(self.status_frame)
 
         # === PROGRESS ===
         self.progress_frame = QFrame()
@@ -299,7 +302,9 @@ class AnalyzePanel(QWidget):
         charts_outer.setContentsMargins(0, 8, 0, 0)
         charts_outer.setSpacing(4)
 
-        self._charts_content = QWidget()
+        # Parent explícit (charts_section) per evitar que setVisible(True) el mostri
+        # un instant com a finestra suelta de nivell superior ("finestra fantasma").
+        self._charts_content = QWidget(self.charts_section)
         self._charts_content.setVisible(True)
         self._charts_content_layout = QVBoxLayout(self._charts_content)
         self._charts_content_layout.setContentsMargins(0, 4, 0, 0)
@@ -367,7 +372,8 @@ class AnalyzePanel(QWidget):
         self._build_table_with_group_headers()
 
         # === REVIEW PANEL (v2.2.0: sempre visible com a panell central de la dreta) ===
-        self._review_panel = QFrame()
+        # Parent explícit (self) per evitar el flash com a finestra suelta en fer setVisible.
+        self._review_panel = QFrame(self)
         self._review_panel.setVisible(True)  # v2.2.0: sempre visible al split
         self._review_panel.setStyleSheet(
             "QFrame { border: 1px solid #DEE2E6; border-radius: 6px;"
@@ -724,7 +730,7 @@ class AnalyzePanel(QWidget):
                 return
 
         logger.info("auto-analyze: disparant anàlisi en background per %s",
-                     self.main_window.seq_name)
+                     seq_path)
         # _run_analyze és asincron (QThread) — no bloqueja
         try:
             self._run_analyze()

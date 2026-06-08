@@ -36,8 +36,10 @@ from hpsec_calibrate import (
     detect_seq_cal_data,
 )
 
-import matplotlib
-matplotlib.use('QtAgg')
+import matplotlib  # noqa: F401
+# matplotlib.use('QtAgg') eliminat: forçava el backend interactiu i obria finestres
+# fantasma en generar informes. Backend fixat a Agg (hpsec_suite_qt.py); embedding
+# via FigureCanvasQTAgg explícit, que no depèn del backend per defecte.
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 import numpy as np

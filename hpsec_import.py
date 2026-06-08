@@ -4251,16 +4251,11 @@ def import_sequence(seq_path, config=None, progress_callback=None):
         result["date"] = read_master_date(seq_path)
 
         # Extreure sensibilitat UIB si disponible (de 0-INFO B5)
+        # _safe_float gestiona formats com "1-1000" (UIB_range) → 1000
         master_info = result["master_data"].get("info", {})
-        uib_sensitivity = master_info.get("uib_sensitivity")
+        uib_sensitivity = _safe_float(master_info.get("uib_sensitivity"))
         if uib_sensitivity is not None:
-            # Guard: pot ser string des d'Excel
-            try:
-                uib_sensitivity = float(uib_sensitivity)
-            except (ValueError, TypeError):
-                uib_sensitivity = None
-            if uib_sensitivity is not None:
-                result["uib_sensitivity"] = uib_sensitivity
+            result["uib_sensitivity"] = uib_sensitivity
 
         report_progress(20, "Parsejant injeccions del MasterFile...")
 

@@ -11,8 +11,10 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, Signal
 
-import matplotlib
-matplotlib.use('QtAgg')
+import matplotlib  # noqa: F401
+# matplotlib.use('QtAgg') eliminat: forçava el backend interactiu i obria finestres
+# fantasma en generar informes. El backend es fixa a Agg (hpsec_suite_qt.py) i
+# l'embedding usa FigureCanvasQTAgg explícit, que no depèn del backend per defecte.
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 import numpy as np

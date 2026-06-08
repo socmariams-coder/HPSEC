@@ -178,8 +178,9 @@ class SeqCalRegressionWidget(QWidget):
 
         # Preview cromatograma (inicialment ocult)
         try:
-            import matplotlib
-            matplotlib.use('QtAgg')
+            import matplotlib  # noqa: F401
+            # matplotlib.use('QtAgg') eliminat: obria finestres fantasma. Backend Agg
+            # global (hpsec_suite_qt.py); embedding via FigureCanvasQTAgg explícit.
             from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
             from matplotlib.figure import Figure
             self._chrom_figure = Figure(figsize=(8, 3), dpi=100)
@@ -234,8 +235,9 @@ class SeqCalRegressionWidget(QWidget):
 
         # Gràfic scatter amb matplotlib
         try:
-            import matplotlib
-            matplotlib.use('QtAgg')
+            import matplotlib  # noqa: F401
+            # matplotlib.use('QtAgg') eliminat: obria finestres fantasma. Backend Agg
+            # global (hpsec_suite_qt.py); embedding via FigureCanvasQTAgg explícit.
             from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
             from matplotlib.figure import Figure
             self._scatter_figure = Figure(figsize=(8, 4), dpi=100)
