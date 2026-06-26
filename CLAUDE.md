@@ -79,6 +79,7 @@ Mark features as DONE only when code is fully functional end-to-end, not when pl
 - [x] Wizard SEQ_CAL: resum regressió al pas 4 (ReviewSummaryPanel) — DONE
 - [x] GlobalCalibrationPanel: convertit a consulta-only (sense aplicar/requantificar) — DONE
 - [x] Calibration: v3.0 independent per signal_scope/uib_sensitivity — DONE (migració automàtica v2→v3)
+- [x] Calibration: reparació pic amb ANCORATGES MANUALS al detall KHP (paritat amb anàlisi) — DONE (2026-06-25, pendent verificació GUI)
 - [x] Calibration: UIB intercept independent a quantify_sample — DONE
 - [x] GlobalCalibrationPanel: vista resum sense SEQ_CAL (taula params, scatter, historial) — DONE
 - [x] GlobalCalibrationPanel: SEQ_CAL auto-flow (Direct→UIB→resum) — DONE
@@ -295,7 +296,62 @@ All exploratory scripts and results live in `research/` — NOT part of the prod
 
 ## Working notes
 
-> Last updated: 2026-03-04
+> Last updated: 2026-06-26
+
+### Selecció robusta de rèplica a la calibració KHP (2026-06-26)
+
+**Problema (usuària):** la calibració BP era poc fiable. Anàlisi a fons sobre les 38 rèpliques
+de l'historial: les anomalies dominants al KHP són **timeout (recàrrega xeringues TOC) i pics
+no-gaussians**, no l'irregular-top (que ja es repara bé, 2/2). El timeout **perfora l'àpex** del
+pic (verificat: 292@5ppm rep2 perd −36% d'àrea; la cua post-timeout és artefacte, no es pot
+reconstruir de manera fiable — ajust gaussià recupera 241 vs 342 reals).
+
+**Bug arrel:** `_process_khp_group` (hpsec_calibrate.py) feia la **unió** d'anomalies de TOTES
+les rèpliques i la passava a `register_calibration`, que invalidava el **nivell sencer** si
+qualsevol rèplica tenia un blocker — tot i que la selecció ja triava la rèplica neta. Però el
+catàleg (hpsec_warnings.py) marca aquests blockers com **per-rèplica** amb acció literal "triar
+l'altra rèplica" (KHP_TIMEOUT_PEAK, KHP_PEAK_NON_GAUSSIAN, TIMEOUT_AT_BOUNDARY, KHP_REPLICA_OUTLIER,
+KHP_DOC_SATURATED). Resultat: la 292 perdia 0,1/0,5/5,0 ppm i es quedava amb 3 punts agrupats.
+
+**Fix (hpsec_calibrate.py, `_process_khp_group`):** després de l'auto-detecció d'outlier, si hi ha
+rèpliques amb blocker però en queda alguna de neta, es **descarten les bloquejades** (`replicas = _usable`)
+i tot el downstream (estadístiques, selecció, unió d'anomalies de validesa) opera només amb les netes
+→ el nivell es manté VÀLID amb la rèplica bona. Només si TOTES porten blocker es manté el conjunt
+(camí all_invalid existent). Afegit `excluded_replica_anomalies` + `selection.n_replicas_usable/
+excluded_anomalous` per traçabilitat. `calibration_anomalies` ara = unió de les NETES (validesa correcta).
+
+**Verificat (292_SEQ_CAL_BP):** 0,1/0,5/5,0 ppm passen a vàlids (rèpliques [1]/[2]/[1]);
+recta BP de 3 punts (RF=761, esbiaixada) → **6 punts RF_mass=683, R²=0,998** — quadra amb 114_SEQ_BP (681).
+
+**Paritat reparació (2) FETA:** a `analizar_khp_data` la decisió `detect_peak_anomaly` (L3153, la que
+afecta l'àrea) es pren ara sobre senyal SUAVITZAT (`apply_smoothing`), com `analyze_sample`. Reparació i
+integració segueixen sobre cru. Efecte: elimina reparacions espúries per soroll del cim (293@1ppm: irregular
+True→False). El pre-repair force=True (L3007) es manté: és disseny KHP intencional (pic gaussià pur).
+
+**Calibration_Reference.json REGENERAT (3) (2026-06-26):** creat via `add_calibration()` (esquema v3.0),
+signal_scope=direct amb rectes SEPARADES: COLUMN rf_mass=793.9/intercept=28.88 (293_SEQ_CAL, R²=0.9998),
+BP rf_mass=682.6/intercept=4.26 (292_SEQ_CAL_BP, R²=0.998). Validat: recuperació 5ppm COLUMN +0.3%, BP −1.1%.
+NOTA: COLUMN RF 794 (no el 628 antic) — és correcte amb la integració cap=4 vigent.
+Rang fiable ≥0.25–0.5 ppm (0.1 ppm prop LOD: COLUMN +14%, BP −23%).
+Scripts de revisió + gràfics a `_results/calibracio_review/` (review_calibracio.py, valida_ppm.py, crear_calibracio.py).
+**PENDENT:** UIB (signal_scope=uib) no calibrat encara — només DOC Direct. Validació cross-mode BP↔COLUMN
+amb mostres reals: pendent (cal samples dual-mode processats; CHECK/ no és en aquesta còpia de Dades3).
+
+### Reparació amb ancoratges manuals al detall KHP de calibració (2026-06-25)
+
+### Reparació amb ancoratges manuals al detall KHP de calibració (2026-06-25)
+
+**Motiu (usuària):** la calibració tenia una reparació de pic més pobra que l'anàlisi normal
+(`repair_dialog.py` ric, amb ancoratges manuals) — només un botó automàtic. La calibració és on
+la precisió de l'àrea importa MÉS (fixa el RF), així que ha de tenir el mateix control.
+
+**Canvi (`gui/widgets/calibrate_panel/khp_detail_dialog.py`):**
+- Casella "Ancoratges manuals" + camps E (esquerre) / D (dret) en min. Desactivat = automàtic (comportament d'abans).
+- `_on_repair_clicked()` passa `anchor_left_t`/`anchor_right_t` a `repair_with_parabola()` quan el mode manual és actiu.
+- Botó separat "✓ Aplicar reparació" (abans es reconnectava el mateix botó) → es pot re-previsualitzar amb ancoratges diferents abans d'aplicar.
+- `_on_manual_toggled()` inicialitza els camps (rang = [t_min, t_max], default = pic ± 0,8 min COL / 0,4 BP).
+
+**PENDENT: verificació a la GUI** (imports OK; falta provar el flux complet obrint un detall KHP real i comprovar que la nova àrea es propaga a la regressió).
 
 ### SEQ_CAL Auto-flow + PDF Dual-Signal (2026-03-04, COMPLETAT)
 

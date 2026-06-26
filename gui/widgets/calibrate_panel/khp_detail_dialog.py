@@ -14,7 +14,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFrame,
-    QSizePolicy, QMessageBox,
+    QSizePolicy, QMessageBox, QDoubleSpinBox, QCheckBox,
 )
 
 try:
@@ -44,6 +44,7 @@ class KHPDetailDialog(QDialog):
         self.khp_data = khp_data
         self.signal = signal
         self._repaired_data = None  # Resultat de reparació pendent d'aplicar
+        self._anchors_inited = False
 
         rep_num = khp_data.get('replica_num', 1)
         conc = khp_data.get('conc_ppm', 0)
@@ -106,15 +107,48 @@ class KHPDetailDialog(QDialog):
         self._metrics_layout.addWidget(self._metrics_label)
         layout.addWidget(metrics_frame)
 
+        # Ancoratges manuals de la paràbola (mateixa capacitat que el diàleg d'anàlisi)
+        anchor_row = QHBoxLayout()
+        anchor_row.setSpacing(4)
+        self._manual_anchors_cb = QCheckBox("Ancoratges manuals")
+        self._manual_anchors_cb.setToolTip(
+            "Tria tu els ancoratges E (esquerre) i D (dret) de la paràbola, com al diàleg "
+            "d'anàlisi. Desactivat = automàtic (comportament d'abans)."
+        )
+        self._manual_anchors_cb.toggled.connect(self._on_manual_toggled)
+        anchor_row.addWidget(self._manual_anchors_cb)
+        self._anchor_left_spin = QDoubleSpinBox()
+        self._anchor_left_spin.setPrefix("E "); self._anchor_left_spin.setSuffix(" min")
+        self._anchor_left_spin.setDecimals(2); self._anchor_left_spin.setSingleStep(0.05)
+        self._anchor_left_spin.setEnabled(False)
+        self._anchor_left_spin.setToolTip("Ancoratge esquerre de la paràbola")
+        anchor_row.addWidget(self._anchor_left_spin)
+        self._anchor_right_spin = QDoubleSpinBox()
+        self._anchor_right_spin.setPrefix("D "); self._anchor_right_spin.setSuffix(" min")
+        self._anchor_right_spin.setDecimals(2); self._anchor_right_spin.setSingleStep(0.05)
+        self._anchor_right_spin.setEnabled(False)
+        self._anchor_right_spin.setToolTip("Ancoratge dret de la paràbola")
+        anchor_row.addWidget(self._anchor_right_spin)
+        anchor_row.addStretch()
+        layout.addLayout(anchor_row)
+
         # Botons
         btn_row = QHBoxLayout()
-        self._btn_repair = QPushButton("⚙ Reparar pic (paràbola)")
+        self._btn_repair = QPushButton("⚙ Previsualitzar reparació")
         self._btn_repair.setToolTip(
-            "Aplicar reparació amb paràbola al pic seleccionat (force=True).\n"
-            "Útil quan el pic té dents subtils que detect_irregular_top no detecta."
+            "Reparar el pic amb una paràbola (force=True).\n"
+            "Amb 'Ancoratges manuals' actiu, ajusta E/D i torna a previsualitzar fins que quedi bé."
         )
         self._btn_repair.clicked.connect(self._on_repair_clicked)
         btn_row.addWidget(self._btn_repair)
+
+        self._btn_apply = QPushButton("✓ Aplicar reparació")
+        self._btn_apply.setEnabled(False)
+        self._btn_apply.setStyleSheet(
+            "QPushButton { background: #C8E6C9; color: #1B5E20; padding: 6px 12px; font-weight: bold; }"
+            "QPushButton:disabled { background: #EEEEEE; color: #AAAAAA; }")
+        self._btn_apply.clicked.connect(self._apply_repair)
+        btn_row.addWidget(self._btn_apply)
 
         self._btn_outlier = QPushButton()
         self._update_outlier_button()
@@ -253,6 +287,24 @@ class KHPDetailDialog(QDialog):
 
         self._metrics_label.setText('<br>'.join(line.replace(' ', '&nbsp;') for line in lines))
 
+    def _on_manual_toggled(self, checked: bool):
+        """Activa/desactiva els camps d'ancoratge manual i els inicialitza."""
+        self._anchor_left_spin.setEnabled(checked)
+        self._anchor_right_spin.setEnabled(checked)
+        if checked and not self._anchors_inited:
+            t = np.asarray(self.khp_data.get('t_doc', []))
+            peak_info = self.khp_data.get('peak_info') or {}
+            p_idx = peak_info.get('peak_idx')
+            is_bp = bool(self.khp_data.get('is_bp', False))
+            if len(t) > 5 and p_idx is not None and 0 <= p_idx < len(t):
+                lo, hi = float(np.min(t)), float(np.max(t))
+                self._anchor_left_spin.setRange(lo, hi)
+                self._anchor_right_spin.setRange(lo, hi)
+                w = 0.4 if is_bp else 0.8
+                self._anchor_left_spin.setValue(max(lo, float(t[p_idx]) - w))
+                self._anchor_right_spin.setValue(min(hi, float(t[p_idx]) + w))
+                self._anchors_inited = True
+
     def _on_repair_clicked(self):
         """Aplica reparació amb paràbola (force=True) i mostra el resultat."""
         try:
@@ -279,9 +331,14 @@ class KHPDetailDialog(QDialog):
         half_w = 3.0 if is_bp else 5.0
         seg_mask = (t >= t[p_idx] - half_w) & (t <= t[p_idx] + half_w)
 
+        al = ar = None
+        if self._manual_anchors_cb.isChecked():
+            al = self._anchor_left_spin.value()
+            ar = self._anchor_right_spin.value()
         try:
             y_seg_rep, repair_info, was_repaired = repair_with_parabola(
-                t[seg_mask], y[seg_mask], force=True)
+                t[seg_mask], y[seg_mask], force=True,
+                anchor_left_t=al, anchor_right_t=ar)
         except Exception as e:
             QMessageBox.warning(self, "Reparació", f"Error a repair_with_parabola: {e}")
             return
@@ -318,19 +375,10 @@ class KHPDetailDialog(QDialog):
             'repair_info': repair_info,
         }
 
-        # Re-render amb el repair pendent
+        # Re-render amb el repair pendent + habilitar Aplicar
         self._render_chromatogram()
         self._render_metrics()
-
-        # Modificar botó per "Aplicar"
-        self._btn_repair.setText("✓ Aplicar reparació")
-        try:
-            self._btn_repair.clicked.disconnect()
-        except Exception:
-            pass
-        self._btn_repair.clicked.connect(self._apply_repair)
-        self._btn_repair.setStyleSheet(
-            "QPushButton { background: #C8E6C9; color: #1B5E20; padding: 6px 12px; font-weight: bold; }")
+        self._btn_apply.setEnabled(True)
 
     def _apply_repair(self):
         """Confirma la reparació i emet el senyal."""
@@ -345,6 +393,9 @@ class KHPDetailDialog(QDialog):
         )
         # Reset
         self._repaired_data = None
+        self._btn_apply.setEnabled(False)
+        self._render_chromatogram()
+        self._render_metrics()
 
     def _on_toggle_outlier(self):
         is_outlier_now = bool(self.khp_data.get('is_outlier', False))

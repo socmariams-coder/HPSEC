@@ -41,6 +41,7 @@ logger = logging.getLogger(__name__)
 
 # Import funcions de detecció des de hpsec_core (Single Source of Truth)
 from hpsec_core import (
+    apply_smoothing,
     detect_irregular_top,
     detect_peak_anomaly,
     calc_top_smoothness,
@@ -3149,11 +3150,16 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
     # quan els límits d'integració tallen el segon pic del patró.
     _half_w_detect = 3.0 if is_bp_chromato else 5.0
     _wide_mask = (t_doc >= t_doc[peak_idx] - _half_w_detect) & (t_doc <= t_doc[peak_idx] + _half_w_detect)
+    # Paritat amb seq normal: la DECISIÓ de reparar (is_irregular_top) es pren sobre
+    # senyal SUAVITZAT, igual que analyze_sample dins detect_main_peak. Sobre senyal cru
+    # el soroll del cim dispara irregular-tops espuris (verificat 2026-06-26: 293@1ppm).
+    # La reparació i la integració segueixen operant sobre el senyal cru (y_doc_net).
+    _y_detect = apply_smoothing(y_doc_net)
     if np.sum(_wide_mask) > 20:
-        anomaly_info = detect_peak_anomaly(t_doc[_wide_mask], y_doc_net[_wide_mask])
+        anomaly_info = detect_peak_anomaly(t_doc[_wide_mask], _y_detect[_wide_mask])
     else:
         t_peak_seg = t_doc[left_idx:right_idx+1]
-        y_peak_seg = y_doc_net[left_idx:right_idx+1]
+        y_peak_seg = _y_detect[left_idx:right_idx+1]
         anomaly_info = detect_peak_anomaly(t_peak_seg, y_peak_seg)
     has_irregular_top = anomaly_info.get('is_irregular_top', False)
     has_irregular = anomaly_info.get('is_irregular', False)
@@ -4930,6 +4936,29 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
                         )
                     )
 
+        # === Selecció robusta de rèplica ===
+        # Els blockers per-rèplica (KHP_TIMEOUT_PEAK, KHP_PEAK_NON_GAUSSIAN,
+        # TIMEOUT_AT_BOUNDARY, KHP_REPLICA_OUTLIER, KHP_DOC_SATURATED) afecten NOMÉS
+        # la rèplica que els porta — el catàleg diu literalment "triar l'altra rèplica".
+        # Si en queda alguna de neta, descartem les bloquejades i continuem amb les
+        # netes: el nivell es manté VÀLID amb la rèplica bona (no s'invalida sencer).
+        # Només quan TOTES porten blocker es manté el conjunt complet → camí all_invalid.
+        def _replica_has_blocker(r):
+            return any(
+                isinstance(a, dict) and a.get('severity') == 'blocker'
+                for a in r.get('calibration_anomalies', [])
+            )
+
+        excluded_replica_anomalies = []
+        n_replicas_total = len(replicas)
+        if not manual_selection:
+            _usable = [r for r in replicas if not _replica_has_blocker(r)]
+            if _usable and len(_usable) < len(replicas):
+                for r in replicas:
+                    if _replica_has_blocker(r):
+                        excluded_replica_anomalies.extend(r.get('calibration_anomalies', []))
+                replicas = _usable  # downstream (estadístiques, selecció, validesa) usa les netes
+
         # Nom: sempre "KHP" (el patró), els números són atributs (conc, vol)
         group_name = "KHP"
 
@@ -5092,7 +5121,9 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
                 'method': selection_method,          # 'average', 'single', 'best_quality', 'R1', 'R2', etc.
                 'reason': selection_reason,          # 'rsd_ok', 'rsd_high', 'manual', 'only_one_replica'
                 'selected_replicas': selected_replicas,  # [1, 2] o [1] o [2]
-                'n_replicas_available': len(replicas),
+                'n_replicas_available': n_replicas_total,
+                'n_replicas_usable': len(replicas),  # netes (sense blocker), post-filtre
+                'excluded_anomalous': n_replicas_total - len(replicas),
                 'is_manual': manual_selection is not None,
                 'khp_name': group_name,  # Nom del KHP
             },
@@ -5100,8 +5131,10 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
             # Comparació entre rèpliques
             'replica_comparison': comparison,
 
-            # Anomalies (unió de totes les rèpliques)
+            # Anomalies de validesa: NOMÉS de les rèpliques netes usades (no la unió
+            # amb les descartades). Les de les descartades es guarden a part per QC.
             'calibration_anomalies': all_calibration_anomalies,
+            'excluded_replica_anomalies': excluded_replica_anomalies,
             'has_irregular_top': group_has_irregular_top,
             'has_irregular': group_has_irregular,
             'has_timeout': group_has_timeout,
