@@ -194,7 +194,18 @@ def _read_toc_timestamps(wb):
     return toc_rows
 
 
-def _assign_toc_rows(hplc_times, toc_rows, net_delay_min, pre_margin_min=1.5):
+def _config_pre_margin():
+    """Marge de pre-injecció (dispersió del reactor TOC), FONT ÚNICA des de config.
+    Així l'eina de delay i la importació usen el mateix valor (abans 1,5 fix
+    a l'eina vs config a l'import → assignacions divergents)."""
+    try:
+        from hpsec_config import get_config
+        return float(get_config().get("sequence", "toc_pre_margin_min", default=1.5))
+    except Exception:
+        return 1.5
+
+
+def _assign_toc_rows(hplc_times, toc_rows, net_delay_min, pre_margin_min=None):
     """
     Assigna files TOC a injeccions HPLC amb un delay donat.
 
@@ -204,6 +215,8 @@ def _assign_toc_rows(hplc_times, toc_rows, net_delay_min, pre_margin_min=1.5):
     if not hplc_times or not toc_rows:
         return []
 
+    if pre_margin_min is None:
+        pre_margin_min = _config_pre_margin()
     hplc_times_ns = np.array([t.value for t in hplc_times])
     pre_margin_ns = pre_margin_min * 60 * 1e9
 
@@ -234,7 +247,7 @@ def _assign_toc_rows(hplc_times, toc_rows, net_delay_min, pre_margin_min=1.5):
     return assignments
 
 
-def estimate_delay_impact(mf_path, old_delay, new_delay, pre_margin_min=1.5):
+def estimate_delay_impact(mf_path, old_delay, new_delay, pre_margin_min=None):
     """
     Estima l'impacte d'un canvi de delay sense modificar el fitxer.
 
@@ -293,7 +306,7 @@ def estimate_delay_impact(mf_path, old_delay, new_delay, pre_margin_min=1.5):
     }
 
 
-def update_masterfile_delay(mf_path, net_delay_min, pre_margin_min=1.5,
+def update_masterfile_delay(mf_path, net_delay_min, pre_margin_min=None,
                             backup=True):
     """
     Actualitza el Net delay i recalcula 4-TOC_CALC al MasterFile.

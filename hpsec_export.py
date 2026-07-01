@@ -1052,7 +1052,13 @@ def export_sequence(
         progress_callback(100, "Exportació completada")
 
     results["n_skipped"] = n_skipped
-    results["success"] = results["n_errors"] == 0
+    # Èxit conscient de la cobertura: no és èxit si no s'ha exportat res
+    # (abans success=True encara que totes les mostres s'haguessin saltat).
+    results["success"] = results["n_errors"] == 0 and results.get("n_exported", 0) > 0
+    if results.get("n_exported", 0) == 0 and not results["errors"]:
+        results.setdefault("warnings", []).append(
+            f"No s'ha exportat cap mostra ({n_skipped} saltades). Revisa la selecció "
+            "i els filtres (blancs/controls/mostres invàlides).")
     return results
 
 

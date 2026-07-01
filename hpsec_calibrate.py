@@ -53,6 +53,7 @@ from hpsec_core import (
     calculate_symmetry,
     fit_bigaussian,
     repair_with_parabola,
+    recompute_area_with_repair,
     expand_with_cap,
     TIMEOUT_CONFIG
 )
@@ -338,6 +339,30 @@ def _migrate_calibration_reference(ref):
     return ref
 
 
+def _atomic_write_json(path, data, **dump_kwargs):
+    """Escriu un JSON de forma atòmica: temp al mateix directori + os.replace.
+
+    Evita deixar el fitxer bo corromput o a mitges si l'escriptura falla (disc
+    ple, lock OneDrive/Excel, crash): el fitxer de destí o queda intacte (vell)
+    o passa a ser el nou complet, mai un estat intermedi.
+    """
+    import tempfile
+    directory = os.path.dirname(path) or '.'
+    fd, tmp = tempfile.mkstemp(dir=directory, prefix='.tmp_', suffix='.json')
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            json.dump(data, f, **dump_kwargs)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)  # atòmic dins el mateix sistema de fitxers
+    except Exception:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def load_calibration_reference():
     """
     Carrega la calibració de referència global (amb cache mtime).
@@ -354,7 +379,8 @@ def load_calibration_reference():
     try:
         mtime = os.path.getmtime(ref_path)
         if _cal_ref_cache is not None and mtime == _cal_ref_mtime:
-            return _cal_ref_cache
+            # Còpia: el cridador no pot mutar l'objecte cachejat (evita enverinar-lo)
+            return copy.deepcopy(_cal_ref_cache)
         with open(ref_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
 
@@ -368,7 +394,7 @@ def load_calibration_reference():
 
         _cal_ref_cache = data
         _cal_ref_mtime = mtime
-        return data
+        return copy.deepcopy(data)
     except Exception as e:
         logger.error(f"Error carregant calibració de referència: {e}")
         return None
@@ -391,14 +417,17 @@ def save_calibration_reference(data):
 
     try:
         data['updated'] = datetime.now().strftime('%Y-%m-%d')
-        with open(ref_path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-        _cal_ref_cache = None  # Invalidar cache
-        _cal_ref_mtime = 0
+        _atomic_write_json(ref_path, data, indent=2, ensure_ascii=False)
         return True
     except Exception as e:
         logger.error(f"Error guardant calibració de referència: {e}")
         return False
+    finally:
+        # Invalidar SEMPRE (èxit o error): la propera càrrega rellegeix del disc,
+        # que amb escriptura atòmica o és el nou complet o el vell intacte —
+        # mai un objecte mutat en memòria sense persistir.
+        _cal_ref_cache = None
+        _cal_ref_mtime = 0
 
 
 def get_calibration_for_date(seq_date, signal='direct', sensitivity=None):
@@ -2393,6 +2422,136 @@ def ensure_local_data_folder(seq_path):
     return data_path
 
 
+# =============================================================================
+# REPARACIONS MANUALS DE PICS KHP (overrides persistents)
+# =============================================================================
+# A diferència de calibration_result.json (que es regenera a cada anàlisi),
+# aquest magatzem NO s'esborra a calibrate_from_import. Guarda els ANCORATGES
+# d'una reparació manual perquè la reanàlisi la torni a aplicar de forma
+# determinista. Reversible (desfer = esborrar l'entrada). Clau per rèplica/senyal.
+
+MANUAL_REPAIRS_FILENAME = "manual_repairs.json"
+
+
+def manual_repair_key(name, replica, signal):
+    """Clau canònica d'una reparació manual: KHP, rèplica i senyal (direct/uib)."""
+    sig = (signal or "direct").lower()
+    return f"{name}_R{replica}_{sig}"
+
+
+def load_manual_repairs(seq_path):
+    """Carrega el dict d'overrides de reparació manual d'una SEQ ({clau: {...}})."""
+    data_path = get_local_data_path(seq_path)
+    if not data_path:
+        return {}
+    filepath = os.path.join(data_path, MANUAL_REPAIRS_FILENAME)
+    if not os.path.exists(filepath):
+        return {}
+    try:
+        with open(filepath, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        return data.get("repairs", {}) or {}
+    except Exception as e:
+        logger.error(f"Error carregant reparacions manuals: {e}")
+        return {}
+
+
+def _save_manual_repairs(seq_path, repairs):
+    data_path = ensure_local_data_folder(seq_path)
+    if not data_path:
+        return False
+    filepath = os.path.join(data_path, MANUAL_REPAIRS_FILENAME)
+    try:
+        from hpsec_version import SUITE_VERSION
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump({
+                "suite_version": SUITE_VERSION,
+                "seq_name": os.path.basename(seq_path),
+                "updated": datetime.now().isoformat(),
+                "repairs": repairs,
+            }, f, indent=2, ensure_ascii=False, cls=NumpyEncoder)
+        return True
+    except Exception as e:
+        logger.error(f"Error guardant reparacions manuals: {e}")
+        return False
+
+
+def set_manual_repair(seq_path, name, replica, signal, anchor_left_t, anchor_right_t,
+                      factor=None):
+    """Desa (o actualitza) una reparació manual d'un pic KHP. Reversible amb remove_manual_repair."""
+    repairs = load_manual_repairs(seq_path)
+    repairs[manual_repair_key(name, replica, signal)] = {
+        "name": name,
+        "replica": str(replica),
+        "signal": (signal or "direct").lower(),
+        "anchor_left_t": (float(anchor_left_t) if anchor_left_t is not None else None),
+        "anchor_right_t": (float(anchor_right_t) if anchor_right_t is not None else None),
+        "factor": (float(factor) if factor is not None else None),
+        "created": datetime.now().isoformat(),
+    }
+    return _save_manual_repairs(seq_path, repairs)
+
+
+def remove_manual_repair(seq_path, name, replica, signal):
+    """Esborra la reparació manual d'un pic (desfer). Retorna True si n'hi havia."""
+    repairs = load_manual_repairs(seq_path)
+    key = manual_repair_key(name, replica, signal)
+    if key in repairs:
+        del repairs[key]
+        _save_manual_repairs(seq_path, repairs)
+        return True
+    return False
+
+
+def apply_manual_repair_to_khp(khp_result, override):
+    """Aplica un override de reparació manual sobre un resultat d'analizar_khp_data.
+
+    Recalcula l'àrea amb la paràbola (ancoratges de l'override) i actualitza in-place
+    el dict: area, peak_info (límits/àrea), y_doc_repaired, i marca manual_repair.
+    Guarda area_pre_manual per poder desfer. Retorna True si s'ha aplicat.
+    """
+    if not khp_result or not override:
+        return False
+    t = khp_result.get('t_doc')
+    y = khp_result.get('y_doc')
+    peak_info = khp_result.get('peak_info') or {}
+    peak_idx = peak_info.get('peak_idx')
+    left_idx = peak_info.get('left_idx', khp_result.get('peak_left_idx'))
+    right_idx = peak_info.get('right_idx', khp_result.get('peak_right_idx'))
+    baseline = peak_info.get('baseline_level', 0) or 0
+    is_bp = bool(khp_result.get('is_bp', False))
+
+    res = recompute_area_with_repair(
+        t, y, peak_idx, left_idx, right_idx, baseline, is_bp,
+        anchor_left_t=override.get('anchor_left_t'),
+        anchor_right_t=override.get('anchor_right_t'),
+        factor=override.get('factor'),
+        original_area=khp_result.get('area'))
+    if not res:
+        logger.warning("Reparació manual no aplicable a %s (anchors no vàlids)",
+                       khp_result.get('filename', '?'))
+        return False
+
+    khp_result['area_pre_manual'] = khp_result.get('area')
+    khp_result['area'] = res['new_area']
+    khp_result['y_doc_repaired'] = res['y_repaired']
+    khp_result['peak_left_idx'] = res['new_left_idx']
+    khp_result['peak_right_idx'] = res['new_right_idx']
+    peak_info['area'] = res['new_area']
+    peak_info['left_idx'] = res['new_left_idx']
+    peak_info['right_idx'] = res['new_right_idx']
+    khp_result['peak_info'] = peak_info
+    khp_result['manual_repair'] = True
+    khp_result['manual_repair_info'] = {
+        'new_area': res['new_area'],
+        'anchor_left_t': res['anchor_left_t'],
+        'anchor_right_t': res['anchor_right_t'],
+        'left_idx': res['new_left_idx'],
+        'right_idx': res['new_right_idx'],
+    }
+    return True
+
+
 
 
 _local_cal_cache = None
@@ -2417,14 +2576,15 @@ def load_local_calibrations(seq_path):
     try:
         mtime = os.path.getmtime(filepath)
         if _local_cal_cache is not None and mtime == _local_cal_mtime and filepath == _local_cal_path:
-            return _local_cal_cache
+            return copy.deepcopy(_local_cal_cache)
         with open(filepath, 'r', encoding='utf-8') as f:
             data = json.load(f)
         cals = data.get("calibrations", [])
         _local_cal_cache = cals
         _local_cal_mtime = mtime
         _local_cal_path = filepath
-        return cals
+        # Còpia: el cridador no pot mutar el cache compartit
+        return copy.deepcopy(cals)
     except Exception as e:
         logger.error(f"Error carregant calibracions: {e}")
         return []
@@ -2450,15 +2610,16 @@ def save_local_calibrations(seq_path, calibrations):
             "updated": datetime.now().isoformat(),
             "calibrations": calibrations
         }
-        with open(filepath, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2, ensure_ascii=False, cls=NumpyEncoder)
-        _local_cal_cache = None  # Invalidar cache
-        _local_cal_mtime = 0
-        _local_cal_path = None
+        _atomic_write_json(filepath, data, indent=2, ensure_ascii=False, cls=NumpyEncoder)
         return True
     except Exception as e:
         logger.error(f"Error guardant CHECK/data: {e}")
         return False
+    finally:
+        # Invalidar sempre (èxit o error): la propera càrrega rellegeix del disc
+        _local_cal_cache = None
+        _local_cal_mtime = 0
+        _local_cal_path = None
 
 
 def get_active_calibration(seq_path, mode=None):
@@ -2649,15 +2810,16 @@ def save_khp_history(seq_path, calibrations):
             "updated": datetime.now().isoformat(),
             "calibrations": calibrations
         }
-        with open(history_path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2, ensure_ascii=False, cls=NumpyEncoder)
-        _khp_cache = None  # Invalidar cache
-        _khp_mtime = 0
-        _khp_cache_path = None
+        _atomic_write_json(history_path, data, indent=2, ensure_ascii=False, cls=NumpyEncoder)
         return True
     except Exception as e:
         logger.error(f"Error guardant històric KHP: {e}")
         return False
+    finally:
+        # Invalidar sempre (èxit o error): la propera càrrega rellegeix del disc
+        _khp_cache = None
+        _khp_mtime = 0
+        _khp_cache_path = None
 
 
 def clean_khp_history(seq_path, dry_run=True):
@@ -4583,6 +4745,10 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
     # Netejar calibracions locals anteriors (reprocessament complet)
     if seq_path:
         save_local_calibrations(seq_path, [])
+
+    # Overrides de reparació manual (persistents, NO esborrats pel reprocessament).
+    # Es reapliquen de forma determinista després d'analitzar cada KHP.
+    manual_repairs = load_manual_repairs(seq_path) if seq_path else {}
     method = imported_data.get("method", "COLUMN")
     samples = imported_data.get("samples", {})
     khp_names = imported_data.get("khp_samples", [])
@@ -4655,6 +4821,9 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
 
                 if khp_result_direct:
                     khp_result_direct["doc_source"] = "direct"
+                    _ovr = manual_repairs.get(manual_repair_key(khp_name, rep_num, "direct"))
+                    if _ovr:
+                        apply_manual_repair_to_khp(khp_result_direct, _ovr)
                     khp_data_direct_list.append(khp_result_direct)
 
             # Analitzar DOC UIB si disponible
@@ -4679,6 +4848,9 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
 
                 if khp_result_uib:
                     khp_result_uib["doc_source"] = "uib"
+                    _ovr = manual_repairs.get(manual_repair_key(khp_name, rep_num, "uib"))
+                    if _ovr:
+                        apply_manual_repair_to_khp(khp_result_uib, _ovr)
                     khp_data_uib_list.append(khp_result_uib)
 
     # Warnings per concentració i DAD 254

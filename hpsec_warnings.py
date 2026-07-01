@@ -193,6 +193,28 @@ ANOMALY_CATALOG = {
         "invalidates": False,
         "action": "Revisar la taula d'an\u00e0lisi",
     },
+    "ANA_VOLUME_ASSUMED": {
+        "severity": WarningLevel.WARNING,
+        "label": "Volum d'injecci\u00f3 assumit",
+        "icon": "\u26a0",
+        "description": "No s'ha trobat el volum d'injecci\u00f3; s'ha usat un valor "
+                       "per defecte. La ppm en dep\u00e8n directament.",
+        "stage": "analyze",
+        "repairable": False,
+        "invalidates": False,
+        "action": "Indicar el volum real al MasterFile (cap\u00e7alera o 0-INFO) i reimportar",
+    },
+    "ANA_SENSITIVITY_ASSUMED": {
+        "severity": WarningLevel.WARNING,
+        "label": "Sensibilitat UIB assumida",
+        "icon": "\u26a0",
+        "description": "No s'ha trobat la sensibilitat UIB; s'ha assumit un valor "
+                       "per estimar el Direct des de l'UIB. L'estimaci\u00f3 en dep\u00e8n.",
+        "stage": "analyze",
+        "repairable": False,
+        "invalidates": False,
+        "action": "Indicar la sensibilitat UIB al MasterFile (0-INFO) i reimportar",
+    },
 
     # === Anomalies d'anàlisi (per rèplica) ===
     "IRREGULAR_TOP_DIRECT": {  # formerly BATMAN_DIRECT — jagged/batman artifact

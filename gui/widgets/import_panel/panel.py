@@ -598,7 +598,28 @@ class ImportPanel(QWidget):
         if not result.get("success"):
             errors = result.get("errors", ["Error desconegut"])
             error_msg = "\n\n".join(errors)
-            QMessageBox.critical(self, "Error d'Importació", error_msg)
+            # Si l'error és estructural del MasterFile, oferir obrir la carpeta
+            _seq_path_err = result.get("seq_path") or self.seq_path
+            _is_mf_err = any(
+                ("MasterFile" in str(e) or "desplaçades" in str(e)
+                 or "1-HPLC-SEQ" in str(e) or "columna" in str(e))
+                for e in errors)
+            _box = QMessageBox(self)
+            _box.setIcon(QMessageBox.Critical)
+            _box.setWindowTitle("Error d'Importació")
+            _box.setText(error_msg)
+            _open_btn = None
+            if _is_mf_err and _seq_path_err and os.path.isdir(_seq_path_err):
+                _open_btn = _box.addButton("📁 Obrir carpeta del MasterFile",
+                                           QMessageBox.ActionRole)
+            _box.addButton(QMessageBox.Ok)
+            _box.exec()
+            if _open_btn is not None and _box.clickedButton() is _open_btn:
+                try:
+                    import subprocess
+                    subprocess.Popen(f'explorer "{os.path.normpath(_seq_path_err)}"')
+                except Exception as _e:
+                    logger.warning(f"No s'ha pogut obrir la carpeta: {_e}")
             # Guardar JSON amb error per persistència entre sessions
             try:
                 seq_path = result.get("seq_path") or self.seq_path
@@ -615,8 +636,24 @@ class ImportPanel(QWidget):
                         "errors": errors,
                         "warnings": [],
                     }
-                    with open(os.path.join(data_folder, "import_manifest.json"), "w",
-                              encoding="utf-8") as f:
+                    # ARREL: un import fallit (p.ex. MasterFile en edició o
+                    # desplaçat) NO ha de sobreescriure un manifest vàlid existent
+                    # — això enverinava la recàrrega (sensibilitat/mostres buides).
+                    # Si ja hi ha un manifest bo, l'error es desa a part.
+                    manifest_path = os.path.join(data_folder, "import_manifest.json")
+                    target = manifest_path
+                    try:
+                        if os.path.exists(manifest_path):
+                            prev = json.load(open(manifest_path, encoding="utf-8"))
+                            if prev.get("success") is not False and (
+                                    prev.get("sequence") or prev.get("samples")):
+                                target = os.path.join(data_folder, "import_error.json")
+                                logger.warning(
+                                    "Import fallit: es conserva el manifest vàlid; "
+                                    "l'error es desa a import_error.json")
+                    except Exception:
+                        pass
+                    with open(target, "w", encoding="utf-8") as f:
                         json.dump(error_json, f, indent=2, ensure_ascii=False)
             except Exception as e:
                 logger.warning(f"No s'ha pogut guardar JSON d'error: {e}")
@@ -1943,39 +1980,10 @@ class ImportPanel(QWidget):
                 dialog.exec()
 
     def _update_warnings(self):
-        """Actualitza avisos al CommonToolbar (G01-G06: estructura unificada)."""
-        # Recollir TOTS els avisos en una llista
-        warnings_list = []
-
-        # 1. Warnings d'importació (injeccions faltants, etc.)
-        import_warnings = getattr(self, '_import_warnings', [])
-        for w in import_warnings:
-            clean_w = w.replace("⚠️ ", "").replace("⚠", "").strip()
-            if clean_w:
-                warnings_list.append(clean_w)
-
-        # 2. Suggeriments pendents
-        pending_suggestions = 0
-        suggestion_samples = []
-        for (r, c), mt in self._match_types.items():
-            if mt == "SUGGESTED":
-                pending_suggestions += 1
-                name_item = self.samples_table.item(r, self.COL_MOSTRA)
-                if name_item and name_item.text() not in suggestion_samples:
-                    suggestion_samples.append(name_item.text())
-
-        if pending_suggestions:
-            samples_preview = ", ".join(suggestion_samples[:3])
-            if len(suggestion_samples) > 3:
-                samples_preview += f"... (+{len(suggestion_samples)-3})"
-            warnings_list.append(f"{pending_suggestions} suggeriments FUZZY: {samples_preview}")
-
-        # 3. Fitxers orfes
-        unassigned_uib, unassigned_dad = self._count_unassigned_orphans()
-        if unassigned_uib > 0:
-            warnings_list.append(f"{unassigned_uib} fitxers UIB sense assignar")
-        if unassigned_dad > 0:
-            warnings_list.append(f"{unassigned_dad} fitxers DAD sense assignar")
+        """No-op: la llista d'avisos que construïa aquí es descartava (codi mort).
+        Els avisos ara viatgen per import_completed/warnings_structured cap a la
+        barra del wizard. Es manté buida per no tocar les crides existents."""
+        return
 
     def _get_assigned_files_from_table(self, include_path_variants=False):
         """Obté els fitxers assignats des de la taula.

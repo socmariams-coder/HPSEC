@@ -911,6 +911,82 @@ def repair_with_parabola(t, y, factor=REPAIR_FACTOR, force=False,
     return y_repaired, repair_info, actually_changed
 
 
+def recompute_area_with_repair(t, y, peak_idx, left_idx, right_idx, baseline,
+                               is_bp, anchor_left_t=None, anchor_right_t=None,
+                               half_window=None, factor=None, original_area=None):
+    """Repara el cim d'un pic amb una paràbola i recalcula l'àrea integrada.
+
+    Funció canònica compartida pel diàleg de detall KHP (previsualització
+    interactiva) i per la reaplicació d'overrides de reparació manual a
+    `calibrate_from_import`. Així el càlcul és idèntic en viu i en persistit.
+
+    Args:
+        t, y: arrays complets del cromatograma (temps, senyal net).
+        peak_idx, left_idx, right_idx: índexs del pic i límits d'integració.
+        baseline: nivell de baseline (per integrar per sobre).
+        is_bp: mode BP (finestra de reparació més estreta).
+        anchor_left_t, anchor_right_t: ancoratges manuals en min (None = auto).
+        half_window: semi-amplada del segment a reparar (None = 3 BP / 5 COL).
+        factor: factor de correcció de l'alçada (None = REPAIR_FACTOR per defecte).
+
+    Returns:
+        dict amb y_repaired, new_area, new_left_idx, new_right_idx, repair_info,
+        anchor_left_t, anchor_right_t — o None si no s'ha pogut reparar.
+    """
+    t = np.asarray(t, dtype=float)
+    y = np.asarray(y, dtype=float)
+    if not (len(t) > 5 and peak_idx is not None
+            and left_idx is not None and right_idx is not None):
+        return None
+    if not (0 <= peak_idx < len(t)):
+        return None
+    baseline = baseline or 0.0
+
+    half_w = half_window if half_window is not None else (3.0 if is_bp else 5.0)
+    seg_mask = (t >= t[peak_idx] - half_w) & (t <= t[peak_idx] + half_w)
+    if seg_mask.sum() < 5:
+        return None
+
+    repair_kwargs = {'force': True,
+                     'anchor_left_t': anchor_left_t, 'anchor_right_t': anchor_right_t}
+    if factor is not None:
+        repair_kwargs['factor'] = factor
+    y_seg_rep, repair_info, was_repaired = repair_with_parabola(
+        t[seg_mask], y[seg_mask], **repair_kwargs)
+    if not was_repaired:
+        return None
+
+    y_full = y.copy()
+    y_full[seg_mask] = y_seg_rep
+
+    # La reparació RECUPERA el cim perdut → l'àrea ha de PUJAR, mai disminuir.
+    # Sumem el guany (senyal reparat − original, només positiu) a l'àrea original,
+    # mantenint la MATEIXA finestra d'integració. Re-buscar límits sobre el senyal
+    # reparat donava finestres més estretes i feia baixar l'àrea (incorrecte).
+    recovered = float(trapezoid(np.maximum(y_full - y, 0.0), t))
+    if original_area is not None:
+        new_area = float(original_area) + recovered
+    else:
+        # Sense àrea original de referència: integra sobre la finestra ORIGINAL
+        # (no re-buscada) del senyal reparat.
+        new_area = float(trapezoid(
+            np.maximum(y_full[left_idx:right_idx + 1] - baseline, 0),
+            t[left_idx:right_idx + 1]))
+
+    return {
+        'y_repaired': y_full,
+        'new_area': new_area,
+        'recovered_area': recovered,
+        'new_left_idx': int(left_idx),
+        'new_right_idx': int(right_idx),
+        'repair_info': repair_info,
+        # Ancoratges efectivament usats (resolts) — per persistir l'override
+        'anchor_left_t': repair_info.get('t_anchor_left', anchor_left_t),
+        'anchor_right_t': repair_info.get('t_anchor_right', anchor_right_t),
+        'factor': factor,
+    }
+
+
 # =============================================================================
 # UTILITY FUNCTIONS
 # =============================================================================

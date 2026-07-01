@@ -31,18 +31,23 @@ class KHPDetailDialog(QDialog):
     """Diàleg de revisió i reparació d'una rèplica KHP."""
 
     repair_applied = Signal(int, str, dict)   # rep_num, signal, new_data
+    repair_undone = Signal(int, str)          # rep_num, signal
     outlier_toggled = Signal(int, str, bool)  # rep_num, signal, is_outlier
 
-    def __init__(self, khp_data: dict, signal: str = "direct", parent=None):
+    def __init__(self, khp_data: dict, signal: str = "direct", parent=None,
+                 has_manual_repair: bool = False):
         """
         Args:
             khp_data: dict amb t_doc, y_doc, peak_info, area, bigaussian_doc,
                       calibration_anomalies, is_outlier, etc.
             signal: "direct" o "uib"
+            has_manual_repair: True si aquesta rèplica té una reparació manual
+                desada (mostra el botó de desfer).
         """
         super().__init__(parent)
         self.khp_data = khp_data
         self.signal = signal
+        self._has_manual_repair = bool(has_manual_repair)
         self._repaired_data = None  # Resultat de reparació pendent d'aplicar
         self._anchors_inited = False
 
@@ -149,6 +154,17 @@ class KHPDetailDialog(QDialog):
             "QPushButton:disabled { background: #EEEEEE; color: #AAAAAA; }")
         self._btn_apply.clicked.connect(self._apply_repair)
         btn_row.addWidget(self._btn_apply)
+
+        # Desfer reparació manual (només si n'hi ha una de desada)
+        self._btn_undo = QPushButton("↺ Desfer reparació manual")
+        self._btn_undo.setToolTip(
+            "Elimina la reparació manual desada i torna el pic al seu estat original "
+            "(integració automàtica). Recalcularà la calibració.")
+        self._btn_undo.setStyleSheet(
+            "QPushButton { background: #FFF3E0; color: #E65100; padding: 6px 12px; }")
+        self._btn_undo.clicked.connect(self._undo_repair)
+        self._btn_undo.setVisible(self._has_manual_repair)
+        btn_row.addWidget(self._btn_undo)
 
         self._btn_outlier = QPushButton()
         self._update_outlier_button()
@@ -308,14 +324,12 @@ class KHPDetailDialog(QDialog):
     def _on_repair_clicked(self):
         """Aplica reparació amb paràbola (force=True) i mostra el resultat."""
         try:
-            from hpsec_core import repair_with_parabola, find_peak_boundaries
-            from scipy.integrate import trapezoid
+            from hpsec_core import recompute_area_with_repair
         except ImportError as e:
             QMessageBox.warning(self, "Error", f"Imports fallits: {e}")
             return
 
         t = np.asarray(self.khp_data.get('t_doc', []))
-        y = np.asarray(self.khp_data.get('y_doc', []))
         peak_info = self.khp_data.get('peak_info') or {}
         p_idx = peak_info.get('peak_idx')
         l_idx = peak_info.get('left_idx', peak_info.get('peak_left_idx'))
@@ -327,23 +341,20 @@ class KHPDetailDialog(QDialog):
             QMessageBox.warning(self, "Reparació", "Falten dades del pic per reparar.")
             return
 
-        # Segment al voltant del pic per la reparació
-        half_w = 3.0 if is_bp else 5.0
-        seg_mask = (t >= t[p_idx] - half_w) & (t <= t[p_idx] + half_w)
-
         al = ar = None
         if self._manual_anchors_cb.isChecked():
             al = self._anchor_left_spin.value()
             ar = self._anchor_right_spin.value()
+
         try:
-            y_seg_rep, repair_info, was_repaired = repair_with_parabola(
-                t[seg_mask], y[seg_mask], force=True,
-                anchor_left_t=al, anchor_right_t=ar)
+            res = recompute_area_with_repair(
+                t, self.khp_data.get('y_doc', []), p_idx, l_idx, r_idx,
+                baseline, is_bp, anchor_left_t=al, anchor_right_t=ar)
         except Exception as e:
-            QMessageBox.warning(self, "Reparació", f"Error a repair_with_parabola: {e}")
+            QMessageBox.warning(self, "Reparació", f"Error a la reparació: {e}")
             return
 
-        if not was_repaired:
+        if not res:
             QMessageBox.information(
                 self, "Reparació",
                 "La paràbola no ha pogut reparar el pic\n"
@@ -351,51 +362,33 @@ class KHPDetailDialog(QDialog):
             )
             return
 
-        # Reconstruir senyal complet i recalcular àrea
-        y_full_repaired = y.copy()
-        y_full_repaired[seg_mask] = y_seg_rep
-
-        # Recalcular límits sobre senyal reparat
-        try:
-            l_new, r_new = find_peak_boundaries(
-                t, y_full_repaired, p_idx, baseline, is_bp=is_bp)
-        except Exception:
-            l_new, r_new = l_idx, r_idx
-
-        new_area = float(trapezoid(
-            np.maximum(y_full_repaired[l_new:r_new+1] - baseline, 0),
-            t[l_new:r_new+1]
-        ))
-
-        self._repaired_data = {
-            'y_repaired': y_full_repaired,
-            'new_area': new_area,
-            'new_left_idx': int(l_new),
-            'new_right_idx': int(r_new),
-            'repair_info': repair_info,
-        }
+        self._repaired_data = res
 
         # Re-render amb el repair pendent + habilitar Aplicar
         self._render_chromatogram()
         self._render_metrics()
         self._btn_apply.setEnabled(True)
 
+    def _undo_repair(self):
+        """Demana esborrar la reparació manual desada i emet repair_undone."""
+        if QMessageBox.question(
+            self, "Desfer reparació manual",
+            "Vols eliminar la reparació manual d'aquesta rèplica i tornar-la\n"
+            "al seu estat original (integració automàtica)?",
+        ) != QMessageBox.Yes:
+            return
+        rep_num = self.khp_data.get('replica_num', 1)
+        self.repair_undone.emit(rep_num, self.signal)
+        self.accept()
+
     def _apply_repair(self):
-        """Confirma la reparació i emet el senyal."""
+        """Confirma la reparació, emet el senyal i tanca (el panell recalcula i informa)."""
         if not self._repaired_data:
             return
         rep_num = self.khp_data.get('replica_num', 1)
+        # El panell desa l'override i re-executa la calibració (mostra el seu propi avís).
         self.repair_applied.emit(rep_num, self.signal, self._repaired_data)
-        QMessageBox.information(
-            self, "Reparació aplicada",
-            f"Àrea reparada: {self._repaired_data['new_area']:.2f}\n"
-            "Cal recalcular la calibració per que es propagui."
-        )
-        # Reset
-        self._repaired_data = None
-        self._btn_apply.setEnabled(False)
-        self._render_chromatogram()
-        self._render_metrics()
+        self.accept()
 
     def _on_toggle_outlier(self):
         is_outlier_now = bool(self.khp_data.get('is_outlier', False))

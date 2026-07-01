@@ -998,7 +998,26 @@ class AnalyzePanel(QWidget):
 
         samples = imported_data.get("samples", {})
         if not samples:
-            QMessageBox.warning(self, "Avis", "No s'han trobat mostres a les dades importades.")
+            import os
+            _errs = imported_data.get("errors") or []
+            _detail = ("\n\n" + "\n\n".join(str(e) for e in _errs)) if _errs else ""
+            _seq_path = self.main_window.seq_path or imported_data.get("seq_path")
+            _box = QMessageBox(self)
+            _box.setIcon(QMessageBox.Warning)
+            _box.setWindowTitle("Sense mostres — revisar MasterFile")
+            _box.setText("No s'han trobat mostres a les dades importades." + _detail)
+            _open_btn = None
+            if _seq_path and os.path.isdir(_seq_path):
+                _open_btn = _box.addButton("📁 Obrir carpeta del MasterFile",
+                                           QMessageBox.ActionRole)
+            _box.addButton(QMessageBox.Ok)
+            _box.exec()
+            if _open_btn is not None and _box.clickedButton() is _open_btn:
+                try:
+                    import subprocess
+                    subprocess.Popen(f'explorer "{os.path.normpath(_seq_path)}"')
+                except Exception:
+                    pass
             self.analyze_completed.emit({'success': False, 'errors': ["No hi ha mostres a les dades"]})
             return
 
@@ -2662,52 +2681,7 @@ class AnalyzePanel(QWidget):
         Aquesta funció no fa res — es manté per backward compat amb
         invocacions externes que encara la criden.
         """
-        return  # v2.2.0: dead path
-        # ----------- Codi original deprecated -----------
-        if not HAS_MATPLOTLIB or not processed_data:
-            return
-
-        samples_grouped = processed_data.get("samples_grouped", {})
-        method = processed_data.get("method", "COLUMN")
-        is_bp = method.upper() == "BP"
-
-        regular = {}
-        blank = {}
-        control = {}
-        khp = {}
-        for name, data in samples_grouped.items():
-            st = data.get("sample_type", "SAMPLE")
-            if st == "KHP":
-                khp[name] = data
-            elif st == "BLANK":
-                replicas = data.get("replicas") or {}
-                for rep_key in sorted(replicas.keys()):
-                    rep_data = replicas[rep_key]
-                    display = f"{name} R{rep_key}" if len(replicas) > 1 else name
-                    blank[display] = {
-                        **data,
-                        "replicas": {rep_key: rep_data},
-                        "selected": {"doc": rep_key, "dad": rep_key},
-                        "_single_injection": True,
-                    }
-            elif st == "CONTROL":
-                control[name] = data
-            else:
-                regular[name] = data
-
-        self._chart_regular = regular
-        self._chart_blank = blank
-        self._chart_control = control
-        self._chart_khp = khp
-        self._chart_is_bp = is_bp
-
-        self._build_sample_checkboxes(regular, blank, control, khp)
-        # v2.2.0: charts (ppm + bars) reubicats al pas Quantificar.
-        # Mantenim charts_section invisible permanentment a Analitzar.
-        self.charts_section.setVisible(False)
-
-        self._charts_initialized = True
-        # No re-dibuixar charts (no es veuen)
+        return
 
     def _build_sample_checkboxes(self, regular, blank, control, khp):
         """Registra mostres per categoria."""

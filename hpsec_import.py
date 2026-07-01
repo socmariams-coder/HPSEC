@@ -73,6 +73,54 @@ def _safe_float(val):
         return None
 
 
+def _autofix_shifted_columns(df):
+    """Corregeix un full amb les dades desplaçades a les columnes duplicades '.1'
+    (G-L) mentre les originals (A-F) estan buides: fa servir les '.1'.
+
+    Centralitzat aquí perquè TOTS els consumidors del full (llista d'injeccions
+    I càlcul de 4-TOC_CALC/DOC Direct) vegin les mateixes dades corregides.
+
+    Retorna (df_corregit, aplicat).
+    """
+    if df is None or not hasattr(df, 'columns'):
+        return df, False
+    try:
+        rename, drop = {}, []
+        for c in list(df.columns):
+            cs = str(c)
+            if cs.endswith('.1'):
+                base = cs[:-2]
+                if base in df.columns and df[c].notna().sum() > 0 and df[base].notna().sum() == 0:
+                    drop.append(base)
+                    rename[c] = base
+        if rename:
+            return df.drop(columns=drop).rename(columns=rename), True
+    except Exception:
+        pass
+    return df, False
+
+
+def _atomic_write_json(path, data, **dump_kwargs):
+    """Escriu un JSON de forma atòmica: temp al mateix directori + os.replace.
+    El fitxer de destí o queda intacte (vell) o passa a ser el nou complet,
+    mai un estat intermedi corromput (disc ple, lock, crash)."""
+    import tempfile
+    directory = os.path.dirname(path) or '.'
+    fd, tmp = tempfile.mkstemp(dir=directory, prefix='.tmp_', suffix='.json')
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            json.dump(data, f, **dump_kwargs)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+
+
 # =============================================================================
 # CARPETA DADES (JSONs)
 # =============================================================================
@@ -592,6 +640,13 @@ def llegir_masterfile_nou(filepath):
                 result["hplc_seq"] = pd.read_excel(xl, sheet_name="1-HPLC-SEQ", engine="openpyxl")
             elif "1-HPLC-SEQ_RAW" in xl.sheet_names:
                 result["hplc_seq"] = pd.read_excel(xl, sheet_name="1-HPLC-SEQ_RAW", engine="openpyxl")
+
+            # Auto-correcció de columnes desplaçades (G-L→A-F) UN SOL COP en llegir,
+            # perquè TOTS els consumidors (llista d'injeccions I 4-TOC_CALC/DOC
+            # Direct) vegin el full corregit. Abans només ho feia parse_injections
+            # → compute_toc_calc llegia el full desplaçat i perdia el DOC Direct.
+            result["hplc_seq"], _hplc_fixed = _autofix_shifted_columns(result["hplc_seq"])
+            result["info"]["_hplc_columns_autofixed"] = _hplc_fixed
 
             # 2-TOC
             if "2-TOC" in xl.sheet_names:
@@ -1733,6 +1788,25 @@ def parse_injections_from_masterfile(master_data, config=None):
         return [], ["ERROR: No s'ha trobat fulla 1-HPLC-SEQ al MasterFile"], 0
 
     # ==========================================================================
+    # AUTO-CORRECCIÓ: dades desplaçades a les columnes G-L (duplicats '.1')
+    # Si les columnes canòniques (A-F) estan buides però el seu duplicat '.1'
+    # (G-L) té dades, fem servir aquest (renombrant-lo) i avisem perquè es
+    # revisi el MasterFile. Així la seqüència s'importa sense haver de tocar el
+    # fitxer a mà.
+    # ==========================================================================
+    # Auto-correcció de columnes desplaçades: normalment ja s'ha fet en llegir el
+    # MasterFile (flag master_data["info"]["_hplc_columns_autofixed"]). Es reaplica
+    # de forma defensiva (idempotent) i s'emet l'avís si s'ha corregit en qualsevol punt.
+    df_seq, _fixed_here = _autofix_shifted_columns(df_seq)
+    if _fixed_here or (master_data.get("info") or {}).get("_hplc_columns_autofixed"):
+        warnings.append(
+            "MASTERFILE AUTO-CORREGIT: les dades de 1-HPLC-SEQ estaven desplaçades "
+            "a les columnes G-L; s'han llegit automàticament. Recomanat: obre el "
+            "MasterFile i mou les dades a les columnes A-F (i prem Re-importar) "
+            "per deixar-lo net.")
+        logger.warning("parse_injections: columnes desplaçades G-L→A-F corregides")
+
+    # ==========================================================================
     # IDENTIFICAR COLUMNES PER NOM (primer match)
     # El MasterFile ha d'estar ben format: columnes A-F amb dades.
     # Si falta alguna columna → error clar indicant quina fulla revisar.
@@ -2344,18 +2418,35 @@ def compute_toc_calc(master_data, toc_df):
         elif 'hora toc' in key_lower or 'hora_toc' in key_lower:
             hora_toc_clock = val
 
-    # Primer: intentar llegir Net delay explícit del 0-INFO
+    # Primer: Net delay del 0-INFO, PRIORITZANT el corregit per la Suite
+    # ("Net delay (Suite)") per sobre del valor original (B12) — la mateixa
+    # prioritat que read_current_delay(). Abans s'agafava l'última clau que
+    # coincidia (sense prioritat), de manera que el valor original podia
+    # guanyar sobre la correcció manual de la Suite.
     net_delay_min = None
     net_delay_source = None
+    _suite_val = None
+    _orig_val = None
     for key, val in info.items():
-        if 'net delay' in str(key).lower():
-            try:
-                v = float(val)
-                if not np.isnan(v):
-                    net_delay_min = v
-                    net_delay_source = "0-INFO_explicit"
-            except (ValueError, TypeError):
-                pass
+        kl = str(key).lower()
+        if 'net delay' not in kl:
+            continue
+        try:
+            v = float(val)
+        except (ValueError, TypeError):
+            continue
+        if np.isnan(v):
+            continue
+        if 'suite' in kl:
+            _suite_val = v
+        else:
+            _orig_val = v
+    if _suite_val is not None:
+        net_delay_min = _suite_val
+        net_delay_source = "0-INFO_Suite"
+    elif _orig_val is not None:
+        net_delay_min = _orig_val
+        net_delay_source = "0-INFO_explicit"
 
     # Segon: calcular des de hores HPLC/TOC
     if net_delay_min is None and hora_hplc_clock and hora_toc_clock:
@@ -4785,6 +4876,19 @@ def import_sequence(seq_path, config=None, progress_callback=None):
                                     n_reassigned)
             except Exception as e_bp:
                 logger.warning("BP DAD254 analysis failed: %s", e_bp)
+                # No empassar en silenci: les finestres BP quedaran per defecte
+                result["bp_reassignment_failed"] = True
+                result.setdefault("warnings", []).append(
+                    "Reassignació BP per DAD254 fallida: les finestres BP usen valors "
+                    "per defecte i poden ser imprecises. Revisar el DAD / l'alineació.")
+                try:
+                    from hpsec_warnings import create_anomaly
+                    result.setdefault("warnings_structured", []).append(
+                        create_anomaly(
+                            "IMP_INCOMPLETE",
+                            override_label="Reassignació BP DAD254 fallida — finestres per defecte"))
+                except Exception:
+                    pass
 
         result["success"] = True
         report_progress(100, "Importació completada")
@@ -5360,8 +5464,8 @@ def save_import_manifest(imported_data, output_path=None):
     # Assegurar que la carpeta existeix
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
-    with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(manifest, f, indent=2, ensure_ascii=False)
+    # Escriptura atòmica: un manifest a mitges no pot substituir el bo
+    _atomic_write_json(output_path, manifest, indent=2, ensure_ascii=False)
 
     return output_path
 
@@ -5391,7 +5495,18 @@ def load_manifest(seq_path):
             try:
                 with open(manifest_path, "r", encoding="utf-8") as f:
                     return json.load(f)
-            except Exception:
+            except (json.JSONDecodeError, ValueError) as e:
+                # Manifest corromput: NO tractar-lo com 'no existeix' en silenci.
+                # Avisar i apartar-lo a .corrupt perquè es regeneri en reimportar.
+                logger.warning("Manifest corromput a %s: %s — apartat a .corrupt",
+                               manifest_path, e)
+                try:
+                    os.replace(manifest_path, manifest_path + ".corrupt")
+                except OSError:
+                    pass
+                continue
+            except Exception as e:
+                logger.warning("No s'ha pogut llegir el manifest %s: %s", manifest_path, e)
                 continue
     return None
 

@@ -31,7 +31,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 from hpsec_calibrate import (
     calibrate_from_import, load_khp_history, load_local_calibrations,
     get_all_active_calibrations, get_rf_mass_cal,
-    get_active_global_calibration
+    get_active_global_calibration,
+    load_manual_repairs, set_manual_repair, remove_manual_repair, manual_repair_key,
 )
 from hpsec_config import get_config
 
@@ -681,6 +682,34 @@ class CalibratePanel(QWidget):
         self.metrics_group = QGroupBox("Rèpliques KHP")
         self.metrics_group.setVisible(False)
         metrics_layout = QVBoxLayout(self.metrics_group)
+
+        # Barra d'accions — coherent amb el pas Analitzar (botons visibles,
+        # mateix diàleg de reparació). Evita el doble-clic amagat.
+        metrics_actions = QHBoxLayout()
+        metrics_actions.setSpacing(6)
+        _sel_hint = QLabel("Selecciona una rèplica:")
+        _sel_hint.setStyleSheet("color:#666; font-size:11px;")
+        metrics_actions.addWidget(_sel_hint)
+        self.metrics_repair_btn = QPushButton("Reparar pic")
+        self.metrics_repair_btn.setStyleSheet(
+            "QPushButton { border: 1px solid #E67E22; border-radius: 3px;"
+            " padding: 4px 10px; font-size: 11px; color: #E67E22; }"
+            "QPushButton:hover { background: #FEF9E7; }")
+        self.metrics_repair_btn.setToolTip(
+            "Reparar el cim irregular (batman) del pic KHP seleccionat — "
+            "mateix diàleg que al pas Analitzar")
+        self.metrics_repair_btn.clicked.connect(self._on_calib_repair_clicked)
+        metrics_actions.addWidget(self.metrics_repair_btn)
+        self.metrics_detail_btn = QPushButton("Detall")
+        self.metrics_detail_btn.setStyleSheet(
+            "QPushButton { border: 1px solid #CED4DA; border-radius: 3px;"
+            " padding: 4px 10px; font-size: 11px; }"
+            "QPushButton:hover { background: #E9ECEF; }")
+        self.metrics_detail_btn.setToolTip("Obrir el detall complet de la rèplica seleccionada")
+        self.metrics_detail_btn.clicked.connect(self._on_calib_detail_clicked)
+        metrics_actions.addWidget(self.metrics_detail_btn)
+        metrics_actions.addStretch()
+        metrics_layout.addLayout(metrics_actions)
 
         self.metrics_table = QTableWidget()
         self.metrics_table.setColumnCount(13)
@@ -1478,6 +1507,18 @@ class CalibratePanel(QWidget):
     # GRAPHS
     # =========================================================================
 
+    def _all_cal_replicas(self, cals):
+        """Aplana TOTES les rèpliques de totes les calibracions (una per concentració).
+        Cada entrada de `cals` (calibrations_direct/uib) porta la seva llista 'replicas'."""
+        if not cals:
+            return []
+        out = []
+        for cal in cals:
+            for rep in (cal.get('replicas') or []):
+                if isinstance(rep, dict):
+                    out.append(rep)
+        return out
+
     def _extract_all_replicas(self, khp_data):
         """Extrae todas las réplicas de los datos KHP."""
         if not khp_data:
@@ -1620,8 +1661,10 @@ class CalibratePanel(QWidget):
 
         import re as _re
 
-        # Direct replicas
-        direct_list = self._extract_all_replicas(khp_data_direct)
+        # Direct replicas — TOTES les concentracions (de calibrations_direct),
+        # no només la primària. Fallback al primari si no hi ha llista per condició.
+        direct_list = (self._all_cal_replicas(result.get("calibrations_direct"))
+                       or self._extract_all_replicas(khp_data_direct))
         for d in direct_list:
             d_copy = d.copy()
             d_copy['_signal'] = 'Direct'
@@ -1630,19 +1673,21 @@ class CalibratePanel(QWidget):
                 fname = d.get('filename', '')
                 match = _re.search(r'R(\d+)', fname)
                 rep_num = match.group(1) if match else '1'
-                direct_timeouts[rep_num] = d.get('timeout_info', {})
+                direct_timeouts[(d.get('conc_ppm'), rep_num)] = d.get('timeout_info', {})
 
-        # UIB replicas (propagant timeouts)
-        uib_list = self._extract_all_replicas(khp_data_uib)
+        # UIB replicas (propagant timeouts) — també totes les concentracions
+        uib_list = (self._all_cal_replicas(result.get("calibrations_uib"))
+                    or self._extract_all_replicas(khp_data_uib))
         for d in uib_list:
             d_copy = d.copy()
             d_copy['_signal'] = 'UIB'
             fname = d.get('filename', '')
             match = _re.search(r'R(\d+)', fname)
             rep_num = match.group(1) if match else '1'
-            if not d_copy.get('has_timeout') and rep_num in direct_timeouts:
+            _tkey = (d.get('conc_ppm'), rep_num)
+            if not d_copy.get('has_timeout') and _tkey in direct_timeouts:
                 d_copy['has_timeout'] = True
-                d_copy['timeout_info'] = direct_timeouts[rep_num]
+                d_copy['timeout_info'] = direct_timeouts[_tkey]
                 d_copy['_timeout_propagated'] = True
             all_data.append(d_copy)
 
@@ -1653,12 +1698,12 @@ class CalibratePanel(QWidget):
             fname = d.get('filename', '')
             match = _re.search(r'R(\d+)', fname)
             rn = match.group(1) if match else '1'
-            uib_area_by_rep[rn] = d.get('area', 0)
+            uib_area_by_rep[(d.get('conc_ppm'), rn)] = d.get('area', 0)
         for d in direct_list:
             fname = d.get('filename', '')
             match = _re.search(r'R(\d+)', fname)
             rn = match.group(1) if match else '1'
-            direct_area_by_rep[rn] = d.get('area', 0)
+            direct_area_by_rep[(d.get('conc_ppm'), rn)] = d.get('area', 0)
 
         if not all_data:
             self.metrics_group.setVisible(False)
@@ -1682,6 +1727,10 @@ class CalibratePanel(QWidget):
             display_name = filename
             if '_R' in filename:
                 display_name = 'R' + filename.split('_R')[-1].split('.')[0].split('_')[0]
+            # Incloure la concentració perquè es distingeixin les rèpliques de cada punt
+            _conc = khp.get('conc_ppm')
+            if _conc:
+                display_name = f"{_conc:g}ppm {display_name}"
             item_rep = QTableWidgetItem(display_name)
             # Guardar referència al dict khp per doble-click
             item_rep.setData(Qt.UserRole, khp)
@@ -1697,11 +1746,12 @@ class CalibratePanel(QWidget):
             # Col 3: Comp. (companion area)
             match = _re.search(r'R(\d+)', filename)
             rep_key = match.group(1) if match else '1'
+            _ckey = (khp.get('conc_ppm'), rep_key)
             if signal == 'Direct':
-                a_uib = uib_area_by_rep.get(rep_key, 0)
+                a_uib = uib_area_by_rep.get(_ckey, 0)
                 self.metrics_table.setItem(row, 3, QTableWidgetItem(f"{a_uib:.0f}" if a_uib > 0 else "-"))
             else:
-                a_direct = direct_area_by_rep.get(rep_key, 0)
+                a_direct = direct_area_by_rep.get(_ckey, 0)
                 item_ad = QTableWidgetItem(f"{a_direct:.0f}" if a_direct > 0 else "-")
                 item_ad.setToolTip("\u00c0rea Direct companion")
                 self.metrics_table.setItem(row, 3, item_ad)
@@ -1833,9 +1883,10 @@ class CalibratePanel(QWidget):
 
             replica_num = khp.get('replica_num', 0)
             signal_type = signal
+            _cb_conc = khp.get('conc_ppm')
             cb.stateChanged.connect(
-                lambda state, rn=replica_num, st=signal_type:
-                    self._on_metrics_outlier_toggled(rn, st, state)
+                lambda state, rn=replica_num, st=signal_type, cc=_cb_conc:
+                    self._on_metrics_outlier_toggled(rn, st, state, cc)
             )
 
             self.metrics_table.setCellWidget(row, 12, cb_widget)
@@ -1893,66 +1944,216 @@ class CalibratePanel(QWidget):
         khp = item_rep.data(Qt.UserRole)
         if not isinstance(khp, dict):
             return
+        # Doble-clic = "Detall" (coherent amb Analitzar). La reparació té botó propi.
+        self._open_khp_detail(khp)
 
+    def _selected_metrics_khp(self):
+        """Retorna el dict khp de la fila seleccionada a la taula (o None)."""
+        row = self.metrics_table.currentRow()
+        if row < 0:
+            return None
+        item = self.metrics_table.item(row, 0)
+        khp = item.data(Qt.UserRole) if item is not None else None
+        return khp if isinstance(khp, dict) else None
+
+    def _on_calib_detail_clicked(self):
+        """Botó 'Detall' — obre el detall de la rèplica seleccionada."""
+        khp = self._selected_metrics_khp()
+        if not khp:
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.information(self, "Detall", "Selecciona una rèplica de la taula.")
+            return
+        self._open_khp_detail(khp)
+
+    def _open_khp_detail(self, khp: dict):
+        """Obre el diàleg de detall KHP per a una rèplica."""
         from .khp_detail_dialog import KHPDetailDialog
-        signal = (khp.get('_signal') or 'Direct').lower()
-        dialog = KHPDetailDialog(khp, signal=signal, parent=self)
-        # Connectar senyals
+        name, replica, signal = self._khp_repair_identity(khp)
+        # Identitat del KHP obert (modal) — desambigua la clau d'override per concentració
+        self._repair_identity = (name, replica, signal)
+        self._detail_conc = khp.get('conc_ppm')
+        try:
+            khp['replica_num'] = int(replica)
+        except (TypeError, ValueError):
+            pass
+        has_manual = False
+        seq_path = self.main_window.seq_path
+        if seq_path and name:
+            repairs = load_manual_repairs(seq_path)
+            has_manual = manual_repair_key(name, replica, signal) in repairs
+        dialog = KHPDetailDialog(khp, signal=signal, parent=self,
+                                 has_manual_repair=has_manual)
         dialog.outlier_toggled.connect(self._on_detail_outlier_toggled)
         dialog.repair_applied.connect(self._on_detail_repair_applied)
+        dialog.repair_undone.connect(self._on_detail_repair_undone)
         dialog.exec()
+
+    def _build_repair_adapter(self, conc, signal):
+        """Adapta les rèpliques KHP (concentració + senyal) a la forma que espera
+        JaggedPeakRepairDialog (replicas amb t_doc + y_doc_net/y_doc_uib_net).
+
+        Llegeix de calibrations_direct/uib (TOTES les concentracions, cada entrada
+        porta la seva llista 'replicas'), no del primari khp_data_direct."""
+        import re as _re
+        res = self.calibration_data or {}
+        cals_key = 'calibrations_direct' if signal == 'direct' else 'calibrations_uib'
+        y_key = 'y_doc_net' if signal == 'direct' else 'y_doc_uib_net'
+        replicas = {}
+        is_bp = False
+        for cal in (res.get(cals_key) or []):
+            if abs((cal.get('conc_ppm') or 0) - conc) > 1e-6:
+                continue
+            for d in cal.get('replicas', []):
+                t = d.get('t_doc')
+                y = d.get('y_doc')
+                if t is None or y is None or len(t) == 0:
+                    continue
+                m = _re.search(r'R(\d+)', d.get('filename', '') or '')
+                rk = m.group(1) if m else str(d.get('replica_num', 1))
+                is_bp = bool(d.get('is_bp', is_bp))
+                replicas[rk] = {
+                    't_doc': np.asarray(t, dtype=float),
+                    y_key: np.asarray(y, dtype=float),
+                    'is_bp': bool(d.get('is_bp', False)),
+                    'anomalies': [],
+                }
+        return {'replicas': replicas}, is_bp
+
+    def _on_calib_repair_clicked(self):
+        """Botó 'Reparar pic' — obre el MATEIX diàleg que a Analitzar (coherència)
+        i desa el resultat com a override persistent reversible."""
+        from PySide6.QtWidgets import QMessageBox
+        khp = self._selected_metrics_khp()
+        if not khp:
+            QMessageBox.information(self, "Reparar pic", "Selecciona una rèplica de la taula.")
+            return
+        seq_path = self.main_window.seq_path
+        if not seq_path or not self.calibration_data:
+            return
+        name, _replica, signal = self._khp_repair_identity(khp)
+        conc = khp.get('conc_ppm', 0)
+        adapter, is_bp = self._build_repair_adapter(conc, signal)
+        if not adapter['replicas']:
+            QMessageBox.information(
+                self, "Reparar pic",
+                "No hi ha dades de cromatograma per reparar.\n"
+                "Pot caldre reprocessar (Verificar).")
+            return
+        try:
+            from ..analyze_panel.repair_dialog import JaggedPeakRepairDialog
+        except Exception as e:
+            QMessageBox.warning(self, "Reparar pic", f"No s'ha pogut obrir el diàleg: {e}")
+            return
+
+        method = "BP" if is_bp else "COLUMN"
+        title = f"{name} {signal.upper()} ({conc:g} ppm)"
+        dialog = JaggedPeakRepairDialog(title, adapter, method, force=True, parent=self)
+        dialog.exec()
+
+        # Sincronitzar overrides amb l'estat final dels cards (aplicats / desfets)
+        existing = load_manual_repairs(seq_path)
+        changed = False
+        for card in getattr(dialog, '_cards', []):
+            rk = getattr(card, 'rep_key', None)
+            sig = getattr(card, 'signal_type', signal)
+            if rk is None:
+                continue
+            key = manual_repair_key(name, rk, sig)
+            if getattr(card, 'state', '') == 'repaired':
+                set_manual_repair(seq_path, name, rk, sig,
+                                  card._anchor_left_spin.value(),
+                                  card._anchor_right_spin.value(),
+                                  getattr(dialog, '_factor', None))
+                changed = True
+            elif key in existing:
+                remove_manual_repair(seq_path, name, rk, sig)
+                changed = True
+        if changed:
+            self.main_window.set_status("Reparació desada — recalculant calibració…", 3000)
+            self._run_calibrate()
+
+    def _khp_repair_identity(self, khp: dict):
+        """Retorna (name, replica, signal) per a la clau de reparació manual.
+
+        name = nom del KHP, replica = número de rèplica (str), signal = direct/uib.
+        Consistent amb manual_repair_key() usat a calibrate_from_import.
+        """
+        import re as _re
+        filename = khp.get('filename', '') or ''
+        name = khp.get('name') or (filename.split('_R')[0] if '_R' in filename else filename)
+        m = _re.search(r'R(\d+)', filename)
+        replica = m.group(1) if m else str(khp.get('replica_num', 1))
+        signal = (khp.get('_signal') or khp.get('doc_source') or 'direct').lower()
+        if signal not in ('direct', 'uib'):
+            signal = 'direct'
+        return name, replica, signal
 
     def _on_detail_outlier_toggled(self, replica_num: int, signal: str, is_outlier: bool):
         """Sincronitza el checkbox de la taula amb el toggle del diàleg."""
         state = 2 if is_outlier else 0  # Qt.Checked = 2, Qt.Unchecked = 0
-        self._on_metrics_outlier_toggled(replica_num, signal, state)
+        self._on_metrics_outlier_toggled(replica_num, signal, state,
+                                         getattr(self, '_detail_conc', None))
 
     def _on_detail_repair_applied(self, replica_num: int, signal: str, repaired_data: dict):
-        """Aplica una reparació manual a una rèplica i recarrega calibracions."""
+        """Desa la reparació manual (ancoratges) com a override persistent i recalcula.
+
+        L'override es reaplica de forma determinista a calibrate_from_import, de manera
+        que el camí en viu i el persistit són idèntics. Reversible amb desfer.
+        """
+        from PySide6.QtWidgets import QMessageBox
         try:
-            from hpsec_calibrate import load_local_calibrations, save_local_calibrations
-            import os
-
             seq_path = self.main_window.seq_path
-            if not seq_path:
+            identity = getattr(self, '_repair_identity', None)
+            if not seq_path or not identity:
                 return
-
-            calibrations = load_local_calibrations(seq_path)
-            seq_name = os.path.basename(seq_path)
+            name, replica, sig = identity
             new_area = float(repaired_data.get('new_area', 0))
 
-            for cal in calibrations:
-                if cal.get('seq_name') != seq_name:
-                    continue
-                replicas_info = cal.get('replicas_info', [])
-                for rep in replicas_info:
-                    if rep.get('replica_num') == replica_num:
-                        rep['area'] = new_area
-                        rep['manual_repair'] = True
-                        rep['manual_repair_info'] = {
-                            'new_area': new_area,
-                            'left_idx': repaired_data.get('new_left_idx'),
-                            'right_idx': repaired_data.get('new_right_idx'),
-                        }
-                        # Si hi havia anomalia NON_GAUSSIAN, ja es manté com a info
-                        # però la rèplica deixa de ser outlier (l'usuari la repara)
-                        rep['is_outlier'] = False
-            save_local_calibrations(seq_path, calibrations)
-            # Notificar que la taula s'ha de recarregar (amb dades actualitzades)
-            # Mantenim flux similar a _on_metrics_outlier_toggled
-            from PySide6.QtWidgets import QMessageBox
+            ok = set_manual_repair(
+                seq_path, name, replica, sig,
+                repaired_data.get('anchor_left_t'),
+                repaired_data.get('anchor_right_t'))
+            if not ok:
+                QMessageBox.warning(self, "Reparació",
+                                    "No s'ha pogut guardar la reparació manual.")
+                return
+
             QMessageBox.information(
                 self, "Reparació guardada",
-                f"Àrea de R{replica_num} actualitzada a {new_area:.2f}.\n"
-                "Recalcula la calibració per propagar el canvi."
-            )
+                f"Reparació manual de {name} R{replica} desada "
+                f"(àrea ≈ {new_area:.2f}).\nRecalculant la calibració…")
+            # Re-executar la calibració: l'override s'aplica i la recta s'actualitza
+            self._run_calibrate()
         except Exception as exc:
-            from PySide6.QtWidgets import QMessageBox
             QMessageBox.warning(self, "Reparació",
-                f"No s'ha pogut guardar la reparació: {exc}")
+                                f"No s'ha pogut guardar la reparació: {exc}")
 
-    def _on_metrics_outlier_toggled(self, replica_num, signal_type, state):
-        """Handler quan canvia el checkbox outlier a la taula de mètriques."""
+    def _on_detail_repair_undone(self, replica_num: int, signal: str):
+        """Esborra la reparació manual desada (desfer) i recalcula."""
+        from PySide6.QtWidgets import QMessageBox
+        try:
+            seq_path = self.main_window.seq_path
+            identity = getattr(self, '_repair_identity', None)
+            if not seq_path or not identity:
+                return
+            name, replica, sig = identity
+            removed = remove_manual_repair(seq_path, name, replica, sig)
+            if removed:
+                self.main_window.set_status(
+                    f"Reparació manual de {name} R{replica} desfeta", 3000)
+                self._run_calibrate()
+            else:
+                QMessageBox.information(self, "Desfer",
+                                        "No hi havia cap reparació manual desada.")
+        except Exception as exc:
+            QMessageBox.warning(self, "Desfer",
+                                f"No s'ha pogut desfer la reparació: {exc}")
+
+    def _on_metrics_outlier_toggled(self, replica_num, signal_type, state, conc=None):
+        """Handler quan canvia el checkbox outlier a la taula de mètriques.
+
+        conc: concentració del punt (per no afectar la mateixa rèplica d'altres
+        concentracions quan la taula mostra tota la recta)."""
         is_outlier = (state == Qt.Checked.value if hasattr(Qt.Checked, 'value') else state == 2)
 
         try:
@@ -1969,6 +2170,9 @@ class CalibratePanel(QWidget):
             updated = False
             for cal in calibrations:
                 if cal.get('seq_name') != seq_name:
+                    continue
+                # Només la calibració d'aquesta concentració (si s'ha indicat)
+                if conc is not None and abs((cal.get('conc_ppm') or 0) - conc) > 1e-6:
                     continue
 
                 replicas_info = cal.get('replicas_info', [])
@@ -2719,12 +2923,16 @@ class CalibratePanel(QWidget):
         if cache is None or not cache.get('mf_path'):
             return
 
-        new_delay = self._bp_delay_current
-        old_delay = self._bp_delay_original
+        old_delay = self._bp_delay_original or 0.0
+        # El slider és un OFFSET sobre l'alineació automàtica (0 = auto). El delay
+        # absolut a escriure és delay_original + offset, NO l'offset tot sol.
+        offset = self._bp_delay_current or 0.0
+        new_delay = old_delay + offset
 
         reply = QMessageBox.question(
             self, "Aplicar delay",
-            f"Canviar el delay de {old_delay:.1f} a {new_delay:.1f} min?\n\n"
+            f"Canviar el delay de {old_delay:.2f} a {new_delay:.2f} min "
+            f"(offset {offset:+.2f})?\n\n"
             f"  • S'escriurà 'Net delay (Suite)' al 0-INFO\n"
             f"  • Es regenerarà el 4-TOC_CALC\n"
             f"  • Es reimportarà la seqüència\n\n"
@@ -2739,7 +2947,14 @@ class CalibratePanel(QWidget):
             from hpsec_delay import update_masterfile_delay
             res = update_masterfile_delay(cache['mf_path'], new_delay)
             if res.get('success'):
+                # El nou delay absolut passa a ser la base; l'offset torna a 0
+                # perquè un segon "Aplicar" no el torni a sumar.
                 self._bp_delay_original = new_delay
+                self._bp_delay_current = 0.0
+                for _w in (self._toc_delay_spin, self._toc_delay_slider):
+                    _w.blockSignals(True)
+                    _w.setValue(0)
+                    _w.blockSignals(False)
                 self._update_toc_delay_impact()
                 self.delay_corrected.emit()
             else:

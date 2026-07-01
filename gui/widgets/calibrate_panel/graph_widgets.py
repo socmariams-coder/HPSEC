@@ -124,6 +124,14 @@ class KHPReplicaGraphWidget(QWidget):
         t_doc = np.asarray(t_doc)
         y_doc = np.asarray(y_doc)
 
+        # Correcció d'alineació TOC↔DAD: desplaça DOC Direct pel seu shift (vs 254nm)
+        # perquè el pic quedi sobre el 254 (mateixa correcció que aplica l'anàlisi
+        # normal a les dades). El 254 és la referència i no es mou.
+        shift_d = float(rep_direct.get('shift_min', 0) or 0)
+        shift_u = 0.0  # s'omple si hi ha UIB
+        if abs(shift_d) > 1e-6:
+            t_doc = t_doc + shift_d
+
         # Colors consistents amb analyze panel
         color_direct = '#1565C0'   # Deep blue (analyze R1)
         color_uib = '#2E7D32'     # Dark green (analyze UIB)
@@ -161,7 +169,8 @@ class KHPReplicaGraphWidget(QWidget):
                        alpha=0.4, linestyle=':')
 
         # Bigaussian fit (dashed over DOC)
-        self._plot_bigaussian_fit(ax, rep_direct)
+        # (fit bigaussià omès en aquesta vista: aportava soroll visual i el seu mu
+        #  no sempre coincideix amb el pic real)
 
         # --- UIB DOC curve (overlaid) ---
         area_uib = 0
@@ -178,6 +187,10 @@ class KHPReplicaGraphWidget(QWidget):
                 has_uib_curve = True
                 t_uib_arr = np.asarray(t_uib)
                 y_uib_arr = np.asarray(y_uib)
+                # Alinear UIB pel seu propi shift vs 254 (normalment ~0)
+                shift_u = float(rep_uib.get('shift_min', 0) or 0)
+                if abs(shift_u) > 1e-6:
+                    t_uib_arr = t_uib_arr + shift_u
                 ax.plot(t_uib_arr, y_uib_arr, color=color_uib, linewidth=1.2, label='UIB')
                 li_u = rep_uib.get('peak_left_idx', 0)
                 ri_u = rep_uib.get('peak_right_idx', len(t_uib_arr) - 1)
@@ -215,28 +228,43 @@ class KHPReplicaGraphWidget(QWidget):
         ax.set_ylabel('DOC (ppb)', fontsize=7)
         ax.tick_params(axis='both', labelsize=6)
         ax.grid(True, alpha=0.3)
-        ax.set_title(f"R{replica_num}", fontsize=8, fontweight='bold')
 
-        # --- Compact legend ---
-        legend_parts = [f"Direct A={area:.0f}"]
+        # Zoom a la zona del pic — evita l'eix 0-80 buit (i fa innecessari l'inset)
+        self._zoom_to_peak(ax, t_doc, y_doc, bool(rep_direct.get('is_bp', False)))
+
+        # Títol amb les àrees (a sobre del gràfic: no solapa mai amb les corbes)
+        title = f"R{replica_num}  ·  Direct A={area:.0f}"
         if has_uib_curve:
-            legend_parts.append(f"UIB A={area_uib:.0f}")
+            title += f"   UIB A={area_uib:.0f}"
         if has_254:
-            legend_parts.append(f"254nm A={a254_area:.1f}")
-        legend_text = " | ".join(legend_parts)
-        ax.text(0.97, 0.97, legend_text,
-                transform=ax.transAxes, fontsize=5.5,
-                verticalalignment='top', horizontalalignment='right',
-                bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.85, edgecolor='#BDC3C7'),
-                family='monospace')
+            title += f"   254 A={a254_area:.1f}"
+        ax.set_title(title, fontsize=7.5, fontweight='bold')
+
+        # Avís d'alineació: shift mesurat PER AQUESTA seq des del KHP (no hi ha
+        # delay fix) i aplicat per fer coincidir DOC amb 254nm. Transparència del
+        # que es fa; si el MasterFile tingués els temps malament, es veuria aquí.
+        if has_254:
+            note = f"alineat a 254nm:  Direct {shift_d:+.2f} min"
+            if has_uib_curve:
+                note += f"   UIB {shift_u:+.2f} min"
+            ax.text(0.015, 0.97, note, transform=ax.transAxes, fontsize=6,
+                    va='top', ha='left', color='#555',
+                    bbox=dict(boxstyle='round,pad=0.25', facecolor='#FFFDE7',
+                              edgecolor='#E0E0E0', alpha=0.9))
 
         # --- Timeout zones ---
         self._draw_timeout_zones(ax, rep_direct)
 
-        # --- Zoom inset (peak area) ---
-        self._add_peak_zoom_inset(ax, t_doc, y_doc, li, ri, color_direct,
-                                  t_uib_arr, y_uib_arr, li_u, ri_u, color_uib,
-                                  has_uib_curve)
+    def _zoom_to_peak(self, ax, t_doc, y_doc, is_bp):
+        """Limita l'eix X a la zona del pic (centre = màxim ± finestra), llegible."""
+        if t_doc is None or y_doc is None or len(t_doc) < 3:
+            return
+        t_doc = np.asarray(t_doc)
+        y_doc = np.asarray(y_doc)
+        center = float(t_doc[int(np.argmax(y_doc))])
+        half = 3.0 if is_bp else 8.0
+        t_lo, t_hi = float(np.min(t_doc)), float(np.max(t_doc))
+        ax.set_xlim(max(t_lo, center - half), min(t_hi, center + half))
 
     def _add_peak_zoom_inset(self, ax, t_doc, y_doc, li, ri, color_direct,
                              t_uib, y_uib, li_u, ri_u, color_uib, has_uib):
@@ -342,8 +370,8 @@ class KHPReplicaGraphWidget(QWidget):
         ax.set_ylim(0, 1)
         ax.axis('off')
 
-    def _plot_bigaussian_fit(self, ax, rep):
-        """Plot bigaussian fit as dashed line over DOC."""
+    def _plot_bigaussian_fit(self, ax, rep, shift=0.0):
+        """Plot bigaussian fit as dashed line over DOC (amb la mateixa alineació)."""
         bigauss = rep.get('bigaussian_doc')
         if not HAS_BIGAUSSIAN or not bigauss:
             return
@@ -355,7 +383,7 @@ class KHPReplicaGraphWidget(QWidget):
             sigma_l = bigauss.get('sigma_left', 0)
             sigma_r = bigauss.get('sigma_right', 0)
             if amp > 0 and mu > 0 and sigma_l > 0 and sigma_r > 0:
-                t_fit = np.linspace(mu - 4*sigma_l, mu + 4*sigma_r, 200)
+                t_fit = np.linspace(mu - 4*sigma_l, mu + 4*sigma_r, 200) + shift
                 y_fit = bigaussian(t_fit, amp, mu, sigma_l, sigma_r, 0)
                 fit_color = '#27AE60' if bigauss.get('status') == 'VALID' else '#F39C12'
                 ax.plot(t_fit, y_fit, color=fit_color, linewidth=1.3, linestyle='--',

@@ -34,6 +34,7 @@ from hpsec_calibrate import (
     load_calibration_reference,
     compute_calibration_fingerprint,
     detect_seq_cal_data,
+    load_manual_repairs, set_manual_repair, remove_manual_repair, manual_repair_key,
 )
 
 import matplotlib  # noqa: F401
@@ -2489,9 +2490,128 @@ class CalibrationLineView(QWidget):
                 pass
             canvas.draw()
 
+            # --- Barra d'accions: Reparar pic (mateix diàleg que a Analitzar) ---
+            btn_bar = QHBoxLayout()
+            repair_btn = QPushButton("🔧 Reparar pic")
+            repair_btn.setStyleSheet(
+                "QPushButton { border: 1px solid #E67E22; border-radius: 3px;"
+                " padding: 5px 14px; color: #E67E22; font-weight: bold; }"
+                "QPushButton:hover { background: #FEF9E7; }")
+            repair_btn.setToolTip(
+                "Reparar el cim irregular (batman) del pic d'aquest punt — "
+                "mateix diàleg que al pas Analitzar. Reversible.")
+            repair_btn.clicked.connect(lambda: self._repair_seq_cal_entry(entry, dialog))
+            btn_bar.addWidget(repair_btn)
+            btn_bar.addStretch()
+            _close_btn = QPushButton("Tancar")
+            _close_btn.clicked.connect(dialog.accept)
+            btn_bar.addWidget(_close_btn)
+            dlg_layout.addLayout(btn_bar)
+
             dialog.exec()
         except Exception as e:
             logger.warning(f"Error preview cromatograma: {e}", exc_info=True)
+
+    def _repair_seq_cal_entry(self, entry, parent_dialog=None):
+        """Obre el diàleg de reparació (el mateix d'Analitzar) per al punt clicat
+        i desa el resultat com a override persistent reversible. Després recalcula."""
+        seq_path = self._seq_path
+        if not seq_path:
+            QMessageBox.information(self, "Reparar pic", "No hi ha cap SEQ_CAL carregada.")
+            return
+        signal = (self._seq_cal_signal or 'direct').lower()
+        y_key = 'y_doc_net' if signal == 'direct' else 'y_doc_uib_net'
+        is_bp = (self._seq_cal_method == 'BP')
+
+        replicas = entry.get('replicas', [])
+        if not replicas and signal == 'uib':
+            um = entry.get('_uib_match_for_replicas')
+            if um:
+                replicas = um.get('replicas', [])
+
+        adapter = {}
+        name = ''
+        for d in replicas:
+            t = d.get('t_doc')
+            y = d.get('y_doc')
+            if t is None or y is None or len(t) == 0:
+                continue
+            fn = d.get('filename', '') or ''
+            m = re.search(r'R(\d+)', fn)
+            rk = m.group(1) if m else str(d.get('replica_num', 1))
+            if not name:
+                name = d.get('name') or (fn.split('_R')[0] if '_R' in fn else fn)
+            adapter[rk] = {
+                't_doc': np.asarray(t, dtype=float),
+                y_key: np.asarray(y, dtype=float),
+                'is_bp': is_bp, 'anomalies': [],
+            }
+        if not adapter:
+            QMessageBox.information(
+                self, "Reparar pic",
+                "No hi ha dades de cromatograma per reparar en aquest punt.")
+            return
+
+        try:
+            from .analyze_panel.repair_dialog import JaggedPeakRepairDialog
+        except Exception as e:
+            QMessageBox.warning(self, "Reparar pic", f"No s'ha pogut obrir el diàleg: {e}")
+            return
+
+        method = 'BP' if is_bp else 'COLUMN'
+        conc = entry.get('conc_ppm', 0)
+        rdlg = JaggedPeakRepairDialog(
+            f"{name} {signal.upper()} ({conc:g} ppm)",
+            {'replicas': adapter}, method, force=True, parent=self)
+        rdlg.exec()
+
+        existing = load_manual_repairs(seq_path)
+        changed = False
+        repaired_reps = []
+        for card in getattr(rdlg, '_cards', []):
+            rk = getattr(card, 'rep_key', None)
+            sig = getattr(card, 'signal_type', signal)
+            if rk is None:
+                continue
+            key = manual_repair_key(name, rk, sig)
+            if getattr(card, 'state', '') == 'repaired':
+                set_manual_repair(seq_path, name, rk, sig,
+                                  card._anchor_left_spin.value(),
+                                  card._anchor_right_spin.value(),
+                                  getattr(rdlg, '_factor', None))
+                changed = True
+                repaired_reps.append(rk)
+            elif key in existing:
+                remove_manual_repair(seq_path, name, rk, sig)
+                changed = True
+
+        if changed:
+            # Avís clar del que es fa (la usuària ha de saber on va a parar)
+            sel_method = entry.get('selection', {}).get('method', '?')
+            n_total = len(getattr(rdlg, '_cards', []))
+            msg = (f"Reparació desada per <b>{name} {conc:g} ppm</b> "
+                   f"({len(repaired_reps)} de {n_total} rèpliques).<br><br>")
+            if sel_method in ('average', 'promig') and len(repaired_reps) < n_total:
+                msg += ("⚠️ La selecció d'aquest punt és <b>PROMIG</b> de les rèpliques: "
+                        "si en repares només una, el punt es mou <b>a la meitat</b>. "
+                        "Repara les dues per veure tot l'efecte.<br><br>")
+            msg += ("La reparació va a l'àrea de la rèplica → al promig del punt → "
+                    "a la recta. Recalculant ara…")
+            QMessageBox.information(self, "Reparació aplicada", msg)
+            if parent_dialog is not None:
+                parent_dialog.accept()
+            # Invalidar cache i recalcular la SEQ_CAL (l'override s'hi reaplica)
+            try:
+                self.parent_panel._result_cache.pop(seq_path, None)
+            except Exception:
+                pass
+            self.parent_panel.load_seq_cal(seq_path)
+        else:
+            QMessageBox.information(
+                self, "Reparació",
+                "No s'ha aplicat cap reparació.\n\n"
+                "Recorda clicar <b>Aplicar</b> dins el diàleg per a cada rèplica "
+                "que vulguis reparar (si no, no es desa res).")
 
     def _on_seq_cal_point_toggled(self, idx, state):
         """Quan l'usuari marca/desmarca un punt de la regressió → sincronitza amb dropdown."""

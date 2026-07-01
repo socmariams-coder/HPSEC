@@ -1,0 +1,151 @@
+# -*- coding: utf-8 -*-
+"""Tests de regressió de robustesa (auditoria 2026-06).
+
+Cada test PROVOCA la condició de problema i comprova el comportament robust nou.
+Executar: python test_robustesa_audit.py
+"""
+import os
+import sys
+import json
+import tempfile
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+_PASS = []
+_FAIL = []
+
+
+def check(name, cond):
+    (_PASS if cond else _FAIL).append(name)
+    print(("  OK  " if cond else " FALLA ") + name)
+
+
+# ---------------------------------------------------------------------------
+def test_atomic_write_and_cache_poisoning():
+    """S2/S7: una escriptura fallida ha d'invalidar el cache i deixar el disc
+    intacte (cap calibració fantasma)."""
+    print("\n[S2/S7] Cache de calibració + escriptura atòmica")
+    import hpsec_calibrate as hc
+    tmp = tempfile.mkdtemp()
+    ref = os.path.join(tmp, 'Calibration_Reference.json')
+    json.dump({"version": "3.0", "calibrations": [{"id": "X"}]}, open(ref, 'w'))
+    hc.get_calibration_reference_path = lambda: ref
+    hc._cal_ref_cache = None
+    hc._cal_ref_mtime = 0
+
+    a = hc.load_calibration_reference()
+    a['calibrations'].append({'poison': True})   # mutar la còpia
+    b = hc.load_calibration_reference()
+    check("load retorna còpia (mutar-la no enverina)", len(b['calibrations']) == 1)
+
+    hc.load_calibration_reference()
+    disk_before = open(ref, encoding='utf-8').read()
+    orig = hc._atomic_write_json
+    hc._atomic_write_json = lambda *a, **k: (_ for _ in ()).throw(IOError('disc ple'))
+    res = hc.save_calibration_reference({"version": "3.0", "calibrations": [{"id": "FANTASMA"}]})
+    cache_after = hc._cal_ref_cache
+    hc._atomic_write_json = orig
+    disk_after = open(ref, encoding='utf-8').read()
+    nxt = hc.load_calibration_reference()
+    check("save fallit -> False", res is False)
+    check("cache invalidat despres del fail", cache_after is None)
+    check("disc intacte (cap fantasma)", disk_before == disk_after)
+    check("propera carrega neta", nxt['calibrations'][0]['id'] == 'X')
+
+
+# ---------------------------------------------------------------------------
+def test_load_manifest_corrupt():
+    """S1: un manifest corromput NO s'ha de tractar com 'no existeix' en silenci:
+    s'aparta a .corrupt i es retorna None."""
+    print("\n[S1] load_manifest amb fitxer corromput")
+    import hpsec_import as hi
+    seq = tempfile.mkdtemp()
+    data_folder = os.path.join(seq, "CHECK", "data")
+    os.makedirs(data_folder, exist_ok=True)
+    mpath = os.path.join(data_folder, "import_manifest.json")
+    open(mpath, 'w', encoding='utf-8').write('{ corromput, no és json }')
+    r = hi.load_manifest(seq)
+    check("retorna None amb manifest corromput", r is None)
+    check("aparta l'original a .corrupt", os.path.exists(mpath + ".corrupt"))
+    check("no deixa el manifest corromput al seu lloc", not os.path.exists(mpath))
+
+
+# ---------------------------------------------------------------------------
+def test_volume_assumed_anomaly():
+    """S1/#1: si no es troba el volum, quantify_sample no ha d'assumir en silenci:
+    marca volume_source='assumed' i emet anomalia ANA_VOLUME_ASSUMED."""
+    print("\n[#1] Volum d'injecció assumit -> anomalia")
+    import hpsec_analyze as ha
+    sample_result = {"processed": True, "sample_name": "TEST", "anomalies": []}
+    try:
+        ha.quantify_sample(sample_result, calibration_data=None, mode="COLUMN")
+    except Exception:
+        pass  # pot petar més avall per falta d'àrees; només ens importa la marca
+    codes = [a.get("code") for a in sample_result.get("anomalies", []) if isinstance(a, dict)]
+    check("s'ha emès ANA_VOLUME_ASSUMED", "ANA_VOLUME_ASSUMED" in codes)
+
+
+# ---------------------------------------------------------------------------
+def test_pre_margin_single_source():
+    """#6: hpsec_delay ha de llegir el pre-margin de config (font única)."""
+    print("\n[#6] Pre-margin des de config (font única)")
+    import hpsec_delay as hd
+    val = hd._config_pre_margin()
+    check("_config_pre_margin retorna un número", isinstance(val, (int, float)) and val > 0)
+
+
+# ---------------------------------------------------------------------------
+def test_autofix_columns_synthetic():
+    """S6/291: un full amb dades a les columnes '.1' (G-L) i originals buides
+    s'ha de corregir (i quedar disponible per a TOTS els consumidors)."""
+    print("\n[291] Auto-fix de columnes desplaçades (sintètic)")
+    import pandas as pd
+    import hpsec_import as hi
+    df = pd.DataFrame({
+        "Line#": [None, None], "Sample Name": [None, None],
+        "Line#.1": [1, 2], "Sample Name.1": ["A", "B"],
+    })
+    fixed, applied = hi._autofix_shifted_columns(df)
+    check("detecta i aplica la correcció", applied)
+    check("la columna 'Sample Name' té dades després", fixed["Sample Name"].notna().sum() == 2)
+
+
+def test_291_doc_direct_recovered():
+    """291: amb l'auto-fix centralitzat, compute_toc_calc ha de poder calcular
+    el 4-TOC_CALC → DOC Direct disponible (cap avís 'DOC Direct no disponible')."""
+    seq = r'C:\Users\maria\Proyectos\Dades3\291_SEQ'
+    if not os.path.isdir(seq):
+        print("\n[291] (saltat: dades no disponibles)")
+        return
+    print("\n[291] DOC Direct recuperat (dades reals)")
+    from hpsec_import import import_sequence
+    imp = import_sequence(seq)
+    ws = " ".join(str(w) for w in (imp.get("warnings") or []))
+    check("import OK", imp.get("success") is True)
+    check("cap avís 'DOC Direct no disponible'", "DOC Direct no disponible" not in ws)
+    check("cap avís 'sense DOC Direct'", "sense DOC Direct" not in ws)
+
+
+# ---------------------------------------------------------------------------
+if __name__ == "__main__":
+    for t in (test_atomic_write_and_cache_poisoning,
+              test_load_manifest_corrupt,
+              test_volume_assumed_anomaly,
+              test_pre_margin_single_source,
+              test_autofix_columns_synthetic,
+              test_291_doc_direct_recovered):
+        try:
+            t()
+        except Exception as e:
+            import traceback
+            _FAIL.append(t.__name__ + " (excepció)")
+            print(" FALLA (excepció):", e)
+            traceback.print_exc()
+
+    print("\n" + "=" * 50)
+    print(f"PASSATS: {len(_PASS)}   FALLATS: {len(_FAIL)}")
+    if _FAIL:
+        for f in _FAIL:
+            print("  x", f)
+        sys.exit(1)
+    print("TOTS OK")

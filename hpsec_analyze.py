@@ -1537,13 +1537,25 @@ def quantify_sample(sample_result, calibration_data, mode="COLUMN", seq_date=Non
     # OBTENIR VOLUM D'INJECCIÓ
     # =========================================================================
     volume_uL = sample_result.get("inj_volume")
+    volume_source = "manifest" if volume_uL is not None else None
     if volume_uL is None and calibration_data:
         volume_uL = calibration_data.get("volume_uL") or calibration_data.get("inj_volume")
+        if volume_uL is not None:
+            volume_source = "calibration"
     if volume_uL is None:
-        # Fallback heurístic — emetre warning perquè no s'ha trobat al manifest
+        # NO assumir en silenci: el volum és divisor directe de la ppm. S'usa un
+        # valor per defecte per no bloquejar, però es marca explícitament i s'emet
+        # una anomalia perquè la GUI ho avisi (o demani el volum a l'usuari).
         volume_uL = 100 if mode.upper() == "BP" else 400
-        logger.warning("quantify_sample: VOLUM NO AL MANIFEST per '%s' mode=%s — usant heuristic %d uL",
+        volume_source = "assumed"
+        logger.warning("quantify_sample: VOLUM NO TROBAT per '%s' mode=%s — assumit %d uL (marcat)",
                        sample_result.get("sample_name", "?"), mode, volume_uL)
+        sample_result.setdefault("anomalies", []).append(
+            create_anomaly("ANA_VOLUME_ASSUMED",
+                           details={"assumed_uL": volume_uL, "mode": mode},
+                           override_label=f"Volum assumit {volume_uL} µL (no trobat)"))
+    result["volume_uL"] = volume_uL
+    result["volume_source"] = volume_source
 
     # =========================================================================
     # OBTENIR rf_mass_cal GLOBAL I INTERCEPT
@@ -2360,7 +2372,16 @@ def analyze_sample(sample_data, calibration_data=None, config=None):
     # Apliquem sobre y_doc_net (que conté UIB net) per generar y_doc_direct_net.
     # Les àrees Direct (areas["DOC"]) es recalculen sobre l'estimat.
     if is_uib_only:
-        sens = sample_data.get("uib_sensitivity") or 700
+        # NO assumir 700 en silenci: el factor d'estimació és sens/1000, així que
+        # un valor erroni escala malament tot el Direct estimat. Comprovar None
+        # explícitament (no 'or', que també capturaria 0) i marcar si falta.
+        sens = sample_data.get("uib_sensitivity")
+        if sens not in (700, 1000):
+            result.setdefault("anomalies", []).append(
+                create_anomaly("ANA_SENSITIVITY_ASSUMED",
+                               details={"found": sens, "assumed": 700},
+                               override_label=f"Sensibilitat UIB no vàlida ({sens}) — assumit 700 ppb"))
+            sens = 700
         direct_factor = sens / 1000.0
         y_direct_est = y_doc_net * direct_factor
         result["y_doc_direct_net"] = y_direct_est
