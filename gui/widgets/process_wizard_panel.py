@@ -1701,6 +1701,26 @@ class ProcessWizardPanel(QWidget):
         self._update_warning_bar()
         self._update_header_for_tab(self.tab_widget.currentIndex())
 
+        # Auto-generar els resultats a SEQ/RESULTATS/ un cop quantificat (per
+        # defecte). Aquest pipeline és la "maduració de dades": deixa els
+        # resultats al costat de les dades crues sense prémer Exportar. L'anàlisi
+        # fi es fa a banda, llegint aquesta carpeta.
+        self._auto_generate_results()
+
+    def _auto_generate_results(self):
+        """Genera automàticament Excels + SUMMARY a SEQ/RESULTATS/ (mode silent).
+
+        Reutilitza l'auto-generació de l'ExportPanel (que ja escriu a RESULTATS/ +
+        CHECK/). En mode silent no obre diàlegs i s'atura sol si la quantificació
+        encara està pendent.
+        """
+        try:
+            if hasattr(self, 'export_panel') and hasattr(self.export_panel, '_run_generate'):
+                logger.info("Auto-generant resultats a RESULTATS/ després de quantificar")
+                self.export_panel._run_generate(silent=True)
+        except Exception as e:
+            logger.warning("Auto-generació de resultats fallida: %s", e)
+
     def _go_to_dashboard(self):
         """Torna a la llista de seqüències."""
         self.main_window.show_dashboard()
