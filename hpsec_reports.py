@@ -202,9 +202,6 @@ def apply_style():
     plt.rcParams.update(STYLE_CONFIG)
 
 
-# NOTA: is_khp s'ha mogut a hpsec_import.py (2026-01-29) - importat a dalt
-
-
 def is_control(name):
     """Detecta si és mostra de control (MQ, NaOH, Blank, etc.)."""
     name_upper = str(name).upper().strip()

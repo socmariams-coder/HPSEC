@@ -68,8 +68,7 @@ KHP_INTEGRATION_CAP_MIN = 4.0
 # Import funcions d'identificació des de hpsec_import (Single Source of Truth)
 from hpsec_import import is_khp, extract_khp_conc, obtenir_seq
 
-# Import funcions utilitàries
-# NOTA (2026-02-03): Baseline functions ara a hpsec_core.py
+# Funcions de baseline i utilitàries
 from hpsec_core import mode_robust, get_baseline_value, get_baseline_stats
 from hpsec_utils import t_at_max
 
@@ -1522,9 +1521,6 @@ def extract_seq_number(seq_path):
     return None
 
 
-# NOTA: obtenir_seq s'ha mogut a hpsec_import.py (2026-01-29)
-
-
 def get_condition_key(mode: str, volume_uL: int, conc_ppm: float = None) -> str:
     """
     Genera clau única per identificar condicions de calibració.
@@ -1607,16 +1603,6 @@ def get_cr_thresholds(is_bp, volume_uL):
         }
 
 
-# NOTA: is_khp, extract_khp_conc s'han mogut a hpsec_import.py (2026-01-29)
-# NOTA: mode_robust, t_at_max s'han mogut a hpsec_utils.py (2026-01-29)
-
-
-# =============================================================================
-# NOTA: Funcions de baseline/stats ara estan a hpsec_utils.py (Single Source of Truth)
-# Usar get_baseline_stats() i get_baseline_value() directament
-
-# NOTA: detect_main_peak i detect_all_peaks ara estan a hpsec_core.py
-# (Single Source of Truth per evitar duplicació)
 
 
 def timeout_affects_peak(timeout_info, t_doc, left_idx, right_idx):

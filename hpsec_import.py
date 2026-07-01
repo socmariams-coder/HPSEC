@@ -1019,7 +1019,8 @@ def list_dad_files(folder_export3d, folder_csv=None):
         for ext in ("*.csv", "*.CSV"):
             dad_files.extend(glob.glob(os.path.join(folder_export3d, ext)))
 
-    # Excloure fitxers UIB (contenen "UIB1B") per si de cas
+    # Els CSV UIB1B són cromatogrames UIB, no matrius DAD Export3D; excloure'ls
+    # evita contaminar la matriu 3D.
     dad_files = [f for f in dad_files if "UIB1B" not in os.path.basename(f).upper()]
 
     return sorted(set(dad_files))

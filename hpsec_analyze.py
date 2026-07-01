@@ -80,7 +80,6 @@ from hpsec_core import (
     compare_signals,
     # Constants
     THRESH_SNR,
-    # Smoothing (migrat 2026-02)
     apply_smoothing,
 )
 from hpsec_config import get_config
@@ -175,19 +174,7 @@ def truncate_chromatogram(t, y, max_time_min=None):
         return t[mask], y[mask]
 
 
-# NOTA: get_baseline_correction() eliminada (2026-02-02)
-# La correcció de baseline es fa a import. Process requereix y_net.
-
-
-# =============================================================================
-# NOTA: apply_smoothing() migrat a hpsec_core.py (2026-02)
-# Importat a dalt via: from hpsec_core import apply_smoothing
-# =============================================================================
-
-
-# =============================================================================
-# NOTA: align_signals_by_max i apply_shift s'han mogut a hpsec_core.py (2026-02-03)
-# =============================================================================
+# La correcció de baseline es fa a la importació; el processament requereix y_net.
 
 # =============================================================================
 # FUNCIONS PROCESSAMENT DAD
@@ -230,8 +217,7 @@ def analyze_dad(df_dad, config=None):
 # =============================================================================
 # FUNCIONS DETECCIÓ PICS
 # =============================================================================
-# NOTA: find_peak_boundaries i detect_main_peak s'importen de hpsec_core.py
-# Eliminades versions locals per evitar duplicació (2026-01-29)
+# find_peak_boundaries i detect_main_peak s'importen de hpsec_core.py
 
 
 # =============================================================================

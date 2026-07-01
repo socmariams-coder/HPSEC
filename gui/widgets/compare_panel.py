@@ -290,7 +290,8 @@ class ComparePanel(QWidget):
         table.setMinimumHeight(200)
         self._comparison_layout.addWidget(table)
 
-        # TODO: grafics (scatter ppm_col vs ppm_bp, Bland-Altman)
+        # Comparació COLUMN vs BP: només taula. Els gràfics (scatter ppm_col vs
+        # ppm_bp, Bland-Altman) no estan implementats en aquesta vista.
 
     def reset(self):
         """Reset del panell."""
