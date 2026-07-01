@@ -631,6 +631,18 @@ class AnalyzePanel(QWidget):
         self._samples_table.setMinimumHeight(300)
         self._samples_table.setMinimumWidth(320)
         self._samples_table.clicked.connect(self._on_table_row_clicked)
+
+        # Llegenda: què és la taula i què fer (abans no s'entenia què mostrava)
+        _hint = QLabel(
+            "Qualitat de cada mostra. <b>Clica una fila</b> per revisar-ne el detall "
+            "(cromatograma, SNR, r², fraccions) a la dreta.<br>"
+            "<span style='color:#27AE60'>✓</span> correcte &nbsp; "
+            "<span style='color:#F39C12'>⚠</span> avís &nbsp; "
+            "<span style='color:#E74C3C'>✘</span> error &nbsp;·&nbsp; "
+            "els selectors trien quina rèplica s'usa per DOC i DAD.")
+        _hint.setWordWrap(True)
+        _hint.setStyleSheet("color:#555; font-size:11px; padding:2px 4px;")
+        self._table_container_layout.addWidget(_hint)
         self._table_container_layout.addWidget(self._samples_table)
         self._table_container.setMinimumWidth(320)
 
@@ -1323,11 +1335,13 @@ class AnalyzePanel(QWidget):
         sample_names = []
         blank_names = []
         control_names = []
+        khp_names = []
 
         for name, sd in self.samples_grouped.items():
             st = sd.get("sample_type", "SAMPLE")
             if st == "KHP":
-                continue
+                # Es mostren també (revisables "per si hi ha dubtes"), al final
+                khp_names.append(name)
             elif st == "BLANK":
                 blank_names.append(name)
             elif st == "CONTROL":
@@ -1349,7 +1363,7 @@ class AnalyzePanel(QWidget):
                 keys.append((sib_order, idx))
             return min(keys) if keys else (0, 999)
 
-        for lst in (sample_names, blank_names, control_names):
+        for lst in (sample_names, blank_names, control_names, khp_names):
             lst.sort(key=_sort_key)
 
         n_ok, n_warning, n_error = 0, 0, 0
@@ -1380,7 +1394,7 @@ class AnalyzePanel(QWidget):
                 n_ok += 1
 
             self._fill_sample_row(table, row, name, sample_data,
-                                  doc_rep, dad_rep, comparison)
+                                  doc_rep, dad_rep, comparison, status_color=sc)
 
         # --- Blancs separator + rows ---
         if blank_names and show_blank:
@@ -1431,6 +1445,41 @@ class AnalyzePanel(QWidget):
                 self._sample_row_map[name] = row
                 self._row_sample_map[row] = name
                 self._fill_control_row(table, row, name, grey_bg)
+
+        # --- KHP (patrons de calibració) separator + rows ---
+        # Es mostren perquè es puguin REVISAR si hi ha dubtes (la calibració es fa
+        # a Verificar, però aquí queden visibles i seleccionables com la resta).
+        if khp_names:
+            row = table.rowCount()
+            table.insertRow(row)
+            sep_item = QTableWidgetItem("--- KHP (calibració) ---")
+            sep_item.setTextAlignment(Qt.AlignCenter)
+            sep_font = QFont()
+            sep_font.setBold(True)
+            sep_item.setFont(sep_font)
+            sep_item.setForeground(QBrush(QColor("#2E86AB")))
+            table.setItem(row, 0, sep_item)
+            table.setSpan(row, 0, 1, 3)
+            for c in range(3):
+                it = table.item(row, c) or QTableWidgetItem("")
+                it.setBackground(QBrush(sep_bg))
+                table.setItem(row, c, it)
+
+            for name in khp_names:
+                sample_data = self.samples_grouped[name]
+                row = table.rowCount()
+                table.insertRow(row)
+                self._sample_row_map[name] = row
+                self._row_sample_map[row] = name
+                _, kdoc = resolve_doc_replica(sample_data)
+                ksel = sample_data.get("selected", {}) or {}
+                kdad = (sample_data.get("replicas", {}) or {}).get(
+                    ksel.get("dad", ksel.get("doc", "1")), {})
+                kcomp = sample_data.get("comparison", {})
+                (ksc, _, _, _, _, _) = classify_sample_status(
+                    kdoc, kdad, kcomp, sample_data=sample_data)
+                self._fill_sample_row(table, row, name, sample_data,
+                                      kdoc, kdad, kcomp, status_color=ksc)
 
         # Update stats
         total = n_ok + n_warning + n_error
@@ -1582,19 +1631,27 @@ class AnalyzePanel(QWidget):
                 logger.warning("Error refresh review panel: %s", e)
 
     def _fill_sample_row(self, table, row, name, sample_data,
-                         doc_rep, dad_rep, comparison):
-        """Fill one regular sample row — Mostra | Rèplica DOC | Rèplica DAD.
+                         doc_rep, dad_rep, comparison, status_color=None):
+        """Fill one regular sample row — Estat+Mostra | Rèplica DOC | Rèplica DAD.
 
-        v2.2.0+: la taula és una llista de selecció amb radios in-line.
-        Tota la resta d'info (SNR, r², anomalies, fraccions, A254…) viu al
-        panell de revisió a la dreta.
+        El detall complet (SNR, r², anomalies, fraccions, A254…) viu al panell de
+        revisió a la dreta; aquí es mostra el semàfor d'estat perquè es vegi la
+        qualitat d'un cop d'ull sense haver de clicar cada mostra.
         """
         selected = sample_data.get("selected", {}) or {}
         replicas_dict = sample_data.get("replicas", {}) or {}
 
-        # Col 0: Mostra (amb tooltip resum d'info que abans tenia col·lumna pròpia)
-        name_item = QTableWidgetItem(name)
+        # Col 0: semàfor d'estat + nom (amb tooltip resum). El semàfor fa visible
+        # la qualitat a la taula (abans només al tooltip / panell dret).
+        _icon = "✓"
+        if status_color == COLOR_ERROR:
+            _icon = "✘"
+        elif status_color == COLOR_WARNING:
+            _icon = "⚠"
+        name_item = QTableWidgetItem(f"{_icon}  {name}")
         name_item.setFont(QFont("Segoe UI", 10))
+        if status_color is not None:
+            name_item.setForeground(QBrush(QColor(status_color)))
         tip_parts = []
         snr = (doc_rep.get("snr_info") or {}).get("snr_direct", 0)
         if snr:
