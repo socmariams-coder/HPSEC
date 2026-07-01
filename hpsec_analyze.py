@@ -1769,6 +1769,9 @@ def analyze_sample(sample_data, calibration_data=None, config=None):
         "sample_type": sample_data.get("sample_type", "SAMPLE"),
         "inj_volume": sample_data.get("inj_volume"),
         "injection_index": sample_data.get("injection_index"),
+        # Propagar la sensibilitat UIB perquè arribi a quantify_sample (routing
+        # UIB 700/1000). Abans es perdia aquí i quantify la rebia None.
+        "uib_sensitivity": sample_data.get("uib_sensitivity"),
         "processed": False,
         "anomalies": [],
     }

@@ -386,7 +386,14 @@ def load_calibration_reference():
 
         # Auto-migració v2.0 → v3.0
         version = str(data.get('version', '1.0'))
-        if version < '3.0':
+        # Comparació NUMÈRICA (no lexicogràfica: '10.0' < '3.0' seria cert i
+        # re-dispararia la migració indefinidament).
+        def _ver_tuple(v):
+            try:
+                return tuple(int(x) for x in str(v).split('.'))
+            except (ValueError, TypeError):
+                return (0,)
+        if _ver_tuple(version) < (3, 0):
             data = _migrate_calibration_reference(data)
             save_calibration_reference(data)
             # Re-read per actualitzar mtime
