@@ -4646,6 +4646,46 @@ def detect_seq_cal_data(calib_result, seq_path, method=None, uib_sensitivity=Non
 # CALIBRACIÓ DES D'IMPORT (NOVA API)
 # =============================================================================
 
+# Alineació TOC↔HPLC derivada del KHP (patró intern de cada seq).
+# El pre-margin d'assignació TOC (dispersió del reactor) es manté constant a
+# config (~1,5 min): verificat empíricament que ≈ l'amplada de BASE del pic KHP
+# (FWHM≈1,0 × 1,5), estable a totes les concentracions i modes. En lloc de
+# derivar-lo per seq (exigiria doble passada, i el valor no canviaria), l'anàlisi
+# del KHP AVISA si els pics d'una seq són anòmalament amples (degradació) o si el
+# shift DOC↔254 és inconsistent entre concentracions (pic mal detectat / delay
+# sospitós) — les dues coses que la constant fixa no captaria.
+KHP_FWHM_EXPECTED_MIN = 1.0        # FWHM típica del pic KHP (min), verificada
+KHP_FWHM_WIDE_FACTOR = 2.0        # avís si FWHM mediana > 2× l'esperat
+KHP_SHIFT_CONSISTENCY_TOL = 0.5   # min; avís si el shift d'un KHP se'n desvia
+
+
+def _check_khp_alignment(direct_list):
+    """Comprovacions d'alineació derivades del KHP. Retorna llista d'avisos."""
+    warns = []
+    if not direct_list:
+        return warns
+    fwhms = [d.get('fwhm_doc') for d in direct_list if (d.get('fwhm_doc') or 0) > 0]
+    if fwhms:
+        med_fwhm = float(np.median(fwhms))
+        if med_fwhm > KHP_FWHM_EXPECTED_MIN * KHP_FWHM_WIDE_FACTOR:
+            warns.append(
+                f"Pics KHP anòmalament amples (FWHM mediana {med_fwhm:.2f} min vs "
+                f"~{KHP_FWHM_EXPECTED_MIN:.1f} esperat): possible degradació de columna; "
+                f"el pre-margin d'assignació TOC podria quedar curt.")
+    shifts = [(d.get('filename', '?'), d.get('shift_min')) for d in direct_list
+              if d.get('shift_min') is not None]
+    if len(shifts) >= 2:
+        med_shift = float(np.median([s for _, s in shifts]))
+        outliers = [(n, s) for n, s in shifts
+                    if abs(s - med_shift) > KHP_SHIFT_CONSISTENCY_TOL]
+        if outliers:
+            noms = ", ".join(f"{n} ({s:+.2f})" for n, s in outliers)
+            warns.append(
+                f"Shift DOC↔254 inconsistent entre KHP (mediana {med_shift:+.2f} min): "
+                f"{noms}. Possible pic mal detectat / delay sospitós — revisar el MasterFile.")
+    return warns
+
+
 def calibrate_from_import(imported_data, config=None, progress_callback=None):
     """
     Calibra una seqüència usant dades d'import_sequence() (en memòria).
@@ -4857,6 +4897,12 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
             w = f"⚠️ {kname}: DAD disponible però sense pic 254nm vàlid — 254 no registrat a històric"
             if w not in result["warnings"]:
                 result["warnings"].append(w)
+
+    # Alineació derivada del KHP: amplada del pic (degradació) + consistència del
+    # shift DOC↔254 entre concentracions (pic mal detectat / delay sospitós).
+    for _w in _check_khp_alignment(khp_data_direct_list):
+        if _w not in result["warnings"]:
+            result["warnings"].append(_w)
 
     # Propagar uib_sensitivity i doc_mode als resultats KHP
     uib_sensitivity = imported_data.get("uib_sensitivity")

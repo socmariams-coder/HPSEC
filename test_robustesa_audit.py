@@ -86,6 +86,27 @@ def test_volume_assumed_anomaly():
 
 
 # ---------------------------------------------------------------------------
+def test_khp_alignment_checks():
+    """#15/A: la comprovació d'alineació del KHP avisa si els pics són massa
+    amples (degradació) o si el shift DOC↔254 és inconsistent (pic mal detectat)."""
+    print("\n[#15/A] Comprovacions d'alineació derivades del KHP")
+    import hpsec_calibrate as hc
+    # Cas net: FWHM ~1, shift consistent -> cap avís
+    ok = [{"filename": "KHP5_R1", "fwhm_doc": 1.0, "shift_min": -1.9},
+          {"filename": "KHP2_R1", "fwhm_doc": 1.0, "shift_min": -1.85}]
+    check("cas net: cap avís", len(hc._check_khp_alignment(ok)) == 0)
+    # Pics amples
+    wide = [{"filename": "KHP5_R1", "fwhm_doc": 3.0, "shift_min": -1.9},
+            {"filename": "KHP2_R1", "fwhm_doc": 3.1, "shift_min": -1.9}]
+    check("pics amples -> avís", any("amples" in w for w in hc._check_khp_alignment(wide)))
+    # Shift inconsistent (un KHP amb punxada equivocada)
+    bad = [{"filename": "KHP5_R1", "fwhm_doc": 1.0, "shift_min": -1.9},
+           {"filename": "KHP2_R1", "fwhm_doc": 1.0, "shift_min": -1.85},
+           {"filename": "KHP1_R1", "fwhm_doc": 1.0, "shift_min": -4.2}]
+    warns = hc._check_khp_alignment(bad)
+    check("shift inconsistent -> avís que cita el KHP", any("KHP1_R1" in w for w in warns))
+
+
 def test_pre_margin_single_source():
     """#6: hpsec_delay ha de llegir el pre-margin de config (font única)."""
     print("\n[#6] Pre-margin des de config (font única)")
@@ -131,6 +152,7 @@ if __name__ == "__main__":
     for t in (test_atomic_write_and_cache_poisoning,
               test_load_manifest_corrupt,
               test_volume_assumed_anomaly,
+              test_khp_alignment_checks,
               test_pre_margin_single_source,
               test_autofix_columns_synthetic,
               test_291_doc_direct_recovered):
