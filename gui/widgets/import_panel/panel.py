@@ -471,14 +471,26 @@ class ImportPanel(QWidget):
             msg += f" ({n_fail} amb errors)"
         self.main_window.set_status(msg, 5000)
 
+        # Propagar les carpetes que han fallat (abans es descartaven en silenci)
+        failed_info = []
+        for path, res in fail_results.items():
+            errs = res.get('errors', ['error desconegut']) if isinstance(res, dict) else ['error desconegut']
+            failed_info.append({'seq': os.path.basename(path), 'errors': errs})
+
+        warns = list(primary_result.get('warnings', []))
+        if failed_info:
+            warns.append("Carpetes NO importades: "
+                         + ", ".join(f['seq'] for f in failed_info))
+
         # Emetre senyal
         self.import_completed.emit({
             'success': True,
-            'warnings': primary_result.get('warnings', []),
+            'warnings': warns,
             'warnings_structured': primary_result.get('warnings_structured', []),
             'orphan_files': primary_result.get('orphan_files', {}),
             'is_sibling_import': True,
             'sibling_count': n_ok,
+            'failed_siblings': failed_info,
         })
 
     def _show_sibling_results(self, results_by_path):

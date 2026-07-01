@@ -629,11 +629,21 @@ def llegir_masterfile_nou(filepath):
                     if key:
                         result["info"][key] = val
 
-                # Sensibilitat UIB a B5 (fila 4, columna 1 en 0-indexed)
-                if len(df_info) > 4 and len(df_info.columns) > 1:
-                    uib_sens = df_info.iloc[4, 1]
-                    if pd.notna(uib_sens):
-                        result["info"]["uib_sensitivity"] = uib_sens
+                # Sensibilitat UIB: preferir per ETIQUETA (robust a reordenacions
+                # de files), amb B5 (iloc[4,1]) com a fallback. Format "1-700"→700
+                # es resol més avall amb _safe_float.
+                _uib_sens = None
+                for _k, _v in result["info"].items():
+                    _kl = str(_k).lower()
+                    if 'uib' in _kl and ('range' in _kl or 'sens' in _kl) and pd.notna(_v):
+                        _uib_sens = _v
+                        break
+                if _uib_sens is None and len(df_info) > 4 and len(df_info.columns) > 1:
+                    _cand = df_info.iloc[4, 1]
+                    if pd.notna(_cand):
+                        _uib_sens = _cand
+                if _uib_sens is not None:
+                    result["info"]["uib_sensitivity"] = _uib_sens
 
             # 1-HPLC-SEQ (o 1-HPLC-SEQ_RAW per format antic v11)
             if "1-HPLC-SEQ" in xl.sheet_names:
@@ -4407,16 +4417,21 @@ def import_sequence(seq_path, config=None, progress_callback=None):
         except Exception as e:
             logger.warning(f"Error llegint fulls addicionals del MasterFile: {e}")
 
-        # Detectar 4-TOC_CALC existent amb timestamps arrodonits al minut
+        # El 4-TOC_CALC existent al MasterFile (si n'hi ha)
+        _toc_calc_existed = toc_calc_df is not None and not (
+            hasattr(toc_calc_df, 'empty') and toc_calc_df.empty)
         _needs_regen = _toc_calc_has_minute_precision(toc_calc_df)
         if _needs_regen:
             logger.info("4-TOC_CALC existent amb timestamps arrodonits, regenerant...")
 
-        # SEMPRE recalcular 4-TOC_CALC a partir de les hores HPLC/TOC
-        # El 4-TOC_CALC del MasterFile pot tenir un delay antic o incorrecte
+        # SEMPRE recalcular 4-TOC_CALC a partir de les hores HPLC/TOC (el 4-TOC_CALC
+        # sempre el genera el programa; recalcular aplica el delay vigent).
         if True:
             if toc_df is not None:
+                # Avís precís: "no trobat" NOMÉS quan realment no existia
                 result["warnings"].append(
+                    "4-TOC_CALC recalculat des de les hores HPLC/TOC (delay vigent)..."
+                    if _toc_calc_existed else
                     "4-TOC_CALC no trobat al MasterFile, calculant automàticament..."
                 )
                 toc_calc_df = compute_toc_calc(result["master_data"], toc_df)
@@ -6247,6 +6262,9 @@ def ensure_data_loaded(imported_data, config=None, progress_callback=None):
             imported_data["master_file"] = master_path
         else:
             logger.error("ensure_data_loaded: MasterFile no trobat per %s", seq_path)
+            # No deixar data_deferred=True en silenci: marcar l'error perquè el
+            # cridador (worker) pugui avortar en lloc de calibrar amb senyals buits.
+            imported_data["load_error"] = "MasterFile no trobat en carregar les dades"
             return imported_data
 
     toc_df = None

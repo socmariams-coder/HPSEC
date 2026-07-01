@@ -131,6 +131,13 @@ class CalSeqWorker(QThread):
                     config=self.config,
                     progress_callback=lambda p, m: progress_cb(35 + int(p * 0.15), m),
                 )
+                # No calibrar amb senyals buits: avortar si la càrrega ha fallat
+                if imported_data.get("load_error") or imported_data.get("data_deferred"):
+                    self.error.emit(
+                        f"No s'han pogut carregar les dades de {seq_name}: "
+                        + str(imported_data.get("load_error", "dades incompletes"))
+                        + ". No es calibra.")
+                    return
 
             # Pas 2: Calibrate (internament registra a KHP_History)
             progress_cb(50, "Calibrant KHP...")
