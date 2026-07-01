@@ -134,6 +134,8 @@ def _read_hplc_timestamps(wb):
             sample_col_idx = i + 1
 
     if date_col_idx is None:
+        logger.warning("_read_hplc_timestamps: columna de data ('Acquired Date'/"
+                       "'Injection Date') no trobada a 1-HPLC-SEQ; sense timestamps HPLC")
         return [], []
 
     hplc_times = []
@@ -175,6 +177,8 @@ def _read_toc_timestamps(wb):
             time_col_toc = c
             break
     if time_col_toc is None:
+        logger.warning("_read_toc_timestamps: columna de temps ('...Date Start...') "
+                       "no trobada per capçalera; usant fallback posicional (columna D)")
         time_col_toc = 4  # fallback: columna D
 
     toc_rows = []

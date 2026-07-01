@@ -751,15 +751,20 @@ def extract_doc_from_masterfile(toc_df, row_start, row_end, t_start=None, detect
         col_str = str(col).lower()
         if 'date' in col_str and 'start' in col_str:
             time_col = col
-        elif 'toc' in col_str and 'ppb' in col_str:
+        elif 'toc' in col_str and 'ppb' in col_str and sig_col is None:
             sig_col = col
         elif 'tc' in col_str and 'ppb' in col_str and sig_col is None:
             sig_col = col
 
-    # Fallback a posició si no es troben
+    # Fallback a posició si no es troben (posicional: fràgil a reordenacions de
+    # columnes — avisar per no fer-ho en silenci).
     if time_col is None and len(toc_df.columns) > 3:
+        logger.warning("extract_doc_from_masterfile: columna de temps TOC no trobada "
+                       "per capçalera; fallback posicional (col 3)")
         time_col = toc_df.columns[3]
     if sig_col is None and len(toc_df.columns) > 5:
+        logger.warning("extract_doc_from_masterfile: columna de senyal DOC/TOC no "
+                       "trobada per capçalera; fallback posicional (col 5)")
         sig_col = toc_df.columns[5]
 
     if time_col is None or sig_col is None:
