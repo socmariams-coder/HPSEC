@@ -4686,6 +4686,20 @@ def _check_khp_alignment(direct_list):
     return warns
 
 
+def _save_khp_measured_delay(seq_path, data):
+    """Desa el delay mesurat pel KHP a CHECK/data/khp_measured_delay.json.
+    NO substitueix el net_delay del MasterFile; queda com a referència traçable
+    (contrastable amb el 0-INFO)."""
+    data_path = ensure_local_data_folder(seq_path)
+    if not data_path:
+        return False
+    from hpsec_version import SUITE_VERSION
+    payload = {"suite_version": SUITE_VERSION, "updated": datetime.now().isoformat(), **data}
+    _atomic_write_json(os.path.join(data_path, "khp_measured_delay.json"),
+                       payload, indent=2, ensure_ascii=False, cls=NumpyEncoder)
+    return True
+
+
 def calibrate_from_import(imported_data, config=None, progress_callback=None):
     """
     Calibra una seqüència usant dades d'import_sequence() (en memòria).
@@ -4903,6 +4917,28 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
     for _w in _check_khp_alignment(khp_data_direct_list):
         if _w not in result["warnings"]:
             result["warnings"].append(_w)
+
+    # Registrar el delay MESURAT pel KHP (mediana del shift DOC↔254) per traçabilitat.
+    # No substitueix el net_delay; queda al JSON de processament, contrastable amb el 0-INFO.
+    _direct_shifts = [d.get('shift_min') for d in khp_data_direct_list if d.get('shift_min') is not None]
+    _uib_shifts = [d.get('shift_min') for d in khp_data_uib_list if d.get('shift_min') is not None]
+    if _direct_shifts:
+        result["khp_measured_delay_min"] = float(np.median(_direct_shifts))
+    if _uib_shifts:
+        result["khp_measured_delay_uib_min"] = float(np.median(_uib_shifts))
+    if seq_path and (_direct_shifts or _uib_shifts):
+        try:
+            _save_khp_measured_delay(seq_path, {
+                "seq_name": os.path.basename(seq_path),
+                "khp_measured_delay_min": result.get("khp_measured_delay_min"),
+                "khp_measured_delay_uib_min": result.get("khp_measured_delay_uib_min"),
+                "per_replica": [
+                    {"khp": d.get('filename'), "conc_ppm": d.get('conc_ppm'),
+                     "signal": "direct", "shift_min": d.get('shift_min')}
+                    for d in khp_data_direct_list if d.get('shift_min') is not None],
+            })
+        except Exception as _e:
+            logger.debug("No s'ha pogut desar khp_measured_delay: %s", _e)
 
     # Propagar uib_sensitivity i doc_mode als resultats KHP
     uib_sensitivity = imported_data.get("uib_sensitivity")

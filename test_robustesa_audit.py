@@ -107,6 +107,19 @@ def test_khp_alignment_checks():
     check("shift inconsistent -> avís que cita el KHP", any("KHP1_R1" in w for w in warns))
 
 
+def test_khp_measured_delay_recorded():
+    """#15: el delay mesurat pel KHP es registra al JSON de processament."""
+    import tempfile
+    import json as _json
+    import hpsec_calibrate as hc
+    seq = tempfile.mkdtemp()
+    ok = hc._save_khp_measured_delay(seq, {"seq_name": "T", "khp_measured_delay_min": -1.85})
+    f = os.path.join(seq, "CHECK", "data", "khp_measured_delay.json")
+    check("desa el JSON de delay mesurat", ok and os.path.exists(f))
+    d = _json.load(open(f, encoding='utf-8'))
+    check("conté el delay mesurat pel KHP", abs(d.get("khp_measured_delay_min") - (-1.85)) < 1e-9)
+
+
 def test_pre_margin_single_source():
     """#6: hpsec_delay ha de llegir el pre-margin de config (font única)."""
     print("\n[#6] Pre-margin des de config (font única)")
@@ -153,6 +166,7 @@ if __name__ == "__main__":
               test_load_manifest_corrupt,
               test_volume_assumed_anomaly,
               test_khp_alignment_checks,
+              test_khp_measured_delay_recorded,
               test_pre_margin_single_source,
               test_autofix_columns_synthetic,
               test_291_doc_direct_recovered):
