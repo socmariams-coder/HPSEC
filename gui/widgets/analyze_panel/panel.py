@@ -1048,7 +1048,16 @@ class AnalyzePanel(QWidget):
         self.analyze_btn.setEnabled(True)
 
         if not result or not result.get("success"):
-            error_msg = result.get("error", "Error desconegut") if result else "Resultat buit"
+            # Mostrar l'error REAL: primer 'error' (singular), després la llista
+            # 'errors' (on van a parar els errors per mostra). Res de "desconegut"
+            # si de fet en tenim.
+            if not result:
+                error_msg = "Resultat buit"
+            else:
+                error_msg = result.get("error")
+                if not error_msg:
+                    errs = result.get("errors") or []
+                    error_msg = "\n".join(str(e) for e in errs) if errs else "Error desconegut"
             self._show_inline_message(error_msg, level="error")
             self._update_status()
             self.analyze_completed.emit(result or {"success": False, "error": error_msg})

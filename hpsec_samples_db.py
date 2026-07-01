@@ -251,33 +251,33 @@ def _create_appearance(
     seq_type: str
 ) -> Dict:
     """Crea el registre d'una aparició."""
-    # Extreure dades quantificació
-    quantification = sample_data.get("quantification", {})
-    selected = sample_data.get("selected", {})
-    replicas = sample_data.get("replicas", {})
+    # Extreure dades quantificació. Usar `or {}` (no get(k, {})): una clau present
+    # amb valor None retornaria None i el .get() següent petava ('NoneType'...).
+    quantification = sample_data.get("quantification") or {}
+    selected = sample_data.get("selected") or {}
+    replicas = sample_data.get("replicas") or {}
 
     # Àrees per fracció (extreure de DOC)
     fractions = {}
     selected_rep = selected.get("doc", "1")
     if selected_rep in replicas:
-        rep_data = replicas[selected_rep]
-        areas = rep_data.get("areas", {})
-        if isinstance(areas, dict):
-            # L'estructura és: {"DOC": {"BB": x, "BB_pct": y, ...}, "A220": {...}, ...}
-            # Agafem les fraccions de DOC amb els valors _pct
-            doc_areas = areas.get("DOC", {})
-            if isinstance(doc_areas, dict):
-                for key, value in doc_areas.items():
-                    if key.endswith("_pct") and isinstance(value, (int, float)):
-                        frac_name = key.replace("_pct", "")
-                        fractions[frac_name] = round(value, 1)
+        rep_data = replicas[selected_rep] or {}
+        areas = rep_data.get("areas") or {}
+        # L'estructura és: {"DOC": {"BB": x, "BB_pct": y, ...}, "A220": {...}, ...}
+        # Agafem les fraccions de DOC amb els valors _pct
+        doc_areas = areas.get("DOC") or {}
+        if isinstance(doc_areas, dict):
+            for key, value in doc_areas.items():
+                if key.endswith("_pct") and isinstance(value, (int, float)):
+                    frac_name = key.replace("_pct", "")
+                    fractions[frac_name] = round(value, 1)
 
     # Obtenir area_total de DOC
     area_total = None
     if selected_rep in replicas:
-        rep_data = replicas[selected_rep]
-        areas = rep_data.get("areas", {})
-        doc_areas = areas.get("DOC", {})
+        rep_data = replicas[selected_rep] or {}
+        areas = rep_data.get("areas") or {}
+        doc_areas = areas.get("DOC") or {}
         if isinstance(doc_areas, dict):
             area_total = doc_areas.get("total")
 

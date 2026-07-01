@@ -221,8 +221,8 @@ def extract_all_features(time_vals, wavelengths, data):
     # --- Shape descriptors ---
     uv_mask = (wl >= 200) & (wl <= 280)
     vis_mask = (wl >= 320) & (wl <= 400)
-    features["shape_uv_area"] = np.trapz(hs_norm[uv_mask], wl[uv_mask])
-    features["shape_vis_area"] = np.trapz(hs_norm[vis_mask], wl[vis_mask])
+    features["shape_uv_area"] = np.trapezoid(hs_norm[uv_mask], wl[uv_mask])
+    features["shape_vis_area"] = np.trapezoid(hs_norm[vis_mask], wl[vis_mask])
     features["shape_uv_vis"] = features["shape_uv_area"] / features["shape_vis_area"] \
         if features["shape_vis_area"] > MIN_RATIO_DENOMINATOR else np.nan
 
@@ -251,8 +251,8 @@ def extract_all_features(time_vals, wavelengths, data):
 
         features[f"elut_peak_{target_wl}"] = peak_time
 
-        area_before = np.trapz(norm_profile[:peak_idx+1]) if peak_idx > 0 else 0
-        area_after = np.trapz(norm_profile[peak_idx:]) if peak_idx < len(norm_profile)-1 else 0
+        area_before = np.trapezoid(norm_profile[:peak_idx+1]) if peak_idx > 0 else 0
+        area_after = np.trapezoid(norm_profile[peak_idx:]) if peak_idx < len(norm_profile)-1 else 0
         total = area_before + area_after
         features[f"elut_asym_{target_wl}"] = area_before / total if total > 0 else 0.5
 

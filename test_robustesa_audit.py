@@ -120,6 +120,34 @@ def test_khp_measured_delay_recorded():
     check("conté el delay mesurat pel KHP", abs(d.get("khp_measured_delay_min") - (-1.85)) < 1e-9)
 
 
+def test_no_np_trapz_in_production():
+    """numpy 2.0 va eliminar np.trapz; els fitxers de producció han d'usar
+    np.trapezoid (si no, l'anàlisi peta amb 'no attribute trapz')."""
+    print("\n[303] Cap np.trapz als fitxers de producció")
+    import glob
+    root = os.path.dirname(os.path.abspath(__file__))
+    prod = (glob.glob(os.path.join(root, "hpsec_*.py"))
+            + [os.path.join(root, "khp_reintegrate_uib.py")])
+    bad = [os.path.basename(f) for f in prod
+           if os.path.exists(f) and "np.trapz(" in open(f, encoding='utf-8').read()]
+    check("cap fitxer de producció usa np.trapz: " + (", ".join(bad) or "cap"), not bad)
+
+
+def test_303_analyze_ok():
+    """303: analitza sense error després d'arreglar np.trapz (abans: totes les
+    seqs amb control/NaOH petaven)."""
+    seq = r'C:\Users\maria\Proyectos\Dades3\303_SEQ'
+    if not os.path.isdir(seq):
+        print("\n[303] (saltat: dades no disponibles)")
+        return
+    print("\n[303] analyze_sequence OK (dades reals)")
+    from hpsec_import import import_sequence
+    from hpsec_analyze import analyze_sequence
+    res = analyze_sequence(import_sequence(seq), None, do_quantify=False)
+    check("analyze success", (res or {}).get("success") is True)
+    check("sense errors a la llista", not (res or {}).get("errors"))
+
+
 def test_pre_margin_single_source():
     """#6: hpsec_delay ha de llegir el pre-margin de config (font única)."""
     print("\n[#6] Pre-margin des de config (font única)")
@@ -167,6 +195,8 @@ if __name__ == "__main__":
               test_volume_assumed_anomaly,
               test_khp_alignment_checks,
               test_khp_measured_delay_recorded,
+              test_no_np_trapz_in_production,
+              test_303_analyze_ok,
               test_pre_margin_single_source,
               test_autofix_columns_synthetic,
               test_291_doc_direct_recovered):

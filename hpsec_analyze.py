@@ -2711,7 +2711,7 @@ def _analyze_light_sample(sample):
     t_doc = np.asarray(t_doc, dtype=float)
 
     # Àrea total DOC
-    area_total = float(np.trapz(y_doc_net, x=t_doc))
+    area_total = float(np.trapezoid(y_doc_net, x=t_doc))
 
     # SNR (simple: peak_height / noise)
     peak_height = float(np.max(y_doc_net))
@@ -2744,7 +2744,7 @@ def _analyze_light_sample(sample):
                 if t_col is not None:
                     t_dad = np.asarray(df_dad[t_col], dtype=float)
                     y_254 = np.asarray(df_dad[col_254], dtype=float)
-                    result["area_254"] = float(np.trapz(y_254, x=t_dad))
+                    result["area_254"] = float(np.trapezoid(y_254, x=t_dad))
         except Exception as e:
             logger.debug("Area 254nm calculation failed: %s", e)
 

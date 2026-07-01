@@ -371,7 +371,7 @@ def main():
                 # CR local (+-5 min)
                 cr_window = 5.0 if not is_bp else 3.0
                 cr_mask = (t_ds >= t_max - cr_window) & (t_ds <= t_max + cr_window)
-                local_area = float(np.trapz(y_net[cr_mask], t_ds[cr_mask])) if cr_mask.sum() > 1 else 0
+                local_area = float(np.trapezoid(y_net[cr_mask], t_ds[cr_mask])) if cr_mask.sum() > 1 else 0
                 cr = area / local_area if local_area > 0 else 0
 
                 # Shift UIB vs 254nm
