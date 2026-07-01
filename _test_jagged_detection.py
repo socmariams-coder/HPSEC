@@ -108,14 +108,14 @@ def analyze_peak_detection(entry):
             ap_match = True
             break
     ap_width = t[ap_right] - t[ap_left]
-    ap_area = float(np.trapz(y[ap_left:ap_right+1], t[ap_left:ap_right+1]))
+    ap_area = float(np.trapezoid(y[ap_left:ap_right+1], t[ap_left:ap_right+1]))
 
     # 3. find_peak_boundaries directe (sense pre-repair)
     bl_stats = get_baseline_stats(t, y, mode=method)
     bl_level = bl_stats.get("mean", 0)
     fpb_left, fpb_right = find_peak_boundaries(t, y, peak_idx, bl_level, is_bp=is_bp)
     fpb_width = t[fpb_right] - t[fpb_left]
-    fpb_area = float(np.trapz(y[fpb_left:fpb_right+1], t[fpb_left:fpb_right+1]))
+    fpb_area = float(np.trapezoid(y[fpb_left:fpb_right+1], t[fpb_left:fpb_right+1]))
 
     # 4. Detecció irregular_top sobre cada segment
     # a) Segment detect_main_peak

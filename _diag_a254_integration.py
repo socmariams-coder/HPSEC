@@ -149,7 +149,7 @@ def process_seq_cal(seq_path):
                         break
 
                 if dad_r1 > dad_l1:
-                    a254_m1 = float(np.trapz(dad_254[dad_l1:dad_r1+1], t_dad[dad_l1:dad_r1+1]))
+                    a254_m1 = float(np.trapezoid(dad_254[dad_l1:dad_r1+1], t_dad[dad_l1:dad_r1+1]))
 
             # ---- Mètode 2: find_peak_boundaries (derivada tangent) ----
             a254_m2 = 0.0
@@ -160,7 +160,7 @@ def process_seq_cal(seq_path):
                 dad_l2, dad_r2 = find_peak_boundaries(
                     t_dad, dad_254, dad_peak['peak_idx'], bl_level_dad, is_bp=is_bp)
                 if dad_r2 > dad_l2:
-                    a254_m2 = float(np.trapz(dad_254[dad_l2:dad_r2+1], t_dad[dad_l2:dad_r2+1]))
+                    a254_m2 = float(np.trapezoid(dad_254[dad_l2:dad_r2+1], t_dad[dad_l2:dad_r2+1]))
 
             # ---- Mètode 3: Mateixos límits temporals que DOC ----
             a254_m3 = 0.0
@@ -177,10 +177,10 @@ def process_seq_cal(seq_path):
                 # Transferir límits DOC al senyal 254
                 dad_mask_doc = (t_dad >= doc_t_start) & (t_dad <= doc_t_end)
                 if np.any(dad_mask_doc):
-                    a254_m3 = float(np.trapz(dad_254[dad_mask_doc], t_dad[dad_mask_doc]))
+                    a254_m3 = float(np.trapezoid(dad_254[dad_mask_doc], t_dad[dad_mask_doc]))
 
             # ---- Mètode 4: Àrea total (sense limits) ----
-            a254_total = float(np.trapz(np.maximum(dad_254, 0), t_dad))
+            a254_total = float(np.trapezoid(np.maximum(dad_254, 0), t_dad))
 
             # ---- Mètode 5: Baseline-subtracted 254nm + find_peak_boundaries ----
             a254_m5 = 0.0
@@ -190,7 +190,7 @@ def process_seq_cal(seq_path):
                 dad_254_net = dad_254 - bl_254_val
                 dad_254_net = np.maximum(dad_254_net, 0)
                 if dad_r2 > dad_l2:
-                    a254_m5 = float(np.trapz(dad_254_net[dad_l2:dad_r2+1], t_dad[dad_l2:dad_r2+1]))
+                    a254_m5 = float(np.trapezoid(dad_254_net[dad_l2:dad_r2+1], t_dad[dad_l2:dad_r2+1]))
 
             # ---- Mètode 6: detect_main_peak directe (sense all_peaks override) ----
             a254_m6 = 0.0
@@ -198,7 +198,7 @@ def process_seq_cal(seq_path):
                 dl = dad_peak['left_idx']
                 dr = dad_peak['right_idx']
                 if dr > dl:
-                    a254_m6 = float(np.trapz(dad_254[dl:dr+1], t_dad[dl:dr+1]))
+                    a254_m6 = float(np.trapezoid(dad_254[dl:dr+1], t_dad[dl:dr+1]))
 
             results.append({
                 'name': sample_name,

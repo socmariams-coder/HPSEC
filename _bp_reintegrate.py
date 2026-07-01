@@ -261,7 +261,7 @@ def process_seq(seq_name, seq_dir):
             continue
 
         # Integrate (trapezoid on net signal)
-        area = float(np.trapz(y_net[left_idx:right_idx + 1], t[left_idx:right_idx + 1]))
+        area = float(np.trapezoid(y_net[left_idx:right_idx + 1], t[left_idx:right_idx + 1]))
 
         # RF
         ug_doc = conc * vol / 1000

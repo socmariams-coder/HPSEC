@@ -182,8 +182,8 @@ for model_name, estimate_fn in [
     for p in pairs:
         y_est = estimate_fn(p["y_uib"])
         # Area total (trapezoid)
-        area_real = np.trapz(np.maximum(p["y_direct"], 0), p["t"])
-        area_est = np.trapz(np.maximum(y_est, 0), p["t"])
+        area_real = np.trapezoid(np.maximum(p["y_direct"], 0), p["t"])
+        area_est = np.trapezoid(np.maximum(y_est, 0), p["t"])
         if area_real > 0:
             errors_area.append((area_est - area_real) / area_real * 100)
         # Forma (Pearson)
@@ -230,8 +230,8 @@ csv_path = OUT_DIR / "direct_uib_pairs.csv"
 with open(csv_path, "w", encoding="utf-8") as f:
     f.write("sample,rep,area_direct,area_uib,ratio,pearson_shape\n")
     for p in pairs:
-        ad = float(np.trapz(np.maximum(p["y_direct"], 0), p["t"]))
-        au = float(np.trapz(np.maximum(p["y_uib"], 0), p["t"]))
+        ad = float(np.trapezoid(np.maximum(p["y_direct"], 0), p["t"]))
+        au = float(np.trapezoid(np.maximum(p["y_uib"], 0), p["t"]))
         ratio = au / ad if ad > 0 else 0
         r_val, _ = sp_stats.pearsonr(p["y_direct"], p["y_uib"])
         f.write(f"{p['sample']},{p['rep']},{ad:.1f},{au:.1f},{ratio:.4f},{r_val:.4f}\n")
@@ -316,8 +316,8 @@ try:
         errs = []
         for p in pairs:
             y_est = p["y_uib"][mask_t] * factor_smooth[mask_t]
-            area_real = np.trapz(np.maximum(p["y_direct"][mask_t], 0), p["t"][mask_t])
-            area_est = np.trapz(np.maximum(y_est, 0), p["t"][mask_t])
+            area_real = np.trapezoid(np.maximum(p["y_direct"][mask_t], 0), p["t"][mask_t])
+            area_est = np.trapezoid(np.maximum(y_est, 0), p["t"][mask_t])
             if area_real > 10:
                 errs.append((area_est - area_real) / area_real * 100)
         frac_residuals[frac] = errs
@@ -367,8 +367,8 @@ try:
         es = []
         for p in pairs:
             y_est = mfn(p["y_uib"])
-            ar = np.trapz(np.maximum(p["y_direct"], 0), p["t"])
-            ae = np.trapz(np.maximum(y_est, 0), p["t"])
+            ar = np.trapezoid(np.maximum(p["y_direct"], 0), p["t"])
+            ae = np.trapezoid(np.maximum(y_est, 0), p["t"])
             if ar > 0:
                 ea.append((ae - ar) / ar * 100)
             mask = (p["y_direct"] > NOISE_FLOOR) | (y_est > NOISE_FLOOR)
@@ -420,8 +420,8 @@ try:
             mask = (p["y_direct"] > NOISE_FLOOR) | (y_est > NOISE_FLOOR)
             r_val = sp_stats.pearsonr(p["y_direct"][mask], y_est[mask])[0] if np.sum(mask) > 10 else 0
             # Area error
-            ar = np.trapz(np.maximum(p["y_direct"], 0), p["t"])
-            ae = np.trapz(np.maximum(y_est, 0), p["t"])
+            ar = np.trapezoid(np.maximum(p["y_direct"], 0), p["t"])
+            ae = np.trapezoid(np.maximum(y_est, 0), p["t"])
             err = (ae - ar) / ar * 100 if ar > 0 else 0
             ax.set_title(f"{p['sample']} R{p['rep']}\nr={r_val:.3f} err={err:.1f}%",
                          fontsize=7)

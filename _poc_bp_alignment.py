@@ -214,7 +214,7 @@ def main():
                         t_integ = t_toc[integ_mask]
                         bl_integ = np.percentile(y_integ, 20)
                         y_net = np.maximum(y_integ - bl_integ, 0)
-                        area_new = float(np.trapz(y_net, t_integ))
+                        area_new = float(np.trapezoid(y_net, t_integ))
 
         # === OLD METHOD: fixed delay ===
         area_old = None
@@ -229,7 +229,7 @@ def main():
             t_old = t_toc[old_mask]
             bl_old = np.percentile(y_old, 20)
             y_net_old = np.maximum(y_old - bl_old, 0)
-            area_old = float(np.trapz(y_net_old, t_old))
+            area_old = float(np.trapezoid(y_net_old, t_old))
 
         # === Compare ===
         diff_pct = None
