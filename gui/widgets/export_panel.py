@@ -107,12 +107,10 @@ class GenerateWorker(QThread):
             results["n_raw"] = len(excel_result.get("raw_files", []))
             results["n_processed"] = len(excel_result.get("processed_files", []))
 
-            # SUMMARY.xlsx → custom dir or SEQ/CHECK/
+            # SUMMARY.xlsx → RESULTATS/ (junt amb els Excels i metadata): és un
+            # LLIURAMENT per a anàlisi extern, no cuina interna. Abans anava a CHECK/.
             self.progress.emit(80, "Generant SUMMARY.xlsx...")
-            if self.custom_output_dir:
-                summary_dir = Path(self.custom_output_dir)
-            else:
-                summary_dir = Path(self.seq_path) / "CHECK"
+            summary_dir = Path(resultats_path)
             summary_dir.mkdir(parents=True, exist_ok=True)
             summary_path = str(summary_dir / "SUMMARY.xlsx")
             summary_result = generate_summary_excel(
@@ -145,8 +143,9 @@ class GenerateWorker(QThread):
                 except Exception as e:
                     results["errors"].append(f"CSV summary: {e}")
 
-            # metadata.json → SEQ/RESULTATS/
-            if self.export_metadata and (self.export_raw or self.export_processed):
+            # metadata.json → SEQ/RESULTATS/ (SEMPRE: és el manifest del pipeline,
+            # recull el més rellevant de cada etapa; abans només amb RAW/PROCESSED)
+            if self.export_metadata:
                 self.progress.emit(87, "Generant metadata.json...")
                 try:
                     meta_path = str(Path(resultats_path) / "metadata.json")
@@ -682,8 +681,7 @@ class ExportPanel(QWidget):
             return
         dest = f"{seq_path}/RESULTATS"
         self.paths_label.setText(
-            f"Excels + CSV \u2192 {dest}/ &nbsp;&nbsp;|&nbsp;&nbsp; "
-            f"SUMMARY \u2192 {seq_path}/CHECK/"
+            f"Tot (Excels + SUMMARY + CSV) \u2192 {dest}/"
         )
 
     def _browse_dest_folder(self):
@@ -714,7 +712,7 @@ class ExportPanel(QWidget):
         self._run_generate(silent=True)
 
     def _run_generate(self, silent=False):
-        """Auto-genera Excels individuals + SUMMARY a SEQ/RESULTATS/ + SEQ/CHECK/."""
+        """Auto-genera Excels + SUMMARY + metadata.json a SEQ/RESULTATS/ (lliurament)."""
         processed_data = self.main_window.processed_data
         if not processed_data:
             if not silent:
@@ -768,7 +766,7 @@ class ExportPanel(QWidget):
         if self.worker is not None:
             self.worker.wait()
 
-        # Auto-generation: Excels + SUMMARY only (no CSV/RAW/ZIP)
+        # Auto-generation: Excels + SUMMARY + metadata.json (manifest del pipeline)
         self.worker = GenerateWorker(
             samples_grouped, seq_path, calibration_data, method, None,
             generate_pdf=False,
@@ -777,7 +775,7 @@ class ExportPanel(QWidget):
             csv_summary=False,
             csv_separator=";",
             export_zip=False,
-            export_metadata=False,
+            export_metadata=True,
             custom_output_dir=None,
         )
         self.worker.progress.connect(self._on_progress)
@@ -826,8 +824,7 @@ class ExportPanel(QWidget):
             """)
 
         self.results_path_label.setText(
-            f"Excels \u2192 <code>{seq_path}/RESULTATS/</code> "
-            f"&nbsp;&middot;&nbsp; SUMMARY \u2192 <code>{seq_path}/CHECK/</code>"
+            f"Resultats (Excels + SUMMARY) \u2192 <code>{seq_path}/RESULTATS/</code>"
         )
         self.results_frame.setVisible(True)
 
@@ -1074,7 +1071,7 @@ class ExportPanel(QWidget):
                 "n_skipped": n_skipped,
                 "discarded_samples": discarded,
                 "bp_info": {},
-                "summary_path": str(Path(seq_path) / "CHECK" / "SUMMARY.xlsx"),
+                "summary_path": str(Path(seq_path) / "RESULTATS" / "SUMMARY.xlsx"),
             }
 
             review_path = data_dir / "review_result.json"

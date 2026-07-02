@@ -30,6 +30,27 @@ from scipy.integrate import trapezoid
 logger = logging.getLogger(__name__)
 
 
+def _atomic_write_json(path, data, **dump_kwargs):
+    """Escriu JSON de forma atòmica (fitxer temporal + os.replace + fsync).
+    Evita deixar un JSON a mitges si el procés mor durant l'escriptura."""
+    import tempfile
+    d = os.path.dirname(os.path.abspath(path))
+    os.makedirs(d, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=d, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, **dump_kwargs)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def _make_unique_filename(base_name, ext, used_filenames):
     """Genera un nom de fitxer únic, afegint _2, _3... si cal."""
     candidate = f"{base_name}{ext}"
@@ -1684,13 +1705,86 @@ def write_metadata_json(
         if cal_info:
             metadata["calibration"] = cal_info
 
+    # === RESUM PER ETAPA DEL PIPELINE (el més rellevant de cada fase) ===
+    pipeline = {}
+
+    # IMPORT: identitat + delay HPLC↔TOC aplicat (del 0-INFO del MasterFile)
+    if seq_path:
+        try:
+            from hpsec_import import load_manifest
+            _m = load_manifest(seq_path) or {}
+            _seq = _m.get("sequence", {}) or {}
+            imp = {}
+            for k in ("date", "method", "data_mode", "uib_sensitivity"):
+                if _seq.get(k) is not None:
+                    imp[k] = _seq.get(k)
+            mf = _m.get("master_file", {}) or {}
+            if mf.get("path"):
+                imp["masterfile"] = Path(mf["path"]).name
+                # Resoldre el path (al manifest pot ser relatiu) contra la SEQ
+                _mfp = mf["path"]
+                if not os.path.isabs(_mfp):
+                    _mfp = os.path.join(seq_path, os.path.basename(_mfp))
+                try:
+                    from hpsec_delay import read_current_delay
+                    _nd = read_current_delay(_mfp)
+                    if _nd is not None:
+                        imp["net_delay_min"] = round(float(_nd), 3)
+                except Exception:
+                    pass
+            _w = _m.get("warnings", []) or []
+            if _w:
+                imp["n_import_warnings"] = len(_w)
+            if imp:
+                pipeline["import"] = imp
+        except Exception:
+            pass
+
+    # VERIFICAR: calibració vigent (RF/intercept ja a metadata["calibration"]);
+    # afegim el delay MESURAT pel KHP si s'ha registrat
+    if seq_path:
+        try:
+            _kd = Path(seq_path) / "CHECK" / "data" / "khp_measured_delay.json"
+            if _kd.exists():
+                _kdd = json.loads(_kd.read_text(encoding="utf-8"))
+                pipeline["calibration_check"] = {
+                    "khp_measured_delay_min": _kdd.get("khp_measured_delay_min"),
+                }
+        except Exception:
+            pass
+
+    # ANALITZAR: qualitat agregada derivada de les mostres
+    n_valid = n_invalid = n_anom = 0
+    type_counts = {}
+    for _name, _info in samples_grouped.items():
+        if _info.get("analysis_type") == "light":
+            _stype = _info.get("sample_type", "BLANK")
+        else:
+            _sel = _info.get("selected", {}) or {}
+            _doc = (_info.get("replicas", {}) or {}).get(_sel.get("doc", "1"), {})
+            _stype = _doc.get("sample_type", "SAMPLE")
+            if _doc.get("anomalies"):
+                n_anom += 1
+            if _info.get("sample_valid") is False or _sel.get("doc") == "none":
+                n_invalid += 1
+            else:
+                n_valid += 1
+        type_counts[_stype] = type_counts.get(_stype, 0) + 1
+    pipeline["analysis"] = {
+        "n_samples": len(samples_grouped),
+        "n_valid": n_valid,
+        "n_invalid": n_invalid,
+        "n_with_anomalies": n_anom,
+        "sample_types": type_counts,
+    }
+
+    metadata["pipeline"] = pipeline
+
     # Opcions d'exportació
     if export_options:
         metadata["export_options"] = export_options
 
-    with open(output_path, 'w', encoding='utf-8') as f:
-        json.dump(metadata, f, indent=2, ensure_ascii=False, default=str)
-
+    _atomic_write_json(output_path, metadata, indent=2, ensure_ascii=False, default=str)
     logger.info(f"metadata.json: {output_path}")
 
 
