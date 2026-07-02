@@ -4,8 +4,7 @@ hpsec_export.py - Mòdul d'exportació HPSEC (Fase 4: EXPORTAR)
 
 FASE 4 del pipeline de 4 fases:
 - Generar Excels finals amb estructura estandarditzada
-- Fulls: ID (traçabilitat), ID_BP (si COLUMN+BP), DOC, DAD, RESULTS
-- Integració automàtica de dades BP quan es processa COLUMN
+- Fulls: ID (traçabilitat), DOC, DAD, RESULTS
 - Usar seleccions de rèpliques de la Fase 3 (Analitzar)
 
 REQUEREIX:
@@ -115,17 +114,15 @@ def write_final_excel(
     calibration_data: dict = None,
     mode: str = "COLUMN",
     config: dict = None,
-    bp_data: dict = None,
 ):
     """
     Escriu Excel final amb estructura estandarditzada.
 
     Fulls:
         ID: Traçabilitat completa (fitxers, shifts, quantificació)
-        ID_BP: Traçabilitat BP (si COLUMN amb dades BP vinculades)
         DOC: Cromatogrames DOC (final, raw Direct, raw UIB)
         DAD: 6 longituds d'ona seleccionades
-        RESULTS: Integracions per fraccions (+ BP_total/BP_ppm si disponible)
+        RESULTS: Integracions per fraccions
 
     Args:
         out_path: Camí del fitxer Excel
@@ -134,7 +131,6 @@ def write_final_excel(
         calibration_data: Dict amb dades de calibració (opcional)
         mode: "BP" o "COLUMN"
         config: Configuració (opcional)
-        bp_data: Dades BP vinculades per aquesta mostra (opcional)
 
     Returns:
         dict amb info d'exportació
@@ -168,12 +164,6 @@ def write_final_excel(
     id_rows = _build_id_sheet(sample_name, sample_data, calibration_data, mode, is_dual)
     df_id = pd.DataFrame(id_rows, columns=["Field", "Value"])
 
-    # === FULL ID_BP: Traçabilitat BP (si COLUMN amb BP) ===
-    df_id_bp = None
-    if bp_data and mode == "COLUMN":
-        bp_id_rows = _build_bp_id_sheet(sample_name, bp_data, calibration_data)
-        df_id_bp = pd.DataFrame(bp_id_rows, columns=["Field", "Value"])
-
     # === FULL DOC: Cromatogrames ===
     df_doc = _build_doc_sheet(t_doc, y_doc_net, y_doc_raw, y_doc_uib_net, y_doc_uib_raw, is_dual)
 
@@ -181,13 +171,11 @@ def write_final_excel(
     df_dad_export = _build_dad_sheet(df_dad, config)
 
     # === FULL RESULTS: Integracions ===
-    df_results = _build_results_sheet(t_doc, y_doc_net, df_dad, mode, config, bp_data=bp_data)
+    df_results = _build_results_sheet(t_doc, y_doc_net, df_dad, mode, config)
 
-    # Escriure Excel: ID | [ID_BP] | DOC | DAD | RESULTS
+    # Escriure Excel: ID | DOC | DAD | RESULTS
     with pd.ExcelWriter(out_path, engine="openpyxl") as writer:
         df_id.to_excel(writer, sheet_name="ID", index=False)
-        if df_id_bp is not None and not df_id_bp.empty:
-            df_id_bp.to_excel(writer, sheet_name="ID_BP", index=False)
         df_doc.to_excel(writer, sheet_name="DOC", index=False)
         if df_dad_export is not None and not df_dad_export.empty:
             df_dad_export.to_excel(writer, sheet_name="DAD", index=False)
@@ -200,7 +188,7 @@ def write_final_excel(
         "n_doc_points": len(t_doc) if t_doc is not None else 0,
         "n_dad_points": len(df_dad) if df_dad is not None else 0,
         "is_dual": is_dual,
-        "has_bp": bp_data is not None,
+        "has_bp": False,
     }
 
 
@@ -409,102 +397,6 @@ def _build_id_sheet(sample_name, sample_data, calibration_data, mode, is_dual):
     return rows
 
 
-def _build_bp_id_sheet(sample_name, bp_data, calibration_data):
-    """Construeix les files del full ID_BP (traçabilitat BP vinculada).
-
-    Args:
-        sample_name: Nom de la mostra
-        bp_data: Dict amb dades BP de la mostra
-        calibration_data: Dict amb dades de calibració
-
-    Returns:
-        list de tuples (Field, Value)
-    """
-    rows = [
-        ("Export_Module", f"hpsec_export v{__version__}"),
-        ("Export_Date", datetime.now().strftime("%Y-%m-%d %H:%M")),
-        ("---", "---"),
-        # Identificació
-        ("Sample", sample_name),
-        ("Method", "BP"),
-        ("SEQ_BP", bp_data.get("seq_name", bp_data.get("bp_seq", ""))),
-        ("Date_BP", bp_data.get("seq_date", bp_data.get("date", ""))),
-        ("---", "---"),
-    ]
-
-    # Rèplica seleccionada
-    replica = bp_data.get("replica", bp_data.get("selected_replica", ""))
-    if replica:
-        rows.append(("Replica_BP", replica))
-
-    # SNR
-    snr = bp_data.get("snr_direct", bp_data.get("snr", None))
-    if snr is not None:
-        rows.append(("SNR_BP", round(float(snr), 1)))
-
-    # Volum injecció
-    inj_vol = bp_data.get("inj_volume")
-    if inj_vol:
-        rows.append(("INJ_Volume_uL_BP", inj_vol))
-    rows.append(("---", "---"))
-
-    # Quantificació
-    area_total = bp_data.get("area_total")
-    if area_total is not None:
-        rows.append(("Area_BP_total", round(float(area_total), 2)))
-    conc_ppm = bp_data.get("concentration_ppm")
-    if conc_ppm is not None:
-        rows.append(("Concentration_ppm_BP", round(float(conc_ppm), 3)))
-    rows.append(("---", "---"))
-
-    # Calibració BP usada
-    if calibration_data:
-        rf_obj = calibration_data.get("rf_mass_cal", {})
-        if isinstance(rf_obj, dict):
-            rf_bp = rf_obj.get("direct", {}).get("bp")
-            if rf_bp is not None:
-                rows.append(("RF_mass_cal_BP", rf_bp))
-        intercept_obj = calibration_data.get("intercept", {})
-        if isinstance(intercept_obj, dict):
-            int_bp = intercept_obj.get("direct", {}).get("bp")
-            if int_bp is not None:
-                rows.append(("Intercept_BP", int_bp))
-        rows.append(("---", "---"))
-
-    # Anomalies
-    anomalies = bp_data.get("anomalies", [])
-    if anomalies:
-        for a in anomalies:
-            if isinstance(a, dict):
-                code = a.get("code", "")
-                sev = a.get("severity", "info")
-                rep = " [REPAIRED]" if a.get("repaired") else ""
-                rows.append((f"Anomaly_BP_{code}", f"{sev}{rep}"))
-            else:
-                rows.append(("Anomaly_BP", str(a)))
-
-    # Bigaussian info
-    bigaussian = bp_data.get("bigaussian_doc", bp_data.get("bigaussian", {}))
-    if bigaussian and isinstance(bigaussian, dict):
-        r2_bg = bigaussian.get("r2") or bigaussian.get("r_squared")
-        if r2_bg is not None:
-            rows.append(("Bigaussian_R2_BP", round(float(r2_bg), 4)))
-        asym = bigaussian.get("asymmetry")
-        if asym is not None:
-            rows.append(("Bigaussian_Asymmetry_BP", round(float(asym), 3)))
-
-    # Timeout info
-    timeout_info = bp_data.get("timeout_info", {})
-    if timeout_info.get("n_timeouts", 0) > 0:
-        rows.append(("Timeout_Severity_BP", timeout_info.get("severity", "")))
-        zone_summary = timeout_info.get("zone_summary", {})
-        if zone_summary:
-            zones_str = "; ".join(f"{zone}: {count}" for zone, count in zone_summary.items())
-            rows.append(("Timeout_Zones_BP", zones_str))
-
-    return rows
-
-
 def _build_doc_sheet(t_doc, y_doc_net, y_doc_raw, y_doc_uib_net, y_doc_uib_raw, is_dual):
     """Construeix el DataFrame del full DOC."""
     if t_doc is None or len(t_doc) == 0:
@@ -567,11 +459,8 @@ def _build_dad_sheet(df_dad, config):
     return pd.DataFrame(result)
 
 
-def _build_results_sheet(t_doc, y_doc_net, df_dad, mode, config, bp_data=None):
-    """Construeix el DataFrame del full RESULTS amb integracions.
-
-    Si bp_data és proporcionat, afegeix files BP_total i BP_ppm.
-    """
+def _build_results_sheet(t_doc, y_doc_net, df_dad, mode, config):
+    """Construeix el DataFrame del full RESULTS amb integracions."""
     target_wls = config.get("target_wavelengths", [220, 252, 254, 272, 290, 362])
     fractions = config.get("time_fractions", {})
 
@@ -610,23 +499,6 @@ def _build_results_sheet(t_doc, y_doc_net, df_dad, mode, config, bp_data=None):
             row.append(round(area_dad, 2) if area_dad > 0 else "-")
 
         rows.append(row)
-
-    # Afegir files BP si disponible
-    if bp_data and mode == "COLUMN":
-        # Fila separador
-        rows.append(["---"] + ["---"] * (len(header) - 1))
-
-        # BP_total: àrea total BP
-        bp_area = bp_data.get("area_total")
-        bp_row = ["BP_total", "BP", round(float(bp_area), 2) if bp_area else "-"]
-        bp_row.extend(["-"] * len(target_wls))
-        rows.append(bp_row)
-
-        # BP_ppm: concentració BP
-        bp_ppm = bp_data.get("concentration_ppm")
-        ppm_row = ["BP_ppm", "BP", round(float(bp_ppm), 3) if bp_ppm else "-"]
-        ppm_row.extend(["-"] * len(target_wls))
-        rows.append(ppm_row)
 
     return pd.DataFrame(rows, columns=header)
 
@@ -686,53 +558,6 @@ def _integrate_dad_fraction(df_dad, wl, t_ini, t_fi):
     y = df_dad[wl_col].values
 
     return _integrate_fraction(t, y, t_ini, t_fi)
-
-
-# =============================================================================
-# INTEGRACIÓ BP
-# =============================================================================
-
-def _find_and_load_bp_data(seq_path, samples_grouped):
-    """Cerca SEQ BP i carrega dades BP per cada mostra.
-
-    Args:
-        seq_path: Path de la seqüència COLUMN
-        samples_grouped: Dict de mostres agrupades
-
-    Returns:
-        dict: {
-            "bp_seq_path": str o None,
-            "bp_seq_name": str o None,
-            "samples": {sample_name: bp_data_dict, ...}
-        }
-    """
-    result = {
-        "bp_seq_path": None,
-        "bp_seq_name": None,
-        "samples": {},
-    }
-
-    try:
-        from hpsec_consolidate import find_matching_bp_sequence, load_bp_data_for_sample
-
-        bp_path = find_matching_bp_sequence(seq_path)
-        if not bp_path:
-            return result
-
-        result["bp_seq_path"] = bp_path
-        result["bp_seq_name"] = Path(bp_path).name
-
-        for sample_name in samples_grouped:
-            bp_data = load_bp_data_for_sample(bp_path, sample_name)
-            if bp_data:
-                # Afegir info SEQ BP
-                bp_data["bp_seq"] = result["bp_seq_name"]
-                result["samples"][sample_name] = bp_data
-
-    except Exception as e:
-        print(f"[WARNING] Error carregant dades BP: {e}")
-
-    return result
 
 
 # =============================================================================
@@ -812,7 +637,6 @@ def export_sequence(
     config: dict = None,
     progress_callback=None,
     seq_path: str = None,
-    bp_resolved: dict = None,
     export_raw: bool = False,
     export_processed: bool = False,
     csv_separator: str = ";",
@@ -827,8 +651,7 @@ def export_sequence(
         mode: "BP" o "COLUMN"
         config: Configuració
         progress_callback: Funció per reportar progrés (pct, msg)
-        seq_path: Path de la seqüència (per cercar BP automàticament)
-        bp_resolved: Dades BP pre-resoltes des del wizard (evita re-descobriment)
+        seq_path: Path de la seqüència
         export_raw: Exportar CSVs RAW (DOC cru + DAD 101λ) a RAW/
         export_processed: Exportar CSVs PROCESSED (DOC net + fraccions) a PROCESSED/
         csv_separator: Separador pels CSVs (";", ",", "\t")
@@ -859,34 +682,6 @@ def export_sequence(
     # Subcarpetes RAW/ i PROCESSED/
     raw_dir = str(output_path / "RAW")
     proc_dir = str(output_path / "PROCESSED")
-
-    # Cercar i carregar dades BP si mode COLUMN
-    bp_all = {}
-    if mode == "COLUMN":
-        if bp_resolved:
-            # Usar dades pre-resoltes (wizard)
-            for name, sdata in bp_resolved.get("samples", {}).items():
-                if sdata and sdata.get("bp_data"):
-                    bp_all[name] = sdata["bp_data"]
-            bp_info = bp_resolved.get("primary_bp")
-            if bp_info:
-                results["bp_info"] = {
-                    "bp_seq_path": bp_info.get("path"),
-                    "bp_seq_name": bp_info.get("name"),
-                    "n_linked": len(bp_all),
-                }
-        elif seq_path:
-            # Fallback: descobriment automàtic (batch, backwards compat)
-            if progress_callback:
-                progress_callback(0, "Cercant dades BP vinculades...")
-            bp_result = _find_and_load_bp_data(seq_path, samples_grouped)
-            bp_all = bp_result.get("samples", {})
-            if bp_result.get("bp_seq_path"):
-                results["bp_info"] = {
-                    "bp_seq_path": bp_result["bp_seq_path"],
-                    "bp_seq_name": bp_result["bp_seq_name"],
-                    "n_linked": len(bp_all),
-                }
 
     total = len(samples_grouped)
     n_skipped = 0
@@ -971,13 +766,6 @@ def export_sequence(
             if "quantification" in sample_info:
                 export_data["quantification"] = sample_info["quantification"]
 
-            # BP data per aquesta mostra
-            bp_data = bp_all.get(sample_name)
-
-            # Propagar bp_linked a sample_info per generate_summary_excel
-            if bp_data:
-                sample_info["bp_linked"] = bp_data
-
             # Nom del fitxer (sense rèplica al nom — la rèplica consta al full ID)
             base = _sample_filename_base(sample_name, mode)
             filename = _make_unique_filename(base, ".xlsx", used_filenames)
@@ -992,7 +780,6 @@ def export_sequence(
                 calibration_data,
                 mode,
                 config,
-                bp_data=bp_data,
             )
 
             # Exportar CSV RAW (DOC cru + DAD 101λ)
@@ -1004,17 +791,6 @@ def export_sequence(
                 except Exception as e_csv:
                     logger.warning(f"CSV RAW {sample_name}: {e_csv}")
 
-                # BP RAW (si COLUMN amb BP vinculat)
-                if bp_data and mode == "COLUMN":
-                    try:
-                        bp_export = dict(bp_data)
-                        bp_export["is_bp"] = True
-                        rf_bp = write_csv_raw(raw_dir, sample_name, bp_export,
-                                              "BP", csv_separator, used_raw)
-                        results["raw_files"].extend(rf_bp)
-                    except Exception as e_csv:
-                        logger.warning(f"CSV RAW BP {sample_name}: {e_csv}")
-
             # Exportar CSV PROCESSED (DOC net + fraccions)
             if export_processed:
                 try:
@@ -1024,23 +800,12 @@ def export_sequence(
                 except Exception as e_csv:
                     logger.warning(f"CSV PROC {sample_name}: {e_csv}")
 
-                # BP PROCESSED
-                if bp_data and mode == "COLUMN":
-                    try:
-                        bp_export = dict(bp_data)
-                        bp_export["is_bp"] = True
-                        pf_bp = write_csv_processed(proc_dir, sample_name, bp_export,
-                                                    "BP", config, csv_separator, used_proc)
-                        results["processed_files"].extend(pf_bp)
-                    except Exception as e_csv:
-                        logger.warning(f"CSV PROC BP {sample_name}: {e_csv}")
-
             results["files"].append({
                 "sample": sample_name,
                 "path": str(filepath),
                 "doc_replica": doc_replica,
                 "dad_replica": dad_replica,
-                "has_bp": bp_data is not None,
+                "has_bp": False,
             })
             results["n_exported"] += 1
 
@@ -1197,13 +962,6 @@ def generate_summary_excel(
             "HCI": quantification.get("hci"),
             "HCI_Character": quantification.get("hci_character", ""),
         }
-
-        # BP linked info
-        bp_info = sample_info.get("bp_linked", {})
-        if bp_info:
-            row["BP_SEQ"] = bp_info.get("bp_seq", bp_info.get("seq_name", ""))
-            row["BP_Area"] = bp_info.get("area_total")
-            row["BP_ppm"] = bp_info.get("concentration_ppm")
 
         summary_rows.append(row)
 
@@ -1883,11 +1641,6 @@ def generate_summary_csv(
             "HCI_Character": quantification.get("hci_character", ""),
         }
 
-        bp_info = sample_info.get("bp_linked", {})
-        if bp_info:
-            row["BP_SEQ"] = bp_info.get("bp_seq", bp_info.get("seq_name", ""))
-            row["BP_ppm"] = bp_info.get("concentration_ppm", "")
-
         summary_rows.append(row)
 
     df = pd.DataFrame(summary_rows)
@@ -2025,5 +1778,4 @@ __all__ = [
     "create_export_zip",
     "patch_excel_calibration",
     "DEFAULT_EXPORT_CONFIG",
-    "_find_and_load_bp_data",
 ]

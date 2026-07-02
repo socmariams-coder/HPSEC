@@ -8,7 +8,6 @@ Contingut:
 - Resum pre-exportació: comptadors (N mostres, M excloses, K avisos)
 - Opcions exportació: checkboxes (Excels individuals, SUMMARY, PDF report)
 - Secció FAIR (placeholder): metadades traçabilitat
-- Consolidació BP (COLUMN mode)
 - Botó "Generar Resultats" + barra progrés
 - Escriu review_result.json per al dashboard
 """
@@ -16,11 +15,10 @@ Contingut:
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QFrame, QScrollArea, QMessageBox, QProgressBar,
-    QTableWidget, QTableWidgetItem, QComboBox, QHeaderView,
+    QComboBox,
     QGroupBox, QCheckBox, QGridLayout, QFileDialog, QLineEdit,
 )
 from PySide6.QtCore import Qt, Signal, QThread
-from PySide6.QtGui import QFont, QColor
 
 import json as _json
 import logging
@@ -41,54 +39,6 @@ from gui.widgets.styles import (
 )
 
 
-class BPDiscoveryWorker(QThread):
-    """Worker per cercar dades BP en background."""
-    finished = Signal(dict)
-    error = Signal(str)
-
-    def __init__(self, seq_path, sample_names, data_folder):
-        super().__init__()
-        self.seq_path = seq_path
-        self.sample_names = sample_names
-        self.data_folder = data_folder
-
-    def run(self):
-        try:
-            from hpsec_consolidate import find_bp_for_samples
-            result = find_bp_for_samples(
-                self.seq_path, self.sample_names, self.data_folder
-            )
-            self.finished.emit(result)
-        except Exception as e:
-            self.error.emit(str(e))
-
-
-class _BPReloadWorker(QThread):
-    """Worker per rellegir dades BP des d'una BP diferent."""
-    finished = Signal(dict)
-    error = Signal(str)
-
-    def __init__(self, bp_path, sample_names, available_bps, seq_path):
-        super().__init__()
-        self.bp_path = bp_path
-        self.sample_names = sample_names
-        self.available_bps = available_bps
-        self.seq_path = seq_path
-
-    def run(self):
-        try:
-            from hpsec_consolidate import find_bp_for_samples
-            result = find_bp_for_samples(
-                self.seq_path, self.sample_names,
-                str(Path(self.seq_path).parent),
-                preferred_bp_path=self.bp_path
-            )
-            result["available_bps"] = self.available_bps
-            self.finished.emit(result)
-        except Exception as e:
-            self.error.emit(str(e))
-
-
 class GenerateWorker(QThread):
     """Worker per generar resultats en background."""
     progress = Signal(int, str)
@@ -96,7 +46,7 @@ class GenerateWorker(QThread):
     error = Signal(str)
 
     def __init__(self, samples_grouped, seq_path, calibration_data, mode, config,
-                 bp_resolved=None, generate_pdf=False,
+                 generate_pdf=False,
                  export_raw=False, export_processed=False,
                  csv_summary=False, csv_separator=";",
                  export_zip=False, export_metadata=True,
@@ -107,7 +57,6 @@ class GenerateWorker(QThread):
         self.calibration_data = calibration_data
         self.mode = mode
         self.config = config
-        self.bp_resolved = bp_resolved
         self.generate_pdf = generate_pdf
         self.export_raw = export_raw
         self.export_processed = export_processed
@@ -139,7 +88,6 @@ class GenerateWorker(QThread):
                 config,
                 progress_cb,
                 seq_path=self.seq_path,
-                bp_resolved=self.bp_resolved,
                 export_raw=self.export_raw,
                 export_processed=self.export_processed,
                 csv_separator=self.csv_separator,
@@ -249,9 +197,6 @@ class ExportPanel(QWidget):
         super().__init__()
         self.main_window = main_window
         self.worker = None
-        self._bp_worker = None
-        self._bp_resolved = None
-        self._bp_available = []
         self._current_method = "COLUMN"
         self._current_seq_path = ""
         self._current_sample_names = []
@@ -335,68 +280,7 @@ class ExportPanel(QWidget):
         self.content_layout.addWidget(self.results_frame)
 
         # =================================================================
-        # PART 2: CONSOLIDACIÓ BP (si COLUMN)
-        # =================================================================
-        # === SECCIÓ CONSOLIDACIÓ BP ===
-        self.bp_group = QGroupBox("CONSOLIDACIÓ BP")
-        self.bp_group.setStyleSheet("""
-            QGroupBox {
-                font-weight: bold; font-size: 11px; color: #2c3e50;
-                border: 1px solid #d5dbdb; border-radius: 6px;
-                margin-top: 8px; padding-top: 18px;
-                background-color: #fafafa;
-            }
-            QGroupBox::title {
-                subcontrol-origin: margin; left: 12px; padding: 0 4px;
-            }
-        """)
-        bp_layout = QVBoxLayout(self.bp_group)
-        bp_layout.setContentsMargins(12, 8, 12, 8)
-        bp_layout.setSpacing(6)
-
-        bp_selector_row = QHBoxLayout()
-        bp_selector_row.addWidget(QLabel("SEQ BP:"))
-        self.bp_combo = QComboBox()
-        self.bp_combo.setMinimumWidth(220)
-        self.bp_combo.currentIndexChanged.connect(self._on_bp_combo_changed)
-        bp_selector_row.addWidget(self.bp_combo)
-        self.bp_status_label = QLabel("")
-        self.bp_status_label.setStyleSheet("color: #7f8c8d; font-size: 11px;")
-        bp_selector_row.addWidget(self.bp_status_label, 1)
-        bp_layout.addLayout(bp_selector_row)
-
-        self.bp_table = QTableWidget()
-        self.bp_table.setColumnCount(5)
-        self.bp_table.setHorizontalHeaderLabels(
-            ["Mostra", "BP", "Rèplica", "ppm", "SNR"]
-        )
-        self.bp_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
-        for col in range(1, 5):
-            self.bp_table.horizontalHeader().setSectionResizeMode(
-                col, QHeaderView.ResizeToContents
-            )
-        self.bp_table.verticalHeader().setVisible(False)
-        self.bp_table.setEditTriggers(QTableWidget.NoEditTriggers)
-        self.bp_table.setAlternatingRowColors(True)
-        self.bp_table.setMaximumHeight(200)
-        self.bp_table.setStyleSheet("""
-            QTableWidget {
-                font-size: 11px; border: 1px solid #e0e0e0;
-                gridline-color: #f0f0f0;
-            }
-            QTableWidget::item { padding: 2px 6px; }
-        """)
-        bp_layout.addWidget(self.bp_table)
-
-        self.bp_info_label = QLabel("")
-        self.bp_info_label.setStyleSheet("color: #7f8c8d; font-size: 10px; font-style: italic;")
-        bp_layout.addWidget(self.bp_info_label)
-
-        self.bp_group.setVisible(False)
-        self.content_layout.addWidget(self.bp_group)
-
-        # =================================================================
-        # PART 3: EXPORT ADDICIONAL
+        # PART 2: EXPORT ADDICIONAL
         # =================================================================
         export_group = QGroupBox("Export addicional")
         export_group.setStyleSheet(_GRP_STYLE)
@@ -661,23 +545,14 @@ class ExportPanel(QWidget):
         # --- FAIR INFO ---
         self._update_fair_info(processed_data)
 
-        # --- CONSOLIDACIÓ BP ---
         self._current_method = method
         self._current_seq_path = seq_path
-        self._bp_resolved = None
+        self._current_sample_names = [
+            name for name, d in regular.items()
+            if d.get("analysis_type") != "khp"
+        ]
 
-        if method.upper() == "COLUMN" and seq_path:
-            self._current_sample_names = [
-                name for name, d in regular.items()
-                if d.get("analysis_type") != "khp"
-            ]
-            self.bp_group.setVisible(True)
-            self.bp_status_label.setText("Cercant BP...")
-            self.bp_table.setRowCount(0)
-            self._launch_bp_discovery(seq_path, self._current_sample_names)
-        else:
-            self.bp_group.setVisible(False)
-            self._auto_generate()
+        self._auto_generate()
 
         # --- PATHS ---
         self._update_paths_label(seq_path)
@@ -782,179 +657,6 @@ class ExportPanel(QWidget):
         self.fair_info.setText("<br>".join(parts))
 
     # ------------------------------------------------------------------
-    # BP Consolidation
-    # ------------------------------------------------------------------
-
-    def _resolve_seq_path(self, seq_path):
-        """Resol un seq_path relatiu (basename) a absolut cercant a les carpetes de dades."""
-        seq_name = os.path.basename(seq_path)
-        # 1. Provar main_window.seq_path (sempre absolut)
-        mw_path = getattr(self.main_window, "seq_path", "")
-        if mw_path and os.path.isdir(mw_path) and os.path.basename(mw_path) == seq_name:
-            return mw_path
-        # 2. Cercar a totes les carpetes de dades
-        try:
-            from hpsec_config import get_data_folders
-            for df in get_data_folders():
-                candidate = os.path.join(df, seq_name)
-                if os.path.isdir(candidate):
-                    return candidate
-        except Exception:
-            pass
-        return None
-
-    def _launch_bp_discovery(self, seq_path, sample_names):
-        """Llança BPDiscoveryWorker per cercar dades BP."""
-        if self._bp_worker and self._bp_worker.isRunning():
-            self._bp_worker.wait(2000)
-
-        # Resolve relative seq_path (analysis_result.json guarda només basename)
-        if not os.path.isabs(seq_path) or not os.path.isdir(seq_path):
-            resolved = self._resolve_seq_path(seq_path)
-            if resolved:
-                seq_path = resolved
-
-        data_folder = str(Path(seq_path).parent)
-        self._bp_worker = BPDiscoveryWorker(seq_path, sample_names, data_folder)
-        self._bp_worker.finished.connect(self._on_bp_discovery_finished)
-        self._bp_worker.error.connect(self._on_bp_discovery_error)
-        self._bp_worker.start()
-
-    def _on_bp_discovery_finished(self, result):
-        """Gestiona el resultat de la cerca BP."""
-        self._bp_resolved = result
-        self._bp_available = result.get("available_bps", [])
-
-        self.bp_combo.blockSignals(True)
-        self.bp_combo.clear()
-        primary = result.get("primary_bp")
-        selected_idx = 0
-
-        if not self._bp_available:
-            self.bp_combo.addItem("Cap BP trobada", None)
-        else:
-            for i, bp in enumerate(self._bp_available):
-                bp_name = bp.get("name", "?")
-                self.bp_combo.addItem(bp_name, bp.get("path"))
-                if primary and bp.get("path") == primary.get("path"):
-                    selected_idx = i
-
-        self.bp_combo.setCurrentIndex(selected_idx)
-        self.bp_combo.blockSignals(False)
-
-        self._populate_bp_table(result)
-        self._auto_generate()
-
-    def _on_bp_discovery_error(self, error_msg):
-        """Error durant la cerca BP."""
-        logger.error(f"Error BP discovery: {error_msg}")
-        self.bp_status_label.setText(f"Error: {error_msg}")
-        self.bp_group.setVisible(False)
-        self._auto_generate()
-
-    def _populate_bp_table(self, bp_result):
-        """Omple la taula de mostres BP."""
-        samples = bp_result.get("samples", {})
-        n_linked = sum(1 for s in samples.values() if s.get("bp_data"))
-        n_total = len(samples)
-
-        self.bp_status_label.setText(f"({n_linked}/{n_total} mostres vinculades)")
-
-        self.bp_table.setRowCount(n_total)
-
-        sorted_names = sorted(
-            samples.keys(),
-            key=lambda n: (0 if samples[n].get("bp_data") else 1, n)
-        )
-
-        for row, name in enumerate(sorted_names):
-            sdata = samples[name]
-            bp_data = sdata.get("bp_data")
-
-            item_name = QTableWidgetItem(name)
-            self.bp_table.setItem(row, 0, item_name)
-
-            if bp_data:
-                source = sdata.get("source", "")
-                source_tag = " *" if source == "name_search" else ""
-                item_status = QTableWidgetItem(f"\u2714{source_tag}")
-                item_status.setForeground(QColor(COLOR_SUCCESS))
-                item_status.setTextAlignment(Qt.AlignCenter)
-                if source == "name_search":
-                    item_status.setToolTip(
-                        f"Trobat per nom a {bp_data.get('seq_name', '?')}"
-                    )
-                self.bp_table.setItem(row, 1, item_status)
-
-                replica = bp_data.get("replica", "?")
-                item_rep = QTableWidgetItem(f"R{replica}")
-                item_rep.setTextAlignment(Qt.AlignCenter)
-                self.bp_table.setItem(row, 2, item_rep)
-
-                ppm = bp_data.get("concentration_ppm")
-                ppm_text = f"{ppm:.2f}" if ppm else "\u2014"
-                item_ppm = QTableWidgetItem(ppm_text)
-                item_ppm.setTextAlignment(Qt.AlignCenter)
-                self.bp_table.setItem(row, 3, item_ppm)
-
-                snr = bp_data.get("snr_direct")
-                snr_text = f"{snr:.0f}" if snr else "\u2014"
-                item_snr = QTableWidgetItem(snr_text)
-                item_snr.setTextAlignment(Qt.AlignCenter)
-                self.bp_table.setItem(row, 4, item_snr)
-            else:
-                item_status = QTableWidgetItem("\u2718")
-                item_status.setForeground(QColor("#bdc3c7"))
-                item_status.setTextAlignment(Qt.AlignCenter)
-                self.bp_table.setItem(row, 1, item_status)
-
-                for col in range(2, 5):
-                    item = QTableWidgetItem("\u2014")
-                    item.setForeground(QColor("#bdc3c7"))
-                    item.setTextAlignment(Qt.AlignCenter)
-                    self.bp_table.setItem(row, col, item)
-
-                for col in range(5):
-                    it = self.bp_table.item(row, col)
-                    if it:
-                        it.setBackground(QColor("#f5f5f5"))
-
-        n_missing = n_total - n_linked
-        if n_missing > 0:
-            self.bp_info_label.setText(
-                f"{n_missing} mostr{'a' if n_missing == 1 else 'es'} sense dades BP"
-            )
-        else:
-            self.bp_info_label.setText("Totes les mostres tenen dades BP vinculades")
-
-    def _on_bp_combo_changed(self, index):
-        """Quan l'usuari canvia la BP al dropdown, relança la cerca."""
-        if index < 0 or not self._bp_available:
-            return
-
-        bp_path = self.bp_combo.currentData()
-        if not bp_path:
-            return
-
-        self.bp_status_label.setText("Actualitzant...")
-
-        if self._bp_worker and self._bp_worker.isRunning():
-            self._bp_worker.wait(2000)
-
-        self._bp_worker = _BPReloadWorker(
-            bp_path, self._current_sample_names,
-            self._bp_available, self._current_seq_path
-        )
-        self._bp_worker.finished.connect(self._on_bp_reload_finished)
-        self._bp_worker.error.connect(self._on_bp_discovery_error)
-        self._bp_worker.start()
-
-    def _on_bp_reload_finished(self, result):
-        """Gestiona el resultat de la recàrrega BP."""
-        self._bp_resolved = result
-        self._populate_bp_table(result)
-
-    # ------------------------------------------------------------------
     # Generate results
     # ------------------------------------------------------------------
 
@@ -1055,7 +757,6 @@ class ExportPanel(QWidget):
         # Auto-generation: Excels + SUMMARY only (no CSV/RAW/ZIP)
         self.worker = GenerateWorker(
             samples_grouped, seq_path, calibration_data, method, None,
-            bp_resolved=self._bp_resolved,
             generate_pdf=False,
             export_raw=False,
             export_processed=False,
@@ -1232,7 +933,6 @@ class ExportPanel(QWidget):
 
         self._export_worker = GenerateWorker(
             samples_grouped, seq_path, calibration_data, method, None,
-            bp_resolved=self._bp_resolved,
             generate_pdf=self.exp_pdf_check.isChecked(),
             export_raw=self.exp_raw_check.isChecked(),
             export_processed=self.exp_processed_check.isChecked(),
@@ -1341,21 +1041,6 @@ class ExportPanel(QWidget):
             n_exported = excel_result.get("n_exported", 0)
             n_skipped = excel_result.get("n_skipped", 0)
 
-            # BP info
-            bp_info = {}
-            if self._bp_resolved:
-                primary = self._bp_resolved.get("primary_bp")
-                if primary:
-                    bp_info["bp_seq_name"] = primary.get("name")
-                    bp_info["bp_seq_path"] = primary.get("path")
-                    bp_samples = self._bp_resolved.get("samples", {})
-                    bp_info["n_linked"] = sum(
-                        1 for s in bp_samples.values() if s.get("bp_data")
-                    )
-                    bp_analysis = Path(primary["path"]) / "CHECK" / "data" / "analysis_result.json"
-                    if bp_analysis.exists():
-                        bp_info["bp_analysis_mtime"] = os.path.getmtime(str(bp_analysis))
-
             # Discarded samples
             processed_data = self.main_window.processed_data or {}
             samples_grouped = processed_data.get("samples_grouped", {})
@@ -1374,7 +1059,7 @@ class ExportPanel(QWidget):
                 "n_exported": n_exported,
                 "n_skipped": n_skipped,
                 "discarded_samples": discarded,
-                "bp_info": bp_info,
+                "bp_info": {},
                 "summary_path": str(Path(seq_path) / "CHECK" / "SUMMARY.xlsx"),
             }
 
@@ -1401,13 +1086,6 @@ class ExportPanel(QWidget):
         self.results_frame.setVisible(False)
         self.results_status_label.setText("")
         self.results_path_label.setText("")
-        self._bp_resolved = None
-        self._bp_available = []
-        self.bp_group.setVisible(False)
-        self.bp_table.setRowCount(0)
-        self.bp_combo.clear()
-        self.bp_status_label.setText("")
-        self.bp_info_label.setText("")
         self._auto_generated = False
         self._populated_seq = ""
         # Export addicional
