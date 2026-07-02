@@ -6,7 +6,7 @@ Genera dos fitxers autocontinguts per cada mostra analitzada, dissenyats per
 treballar amb scripts externs (pandas, R, MATLAB, Excel) sense reprocessar
 res ni dependre del JSON central de la seqüència.
 
-Estructura per mostra (a `SEQ/PER_SAMPLE/`):
+Estructura per mostra (a `SEQ/RESULTATS/PER_SAMPLE/` — lliurament per a fora):
     {sample}.csv   ← cromatograma tabular (totes les rèpliques + DAD + final)
     {sample}.json  ← metadades estructurades (anomalies, àrees, selecció, ppm…)
 
@@ -434,7 +434,7 @@ def write_all_samples(processed_data, output_dir=None):
         if not seq_path:
             logger.warning("write_all_samples: cap seq_path; sense output_dir")
             return {}
-        output_dir = os.path.join(seq_path, "PER_SAMPLE")
+        output_dir = os.path.join(seq_path, "RESULTATS", "PER_SAMPLE")
 
     samples_grouped = processed_data.get("samples_grouped") or {}
     method = processed_data.get("method", "COLUMN")
@@ -519,7 +519,7 @@ def update_all_quantifications(processed_data, output_dir=None):
     if output_dir is None:
         if not seq_path:
             return 0
-        output_dir = os.path.join(seq_path, "PER_SAMPLE")
+        output_dir = os.path.join(seq_path, "RESULTATS", "PER_SAMPLE")
     if not os.path.isdir(output_dir):
         return 0
 

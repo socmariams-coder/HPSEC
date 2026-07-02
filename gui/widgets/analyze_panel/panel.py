@@ -789,7 +789,7 @@ class AnalyzePanel(QWidget):
         seq_path = result.get("seq_path") or self.main_window.seq_path
         if not seq_path:
             return
-        per_sample_dir = os.path.join(seq_path, "PER_SAMPLE")
+        per_sample_dir = os.path.join(seq_path, "RESULTATS", "PER_SAMPLE")
         # Comptar mostres no-KHP esperades
         samples_grouped = result.get("samples_grouped") or {}
         expected = sum(1 for sd in samples_grouped.values()
