@@ -2706,7 +2706,7 @@ class AnalyzePanel(QWidget):
             return
 
         try:
-            from generate_analysis_report import generate_analysis_report
+            from hpsec_reports import generate_analysis_report
 
             report_data = dict(processed_data)
             report_data["samples_grouped"] = self.samples_grouped

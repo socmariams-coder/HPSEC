@@ -5688,7 +5688,8 @@ def generate_analysis_report(seq_path, output_path=None, analysis_data=None):
         return None
 
     if output_path is None:
-        output_path = Path(seq_path) / "CHECK"
+        # Lliurament humà → RESULTATS/ (amb la resta), no la carpeta interna CHECK/
+        output_path = Path(seq_path) / "RESULTATS"
     output_path = Path(output_path)
     output_path.mkdir(parents=True, exist_ok=True)
 

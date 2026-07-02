@@ -168,7 +168,7 @@ class GenerateWorker(QThread):
             if self.generate_pdf:
                 self.progress.emit(90, "Generant PDF anàlisi...")
                 try:
-                    from generate_analysis_report import generate_analysis_report
+                    from hpsec_reports import generate_analysis_report
                     report_data = {
                         "samples_grouped": self.samples_grouped,
                         "method": self.mode,
@@ -176,8 +176,11 @@ class GenerateWorker(QThread):
                         "seq_name": Path(self.seq_path).name,
                         "success": True,
                     }
+                    # output_path = destí d'exportació (RESULTATS/ o carpeta triada),
+                    # perquè el PDF NO caigui sempre a CHECK/ i segueixi el lliurament
                     pdf_path = generate_analysis_report(
-                        self.seq_path, analysis_data=report_data
+                        self.seq_path, output_path=resultats_path,
+                        analysis_data=report_data
                     )
                     results["pdf_report"] = pdf_path
                 except Exception as e:

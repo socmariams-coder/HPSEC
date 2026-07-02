@@ -1437,7 +1437,7 @@ class ResultsTab(QWidget):
             return
 
         try:
-            from generate_analysis_report import generate_analysis_report
+            from hpsec_reports import generate_analysis_report
 
             # Passar dades en memoria (inclou seleccions actuals de l'usuari)
             report_data = dict(processed_data)
