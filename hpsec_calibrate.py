@@ -884,10 +884,9 @@ def register_qc_result(seq_name, seq_date, qc_result, khp_data):
     history['entries'].insert(0, entry)
     history['updated'] = datetime.now().isoformat()
 
-    # Guardar
+    # Guardar (atòmic)
     try:
-        with open(qc_path, 'w', encoding='utf-8') as f:
-            json.dump(history, f, indent=2, ensure_ascii=False)
+        _atomic_write_json(qc_path, history, indent=2, ensure_ascii=False)
         return True
     except Exception as e:
         logger.error(f"Error guardant QC History: {e}")
@@ -1251,8 +1250,7 @@ def requantify_analysis_json(json_path, new_rf_direct, new_intercept_direct,
 
     # Guardar
     try:
-        with open(json_path, 'w', encoding='utf-8') as f:
-            _json.dump(data, f, indent=2, ensure_ascii=False)
+        _atomic_write_json(json_path, data, indent=2, ensure_ascii=False)
         result["success"] = True
         result["samples_updated"] = n_updated
     except Exception as e:
@@ -1318,8 +1316,7 @@ def invalidate_quantification_json(json_path):
     data["quantification_invalidated_at"] = datetime.now().isoformat()
 
     try:
-        with open(json_path, 'w', encoding='utf-8') as f:
-            _json.dump(data, f, indent=2, ensure_ascii=False)
+        _atomic_write_json(json_path, data, indent=2, ensure_ascii=False)
         result["success"] = True
         result["samples_invalidated"] = n_invalidated
     except Exception as e:
@@ -2456,13 +2453,12 @@ def _save_manual_repairs(seq_path, repairs):
     filepath = os.path.join(data_path, MANUAL_REPAIRS_FILENAME)
     try:
         from hpsec_version import SUITE_VERSION
-        with open(filepath, 'w', encoding='utf-8') as f:
-            json.dump({
-                "suite_version": SUITE_VERSION,
-                "seq_name": os.path.basename(seq_path),
-                "updated": datetime.now().isoformat(),
-                "repairs": repairs,
-            }, f, indent=2, ensure_ascii=False, cls=NumpyEncoder)
+        _atomic_write_json(filepath, {
+            "suite_version": SUITE_VERSION,
+            "seq_name": os.path.basename(seq_path),
+            "updated": datetime.now().isoformat(),
+            "repairs": repairs,
+        }, indent=2, ensure_ascii=False, cls=NumpyEncoder)
         return True
     except Exception as e:
         logger.error(f"Error guardant reparacions manuals: {e}")
