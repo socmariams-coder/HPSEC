@@ -388,9 +388,26 @@ class QuantifyPanel(QWidget):
             return
         json_path = os.path.join(seq_path, "CHECK", "data", "analysis_result.json")
         try:
-            with open(json_path, "w", encoding="utf-8") as f:
-                json.dump(self._quantification_result, f, indent=2,
-                          default=str, ensure_ascii=False)
+            # Atòmic + NumpyEncoder (mateix encoder que save_analysis_result;
+            # abans default=str convertia números en text — no impecable)
+            import tempfile
+            from hpsec_analyze import NumpyEncoder
+            d = os.path.dirname(json_path)
+            os.makedirs(d, exist_ok=True)
+            fd, tmp = tempfile.mkstemp(dir=d, suffix=".tmp")
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    json.dump(self._quantification_result, f, indent=2,
+                              ensure_ascii=False, cls=NumpyEncoder)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp, json_path)
+            except Exception:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+                raise
         except Exception as e:
             logger.error("Error persistint quantificació: %s", e)
 

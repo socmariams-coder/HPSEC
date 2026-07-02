@@ -3782,11 +3782,25 @@ def save_analysis_result(analysis_data, output_path=None):
 
             result["samples_grouped"][sample_name] = grouped_entry
 
-    # Guardar
+    # Guardar (ATÒMIC: temp + fsync + os.replace; encoder NumpyEncoder únic per a
+    # aquest fitxer — abans Quantificar el reescrivia amb un encoder diferent)
+    import tempfile
     try:
-        os.makedirs(os.path.dirname(output_path), exist_ok=True)
-        with open(output_path, "w", encoding="utf-8") as f:
-            json.dump(result, f, indent=2, ensure_ascii=False, cls=NumpyEncoder)
+        d = os.path.dirname(output_path)
+        os.makedirs(d, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=d, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(result, f, indent=2, ensure_ascii=False, cls=NumpyEncoder)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, output_path)
+        except Exception:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
         return output_path
     except Exception as e:
         print(f"Error guardant analysis_result.json: {e}")

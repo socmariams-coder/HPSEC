@@ -36,6 +36,26 @@ logger = logging.getLogger(__name__)
 
 JSON_SCHEMA_VERSION = "1.0"
 
+
+def _atomic_write_json(path, data, **dump_kwargs):
+    """Escriu JSON atòmicament (temp + fsync + os.replace)."""
+    import tempfile
+    d = os.path.dirname(os.path.abspath(path))
+    os.makedirs(d, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=d, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, **dump_kwargs)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
 # ============================================================================
 # Helpers
 # ============================================================================
@@ -408,8 +428,7 @@ def write_sample_files(sample_name, sample_data, processed_data, output_dir,
     # JSON (sempre)
     try:
         metadata = _build_metadata(sample_name, sample_data, processed_data, method)
-        with open(json_path, "w", encoding="utf-8") as f:
-            json.dump(metadata, f, indent=2, ensure_ascii=False)
+        _atomic_write_json(json_path, metadata, indent=2, ensure_ascii=False)
     except Exception as e:
         logger.warning("Error writing JSON for %s: %s", sample_name, e)
 
@@ -503,8 +522,7 @@ def update_sample_quantification(sample_name, quantification, output_dir,
     data["timestamp"] = datetime.now().isoformat()
 
     try:
-        with open(json_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
+        _atomic_write_json(json_path, data, indent=2, ensure_ascii=False)
     except Exception as e:
         logger.warning("Error writing JSON for %s: %s", sample_name, e)
         return None
