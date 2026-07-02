@@ -71,6 +71,16 @@ class GenerateWorker(QThread):
             config = self.config or DEFAULT_EXPORT_CONFIG
             results = {"excel_files": None, "summary": None, "errors": []}
 
+            # Identitat de seqüència per al SUMMARY (permet concatenar seqs a fora)
+            seq_name = Path(self.seq_path).name if self.seq_path else ""
+            seq_date = ""
+            try:
+                from hpsec_import import load_manifest
+                _m = load_manifest(self.seq_path) or {}
+                seq_date = (_m.get("sequence", {}) or {}).get("date", "") or _m.get("date", "")
+            except Exception:
+                pass
+
             def progress_cb(pct, msg):
                 self.progress.emit(pct, msg)
 
@@ -111,6 +121,8 @@ class GenerateWorker(QThread):
                 self.calibration_data,
                 self.mode,
                 config,
+                seq_name=seq_name,
+                seq_date=seq_date,
             )
             results["summary"] = summary_result
 
@@ -126,6 +138,8 @@ class GenerateWorker(QThread):
                         self.mode,
                         config,
                         separator=self.csv_separator,
+                        seq_name=seq_name,
+                        seq_date=seq_date,
                     )
                     results["csv_summary"] = csv_summary_path
                 except Exception as e:

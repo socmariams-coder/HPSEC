@@ -831,34 +831,25 @@ def export_sequence(
 # GENERACIÓ DE RESUM
 # =============================================================================
 
-def generate_summary_excel(
-    samples_grouped: dict,
-    output_path: str,
-    calibration_data: dict = None,
-    mode: str = "COLUMN",
-    config: dict = None,
-):
-    """
-    Genera un Excel resum amb totes les mostres.
+def _build_summary_rows(samples_grouped, mode="COLUMN", config=None,
+                        seq_name=None, seq_date=None):
+    """Construeix les files del SUMMARY (font ÚNICA per a Excel i CSV).
 
-    Fulls:
-        SUMMARY: Una fila per mostra amb concentració, SNR, warnings, BP info
-        CALIBRATION: Info de calibració usada
-
-    Args:
-        samples_grouped: Dict amb mostres agrupades
-        output_path: Camí del fitxer Excel
-        calibration_data: Dades de calibració
-        mode: "BP" o "COLUMN"
-        config: Configuració
-
-    Returns:
-        dict amb info d'exportació
+    Esquema pensat per a ANÀLISI EXTERN (tidy):
+    - Columnes d'identitat primer (Seq, Seq_Date, Mode) perquè es puguin
+      CONCATENAR seqüències diferents i agrupar per campanya.
+    - Conc_ppm SEMPRE numèric o buit (mai text tipus "NO VÀLIDA"), amb una
+      columna booleana Valid a part. Així una eina externa parseja la columna
+      com a numèrica sense trencar-se.
     """
     config = config or DEFAULT_EXPORT_CONFIG
-    target_wls = config.get("target_wavelengths", [220, 252, 254, 272, 290, 362])
 
-    # === FULL SUMMARY ===
+    def _ident(row):
+        """Prepend columnes d'identitat de seqüència."""
+        base = {"Seq": seq_name or "", "Seq_Date": seq_date or "", "Mode": mode}
+        base.update(row)
+        return base
+
     summary_rows = []
     for sample_name in sorted(samples_grouped.keys()):
         sample_info = samples_grouped[sample_name]
@@ -870,13 +861,13 @@ def generate_summary_excel(
             replicas = sample_info.get("replicas", {})
             doc_data = replicas.get(doc_replica, {})
             sample_type = sample_info.get("sample_type", "BLANK")
-
-            row = {
+            summary_rows.append(_ident({
                 "Sample": sample_name,
                 "Type": sample_type,
                 "Inj_Index": doc_data.get("injection_index", ""),
-                "DOC_Replica": f"R{doc_replica}",
+                "DOC_Replica": doc_replica,
                 "DAD_Replica": None,
+                "Valid": True,
                 "Conc_ppm": None,
                 "Area_total": doc_data.get("area_total"),
                 "A_UIB": None,
@@ -888,11 +879,11 @@ def generate_summary_excel(
                 "R2_DOC": None,
                 "R2_DAD": None,
                 "Anomalies": "",
+                "Max_Severity": "",
                 "Warnings": "",
                 "HCI": None,
                 "HCI_Character": "",
-            }
-            summary_rows.append(row)
+            }))
             continue
 
         selected = sample_info.get("selected", {})
@@ -908,40 +899,37 @@ def generate_summary_excel(
 
         doc_data = sample_info.get("replicas", {}).get(doc_replica, {})
         snr_info = doc_data.get("snr_info", {})
-
-        # Determine sample type
         sample_type = doc_data.get("sample_type", "SAMPLE")
 
-        # Warnings
         doc_warnings = comparison.get("doc", {}).get("warnings", []) if comparison else []
         dad_warnings = comparison.get("dad", {}).get("warnings", []) if comparison else []
         all_warnings = doc_warnings + dad_warnings
-        # Anomalies de la rèplica seleccionada
         anomalies = doc_data.get("anomalies", [])
 
-        # Dades DAD (pot ser diferent rèplica)
         dad_data = sample_info.get("replicas", {}).get(dad_replica, {}) if dad_replica != "none" else {}
         dad_areas = (dad_data.get("areas") or {})
         area_254 = dad_areas.get("A254", {}).get("total", 0)
         snr_info_dad = dad_data.get("snr_info_dad") or {}
         snr_254 = snr_info_dad.get("A254", {}).get("snr", 0)
 
-        # R² values
         r2_doc = comparison.get("doc", {}).get("pearson", 0) if comparison else 0
         r2_dad = comparison.get("dad", {}).get("pearson_min", 0) if comparison else 0
 
-        # Àrees UIB
         areas_uib = doc_data.get("areas_uib") or {}
         area_uib = areas_uib.get("total", 0)
         ppm_uib = quantification.get("concentration_ppm_uib")
 
-        row = {
+        # Conc_ppm SEMPRE numèric o None (mai text) + Valid a part
+        conc = None if is_invalid else quantification.get("concentration_ppm")
+
+        summary_rows.append(_ident({
             "Sample": sample_name,
             "Type": sample_type,
             "Inj_Index": doc_data.get("injection_index", ""),
-            "DOC_Replica": "Cap" if doc_replica == "none" else f"R{doc_replica}",
-            "DAD_Replica": "Cap" if dad_replica == "none" else f"R{dad_replica}",
-            "Conc_ppm": "NO VÀLIDA" if is_invalid else quantification.get("concentration_ppm"),
+            "DOC_Replica": "" if doc_replica == "none" else doc_replica,
+            "DAD_Replica": "" if dad_replica == "none" else dad_replica,
+            "Valid": not is_invalid,
+            "Conc_ppm": conc,
             "Area_total": quantification.get("area_total"),
             "A_UIB": area_uib if area_uib else None,
             "ppm_UIB": ppm_uib,
@@ -961,10 +949,42 @@ def generate_summary_excel(
             ) if all_warnings else "",
             "HCI": quantification.get("hci"),
             "HCI_Character": quantification.get("hci_character", ""),
-        }
+        }))
 
-        summary_rows.append(row)
+    return summary_rows
 
+
+def generate_summary_excel(
+    samples_grouped: dict,
+    output_path: str,
+    calibration_data: dict = None,
+    mode: str = "COLUMN",
+    config: dict = None,
+    seq_name: str = None,
+    seq_date: str = None,
+):
+    """
+    Genera un Excel resum amb totes les mostres.
+
+    Fulls:
+        SUMMARY: Una fila per mostra amb concentració, SNR, warnings, BP info
+        CALIBRATION: Info de calibració usada
+
+    Args:
+        samples_grouped: Dict amb mostres agrupades
+        output_path: Camí del fitxer Excel
+        calibration_data: Dades de calibració
+        mode: "BP" o "COLUMN"
+        config: Configuració
+
+    Returns:
+        dict amb info d'exportació
+    """
+    config = config or DEFAULT_EXPORT_CONFIG
+
+    # === FULL SUMMARY (font única de files) ===
+    summary_rows = _build_summary_rows(samples_grouped, mode, config,
+                                       seq_name=seq_name, seq_date=seq_date)
     df_summary = pd.DataFrame(summary_rows)
 
     # === FULL CALIBRATION ===
@@ -1540,6 +1560,8 @@ def generate_summary_csv(
     mode: str = "COLUMN",
     config: dict = None,
     separator: str = ";",
+    seq_name: str = None,
+    seq_date: str = None,
 ):
     """
     Genera CSV resum amb totes les mostres (equivalent a SUMMARY.xlsx).
@@ -1578,71 +1600,9 @@ def generate_summary_csv(
 
     header_text = _csv_metadata_header(meta_fields)
 
-    # Construir les mateixes files que generate_summary_excel
-    summary_rows = []
-    for sample_name in sorted(samples_grouped.keys()):
-        sample_info = samples_grouped[sample_name]
-
-        if sample_info.get("analysis_type") == "light":
-            selected = sample_info.get("selected", {})
-            doc_replica = selected.get("doc", "1")
-            replicas = sample_info.get("replicas", {})
-            doc_data = replicas.get(doc_replica, {})
-            sample_type = sample_info.get("sample_type", "BLANK")
-            row = {
-                "Sample": sample_name,
-                "Type": sample_type,
-                "Conc_ppm": "",
-                "Area_total": doc_data.get("area_total", ""),
-                "SNR_Direct": doc_data.get("snr", ""),
-            }
-            summary_rows.append(row)
-            continue
-
-        selected = sample_info.get("selected", {})
-        quantification = sample_info.get("quantification", {})
-        comparison = sample_info.get("comparison", {})
-        doc_replica = selected.get("doc", "1")
-        dad_replica = selected.get("dad", "1")
-        is_invalid = (doc_replica == "none"
-                      or sample_info.get("sample_valid") is False
-                      or sample_info.get("skip_quantification", False))
-        doc_data = sample_info.get("replicas", {}).get(doc_replica, {})
-        snr_info = doc_data.get("snr_info", {})
-        sample_type = doc_data.get("sample_type", "SAMPLE")
-        anomalies = doc_data.get("anomalies", [])
-
-        dad_data = sample_info.get("replicas", {}).get(dad_replica, {}) if dad_replica != "none" else {}
-        dad_areas = (dad_data.get("areas") or {})
-        area_254 = dad_areas.get("A254", {}).get("total", 0)
-
-        r2_doc = comparison.get("doc", {}).get("pearson", 0) if comparison else 0
-        r2_dad = comparison.get("dad", {}).get("pearson_min", 0) if comparison else 0
-        areas_uib = doc_data.get("areas_uib") or {}
-        area_uib = areas_uib.get("total", 0)
-        ppm_uib = quantification.get("concentration_ppm_uib")
-
-        row = {
-            "Sample": sample_name,
-            "Type": sample_type,
-            "Conc_ppm": "NO VALIDA" if is_invalid else quantification.get("concentration_ppm", ""),
-            "Area_total": quantification.get("area_total", ""),
-            "A_UIB": area_uib if area_uib else "",
-            "ppm_UIB": ppm_uib if ppm_uib else "",
-            "A_254": area_254 if area_254 else "",
-            "SNR_Direct": snr_info.get("snr_direct", ""),
-            "R2_DOC": round(r2_doc, 4) if r2_doc > 0 else "",
-            "R2_DAD": round(r2_dad, 4) if r2_dad > 0 else "",
-            "Anomalies": "; ".join(
-                (a.get("code", "") + ("[R]" if a.get("repaired") else "")) if isinstance(a, dict)
-                else str(a) for a in anomalies
-            ) if anomalies else "",
-            "HCI": quantification.get("hci", ""),
-            "HCI_Character": quantification.get("hci_character", ""),
-        }
-
-        summary_rows.append(row)
-
+    # Mateixes files que l'Excel (font única _build_summary_rows) → esquema idèntic
+    summary_rows = _build_summary_rows(samples_grouped, mode, config,
+                                       seq_name=seq_name, seq_date=seq_date)
     df = pd.DataFrame(summary_rows)
 
     with open(output_path, 'w', encoding='utf-8', newline='') as f:
