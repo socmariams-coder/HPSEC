@@ -170,7 +170,8 @@ def register_sample_appearance(
     seq_name: str,
     seq_path: str,
     sample_data: Dict,
-    seq_type: str = "COLUMN"
+    seq_type: str = "COLUMN",
+    index: Dict = None,
 ) -> bool:
     """
     Registra una aparició d'una mostra a l'índex.
@@ -181,11 +182,15 @@ def register_sample_appearance(
         seq_path: Path de la seqüència
         sample_data: Dades de la mostra (de samples_grouped)
         seq_type: "COLUMN" o "BP"
+        index: si es passa, s'hi registra SENSE desar (el cridador desa un cop);
+            si és None, es carrega i es desa aquí (ús individual)
 
     Returns:
         True si s'ha registrat correctament
     """
-    index = load_samples_index()
+    _save_here = index is None
+    if index is None:
+        index = load_samples_index()
 
     # Normalitzar nom per clau
     normalized_name = _normalize_sample_name(sample_name)
@@ -226,8 +231,10 @@ def register_sample_appearance(
     sample_entry["n_appearances"] = len(sample_entry["appearances"])
     sample_entry["last_seen"] = datetime.now().strftime("%Y-%m-%d")
 
-    # Guardar
-    return save_samples_index(index)
+    # Desar només si som en mode individual; en lot, el cridador desa un cop
+    if _save_here:
+        return save_samples_index(index)
+    return True
 
 
 def register_samples_from_analysis(analysis_result: Dict) -> int:
@@ -245,6 +252,9 @@ def register_samples_from_analysis(analysis_result: Dict) -> int:
     seq_name = analysis_result.get("seq_name", os.path.basename(seq_path))
     seq_type = analysis_result.get("seq_type", "COLUMN")
 
+    # Carregar l'índex UN cop, registrar tot en memòria i desar UN cop al final
+    # (abans es reescrivia l'índex global una vegada per mostra).
+    index = load_samples_index()
     count = 0
     for sample_name, sample_data in samples_grouped.items():
         # Saltar controls i blancs si es vol (opcional)
@@ -253,10 +263,12 @@ def register_samples_from_analysis(analysis_result: Dict) -> int:
             continue
 
         if register_sample_appearance(
-            sample_name, seq_name, seq_path, sample_data, seq_type
+            sample_name, seq_name, seq_path, sample_data, seq_type, index=index
         ):
             count += 1
 
+    if count:
+        save_samples_index(index)
     return count
 
 
