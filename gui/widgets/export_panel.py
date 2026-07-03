@@ -185,7 +185,8 @@ class GenerateWorker(QThread):
                 results["fair"] = generate_data_package(
                     self.samples_grouped, resultats_path, mode=self.mode,
                     calibration_data=self.calibration_data, config=config,
-                    seq_name=seq_name, seq_date=seq_date, net_delay_min=net_delay)
+                    seq_name=seq_name, seq_date=seq_date, net_delay_min=net_delay,
+                    seq_path=self.seq_path)
             except Exception as e:
                 results["errors"].append(f"FAIR dataset: {e}")
 

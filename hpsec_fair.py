@@ -23,11 +23,13 @@ required for internationally reusable open data. Encoding UTF-8, decimal point
 """
 import os
 import csv
+import glob
 import json
 import tempfile
 from datetime import datetime, timezone
 
 import numpy as np
+import pandas as pd
 
 from hpsec_version import SUITE_VERSION
 
@@ -235,56 +237,108 @@ def _results_row(sample_name, sample, seq_name, seq_date, mode, target_wls,
 # --------------------------------------------------------------------------- #
 # Per-sample trace CSV
 # --------------------------------------------------------------------------- #
-def _write_trace(path, sample, mode, target_wls):
-    """COLUMN: time + DOC + one column per DAD wavelength (interpolated to DOC time).
-    BP: DAD spectrum at the peak maximum (wavelength_nm, absorbance)."""
+def _read_export3d_full(seq_path, sample_name, replica):
+    """Read the full DAD spectrum (all acquired wavelengths) from the raw Export3d
+    CSV for one injection. Returns (t, [(wl_int, y_array), ...]) or None.
+
+    Export3d files are UTF-16, named '{sample}_{replica}.CSV', first column = time,
+    remaining columns = wavelengths (nm)."""
+    if not seq_path:
+        return None
+    d = os.path.join(seq_path, "Export3d")
+    if not os.path.isdir(d):
+        return None
+    cands = (glob.glob(os.path.join(d, f"{sample_name}_{replica}.CSV"))
+             or glob.glob(os.path.join(d, f"{sample_name}_{replica}.csv"))
+             or glob.glob(os.path.join(d, f"{sample_name}_*.CSV")))
+    if not cands:
+        return None
+    df = None
+    for enc in ("utf-16", "utf-16-le", "utf-8"):
+        try:
+            df = pd.read_csv(cands[0], encoding=enc)
+            break
+        except Exception:
+            continue
+    if df is None or df.shape[1] < 2:
+        return None
+    cols = list(df.columns)
+    try:
+        t = np.asarray(df[cols[0]], dtype=float)
+    except (ValueError, TypeError):
+        return None
+    wls = []
+    for c in cols[1:]:
+        try:
+            wl = int(round(float(str(c))))
+        except (ValueError, TypeError):
+            continue
+        try:
+            wls.append((wl, np.asarray(df[c], dtype=float)))
+        except (ValueError, TypeError):
+            continue
+    return (t, wls) if wls else None
+
+
+def _write_trace(path, sample_name, sample, mode, target_wls, seq_path):
+    """COLUMN: one CSV with time + DOC + ALL DAD wavelengths, downsampled onto the
+    DOC time grid (interp). Falls back to the 6 in-memory wavelengths if the raw
+    Export3d is unavailable. BP: the full UV spectrum at the peak maximum.
+
+    Returns the sorted list of wavelength integers written (for the schema)."""
     rep = _sel_doc_replica(sample)
     sel = sample.get("selected") or {}
     dad_rep = (sample.get("replicas") or {}).get(sel.get("dad", sel.get("doc", "1")), {}) or {}
-    df_dad = dad_rep.get("df_dad")
-    cols, is_df = _dad_columns(df_dad)
+    ex = _read_export3d_full(seq_path, sample_name, sel.get("doc", "1"))
 
     if mode == "BP":
-        # DAD spectrum at the peak apex
         rows = [["wavelength_nm", "absorbance_mAU"]]
-        if cols:
-            tcol = _find_time_col(cols)
-            pk = rep.get("peak_info") or {}
-            tmax = pk.get("t_max")
-            if tcol is not None:
-                t = _col_series(df_dad, tcol, is_df)
-                imax = int(np.argmin(np.abs(t - tmax))) if tmax is not None else int(len(t) // 2)
-                for wl in target_wls:
-                    wc = _find_wl_col(cols, wl)
-                    if wc is not None:
-                        y = _col_series(df_dad, wc, is_df)
-                        rows.append([wl, _num(y[imax], 4)])
+        pk = rep.get("peak_info") or {}
+        tmax = pk.get("t_max")
+        wl_out = []
+        if ex:
+            t_dad, wls = ex
+            imax = int(np.argmin(np.abs(t_dad - tmax))) if tmax is not None else len(t_dad) // 2
+            for wl, y in wls:
+                rows.append([wl, _num(y[imax], 5)])
+                wl_out.append(wl)
         _write_rows(path, rows)
-        return path
+        return wl_out
 
-    # COLUMN: time + DOC + wavelengths
+    # COLUMN
     t_doc = rep.get("t_doc")
     y_doc = rep.get("y_doc_net")
     if t_doc is None or y_doc is None:
-        return None
+        return []
     t_doc = np.asarray(t_doc, dtype=float)
     header = ["time_min", "doc"]
     data = [t_doc, np.asarray(y_doc, dtype=float)]
-    if cols:
-        tcol = _find_time_col(cols)
-        t_dad = _col_series(df_dad, tcol, is_df) if tcol is not None else None
-        for wl in target_wls:
-            wc = _find_wl_col(cols, wl)
-            if wc is not None and t_dad is not None:
-                y = _col_series(df_dad, wc, is_df)
-                yi = np.interp(t_doc, t_dad, y, left=np.nan, right=np.nan)
-                header.append(f"a{wl}")
-                data.append(yi)
+    wl_out = []
+    if ex:
+        t_dad, wls = ex
+        for wl, y in wls:
+            data.append(np.interp(t_doc, t_dad, y, left=np.nan, right=np.nan))
+            header.append(f"a{wl}")
+            wl_out.append(wl)
+    else:
+        # Fallback: the 6 wavelengths kept in memory (df_dad)
+        df_dad = dad_rep.get("df_dad")
+        cols, is_df = _dad_columns(df_dad)
+        if cols:
+            tcol = _find_time_col(cols)
+            t_dad = _col_series(df_dad, tcol, is_df) if tcol is not None else None
+            for wl in target_wls:
+                wc = _find_wl_col(cols, wl)
+                if wc is not None and t_dad is not None:
+                    data.append(np.interp(t_doc, t_dad, _col_series(df_dad, wc, is_df),
+                                          left=np.nan, right=np.nan))
+                    header.append(f"a{wl}")
+                    wl_out.append(wl)
     rows = [header]
     for i in range(len(t_doc)):
         rows.append([_num(col[i], 5) for col in data])
     _write_rows(path, rows)
-    return path
+    return wl_out
 
 
 def _write_rows(path, rows):
@@ -432,7 +486,7 @@ LICENSE
 # --------------------------------------------------------------------------- #
 def generate_data_package(samples_grouped, output_dir, mode="COLUMN",
                           calibration_data=None, config=None, seq_name="",
-                          seq_date="", net_delay_min=None):
+                          seq_date="", net_delay_min=None, seq_path=None):
     """Write the Frictionless Data Package (results + traces + datapackage.json + README).
 
     Returns a dict with the paths written and counts.
@@ -457,6 +511,7 @@ def generate_data_package(samples_grouped, output_dir, mode="COLUMN",
     col_names = [c[0] for c in results_cols]
     rows = [col_names]
     trace_resources = []
+    trace_wls = []          # wavelengths actually written (full DAD from Export3d)
     n = 0
     for name in sorted(samples_grouped.keys()):
         sample = samples_grouped[name]
@@ -464,11 +519,12 @@ def generate_data_package(samples_grouped, output_dir, mode="COLUMN",
                          config, net_delay_min)
         rows.append([r.get(c, "") for c in col_names])
         n += 1
-        # trace (skip KHP standards from the open dataset traces? keep all real+light)
         fname = f"{name}_{date_tag}_SEC.csv"
         tpath = os.path.join(traces_dir, fname)
-        written = _write_trace(tpath, sample, mode, target_wls)
-        if written:
+        wl_written = _write_trace(tpath, name, sample, mode, target_wls, seq_path)
+        if wl_written:
+            if len(wl_written) > len(trace_wls):
+                trace_wls = wl_written
             trace_resources.append({
                 "name": _slug(f"trace-{name}"),
                 "path": f"traces/{fname}",
@@ -477,8 +533,8 @@ def generate_data_package(samples_grouped, output_dir, mode="COLUMN",
     _write_rows(os.path.join(output_dir, "results_SEC.csv"), rows)
 
     # --- datapackage.json ---
-    dp = _build_datapackage(seq_name, seq_date, mode, target_wls, results_cols,
-                            trace_resources, calibration_data, config)
+    dp = _build_datapackage(seq_name, seq_date, mode, trace_wls or target_wls,
+                            results_cols, trace_resources, calibration_data, config)
     _atomic_write(os.path.join(output_dir, "datapackage.json"),
                   json.dumps(dp, indent=2, ensure_ascii=False))
 
