@@ -769,10 +769,11 @@ class ExportPanel(QWidget):
         if self.worker is not None:
             self.worker.wait()
 
-        # Auto-generation: Excels + SUMMARY + metadata.json (manifest del pipeline)
+        # Auto-generation: Excels + SUMMARY + metadata.json + PDF (grafics+informe,
+        # per veure-ho sense obrir la Suite)
         self.worker = GenerateWorker(
             samples_grouped, seq_path, calibration_data, method, None,
-            generate_pdf=False,
+            generate_pdf=True,
             export_raw=False,
             export_processed=False,
             csv_summary=False,

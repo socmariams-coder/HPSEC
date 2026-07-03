@@ -3736,12 +3736,19 @@ def save_analysis_result(analysis_data, output_path=None):
             "y_doc_net_pre_composition": sample.get("y_doc_net_pre_composition"),
         }
 
-    # Resumir mostres
+    # Resumir mostres. La llista plana 'samples' NO la redibuixa la GUI (usa
+    # 'samples_grouped'); per no duplicar MB, la persistim SENSE els arrays de
+    # senyal (que segueixen a samples_grouped i a PER_SAMPLE/). Estalvi ~50%.
+    _ARRAY_KEYS = ("t_doc", "y_doc_net", "y_doc_uib_net", "y_doc_direct_net",
+                   "df_dad", "y_doc_net_pre_composition")
     for sample in analysis_data.get("samples", []):
         if sample.get("analysis_type") == "light":
-            result["samples"].append(summarize_light_sample(sample))
+            entry = summarize_light_sample(sample)
         else:
-            result["samples"].append(summarize_sample(sample))
+            entry = summarize_sample(sample)
+        for _ak in _ARRAY_KEYS:
+            entry.pop(_ak, None)
+        result["samples"].append(entry)
 
     # Guardar samples_grouped (estructura agrupada per GUI)
     samples_grouped = analysis_data.get("samples_grouped", {})
