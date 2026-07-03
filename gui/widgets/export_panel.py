@@ -164,6 +164,31 @@ class GenerateWorker(QThread):
                 except Exception as e:
                     results["errors"].append(f"metadata.json: {e}")
 
+            # Dataset FAIR (Frictionless Data Package) → RESULTATS/
+            # CSV nets + datapackage.json (esquema+provenança+metadata) + README,
+            # tot en anglès. És el lliurament per a anàlisi externa (open data).
+            self.progress.emit(92, "Generant dataset FAIR (open data)...")
+            try:
+                from hpsec_fair import generate_data_package
+                net_delay = None
+                try:
+                    from hpsec_import import load_manifest
+                    from hpsec_delay import read_current_delay
+                    _m = load_manifest(self.seq_path) or {}
+                    _mfp = (_m.get("master_file", {}) or {}).get("path")
+                    if _mfp:
+                        if not os.path.isabs(_mfp):
+                            _mfp = os.path.join(self.seq_path, os.path.basename(_mfp))
+                        net_delay = read_current_delay(_mfp)
+                except Exception:
+                    pass
+                results["fair"] = generate_data_package(
+                    self.samples_grouped, resultats_path, mode=self.mode,
+                    calibration_data=self.calibration_data, config=config,
+                    seq_name=seq_name, seq_date=seq_date, net_delay_min=net_delay)
+            except Exception as e:
+                results["errors"].append(f"FAIR dataset: {e}")
+
             # PDF analysis report
             if self.generate_pdf:
                 self.progress.emit(90, "Generant PDF anàlisi...")

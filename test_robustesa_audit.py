@@ -148,6 +148,35 @@ def test_303_analyze_ok():
     check("sense errors a la llista", not (res or {}).get("errors"))
 
 
+def test_fair_data_package():
+    """FAIR: genera un Frictionless Data Package (results_SEC.csv net + datapackage.json
+    amb esquema i unitats + README), tot en anglès, amb ppm i fraccions."""
+    print("\n[FAIR] Frictionless Data Package")
+    import tempfile
+    import json as _json
+    import pandas as pd
+    from hpsec_fair import generate_data_package
+    sg = {"S1": {"sample_type": "SAMPLE", "selected": {"doc": "1", "dad": "1"},
+                 "replicas": {"1": {"injection_index": 5, "inj_volume": 400,
+                                    "areas": {"DOC": {"BioP": 10.0, "HS": 20.0, "total": 40.0,
+                                                      "HS_pct": 50.0},
+                                              "A254": {"HS": 5.0, "total": 8.0}}}},
+                 "quantification": {"concentration_ppm_direct": 3.4, "hci": 0.7}}}
+    out = tempfile.mkdtemp()
+    generate_data_package(sg, out, mode="COLUMN", seq_name="TEST", seq_date="2026-01-15")
+    check("genera results + datapackage + README", all(
+        os.path.exists(os.path.join(out, f))
+        for f in ("results_SEC.csv", "datapackage.json", "README.txt")))
+    df = pd.read_csv(os.path.join(out, "results_SEC.csv"))
+    check("results_SEC.csv net (pandas) amb ppm",
+          "conc_ppm_doc" in df.columns and float(df["conc_ppm_doc"].iloc[0]) == 3.4)
+    check("porta fraccions DOC", "doc_hs_pct" in df.columns)
+    dp = _json.load(open(os.path.join(out, "datapackage.json"), encoding="utf-8"))
+    fields = dp["resources"][0]["schema"]["fields"]
+    check("datapackage: esquema amb unitats", any(f.get("unit") for f in fields))
+    check("datapackage: llicència oberta", dp["licenses"][0]["name"].startswith("CC-BY"))
+
+
 def test_pre_margin_single_source():
     """#6: hpsec_delay ha de llegir el pre-margin de config (font única)."""
     print("\n[#6] Pre-margin des de config (font única)")
@@ -197,6 +226,7 @@ if __name__ == "__main__":
               test_khp_measured_delay_recorded,
               test_no_np_trapz_in_production,
               test_303_analyze_ok,
+              test_fair_data_package,
               test_pre_margin_single_source,
               test_autofix_columns_synthetic,
               test_291_doc_direct_recovered):
