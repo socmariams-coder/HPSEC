@@ -770,45 +770,7 @@ class AnalyzePanel(QWidget):
             self.status_frame.setVisible(False)
             self.results_frame.setVisible(True)
             self.main_window.set_status("Analisi carregada des de fitxer existent", 3000)
-            # Lazy-generate PER_SAMPLE/ si falta (SEQs analitzades abans d'aquesta feature)
-            try:
-                self._ensure_per_sample_files(result)
-            except Exception as e:
-                logger.debug("Per-sample lazy gen skipped: %s", e)
             self.analyze_completed.emit(result)
-
-    def _ensure_per_sample_files(self, result):
-        """Genera PER_SAMPLE/ si no existeix o està incomplet.
-
-        Cobreix SEQs analitzades abans de la introducció d'aquesta carpeta:
-        si hi ha JSON d'anàlisi però no la carpeta PER_SAMPLE (o té menys
-        fitxers que mostres no-KHP), es genera ara sense reanalitzar.
-        Sense modificar el JSON central; només crea fitxers nous.
-        """
-        import os
-        seq_path = result.get("seq_path") or self.main_window.seq_path
-        if not seq_path:
-            return
-        per_sample_dir = os.path.join(seq_path, "RESULTATS", "PER_SAMPLE")
-        # Comptar mostres no-KHP esperades
-        samples_grouped = result.get("samples_grouped") or {}
-        expected = sum(1 for sd in samples_grouped.values()
-                       if isinstance(sd, dict)
-                       and sd.get("sample_type") != "KHP")
-        if expected == 0:
-            return
-        # Si la carpeta existeix i té .json prou, no fer res
-        if os.path.isdir(per_sample_dir):
-            existing = sum(1 for f in os.listdir(per_sample_dir)
-                           if f.endswith(".json"))
-            if existing >= expected:
-                return
-        from hpsec_per_sample import write_all_samples
-        written = write_all_samples(result)
-        if written:
-            logger.info("PER_SAMPLE/ generat (lazy): %d fitxers", len(written))
-            self.main_window.set_status(
-                f"PER_SAMPLE generat: {len(written)} mostres", 3000)
 
     def _populate_sub_tabs(self, result):
         """Propaga dades d'analisi als sub-tabs QC i Comparacio."""
@@ -1763,12 +1725,7 @@ class AnalyzePanel(QWidget):
             save_analysis_result(processed)
             logger.info("_save_current_analysis: guardat OK (quantification_pending=True)")
 
-            # Refrescar CSV+JSON per mostra (canvi selecció/repair/compose)
-            try:
-                from hpsec_per_sample import write_all_samples
-                write_all_samples(processed)
-            except Exception as e2:
-                logger.warning("Error refrescant fitxers per mostra: %s", e2)
+            # (Els fitxers per mostra es regeneren al dataset FAIR a l'exportació.)
 
             # Auto-requantify en background si abans hi havia quantificació
             if had_quantification:

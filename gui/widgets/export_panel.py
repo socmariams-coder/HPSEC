@@ -84,85 +84,14 @@ class GenerateWorker(QThread):
             def progress_cb(pct, msg):
                 self.progress.emit(pct, msg)
 
-            # Excels individuals (+ RAW/PROCESSED CSVs)
+            # Carpeta de lliurament. El lliurament és el dataset FAIR + el PDF;
+            # cap Excel (redundants amb el dataset). El datapackage.json és el
+            # manifest/diccionari (substitueix SUMMARY.* i metadata.json).
             if self.custom_output_dir:
                 resultats_path = self.custom_output_dir
             else:
                 resultats_path = str(Path(self.seq_path) / "RESULTATS")
-            self.progress.emit(0, "Generant Excels individuals...")
-            excel_result = export_sequence(
-                self.samples_grouped,
-                resultats_path,
-                self.calibration_data,
-                self.mode,
-                config,
-                progress_cb,
-                seq_path=self.seq_path,
-                export_raw=self.export_raw,
-                export_processed=self.export_processed,
-                csv_separator=self.csv_separator,
-            )
-            results["excel_files"] = excel_result
-            results["errors"].extend(excel_result.get("errors", []))
-            results["n_raw"] = len(excel_result.get("raw_files", []))
-            results["n_processed"] = len(excel_result.get("processed_files", []))
-
-            # SUMMARY.xlsx → RESULTATS/ (junt amb els Excels i metadata): és un
-            # LLIURAMENT per a anàlisi extern, no cuina interna. Abans anava a CHECK/.
-            self.progress.emit(80, "Generant SUMMARY.xlsx...")
-            summary_dir = Path(resultats_path)
-            summary_dir.mkdir(parents=True, exist_ok=True)
-            summary_path = str(summary_dir / "SUMMARY.xlsx")
-            summary_result = generate_summary_excel(
-                self.samples_grouped,
-                summary_path,
-                self.calibration_data,
-                self.mode,
-                config,
-                seq_name=seq_name,
-                seq_date=seq_date,
-            )
-            results["summary"] = summary_result
-
-            # SUMMARY.csv → same dir as SUMMARY.xlsx
-            if self.csv_summary:
-                self.progress.emit(84, "Generant SUMMARY.csv...")
-                try:
-                    csv_summary_path = str(summary_dir / "SUMMARY.csv")
-                    generate_summary_csv(
-                        self.samples_grouped,
-                        csv_summary_path,
-                        self.calibration_data,
-                        self.mode,
-                        config,
-                        separator=self.csv_separator,
-                        seq_name=seq_name,
-                        seq_date=seq_date,
-                    )
-                    results["csv_summary"] = csv_summary_path
-                except Exception as e:
-                    results["errors"].append(f"CSV summary: {e}")
-
-            # metadata.json → SEQ/RESULTATS/ (SEMPRE: és el manifest del pipeline,
-            # recull el més rellevant de cada etapa; abans només amb RAW/PROCESSED)
-            if self.export_metadata:
-                self.progress.emit(87, "Generant metadata.json...")
-                try:
-                    meta_path = str(Path(resultats_path) / "metadata.json")
-                    export_opts = {
-                        "raw": self.export_raw,
-                        "processed": self.export_processed,
-                        "csv_separator": repr(self.csv_separator),
-                        "zip": self.export_zip,
-                    }
-                    write_metadata_json(
-                        meta_path, self.samples_grouped, self.mode,
-                        self.calibration_data, config,
-                        self.seq_path, export_opts,
-                    )
-                    results["metadata"] = meta_path
-                except Exception as e:
-                    results["errors"].append(f"metadata.json: {e}")
+            Path(resultats_path).mkdir(parents=True, exist_ok=True)
 
             # Dataset FAIR (Frictionless Data Package) → RESULTATS/
             # CSV nets + datapackage.json (esquema+provenança+metadata) + README,
@@ -824,14 +753,14 @@ class ExportPanel(QWidget):
         self.status_label.setVisible(False)
 
         errors = results.get("errors", [])
-        excel_result = results.get("excel_files", {})
-        n_exported = excel_result.get("n_exported", 0) if excel_result else 0
+        fair = results.get("fair", {}) or {}
+        n_s = fair.get("n_samples", 0)
         seq_path = self._current_seq_path
 
         # Update results_frame
         if errors:
             self.results_status_label.setText(
-                f"<b>\u26a0 {n_exported} Excels + SUMMARY generats</b> "
+                f"<b>\u26a0 Dataset FAIR generat ({n_s} mostres)</b> "
                 f"amb {len(errors)} error{'s' if len(errors) > 1 else ''}"
             )
             self.results_frame.setStyleSheet("""
@@ -843,7 +772,7 @@ class ExportPanel(QWidget):
             """)
         else:
             self.results_status_label.setText(
-                f"<b>\u2714 {n_exported} Excels + SUMMARY generats correctament</b>"
+                f"<b>\u2714 Dataset FAIR + PDF generats ({n_s} mostres)</b>"
             )
             self.results_frame.setStyleSheet("""
                 QFrame {
@@ -854,7 +783,8 @@ class ExportPanel(QWidget):
             """)
 
         self.results_path_label.setText(
-            f"Resultats (Excels + SUMMARY) \u2192 <code>{seq_path}/RESULTATS/</code>"
+            f"Dataset FAIR (results_SEC.csv + traces/ + datapackage.json) + PDF "
+            f"\u2192 <code>{seq_path}/RESULTATS/</code>"
         )
         self.results_frame.setVisible(True)
 
@@ -1078,9 +1008,8 @@ class ExportPanel(QWidget):
             data_dir = Path(seq_path) / "CHECK" / "data"
             data_dir.mkdir(parents=True, exist_ok=True)
 
-            excel_result = results.get("excel_files", {}) or {}
-            n_exported = excel_result.get("n_exported", 0)
-            n_skipped = excel_result.get("n_skipped", 0)
+            fair = results.get("fair", {}) or {}
+            n_exported = fair.get("n_samples", 0)
 
             # Discarded samples
             processed_data = self.main_window.processed_data or {}
@@ -1098,10 +1027,10 @@ class ExportPanel(QWidget):
                 "seq_name": Path(seq_path).name,
                 "method": self._current_method,
                 "n_exported": n_exported,
-                "n_skipped": n_skipped,
+                "n_skipped": 0,
                 "discarded_samples": discarded,
                 "bp_info": {},
-                "summary_path": str(Path(seq_path) / "RESULTATS" / "SUMMARY.xlsx"),
+                "dataset_path": str(Path(seq_path) / "RESULTATS" / "datapackage.json"),
             }
 
             review_path = data_dir / "review_result.json"
