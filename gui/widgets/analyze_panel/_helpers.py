@@ -1,8 +1,8 @@
 """
 Shared helper functions for analyze_panel package.
 
-Provides reusable table population and styling functions used by both
-panel.py (main panel), dialogs.py (detail dialog), and sample_card.py.
+Provides reusable table population and styling functions used by
+panel.py (main panel) and dialogs.py (detail dialog).
 """
 
 from PySide6.QtWidgets import (
@@ -330,7 +330,7 @@ def draw_timeout_zones_on_ax(ax, timeout_info_r1, timeout_info_r2=None,
 
 
 # ---------------------------------------------------------------------------
-# Calibration comparison helpers (shared between AnalyzePanel and ReviewPanel)
+# Calibration comparison helpers
 # ---------------------------------------------------------------------------
 
 def format_calibration_comparison_html(rf_vigent, int_vigent, rf_new, int_new,

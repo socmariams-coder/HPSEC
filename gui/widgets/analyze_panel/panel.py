@@ -66,7 +66,6 @@ from ._helpers import (
     classify_sample_status, resolve_doc_replica, find_repair_targets,
 )
 from .sequence_qc_tab import SequenceQCTab
-# ComparisonTab moved to tab Mostres
 
 # Fraction colors (consistent palette)
 FRACTION_COLORS = {
@@ -1741,8 +1740,7 @@ class AnalyzePanel(QWidget):
         - No es dispara si ja hi ha un worker auto-requantify en marxa
           (evita pile-up amb diverses reparacions ràpides seguides).
         - L'usuari pot seguir treballant mentre s'executa.
-        - Quan acaba, el JSON i els PER_SAMPLE/*.json queden actualitzats
-          automàticament (quantify_sequence ja crida update_all_quantifications).
+        - Quan acaba, el JSON d'anàlisi queda actualitzat automàticament.
         """
         if getattr(self, '_auto_quantify_worker', None) is not None \
                 and self._auto_quantify_worker.isRunning():

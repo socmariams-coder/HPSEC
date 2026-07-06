@@ -2202,36 +2202,6 @@ class ImportPanel(QWidget):
         dialog = OrphanFilesDialog(self, orphans_with_info)
         dialog.exec()
 
-    def _on_warnings_confirmed(self, initials: str):
-        """Handler quan es confirmen avisos via CommonToolbar."""
-        self._warnings_confirmed = True
-        self._warnings_confirmed_by = initials
-        self._orphan_warning_dismissed = True
-
-        # Guardar al manifest
-        if self.imported_data:
-            self.imported_data["warnings_confirmed"] = True
-            self.imported_data["warnings_confirmed_by"] = initials
-            self.imported_data["orphan_warning_dismissed"] = True
-            try:
-                save_import_manifest(self.imported_data)
-                self.main_window.set_status(f"Avisos confirmats per {initials}", 3000)
-            except Exception as e:
-                logger.warning(f"No s'ha pogut guardar: {e}")
-
-        # Notificar wizard
-        self.warnings_dismissed.emit()
-        self._update_next_button_state()
-
-    def _on_notes_changed(self, notes: str):
-        """Handler quan canvien les notes via CommonToolbar."""
-        if self.imported_data:
-            self.imported_data["notes"] = notes
-            try:
-                save_import_manifest(self.imported_data)
-            except Exception as e:
-                logger.warning(f"No s'ha pogut guardar notes: {e}")
-
     def _save_manifest(self):
         """Guarda el manifest amb les assignacions actuals."""
         if not self.imported_data:
