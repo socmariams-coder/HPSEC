@@ -704,14 +704,12 @@ class ImportPanel(QWidget):
 
         # Auto-generar PDF d'importació
         try:
-            from generate_import_report import generate_import_report
+            from hpsec_reports import generate_import_report
             seq_path = result.get("seq_path") or self.main_window.seq_path
             if seq_path:
                 pdf = generate_import_report(seq_path)
                 if pdf:
                     logger.info(f"Report importació: {pdf}")
-        except ImportError:
-            pass
         except Exception as e:
             logger.warning(f"No s'ha pogut generar report d'importació: {e}")
 
