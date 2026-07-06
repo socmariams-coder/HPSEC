@@ -35,40 +35,14 @@ import re
 
 logger = logging.getLogger(__name__)
 
-# =========================================================================
-# HELPER: Extreu número de seqüència del nom
-# =========================================================================
+# Font única per extreure el número de SEQ (retorna None si no n'hi ha;
+# aquí es fa servir com a clau d'ordenació, per això el fallback a 0)
+from hpsec_consolidate import extract_seq_number as _extract_seq_number
+
+
 def extract_seq_number(seq_name):
-    """
-    Extreu el número de seqüència d'un nom de SEQ.
-    Ex: '2024121001_SEQ' -> 2024121001
-        'SEQ_001' -> 1
-        'HPSEC_20241210_02_SEQ' -> 2024121002
-    """
-    if not seq_name:
-        return 0
-
-    # Intentar patró comú: YYYYMMDDXX (10 dígits)
-    match = re.search(r'(\d{10})', seq_name)
-    if match:
-        return int(match.group(1))
-
-    # Patró alternatiu: YYYYMMDD_XX -> combinar
-    match = re.search(r'(\d{8})[_-]?(\d{1,2})', seq_name)
-    if match:
-        return int(match.group(1)) * 100 + int(match.group(2))
-
-    # Només números al final
-    match = re.search(r'(\d+)(?:_SEQ)?$', seq_name, re.IGNORECASE)
-    if match:
-        return int(match.group(1))
-
-    # Qualsevol número
-    match = re.search(r'(\d+)', seq_name)
-    if match:
-        return int(match.group(1))
-
-    return 0
+    """Número de SEQ del nom, o 0 si no es pot extreure (clau d'ordenació)."""
+    return _extract_seq_number(seq_name or "") or 0
 
 
 # Matplotlib

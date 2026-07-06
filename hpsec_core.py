@@ -153,6 +153,58 @@ def downsample_to_cadence(t, y, target_dt=DOC_TARGET_DT_MIN):
     return t_ds, y_ds
 
 
+def downsample_2d(t, data_2d, target_dt):
+    """Downsample matriu 2D (temps × columnes) per bin-average.
+
+    Mateix criteri que downsample_to_cadence: si la cadència original ja és
+    >= target_dt * 0.8, retorna les dades sense modificar. Els bins buits
+    s'omplen amb el punt més proper.
+
+    Args:
+        t: array temps (n_points,)
+        data_2d: array 2D (n_points, n_cols) o DataFrame
+        target_dt: cadència objectiu (min)
+
+    Returns:
+        (t_new, data_new) arrays downsampled
+    """
+    t = np.asarray(t, dtype=float)
+    if hasattr(data_2d, 'values'):
+        data_2d = data_2d.values
+    data_2d = np.asarray(data_2d, dtype=float)
+
+    dt_median = np.median(np.diff(t))
+    if dt_median >= target_dt * 0.8:
+        return t, data_2d  # ja prou espaiats
+
+    t_min, t_max = t[0], t[-1]
+    bins = np.arange(t_min, t_max + target_dt, target_dt)
+    n_bins = len(bins) - 1
+    if n_bins < 2:
+        return t, data_2d
+
+    t_new = np.zeros(n_bins)
+    data_new = np.zeros((n_bins, data_2d.shape[1] if data_2d.ndim > 1 else 1))
+    if data_2d.ndim == 1:
+        data_2d = data_2d.reshape(-1, 1)
+
+    indices = np.digitize(t, bins) - 1
+    indices = np.clip(indices, 0, n_bins - 1)
+
+    for b in range(n_bins):
+        mask = indices == b
+        if mask.any():
+            t_new[b] = np.mean(t[mask])
+            data_new[b] = np.mean(data_2d[mask], axis=0)
+        else:
+            t_new[b] = (bins[b] + bins[b + 1]) / 2
+            # Interpolar des del punt més proper
+            nearest = np.argmin(np.abs(t - t_new[b]))
+            data_new[b] = data_2d[nearest]
+
+    return t_new, data_new
+
+
 # =============================================================================
 # BI-GAUSSIAN FUNCTIONS
 # =============================================================================

@@ -30,25 +30,7 @@ from scipy.integrate import trapezoid
 logger = logging.getLogger(__name__)
 
 
-def _atomic_write_json(path, data, **dump_kwargs):
-    """Escriu JSON de forma atòmica (fitxer temporal + os.replace + fsync).
-    Evita deixar un JSON a mitges si el procés mor durant l'escriptura."""
-    import tempfile
-    d = os.path.dirname(os.path.abspath(path))
-    os.makedirs(d, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=d, suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(data, f, **dump_kwargs)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, path)
-    except Exception:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
+from hpsec_utils import _atomic_write_json
 
 
 def _make_unique_filename(base_name, ext, used_filenames):
@@ -1054,52 +1036,7 @@ def _csv_metadata_header(fields, comment_char="#"):
     return "\n".join(lines)
 
 
-def _downsample_2d(t, data_2d, target_dt):
-    """Downsample matriu 2D (temps × columnes) per bin-average.
-
-    Args:
-        t: array temps (n_points,)
-        data_2d: array 2D (n_points, n_cols) o DataFrame
-        target_dt: cadència objectiu (min)
-
-    Returns:
-        (t_new, data_new) arrays downsampled
-    """
-    t = np.asarray(t, dtype=float)
-    if hasattr(data_2d, 'values'):
-        data_2d = data_2d.values
-    data_2d = np.asarray(data_2d, dtype=float)
-
-    dt_median = np.median(np.diff(t))
-    if dt_median >= target_dt * 0.8:
-        return t, data_2d  # ja prou espaiats
-
-    t_min, t_max = t[0], t[-1]
-    bins = np.arange(t_min, t_max + target_dt, target_dt)
-    n_bins = len(bins) - 1
-    if n_bins < 2:
-        return t, data_2d
-
-    t_new = np.zeros(n_bins)
-    data_new = np.zeros((n_bins, data_2d.shape[1] if data_2d.ndim > 1 else 1))
-    if data_2d.ndim == 1:
-        data_2d = data_2d.reshape(-1, 1)
-
-    indices = np.digitize(t, bins) - 1
-    indices = np.clip(indices, 0, n_bins - 1)
-
-    for b in range(n_bins):
-        mask = indices == b
-        if mask.any():
-            t_new[b] = np.mean(t[mask])
-            data_new[b] = np.mean(data_2d[mask], axis=0)
-        else:
-            t_new[b] = (bins[b] + bins[b + 1]) / 2
-            # Interpolar des del punt més proper
-            nearest = np.argmin(np.abs(t - t_new[b]))
-            data_new[b] = data_2d[nearest]
-
-    return t_new, data_new
+from hpsec_core import downsample_2d as _downsample_2d
 
 
 def write_csv_raw(

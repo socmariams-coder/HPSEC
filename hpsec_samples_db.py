@@ -75,24 +75,7 @@ def load_samples_index() -> Dict:
         return _create_empty_index()
 
 
-def _atomic_write_json(path, data, **dump_kwargs):
-    """Escriu JSON atòmicament (temp + fsync + os.replace)."""
-    import tempfile
-    d = os.path.dirname(os.path.abspath(path))
-    os.makedirs(d, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=d, suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(data, f, **dump_kwargs)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, path)
-    except Exception:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
+from hpsec_utils import _atomic_write_json
 
 
 def save_samples_index(index: Dict) -> bool:

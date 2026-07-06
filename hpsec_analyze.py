@@ -3306,30 +3306,11 @@ def quantify_sequence(analysis_result, seq_path=None, mode=None, seq_date=None,
 # GUARDAR RESULTAT ANÀLISI (JSON)
 # =============================================================================
 
-def get_data_folder(seq_path, create=False):
-    """Retorna la carpeta CHECK/data d'una SEQ."""
-    data_folder = os.path.join(seq_path, "CHECK", "data")
-    if create:
-        os.makedirs(data_folder, exist_ok=True)
-    return data_folder
+# Font única: hpsec_import (mateixa carpeta CHECK/data)
+from hpsec_import import get_data_folder
 
 
-class NumpyEncoder(json.JSONEncoder):
-    """Encoder JSON per tipus numpy i pandas."""
-    def default(self, obj):
-        if isinstance(obj, np.ndarray):
-            return obj.tolist()
-        if isinstance(obj, (np.integer, np.int64, np.int32)):
-            return int(obj)
-        if isinstance(obj, (np.floating, np.float64, np.float32)):
-            return float(obj)
-        if isinstance(obj, np.bool_):
-            return bool(obj)
-        if isinstance(obj, pd.DataFrame):
-            return obj.to_dict(orient="list")
-        if pd.isna(obj):
-            return None
-        return super().default(obj)
+from hpsec_utils import NumpyEncoder, _atomic_write_json
 
 
 def save_analysis_result(analysis_data, output_path=None):
@@ -3512,25 +3493,11 @@ def save_analysis_result(analysis_data, output_path=None):
 
             result["samples_grouped"][sample_name] = grouped_entry
 
-    # Guardar (ATÒMIC: temp + fsync + os.replace; encoder NumpyEncoder únic per a
-    # aquest fitxer — abans Quantificar el reescrivia amb un encoder diferent)
-    import tempfile
+    # Guardar (ATÒMIC; encoder NumpyEncoder únic per a aquest fitxer — abans
+    # Quantificar el reescrivia amb un encoder diferent)
     try:
-        d = os.path.dirname(output_path)
-        os.makedirs(d, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(dir=d, suffix=".tmp")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(result, f, indent=2, ensure_ascii=False, cls=NumpyEncoder)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp, output_path)
-        except Exception:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-            raise
+        _atomic_write_json(output_path, result, indent=2, ensure_ascii=False,
+                           cls=NumpyEncoder)
         return output_path
     except Exception as e:
         print(f"Error guardant analysis_result.json: {e}")
@@ -3575,7 +3542,7 @@ def load_analysis_result(seq_path):
     """
     import json
 
-    data_folder = get_data_folder(seq_path)
+    data_folder = get_data_folder(seq_path, create=False)
     filepath = os.path.join(data_folder, "analysis_result.json")
 
     if not os.path.exists(filepath):

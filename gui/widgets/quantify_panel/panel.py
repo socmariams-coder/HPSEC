@@ -390,24 +390,9 @@ class QuantifyPanel(QWidget):
         try:
             # Atòmic + NumpyEncoder (mateix encoder que save_analysis_result;
             # abans default=str convertia números en text — no impecable)
-            import tempfile
-            from hpsec_analyze import NumpyEncoder
-            d = os.path.dirname(json_path)
-            os.makedirs(d, exist_ok=True)
-            fd, tmp = tempfile.mkstemp(dir=d, suffix=".tmp")
-            try:
-                with os.fdopen(fd, "w", encoding="utf-8") as f:
-                    json.dump(self._quantification_result, f, indent=2,
-                              ensure_ascii=False, cls=NumpyEncoder)
-                    f.flush()
-                    os.fsync(f.fileno())
-                os.replace(tmp, json_path)
-            except Exception:
-                try:
-                    os.unlink(tmp)
-                except OSError:
-                    pass
-                raise
+            from hpsec_utils import NumpyEncoder, _atomic_write_json
+            _atomic_write_json(json_path, self._quantification_result,
+                               indent=2, ensure_ascii=False, cls=NumpyEncoder)
         except Exception as e:
             logger.error("Error persistint quantificació: %s", e)
 

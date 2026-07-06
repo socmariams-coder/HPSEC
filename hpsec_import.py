@@ -100,25 +100,7 @@ def _autofix_shifted_columns(df):
     return df, False
 
 
-def _atomic_write_json(path, data, **dump_kwargs):
-    """Escriu un JSON de forma atòmica: temp al mateix directori + os.replace.
-    El fitxer de destí o queda intacte (vell) o passa a ser el nou complet,
-    mai un estat intermedi corromput (disc ple, lock, crash)."""
-    import tempfile
-    directory = os.path.dirname(path) or '.'
-    fd, tmp = tempfile.mkstemp(dir=directory, prefix='.tmp_', suffix='.json')
-    try:
-        with os.fdopen(fd, 'w', encoding='utf-8') as f:
-            json.dump(data, f, **dump_kwargs)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, path)
-    except Exception:
-        try:
-            os.remove(tmp)
-        except OSError:
-            pass
-        raise
+from hpsec_utils import _atomic_write_json
 
 
 # =============================================================================

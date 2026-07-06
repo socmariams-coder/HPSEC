@@ -82,18 +82,7 @@ from hpsec_warnings import (
 # JSON ENCODER PER NUMPY TYPES
 # =============================================================================
 
-class NumpyEncoder(json.JSONEncoder):
-    """Custom JSON encoder that handles numpy types."""
-    def default(self, obj):
-        if isinstance(obj, np.integer):
-            return int(obj)
-        elif isinstance(obj, np.floating):
-            return float(obj)
-        elif isinstance(obj, np.ndarray):
-            return obj.tolist()
-        elif isinstance(obj, np.bool_):
-            return bool(obj)
-        return super().default(obj)
+from hpsec_utils import NumpyEncoder, _atomic_write_json
 
 
 # =============================================================================
@@ -336,30 +325,6 @@ def _migrate_calibration_reference(ref):
     ref['version'] = '3.0'
 
     return ref
-
-
-def _atomic_write_json(path, data, **dump_kwargs):
-    """Escriu un JSON de forma atòmica: temp al mateix directori + os.replace.
-
-    Evita deixar el fitxer bo corromput o a mitges si l'escriptura falla (disc
-    ple, lock OneDrive/Excel, crash): el fitxer de destí o queda intacte (vell)
-    o passa a ser el nou complet, mai un estat intermedi.
-    """
-    import tempfile
-    directory = os.path.dirname(path) or '.'
-    fd, tmp = tempfile.mkstemp(dir=directory, prefix='.tmp_', suffix='.json')
-    try:
-        with os.fdopen(fd, 'w', encoding='utf-8') as f:
-            json.dump(data, f, **dump_kwargs)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, path)  # atòmic dins el mateix sistema de fitxers
-    except Exception:
-        try:
-            os.remove(tmp)
-        except OSError:
-            pass
-        raise
 
 
 def load_calibration_reference():
@@ -1508,14 +1473,12 @@ def get_injection_volume(seq_path, is_bp, manifest_volume=None):
 
 
 def extract_seq_number(seq_path):
-    """Extreu el número de seqüència del path."""
+    """Extreu el número de seqüència del path (delega a hpsec_consolidate)."""
     if not seq_path:
         return None
+    from hpsec_consolidate import extract_seq_number as _extract
     folder_name = os.path.basename(os.path.normpath(seq_path))
-    match = re.search(r'^(\d+)', folder_name)
-    if match:
-        return int(match.group(1))
-    return None
+    return _extract(folder_name)
 
 
 def get_condition_key(mode: str, volume_uL: int, conc_ppm: float = None) -> str:

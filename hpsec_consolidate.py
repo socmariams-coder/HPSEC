@@ -38,8 +38,8 @@ def extract_seq_number(seq_name: str) -> Optional[int]:
         "285_SEQ_BP" -> 285
         "SEQ_287_TEST" -> 287
     """
-    # Patró: número al principi seguit de _
-    match = re.match(r'^(\d+)_', seq_name)
+    # Patró: número al principi (seguit de _ o final de nom)
+    match = re.match(r'^(\d+)(?:_|$)', seq_name)
     if match:
         return int(match.group(1))
 

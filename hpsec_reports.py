@@ -4145,42 +4145,7 @@ def _ana_draw_sample_header(fig, sg, sample_name):
             x_pos += len(text) * 0.005 + 0.01
 
 
-def _ana_downsample_2d(t, data_2d, target_dt):
-    """Downsample matriu 2D per bin-average (còpia local de hpsec_export)."""
-    t = np.asarray(t, dtype=float)
-    if hasattr(data_2d, 'values'):
-        data_2d = data_2d.values
-    data_2d = np.asarray(data_2d, dtype=float)
-
-    dt_median = np.median(np.diff(t))
-    if dt_median >= target_dt * 0.8:
-        return t, data_2d
-
-    t_min, t_max_val = t[0], t[-1]
-    bins = np.arange(t_min, t_max_val + target_dt, target_dt)
-    n_bins = len(bins) - 1
-    if n_bins < 2:
-        return t, data_2d
-
-    t_new = np.zeros(n_bins)
-    data_new = np.zeros((n_bins, data_2d.shape[1] if data_2d.ndim > 1 else 1))
-    if data_2d.ndim == 1:
-        data_2d = data_2d.reshape(-1, 1)
-
-    indices = np.digitize(t, bins) - 1
-    indices = np.clip(indices, 0, n_bins - 1)
-
-    for b in range(n_bins):
-        mask = indices == b
-        if mask.any():
-            t_new[b] = np.mean(t[mask])
-            data_new[b] = np.mean(data_2d[mask], axis=0)
-        else:
-            t_new[b] = (bins[b] + bins[b + 1]) / 2
-            nearest = np.argmin(np.abs(t - t_new[b]))
-            data_new[b] = data_2d[nearest]
-
-    return t_new, data_new
+from hpsec_core import downsample_2d as _ana_downsample_2d
 
 
 def _ana_draw_heatmap_page(pdf, sg, sample_name, method, page_num):
