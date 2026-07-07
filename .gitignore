@@ -41,7 +41,7 @@ _DEV/
 PROVES/
 
 # Temporary analysis scripts (not part of main product) — only at repo root
-# Anchored with leading / per no capturar fitxers del codi font (ex: gui/widgets/compare_panel.py).
+# Anchored with leading / per no capturar fitxers del codi font (ex: gui/widgets/*.py).
 # Bug #20 P2b.
 /analyze_*.py
 /compare_*.py
@@ -51,6 +51,20 @@ PROVES/
 /extract_*.py
 /create_*.py
 /cleanup_*.py
+/_*.py
+
+# Arxiu de scripts de diagnòstic d'un sol ús i docs obsolets (fora del track;
+# es conserven només al disc local)
+/archive/
+
+# Dades one-shot a l'arrel (no són recursos del producte)
+/test_save_uib.json
+/_results/
+/analisi_khp/
+/analisi_calibracio/
+/285_SEQ_KHP.xlsx
+/286_SEQ_BP_KHP.xlsx
+/Registre manteniment HPLC-DAD-TOC.xlsx
 
 # Development logs
 recalibrate_log_*.txt

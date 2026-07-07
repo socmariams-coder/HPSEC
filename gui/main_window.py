@@ -291,7 +291,7 @@ class HPSECSuiteWindow(QMainWindow):
     def go_to_process_step(self, step_index):
         """
         Navega a una etapa específica del process wizard.
-        0=Importar, 1=Calibrar, 2=Analitzar, 3=Consolidar
+        0=Importar, 1=Verificar, 2=Analitzar, 3=Quantificar, 4=Exportar
         """
         self._show_wizard()
         # Navegar dins del wizard

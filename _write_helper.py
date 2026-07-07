@@ -1,1 +1,0 @@
-import pathlib, sys; p = pathlib.Path(sys.argv[1]); p.write_text(sys.stdin.read(), encoding="utf-8"); print("Written", p.stat().st_size, "bytes")
