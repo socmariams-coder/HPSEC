@@ -484,6 +484,28 @@ def get_data_folder():
     folders = get_data_folders()
     return folders[0] if folders else ""
 
+def get_sample_duration(mode="COLUMN"):
+    """Durada per mostra (crom + post-run) en minuts, segons mode.
+
+    Font única per als valors de sequence.sample_duration_* (evitar
+    hardcodejar 78.65/12.0 pels mòduls).
+    """
+    cfg = get_config()
+    if str(mode).upper() == "BP":
+        return float(cfg.get("sequence", "sample_duration_bp", default=12.0))
+    return float(cfg.get("sequence", "sample_duration_column", default=78.65))
+
+
+def get_toc_cycle_min():
+    """Cicle de recàrrega de xeringa del TOC (minuts). Font única."""
+    return float(get_config().get("sequence", "toc_cycle_min", default=77.2))
+
+
+def get_toc_timeout_sec():
+    """Durada del timeout del TOC (segons). Font única."""
+    return float(get_config().get("sequence", "toc_timeout_sec", default=74))
+
+
 def get_registry_path():
     """
     Obté la carpeta REGISTRY per JSONs globals (KHP_History, Samples_History).

@@ -26,14 +26,16 @@ from typing import List, Dict, Tuple, Optional
 # CONSTANTS
 # =============================================================================
 
-# Paràmetres del sistema TOC
-TOC_CYCLE_MIN = 77.2          # Cicle recàrrega xeringa (minuts)
-TOC_TIMEOUT_SEC = 74          # Duració del timeout (segons)
-TOC_TIMEOUT_MIN = 74 / 60     # ~1.23 min
+# Paràmetres del sistema TOC — font única: hpsec_config (secció "sequence")
+from hpsec_config import get_sample_duration, get_toc_cycle_min, get_toc_timeout_sec
+
+TOC_CYCLE_MIN = get_toc_cycle_min()        # Cicle recàrrega xeringa (minuts)
+TOC_TIMEOUT_SEC = get_toc_timeout_sec()    # Duració del timeout (segons)
+TOC_TIMEOUT_MIN = TOC_TIMEOUT_SEC / 60     # ~1.23 min
 
 # Durades típiques de mostra
-SAMPLE_DURATION_CURRENT = 78.65  # Duració actual (min)
-SAMPLE_DURATION_OPTIMAL = 77.2   # Duració òptima (min)
+SAMPLE_DURATION_CURRENT = get_sample_duration("COLUMN")  # Duració actual (min)
+SAMPLE_DURATION_OPTIMAL = TOC_CYCLE_MIN    # Duració òptima = cicle TOC (deriva 0)
 
 # Zones cromatograma per mode
 ZONES = {
@@ -381,7 +383,7 @@ if __name__ == "__main__":
 
     # Exemple: seqüència de 29 mostres, duració actual
     n = 29
-    duration = 78.65
+    duration = SAMPLE_DURATION_CURRENT
     t0 = 40.0
 
     print(f"\nSeqüència: {n} mostres, {duration} min/mostra, T0={t0} min")

@@ -1688,7 +1688,8 @@ def estimate_timeout_for_uib(direct_timeout_info=None, sample_num=None,
     # --- Font 2: Model predictiu (planner) ---
     if sample_num is not None and t0 is not None:
         if sample_duration is None:
-            sample_duration = 12.0 if is_bp else 78.65  # Durades típiques
+            from hpsec_config import get_sample_duration
+            sample_duration = get_sample_duration("BP" if is_bp else "COLUMN")
 
         try:
             from hpsec_planner import predict_timeout_position
