@@ -1075,7 +1075,10 @@ class AnalyzePanel(QWidget):
         logger.error(f"Error durant analisi: {error_msg}")
         self.progress_frame.setVisible(False)
         self.analyze_btn.setEnabled(True)
-        self._show_inline_message(str(error_msg), level="error")
+        self._show_inline_message(
+            f"No s'ha pogut completar l'anàlisi: {error_msg}\n"
+            "El detall tècnic és al log de la sessió "
+            "(carpeta d'usuari, .hpsec\\hpsec_suite.log).", level="error")
         self.analyze_completed.emit({"success": False, "error": error_msg})
 
     def _show_inline_message(self, message, level="info"):
@@ -1760,11 +1763,19 @@ class AnalyzePanel(QWidget):
             self._auto_quantify_worker.completed.connect(
                 self._on_auto_requantify_done)
             self._auto_quantify_worker.error.connect(
-                lambda msg: logger.warning("Auto-requantify error: %s", msg))
+                self._on_auto_requantify_error)
             self._auto_quantify_worker.start()
             self.main_window.set_status("Requantificant en background…", 3000)
         except Exception as e:
             logger.warning("Error disparant auto-requantify: %s", e)
+
+    def _on_auto_requantify_error(self, msg):
+        """La requantificació automàtica ha fallat: avisar, no silenciar.
+        Si l'usuari no ho veu, pot creure que els ppm estan actualitzats."""
+        logger.warning("Auto-requantify error: %s", msg)
+        self.main_window.set_status(
+            f"⚠ La requantificació automàtica ha fallat: {msg} — "
+            "torna a executar Quantificar (pas 4)", 10000)
 
     def _on_auto_requantify_done(self, result):
         """Callback quan l'auto-requantify acaba. Actualitza processed_data

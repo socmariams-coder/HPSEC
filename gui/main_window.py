@@ -219,15 +219,17 @@ class HPSECSuiteWindow(QMainWindow):
     def _open_sequence(self):
         """Obre diàleg per seleccionar carpeta SEQ."""
         from hpsec_config import get_data_folder
-        data_folder = get_data_folder()
+        from gui.settings import recall_dir, remember_dir
+        start_dir = recall_dir("last_seq_dir", get_data_folder())
 
         path = QFileDialog.getExistingDirectory(
             self,
             "Selecciona carpeta SEQ",
-            data_folder,
+            start_dir,
             QFileDialog.ShowDirsOnly
         )
         if path:
+            remember_dir("last_seq_dir", os.path.dirname(path))
             self.load_sequence(path)
             # Anar al wizard
             self._show_wizard()
@@ -435,20 +437,44 @@ class HPSECSuiteWindow(QMainWindow):
             event.ignore()
 
 
+def get_log_path():
+    """Ruta del fitxer de log de la sessió (carpeta de l'usuari)."""
+    log_dir = Path.home() / ".hpsec"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    return log_dir / "hpsec_suite.log"
+
+
 def main():
     """Punt d'entrada principal."""
-    # Configurar logging
+    # Configurar logging: consola + fitxer (l'usuari normalment no veu la
+    # consola; els missatges d'error de la GUI remeten a aquest fitxer)
+    log_path = get_log_path()
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         datefmt="%H:%M:%S",
+        handlers=[
+            logging.StreamHandler(),
+            logging.FileHandler(log_path, mode="w", encoding="utf-8"),
+        ],
     )
+    logging.getLogger(__name__).info("Log de sessió: %s", log_path)
 
-    # Catch unhandled exceptions to stderr before Qt swallows them
+    # Excepcions no capturades: al log + diàleg visible (abans només stderr,
+    # que no existeix quan s'obre amb doble clic)
     import traceback as _tb
     _original_excepthook = sys.excepthook
     def _excepthook(exc_type, exc_val, exc_tb):
         _tb.print_exception(exc_type, exc_val, exc_tb)
+        logging.getLogger(__name__).critical(
+            "Excepció no capturada", exc_info=(exc_type, exc_val, exc_tb))
+        try:
+            QMessageBox.critical(
+                None, "Error inesperat",
+                f"S'ha produït un error inesperat:\n\n{exc_val}\n\n"
+                f"El detall tècnic és a:\n{log_path}")
+        except Exception:
+            pass
         _original_excepthook(exc_type, exc_val, exc_tb)
     sys.excepthook = _excepthook
 

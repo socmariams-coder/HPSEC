@@ -111,6 +111,7 @@ class QuantifyPanel(QWidget):
         self._cal_info_label.setTextFormat(Qt.RichText)
         self._cal_info_label.setWordWrap(True)
         self._cal_info_label.setStyleSheet("font-size: 11px;")
+        self._cal_info_label.linkActivated.connect(self._goto_global_calibration)
         header_layout.addWidget(self._cal_info_label)
 
         actions_row = QHBoxLayout()
@@ -300,10 +301,18 @@ class QuantifyPanel(QWidget):
         else:
             # Encara no s'ha quantificat — mostrar taula amb àrees + ppm pendent
             self._render_pending()
+            # Auto-executar si hi ha recta vigent: el pas no ha de dependre
+            # d'un clic que, si s'oblida, deixa els ppm buits a l'export.
+            # El botó queda com a re-execució manual.
+            if self._apply_btn.isEnabled() and (
+                    self._worker is None or not self._worker.isRunning()):
+                self._run_quantify()
 
     # ────────────────────────────────────────────────── Header (recta) ────
 
     def _update_cal_info(self):
+        if not self._analysis_result:
+            return
         try:
             from hpsec_calibrate import get_rf_mass_cal, get_calibration_intercept
             method = (self._analysis_result.get("method") or "COLUMN").lower()
@@ -324,7 +333,10 @@ class QuantifyPanel(QWidget):
             if not parts:
                 self._cal_info_label.setText(
                     "<span style='color:#c0392b'>"
-                    "⚠ Cap recta de calibració activa per aquest mode.</span>")
+                    "⚠ Cap recta de calibració activa per aquest mode.</span> "
+                    "Per activar-ne una: processa una SEQ de calibració (nom amb "
+                    "<b>_CAL</b>) o consulta l'estat a "
+                    "<a href='goto_cal'>Calibració Global</a>.")
                 self._apply_btn.setEnabled(False)
             else:
                 self._cal_info_label.setText(
@@ -334,6 +346,13 @@ class QuantifyPanel(QWidget):
             logger.warning("Error info calibració: %s", e)
             self._cal_info_label.setText(
                 f"<span style='color:#c0392b'>Error: {e}</span>")
+
+    def _goto_global_calibration(self, _link=None):
+        """Porta l'usuari al tab Calibració Global (escenari sense recta)."""
+        try:
+            self.main_window.tab_widget.setCurrentIndex(4)
+        except Exception as e:
+            logger.warning("No s'ha pogut navegar a Calibració Global: %s", e)
 
     # ─────────────────────────────────────────── Run quantify (worker) ────
 

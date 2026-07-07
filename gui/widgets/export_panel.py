@@ -644,21 +644,24 @@ class ExportPanel(QWidget):
 
     def _browse_dest_folder(self):
         """Obre diàleg per seleccionar carpeta de destí."""
-        # Intentar obrir al OneDrive/SharePoint si existeix
-        start_dir = ""
-        for candidate in [
-            os.path.expanduser("~/OneDrive - Universitat de Girona"),
-            os.path.expanduser("~/OneDrive"),
-            self._current_seq_path,
-        ]:
-            if candidate and os.path.isdir(candidate):
-                start_dir = candidate
-                break
+        from gui.settings import recall_dir, remember_dir
+        # Última carpeta usada; si no, OneDrive/SharePoint; si no, la SEQ
+        start_dir = recall_dir("last_export_dir")
+        if not start_dir:
+            for candidate in [
+                os.path.expanduser("~/OneDrive - Universitat de Girona"),
+                os.path.expanduser("~/OneDrive"),
+                self._current_seq_path,
+            ]:
+                if candidate and os.path.isdir(candidate):
+                    start_dir = candidate
+                    break
 
         folder = QFileDialog.getExistingDirectory(
             self, "Selecciona carpeta de destí", start_dir
         )
         if folder:
+            remember_dir("last_export_dir", folder)
             self.dest_path_edit.setText(folder)
             self._update_paths_label()
 
@@ -823,24 +826,28 @@ class ExportPanel(QWidget):
 
     def _browse_zip_dest(self):
         """Obre diàleg per seleccionar destí del fitxer ZIP."""
+        from gui.settings import recall_dir, remember_dir
         seq_name = Path(self._current_seq_path).name if self._current_seq_path else "export"
         default_name = f"{seq_name}_HPSEC_EXPORT.zip"
 
-        start_dir = ""
-        for candidate in [
-            os.path.expanduser("~/OneDrive - Universitat de Girona"),
-            os.path.expanduser("~/OneDrive"),
-            self._current_seq_path,
-        ]:
-            if candidate and os.path.isdir(candidate):
-                start_dir = candidate
-                break
+        # Última carpeta usada; si no, OneDrive/SharePoint; si no, la SEQ
+        start_dir = recall_dir("last_zip_dir")
+        if not start_dir:
+            for candidate in [
+                os.path.expanduser("~/OneDrive - Universitat de Girona"),
+                os.path.expanduser("~/OneDrive"),
+                self._current_seq_path,
+            ]:
+                if candidate and os.path.isdir(candidate):
+                    start_dir = candidate
+                    break
 
         path, _ = QFileDialog.getSaveFileName(
             self, "Desa fitxer ZIP", os.path.join(start_dir, default_name),
             "ZIP (*.zip)"
         )
         if path:
+            remember_dir("last_zip_dir", os.path.dirname(path))
             self.zip_path_edit.setText(path)
 
     def _run_export(self):

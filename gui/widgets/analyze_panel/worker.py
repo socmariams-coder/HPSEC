@@ -58,8 +58,9 @@ class AnalyzeWorker(QThread):
             self.finished.emit(result)
 
         except Exception as e:
-            import traceback
-            self.error.emit(f"{str(e)}\n\n{traceback.format_exc()}")
+            # El traceback complet va al log; a l'usuari només el motiu
+            logger.error("Error analitzant la sequencia", exc_info=True)
+            self.error.emit(str(e) or type(e).__name__)
 
 
 class SiblingAnalyzeWorker(QThread):
@@ -140,5 +141,6 @@ class SiblingAnalyzeWorker(QThread):
             self.all_finished.emit(results)
 
         except Exception as e:
-            import traceback
-            self.error.emit(f"{str(e)}\n\n{traceback.format_exc()}")
+            # El traceback complet va al log; a l'usuari només el motiu
+            logger.error("Error analitzant siblings", exc_info=True)
+            self.error.emit(str(e) or type(e).__name__)
