@@ -1432,80 +1432,20 @@ def quantify_sample(sample_result, calibration_data, mode="COLUMN", seq_date=Non
     return result
 
 
-# =============================================================================
-# PROCESSAMENT D'UNA MOSTRA
-# =============================================================================
-def analyze_sample(sample_data, calibration_data=None, config=None):
+
+# ---------------------------------------------------------------------------
+# FASES D'analyze_sample
+# ---------------------------------------------------------------------------
+# analyze_sample() és una orquestració de fases; cada fase viu en un helper
+# _asample_* que rep l'estat de senyals `sig` (dict) i anota el `result`.
+
+
+def _asample_prepare_signals(sample_data, calibration_data, config, result):
+    """Fase 1 — senyals: RAW→NET, filtre DAD, shifts, interpolació UIB, baseline.
+
+    Retorna l'estat de senyals (dict) o None si falta informació essencial
+    (l'error queda anotat a result).
     """
-    Processa una mostra individual: alineació, pics, àrees.
-
-    NOTA: Si les dades inclouen y_net (baseline ja restada per import),
-    s'usa directament. Si no, es calcula baseline aquí (compatibilitat).
-
-    Args:
-        sample_data: Dict amb dades de la mostra (de import_sequence):
-            - name: Nom de la mostra
-            - replica: Número de rèplica
-            - t_doc: Array de temps DOC
-            - y_doc_direct: Senyal DOC Direct RAW (si DUAL)
-            - y_doc_direct_net: Senyal DOC Direct NET (si disponible)
-            - y_doc_uib: Senyal DOC UIB RAW (si DUAL)
-            - y_doc_uib_net: Senyal DOC UIB NET (si disponible)
-            - y_doc: Senyal DOC RAW (si simple)
-            - y_doc_net: Senyal DOC NET (si disponible)
-            - df_dad: DataFrame DAD
-        calibration_data: Dict amb dades de calibració (de calibrate_sequence):
-            - shift_uib: Shift per DOC_UIB (minuts)
-            - shift_direct: Shift per DOC_Direct (minuts)
-        config: Configuració
-
-    Returns:
-        dict amb:
-            - name, replica: Identificació
-            - t_doc, y_doc_net: Dades processades
-            - peak_info: Info del pic principal
-            - fwhm_doc: FWHM del pic DOC (minuts)
-            - symmetry_doc: Simetria del pic DOC (ratio)
-            - fwhm_uib: FWHM del pic UIB (minuts, només si DUAL)
-            - irregular_top_direct: Bool si detectat cim irregular a Direct
-            - irregular_top_uib: Bool si detectat cim irregular a UIB (només DUAL)
-            - areas: Dict amb àrees per fraccions (DOC + DAD)
-            - areas_uib: Dict àrees UIB per fraccions (només DUAL)
-            - tmax_signals: Dict amb tmax per senyal
-            - snr_info: Dict amb SNR, LOD, LOQ
-            - timeout_info: Info de timeouts
-            - anomalies: Llista d'anomalies detectades
-
-            Només COLUMN mode:
-            - pearson_direct_uib: Correlació Direct vs UIB
-            - area_diff_pct: Dict amb diff % per fracció (Direct vs UIB)
-            - sb_hs_ratio: Ratio àrea SB / àrea HS
-            - doc_254_ratio: Dict amb ratio DOC/254 per fracció
-            - n_peaks_254_HS: Nombre de pics a 254nm dins zona HS
-    """
-    config = config or DEFAULT_PROCESS_CONFIG
-
-    sample_name = sample_data.get("name", "UNKNOWN")
-    seq_name = sample_data.get("seq_name", "")
-
-    result = {
-        "name": sample_name,
-        "replica": sample_data.get("replica", "1"),
-        "sample_type": sample_data.get("sample_type", "SAMPLE"),
-        "inj_volume": sample_data.get("inj_volume"),
-        "injection_index": sample_data.get("injection_index"),
-        # Propagar la sensibilitat UIB perquè arribi a quantify_sample (routing
-        # UIB 700/1000). Abans es perdia aquí i quantify la rebia None.
-        "uib_sensitivity": sample_data.get("uib_sensitivity"),
-        "processed": False,
-        "anomalies": [],
-    }
-    # Traçabilitat sibling (packs)
-    if sample_data.get("source_seq"):
-        result["source_seq"] = sample_data["source_seq"]
-    if sample_data.get("original_rep_num"):
-        result["original_rep_num"] = sample_data["original_rep_num"]
-
     # Obtenir dades RAW
     t_doc = sample_data.get("t_doc")
     t_doc_uib = sample_data.get("t_doc_uib")  # Temps UIB (pot ser diferent de t_doc)
@@ -1528,7 +1468,7 @@ def analyze_sample(sample_data, calibration_data=None, config=None):
 
     if t_doc is None or (y_doc is None and not is_dual):
         result["error"] = "Missing DOC data"
-        return result
+        return None
 
     t_doc = np.asarray(t_doc).flatten()
 
@@ -1624,7 +1564,7 @@ def analyze_sample(sample_data, calibration_data=None, config=None):
         else:
             result["error"] = "BASELINE_MISSING"
             result["error_message"] = "Dades Direct sense correcció de baseline. Cal tornar a importar la seqüència."
-            return result
+            return None
 
         if y_doc_uib is not None and len(y_doc_uib) > 0:
             if y_doc_uib_net_precomp is not None and len(y_doc_uib_net_precomp) == len(t_doc):
@@ -1644,8 +1584,24 @@ def analyze_sample(sample_data, calibration_data=None, config=None):
         else:
             result["error"] = "BASELINE_MISSING"
             result["error_message"] = "Dades sense correcció de baseline. Cal tornar a importar la seqüència."
-            return result
+            return None
 
+    return {
+        "t_doc": t_doc,
+        "t_doc_uib": t_doc_uib,
+        "y_doc": y_doc,
+        "y_doc_uib": y_doc_uib,
+        "df_dad": df_dad,
+        "is_bp": is_bp,
+        "is_dual": is_dual,
+        "y_doc_net": y_doc_net,
+        "y_doc_direct_net": y_doc_direct_net if is_dual else None,
+        "y_doc_uib_net": y_doc_uib_net if is_dual else None,
+    }
+
+
+def _asample_collect_timeouts(sample_data, result, is_dual):
+    """Fase 2 — timeouts detectats a import: propaga flags al result."""
     # Timeout info: ve d'import (detect_sequence_timeouts → map_timeouts_to_injection)
     timeout_info = sample_data.get("timeout_info", {})
     timeout_positions = timeout_info.get("t_positions", [])
@@ -1667,6 +1623,21 @@ def analyze_sample(sample_data, calibration_data=None, config=None):
         uib_timeout = sample_data.get("timeout_info_uib", {})
         if uib_timeout and uib_timeout.get("n_timeouts", 0) > 0:
             result["timeout_info_uib"] = uib_timeout
+
+    return timeout_info, timeout_positions
+
+
+def _asample_detect_peak_and_repairs(sig, sample_data, config, result,
+                                     seq_name, sample_name):
+    """Fase 3 — pic principal, cims irregulars (+auto-repair UIB) i saturació UIB."""
+    t_doc = sig["t_doc"]
+    t_doc_uib = sig["t_doc_uib"]
+    y_doc = sig["y_doc"]
+    y_doc_uib = sig["y_doc_uib"]
+    y_doc_net = sig["y_doc_net"]
+    y_doc_uib_net = sig["y_doc_uib_net"]
+    is_bp = sig["is_bp"]
+    is_dual = sig["is_dual"]
 
     # Detectar pic principal
     y_smooth = apply_smoothing(y_doc_net)
@@ -1755,6 +1726,18 @@ def analyze_sample(sample_data, calibration_data=None, config=None):
 
     result["peak_info"] = peak_info
 
+    sig["y_doc_uib_net"] = y_doc_uib_net
+    return peak_info, y_smooth
+
+
+def _asample_flag_timeout_in_peak(sig, config, result, timeout_info,
+                                  timeout_positions, peak_info):
+    """Fase 4 — anomalies TIMEOUT_IN_PEAK (Direct i UIB)."""
+    t_doc = sig["t_doc"]
+    y_doc_uib_net = sig["y_doc_uib_net"]
+    is_bp = sig["is_bp"]
+    is_dual = sig["is_dual"]
+
     # Check TIMEOUT_IN_PEAK: timeout que afecta el pic principal DOC Direct
     if timeout_positions and peak_info.get("valid"):
         t_start_peak = peak_info.get("t_start", t_doc[peak_info.get("left_idx", 0)])
@@ -1798,6 +1781,16 @@ def analyze_sample(sample_data, calibration_data=None, config=None):
                     "timeout_info": uib_timeout, "signal": "uib"
                 }))
                 result["timeout_in_peak_uib"] = True
+
+
+def _asample_peak_metrics(sig, config, result, peak_info, y_smooth):
+    """Fase 5 — FWHM, simetria i ajust bigaussià (DOC, UIB i DAD 254 a BP)."""
+    t_doc = sig["t_doc"]
+    y_doc_net = sig["y_doc_net"]
+    y_doc_uib_net = sig["y_doc_uib_net"]
+    df_dad = sig["df_dad"]
+    is_bp = sig["is_bp"]
+    is_dual = sig["is_dual"]
 
     # Calcular FWHM i simetria del pic principal
     if peak_info.get("valid"):
@@ -1910,6 +1903,16 @@ def analyze_sample(sample_data, calibration_data=None, config=None):
             except Exception as e:
                 logger.debug("DAD 254nm peak analysis failed: %s", e)
 
+
+def _asample_areas_and_snr(sig, config, result, peak_info, timeout_positions):
+    """Fase 6 — àrees per fraccions, tmax per senyal i SNR/LOD/LOQ."""
+    t_doc = sig["t_doc"]
+    y_doc_net = sig["y_doc_net"]
+    y_doc_uib_net = sig["y_doc_uib_net"]
+    df_dad = sig["df_dad"]
+    is_bp = sig["is_bp"]
+    is_dual = sig["is_dual"]
+
     # Calcular àrees per fraccions (inclou DAD si disponible)
     # LMW s'inclou al total (és senyal real). mode passa per baseline DAD correcta.
     mode_type = "BP" if is_bp else "COLUMN"
@@ -1948,6 +1951,15 @@ def analyze_sample(sample_data, calibration_data=None, config=None):
     if dad_snr_info:
         result["snr_info_dad"] = dad_snr_info
 
+    return areas
+
+
+def _asample_areas_uib(sig, sample_data, config, result, areas):
+    """Fase 7 — àrees UIB (mode DUAL o dades només-UIB)."""
+    t_doc = sig["t_doc"]
+    y_doc_uib_net = sig["y_doc_uib_net"]
+    is_dual = sig["is_dual"]
+
     # =========================================================================
     # ÀREES UIB (per DUAL o quan només hi ha UIB)
     # =========================================================================
@@ -1963,6 +1975,17 @@ def analyze_sample(sample_data, calibration_data=None, config=None):
     elif is_uib_only and "DOC" in areas:
         # Només UIB: les àrees DOC ja són d'UIB, copiar a areas_uib
         result["areas_uib"] = areas.get("DOC", {}).copy()
+
+
+def _asample_column_metrics(sig, config, result, areas):
+    """Fase 8 — mètriques només-COLUMN: Pearson Direct↔UIB, ratios i recompte de pics."""
+    t_doc = sig["t_doc"]
+    y_doc_net = sig["y_doc_net"]
+    y_doc_direct_net = sig["y_doc_direct_net"]
+    y_doc_uib_net = sig["y_doc_uib_net"]
+    df_dad = sig["df_dad"]
+    is_bp = sig["is_bp"]
+    is_dual = sig["is_dual"]
 
     # =========================================================================
     # MÈTRIQUES ADDICIONALS (només COLUMN)
@@ -2067,6 +2090,17 @@ def analyze_sample(sample_data, calibration_data=None, config=None):
         # Backwards compat
         result["n_peaks_254_HS"] = n_peaks_per_wl.get("A254", {}).get("HS")
 
+
+def _asample_hci_and_pack(sig, sample_data, result):
+    """Fase 9 — HCI (només COLUMN) i empaquetat de senyals al result."""
+    t_doc = sig["t_doc"]
+    y_doc_net = sig["y_doc_net"]
+    y_doc_direct_net = sig["y_doc_direct_net"]
+    y_doc_uib_net = sig["y_doc_uib_net"]
+    df_dad = sig["df_dad"]
+    is_bp = sig["is_bp"]
+    is_dual = sig["is_dual"]
+
     # =========================================================================
     # HCI (Humic Character Index) — només COLUMN, mai BP/BLANK/CONTROL
     # =========================================================================
@@ -2091,6 +2125,13 @@ def analyze_sample(sample_data, calibration_data=None, config=None):
     result["is_bp"] = is_bp
     result["is_dual"] = is_dual
     result["processed"] = True
+
+
+def _asample_estimate_direct_from_uib(sig, sample_data, config, result):
+    """Fase 10 — dades només-UIB: estimar el Direct des del net UIB (factor sens/1000)."""
+    t_doc = sig["t_doc"]
+    y_doc_net = sig["y_doc_net"]
+    is_uib_only = result.get("is_uib_only", False)
 
     # =========================================================================
     # ESTIMACIÓ DIRECT DES D'UIB (is_uib_only)
@@ -2124,6 +2165,102 @@ def analyze_sample(sample_data, calibration_data=None, config=None):
                      sample_data.get("name", "?"), direct_factor, sens,
                      areas_direct_est.get("total", 0),
                      result.get("areas_uib", {}).get("total", 0))
+
+
+# =============================================================================
+# PROCESSAMENT D'UNA MOSTRA
+# =============================================================================
+def analyze_sample(sample_data, calibration_data=None, config=None):
+    """
+    Processa una mostra individual: alineació, pics, àrees.
+
+    NOTA: Si les dades inclouen y_net (baseline ja restada per import),
+    s'usa directament. Si no, es calcula baseline aquí (compatibilitat).
+
+    Args:
+        sample_data: Dict amb dades de la mostra (de import_sequence):
+            - name: Nom de la mostra
+            - replica: Número de rèplica
+            - t_doc: Array de temps DOC
+            - y_doc_direct: Senyal DOC Direct RAW (si DUAL)
+            - y_doc_direct_net: Senyal DOC Direct NET (si disponible)
+            - y_doc_uib: Senyal DOC UIB RAW (si DUAL)
+            - y_doc_uib_net: Senyal DOC UIB NET (si disponible)
+            - y_doc: Senyal DOC RAW (si simple)
+            - y_doc_net: Senyal DOC NET (si disponible)
+            - df_dad: DataFrame DAD
+        calibration_data: Dict amb dades de calibració (de calibrate_sequence):
+            - shift_uib: Shift per DOC_UIB (minuts)
+            - shift_direct: Shift per DOC_Direct (minuts)
+        config: Configuració
+
+    Returns:
+        dict amb:
+            - name, replica: Identificació
+            - t_doc, y_doc_net: Dades processades
+            - peak_info: Info del pic principal
+            - fwhm_doc: FWHM del pic DOC (minuts)
+            - symmetry_doc: Simetria del pic DOC (ratio)
+            - fwhm_uib: FWHM del pic UIB (minuts, només si DUAL)
+            - irregular_top_direct: Bool si detectat cim irregular a Direct
+            - irregular_top_uib: Bool si detectat cim irregular a UIB (només DUAL)
+            - areas: Dict amb àrees per fraccions (DOC + DAD)
+            - areas_uib: Dict àrees UIB per fraccions (només DUAL)
+            - tmax_signals: Dict amb tmax per senyal
+            - snr_info: Dict amb SNR, LOD, LOQ
+            - timeout_info: Info de timeouts
+            - anomalies: Llista d'anomalies detectades
+
+            Només COLUMN mode:
+            - pearson_direct_uib: Correlació Direct vs UIB
+            - area_diff_pct: Dict amb diff % per fracció (Direct vs UIB)
+            - sb_hs_ratio: Ratio àrea SB / àrea HS
+            - doc_254_ratio: Dict amb ratio DOC/254 per fracció
+            - n_peaks_254_HS: Nombre de pics a 254nm dins zona HS
+    """
+    config = config or DEFAULT_PROCESS_CONFIG
+
+    sample_name = sample_data.get("name", "UNKNOWN")
+    seq_name = sample_data.get("seq_name", "")
+
+    result = {
+        "name": sample_name,
+        "replica": sample_data.get("replica", "1"),
+        "sample_type": sample_data.get("sample_type", "SAMPLE"),
+        "inj_volume": sample_data.get("inj_volume"),
+        "injection_index": sample_data.get("injection_index"),
+        # Propagar la sensibilitat UIB perquè arribi a quantify_sample (routing
+        # UIB 700/1000). Abans es perdia aquí i quantify la rebia None.
+        "uib_sensitivity": sample_data.get("uib_sensitivity"),
+        "processed": False,
+        "anomalies": [],
+    }
+    # Traçabilitat sibling (packs)
+    if sample_data.get("source_seq"):
+        result["source_seq"] = sample_data["source_seq"]
+    if sample_data.get("original_rep_num"):
+        result["original_rep_num"] = sample_data["original_rep_num"]
+
+
+    # Pipeline per fases (helpers _asample_*; el comportament és el mateix,
+    # però cada fase és una funció curta i llegible)
+    sig = _asample_prepare_signals(sample_data, calibration_data, config, result)
+    if sig is None:
+        return result
+
+    timeout_info, timeout_positions = _asample_collect_timeouts(
+        sample_data, result, sig["is_dual"])
+    peak_info, y_smooth = _asample_detect_peak_and_repairs(
+        sig, sample_data, config, result, seq_name, sample_name)
+    _asample_flag_timeout_in_peak(
+        sig, config, result, timeout_info, timeout_positions, peak_info)
+    _asample_peak_metrics(sig, config, result, peak_info, y_smooth)
+    areas = _asample_areas_and_snr(
+        sig, config, result, peak_info, timeout_positions)
+    _asample_areas_uib(sig, sample_data, config, result, areas)
+    _asample_column_metrics(sig, config, result, areas)
+    _asample_hci_and_pack(sig, sample_data, result)
+    _asample_estimate_direct_from_uib(sig, sample_data, config, result)
 
     return result
 
