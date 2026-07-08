@@ -660,3 +660,115 @@ def get_max_warning_level(warnings: list) -> str:
             max_level = level
 
     return max_level
+
+
+# =============================================================================
+# ROLL-UP PER MOSTRA — FONT ÚNICA per al header, el bloqueig i el filtre GUI
+# =============================================================================
+# Tota la senyalització visual (semàfor de fila, resum del header, botó Següent,
+# filtre "només amb avisos") deriva d'AQUÍ. Abans cada capa recalculava la
+# severitat pel seu compte (barra vs botó vs taula) i divergien. Ara la veritat
+# és la mostra: aquesta funció recull les anomalies REALS per mostra de qualsevol
+# fase i la resta n'és un resum fidel.
+
+_SEVERITY_RANK = {"blocker": 3, "warning": 2, "info": 1, "none": 0}
+
+# Codis-resum que NO representen una mostra concreta (evitar doble comptatge):
+# el placeholder col·lapsat de l'anàlisi es substitueix pel detall per rèplica.
+_SUMMARY_CODES = {"ANA_SAMPLES_WITH_ISSUES"}
+
+
+def _anomaly_active_severity(anomaly) -> str:
+    """Severitat efectiva d'una anomalia (dict o string), o 'none' si reparada/descartada."""
+    if isinstance(anomaly, dict):
+        if anomaly.get("repaired") or anomaly.get("dismissed"):
+            return "none"
+        sev = anomaly.get("severity")
+        if sev in ("blocker", "warning", "info"):
+            return sev
+        code = anomaly.get("code", "")
+    else:
+        if "_REPAIRED" in str(anomaly):
+            return "none"
+        code = str(anomaly)
+    entry = ANOMALY_CATALOG.get(code, {})
+    sev = entry.get("severity", WarningLevel.INFO)
+    return sev.value if isinstance(sev, WarningLevel) else sev
+
+
+def collect_sample_issues(data: dict) -> list:
+    """Recull les mostres amb avisos d'un resultat de fase (import/calibrate/analyze).
+
+    Font única per a la GUI: llegeix les anomalies REALS per mostra
+    (samples_grouped→replicas per a l'anàlisi) i les entrades per mostra de
+    warnings_structured (import/calibrate). Els avisos de seqüència (sense
+    mostra) s'agrupen sota "(seqüència)".
+
+    Returns:
+        Llista de dicts {sample, severity, codes, messages}, ordenada per
+        severitat descendent (blocker → warning → info). Llista buida si no
+        hi ha cap avís actiu.
+    """
+    if not data:
+        return []
+
+    by_sample = {}
+
+    def _add(sample, anomaly):
+        code = anomaly.get("code", "") if isinstance(anomaly, dict) else str(anomaly)
+        if code in _SUMMARY_CODES:
+            return
+        sev = _anomaly_active_severity(anomaly)
+        if sev == "none":
+            return
+        entry = by_sample.setdefault(sample, {
+            "sample": sample, "severity": "none", "codes": [], "messages": [],
+        })
+        if code and code not in entry["codes"]:
+            entry["codes"].append(code)
+            if isinstance(anomaly, dict):
+                msg = anomaly.get("message") or anomaly.get("label") or code
+            else:
+                msg = code
+            entry["messages"].append(msg)
+        if _SEVERITY_RANK.get(sev, 0) > _SEVERITY_RANK.get(entry["severity"], 0):
+            entry["severity"] = sev
+
+    # Anàlisi: anomalies per rèplica + avisos de comparació de rèpliques
+    for name, sg in (data.get("samples_grouped") or {}).items():
+        for rep in (sg.get("replicas") or {}).values():
+            for a in (rep.get("anomalies") or []):
+                _add(name, a)
+        comp = sg.get("comparison") or {}
+        for domain in ("doc", "dad"):
+            for w in ((comp.get(domain) or {}).get("warnings") or []):
+                _add(name, w)
+
+    # Import/calibrate/export: warnings_structured amb camp "sample"
+    for w in (data.get("warnings_structured") or []):
+        sample = (w.get("sample") if isinstance(w, dict) else None) or "(seqüència)"
+        _add(sample, w)
+
+    issues = list(by_sample.values())
+    issues.sort(key=lambda it: -_SEVERITY_RANK.get(it["severity"], 0))
+    return issues
+
+
+def max_severity_of_issues(issues: list) -> str:
+    """Severitat màxima d'una llista de mostres amb avisos (de collect_sample_issues)."""
+    out, rank = "none", 0
+    for it in issues:
+        r = _SEVERITY_RANK.get(it.get("severity", "none"), 0)
+        if r > rank:
+            rank, out = r, it["severity"]
+    return out
+
+
+def samples_with_issues(issues: list, min_severity: str = "warning") -> set:
+    """Noms de mostra amb severitat >= min_severity (per al filtre de les taules)."""
+    floor = _SEVERITY_RANK.get(min_severity, 2)
+    return {
+        it["sample"] for it in issues
+        if _SEVERITY_RANK.get(it.get("severity", "none"), 0) >= floor
+        and it["sample"] != "(seqüència)"
+    }
