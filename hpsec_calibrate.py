@@ -2870,78 +2870,13 @@ def get_best_khp_from_history(seq_path, mode="COLUMN", exclude_current=True):
 # ANÀLISI KHP
 # =============================================================================
 
-def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
-    """
-    Analitza dades KHP en memòria (sense llegir Excel).
+def _khp_integrate_254(df_dad, config, is_bp_chromato, mode, name):
+    """FASE 254nm — integra el pic DAD 254 (referència temporal del KHP).
 
-    Versió de analizar_khp_consolidado que rep dades directament.
-    Usada per calibrate_from_import().
-
-    Args:
-        t_doc: Array de temps (min)
-        y_doc_net: Array de senyal DOC (amb baseline restada)
-        metadata: Dict amb:
-            - name: Nom de la mostra (ex: "KHP2")
-            - conc_ppm: Concentració en ppm
-            - replica: Número de rèplica
-            - method: "BP" o "COLUMN"
-            - seq_path: Path de la SEQ (per volum injecció)
-        df_dad: DataFrame DAD opcional (amb "time (min)" i columnes wavelength)
-        config: Configuració
-
-    Returns:
-        Dict amb dades d'anàlisi (igual que analizar_khp_consolidado)
-    """
-    config = {**DEFAULT_CONFIG, **(config or {})}
-
-    # Extreure metadata
-    name = metadata.get("name", "KHP")
-    conc = metadata.get("conc_ppm", 0)
-    replica = metadata.get("replica", "1")
-    method = metadata.get("method", "COLUMN")
-    seq_path = metadata.get("seq_path", "")
-    volume_uL_meta = metadata.get("volume_uL")  # Volum del metadata (si disponible)
-
-    if conc == 0:
-        # Intentar extreure de nom
-        conc = extract_khp_conc(name)
-
-    # conc=0 és acceptable: shift, àrees i detecció d'anomalies no necessiten concentració.
-    # Només RF (response factor) no es pot calcular sense conc (ja protegit amb if conc > 0).
-
-    # Netejar NaN
-    t_doc = np.asarray(t_doc)
-    y_doc_net = np.asarray(y_doc_net)
-    mask = np.isfinite(t_doc) & np.isfinite(y_doc_net)
-    t_doc, y_doc_net = t_doc[mask], y_doc_net[mask]
-
-    if len(t_doc) < 10:
-        return None
-
-    # Detectar si és BP
-    t_max_chromato = float(np.max(t_doc))
-    is_bp_chromato = (method == "BP") or t_max_chromato < 20
-    mode = "BP" if is_bp_chromato else "COLUMN"
-
-    # Detecció saturació UIB per forma del pic (Gaussian clipping)
-    doc_source = metadata.get("doc_source", "direct")
-    uib_saturated = False
-    clipping_info = None
-    if doc_source == "uib":
-        from hpsec_core import detect_peak_clipping
-        clipping_info = detect_peak_clipping(t_doc, y_doc_net)
-        if clipping_info["is_saturated"]:
-            uib_saturated = True
-            logger.warning(
-                "analizar_khp_data: UIB SATURAT per %s (plateau_ratio=%.3f, "
-                "plateau=%d pts, FWHM=%d pts, y_max=%.1f)",
-                name, clipping_info["plateau_ratio"],
-                clipping_info["plateau_width_pts"], clipping_info["fwhm_pts"],
-                clipping_info["y_max_observed"]
-            )
-
+    El 254nm defineix la posició del pic; el DOC s'hi alinea després.
+    Retorna un dict amb t_dad, dad_254, t_max_254, dad_peak_info, àrees i
+    la llista de warnings de qualitat DAD."""
     from hpsec_core import find_peak_boundaries
-
     # =========================================================================
     # STEP 0: Integrar DAD 254nm PRIMER (referència temporal)
     # El 254nm defineix la posició del pic KHP. El DOC s'alinea després.
@@ -2954,7 +2889,7 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
     a254_area = 0.0
     a254_area_total = 0.0
     cr_254 = np.nan
-    dad_quality_warnings = []
+    warns = []
 
     if has_dad and "time (min)" in df_dad.columns:
         col_254 = None
@@ -2996,32 +2931,48 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
                     if a254_area_total > 0 and a254_area > 0:
                         cr_254 = a254_area / a254_area_total
                         if cr_254 < 0.90:
-                            dad_quality_warnings.append(
+                            warns.append(
                                 f"MULTI_PEAK_254: pic principal={cr_254:.0%} de l'àrea total 254nm")
 
                     # t_ret check per 254
                     if is_bp_chromato and t_max_254 > 3.5:
-                        dad_quality_warnings.append(
+                        warns.append(
                             f"T_RETENTION_254_ANOMAL: t_max={t_max_254:.2f} min (BP esperat <3.5)")
                     elif not is_bp_chromato and (t_max_254 < 18 or t_max_254 > 25):
-                        dad_quality_warnings.append(
+                        warns.append(
                             f"T_RETENTION_254_ANOMAL: t_max={t_max_254:.2f} min (COLUMN esperat 18-25)")
 
                     logger.debug("analizar_khp_data: 254nm integrat independent: t_max=%.2f, area=%.2f, CR=%.2f",
                                  t_max_254, a254_area, cr_254 if not np.isnan(cr_254) else 0)
                 else:
-                    dad_quality_warnings.append("NO_254_PEAK: pic 254nm no detectat o invàlid")
+                    warns.append("NO_254_PEAK: pic 254nm no detectat o invàlid")
                     logger.warning("analizar_khp_data: pic DAD 254nm no vàlid")
     else:
-        dad_quality_warnings.append("NO_DAD_254_REFERENCE: no hi ha senyal 254nm, no es pot verificar alineació")
+        warns.append("NO_DAD_254_REFERENCE: no hi ha senyal 254nm, no es pot verificar alineació")
 
-    # =========================================================================
-    # STEP 1: Integrar DOC alineat a t_max_254 (o independent si no hi ha 254)
-    # =========================================================================
-    _guided_254_details = None  # Set if guided search finds peak
+    return {
+        'has_dad': has_dad,
+        't_dad': t_dad,
+        'dad_254': dad_254,
+        't_max_254': t_max_254,
+        'dad_peak_info': dad_peak_info,
+        'a254_area': a254_area,
+        'a254_area_total': a254_area_total,
+        'cr_254': cr_254,
+        'warnings': warns,
+    }
 
-    all_peaks = detect_all_peaks(t_doc, y_doc_net, config["peak_min_prominence_pct"])
 
+def _khp_select_doc_peak(t_doc, y_doc_net, t_max_254, doc_source, config,
+                         is_bp_chromato, all_peaks):
+    """FASE selecció pic DOC — tria el pic DOC (guiat per 254nm si n'hi ha),
+    el pre-repara i n'integra els límits amb cap.
+
+    Retorna (peak_info, guided_254_details, warnings). peak_info pot ser
+    invàlid: el caller decideix què fer."""
+    from hpsec_core import find_peak_boundaries
+    _guided_254_details = None
+    warns = []
     if t_max_254 is not None:
         # --- A) Candidat estàndard: pic més proper a 254 en all_peaks ---
         # UIB sincronitzat amb DAD (ambdós HPLC-side) → finestra estreta
@@ -3079,7 +3030,7 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
                         t_doc[guided_idx], h_guided, std_candidate['t'], h_std)
                 else:
                     selected_idx = guided_idx
-                    dad_quality_warnings.append(
+                    warns.append(
                         f"DOC_GUIDED_BY_254: pic DOC trobat per cerca dirigida "
                         f"(t={t_doc[guided_idx]:.2f}, ref 254nm t={t_max_254:.2f})")
                     _guided_254_details = {"t_doc": float(t_doc[guided_idx]), "t_254": t_max_254}
@@ -3102,7 +3053,7 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
                     t_doc[guided_idx], h_guided, t_doc[global_max_idx], h_global)
             else:
                 selected_idx = guided_idx
-                dad_quality_warnings.append(
+                warns.append(
                     f"DOC_GUIDED_BY_254: pic DOC trobat per cerca dirigida "
                     f"(t={t_doc[guided_idx]:.2f}, ref 254nm t={t_max_254:.2f})")
                 _guided_254_details = {"t_doc": float(t_doc[guided_idx]), "t_254": t_max_254}
@@ -3111,7 +3062,7 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
         else:
             if all_peaks:
                 nearest = min(all_peaks, key=lambda pk: abs(pk['t'] - t_max_254))
-                dad_quality_warnings.append(
+                warns.append(
                     f"T_RETENTION_MISMATCH: pic DOC a {nearest['t']:.2f} vs 254 a {t_max_254:.2f} min")
 
         # --- D) Pre-repair + find_peak_boundaries sobre el pic seleccionat ---
@@ -3184,6 +3135,99 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
     else:
         peak_info = detect_main_peak(t_doc, y_doc_net, config["peak_min_prominence_pct"])
 
+
+    return peak_info, _guided_254_details, warns
+
+
+def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
+    """
+    Analitza dades KHP en memòria (sense llegir Excel).
+
+    Versió de analizar_khp_consolidado que rep dades directament.
+    Usada per calibrate_from_import().
+
+    Args:
+        t_doc: Array de temps (min)
+        y_doc_net: Array de senyal DOC (amb baseline restada)
+        metadata: Dict amb:
+            - name: Nom de la mostra (ex: "KHP2")
+            - conc_ppm: Concentració en ppm
+            - replica: Número de rèplica
+            - method: "BP" o "COLUMN"
+            - seq_path: Path de la SEQ (per volum injecció)
+        df_dad: DataFrame DAD opcional (amb "time (min)" i columnes wavelength)
+        config: Configuració
+
+    Returns:
+        Dict amb dades d'anàlisi (igual que analizar_khp_consolidado)
+    """
+    config = {**DEFAULT_CONFIG, **(config or {})}
+
+    # Extreure metadata
+    name = metadata.get("name", "KHP")
+    conc = metadata.get("conc_ppm", 0)
+    replica = metadata.get("replica", "1")
+    method = metadata.get("method", "COLUMN")
+    seq_path = metadata.get("seq_path", "")
+    volume_uL_meta = metadata.get("volume_uL")  # Volum del metadata (si disponible)
+
+    if conc == 0:
+        # Intentar extreure de nom
+        conc = extract_khp_conc(name)
+
+    # conc=0 és acceptable: shift, àrees i detecció d'anomalies no necessiten concentració.
+    # Només RF (response factor) no es pot calcular sense conc (ja protegit amb if conc > 0).
+
+    # Netejar NaN
+    t_doc = np.asarray(t_doc)
+    y_doc_net = np.asarray(y_doc_net)
+    mask = np.isfinite(t_doc) & np.isfinite(y_doc_net)
+    t_doc, y_doc_net = t_doc[mask], y_doc_net[mask]
+
+    if len(t_doc) < 10:
+        return None
+
+    # Detectar si és BP
+    t_max_chromato = float(np.max(t_doc))
+    is_bp_chromato = (method == "BP") or t_max_chromato < 20
+    mode = "BP" if is_bp_chromato else "COLUMN"
+
+    # Detecció saturació UIB per forma del pic (Gaussian clipping)
+    doc_source = metadata.get("doc_source", "direct")
+    uib_saturated = False
+    clipping_info = None
+    if doc_source == "uib":
+        from hpsec_core import detect_peak_clipping
+        clipping_info = detect_peak_clipping(t_doc, y_doc_net)
+        if clipping_info["is_saturated"]:
+            uib_saturated = True
+            logger.warning(
+                "analizar_khp_data: UIB SATURAT per %s (plateau_ratio=%.3f, "
+                "plateau=%d pts, FWHM=%d pts, y_max=%.1f)",
+                name, clipping_info["plateau_ratio"],
+                clipping_info["plateau_width_pts"], clipping_info["fwhm_pts"],
+                clipping_info["y_max_observed"]
+            )
+
+    from hpsec_core import find_peak_boundaries
+
+    # STEP 0: integrar DAD 254nm (referència temporal) — veure _khp_integrate_254
+    _s254 = _khp_integrate_254(df_dad, config, is_bp_chromato, mode, name)
+    has_dad = _s254['has_dad']
+    t_dad = _s254['t_dad']
+    dad_254 = _s254['dad_254']
+    t_max_254 = _s254['t_max_254']
+    dad_peak_info = _s254['dad_peak_info']
+    a254_area = _s254['a254_area']
+    a254_area_total = _s254['a254_area_total']
+    cr_254 = _s254['cr_254']
+    dad_quality_warnings = _s254['warnings']
+
+    # STEP 1: seleccionar el pic DOC (guiat per 254nm) — veure _khp_select_doc_peak
+    all_peaks = detect_all_peaks(t_doc, y_doc_net, config["peak_min_prominence_pct"])
+    peak_info, _guided_254_details, _step1_warns = _khp_select_doc_peak(
+        t_doc, y_doc_net, t_max_254, doc_source, config, is_bp_chromato, all_peaks)
+    dad_quality_warnings.extend(_step1_warns)
     if not peak_info.get('valid', False):
         return None
 
