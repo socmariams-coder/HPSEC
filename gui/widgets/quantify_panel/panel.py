@@ -149,7 +149,17 @@ class QuantifyPanel(QWidget):
         self._main_splitter.setChildrenCollapsible(False)
         self._main_splitter.setHandleWidth(4)
 
-        # Taula esquerra
+        # Taula esquerra (dins un contenidor amb el filtre a sobre)
+        self._table_container = QWidget()
+        _tc_layout = QVBoxLayout(self._table_container)
+        _tc_layout.setContentsMargins(0, 0, 0, 0)
+        _tc_layout.setSpacing(4)
+
+        self._only_issues_cb = QCheckBox("Només mostres amb avisos")
+        self._only_issues_cb.setStyleSheet("font-size: 11px; padding: 2px;")
+        self._only_issues_cb.toggled.connect(lambda _: self._apply_issue_filter())
+        _tc_layout.addWidget(self._only_issues_cb)
+
         self._table = QTableWidget()
         self._table.setEditTriggers(QTableWidget.NoEditTriggers)
         self._table.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -162,7 +172,8 @@ class QuantifyPanel(QWidget):
         )
         self._table.setMinimumWidth(420)
         self._table.itemSelectionChanged.connect(self._on_table_selection)
-        self._main_splitter.addWidget(self._table)
+        _tc_layout.addWidget(self._table)
+        self._main_splitter.addWidget(self._table_container)
 
         # Detall dret amb tabs
         self._detail_frame = QFrame()
@@ -561,6 +572,45 @@ class QuantifyPanel(QWidget):
             self._detail_tabs.setTabEnabled(self._frac_tab_idx, False)
         else:
             self._detail_tabs.setTabEnabled(self._frac_tab_idx, True)
+
+        self._apply_issue_filter()
+
+    # --- Filtre "només mostres amb avisos" -------------------------------
+    def _flagged_sample_names(self) -> set:
+        """Mostres amb warning/blocker (anomalies d'anàlisi) o quantificació no vàlida."""
+        flagged = set()
+        try:
+            from hpsec_warnings import collect_sample_issues, samples_with_issues
+            data = self._analysis_result or {}
+            flagged |= samples_with_issues(collect_sample_issues(data), "warning")
+        except Exception:
+            pass
+        for name, sg in (self._analysis_result or {}).get("samples_grouped", {}).items():
+            q = sg.get("quantification") or {}
+            if q.get("valid") is False:
+                flagged.add(name)
+        return flagged
+
+    def _apply_issue_filter(self):
+        table = getattr(self, "_table", None)
+        if table is None:
+            return
+        on = getattr(self, "_only_issues_cb", None) is not None and self._only_issues_cb.isChecked()
+        flagged = self._flagged_sample_names() if on else set()
+        for row in range(table.rowCount()):
+            if not on:
+                table.setRowHidden(row, False)
+                continue
+            name_item = table.item(row, 0)
+            name = name_item.text() if name_item is not None else None
+            table.setRowHidden(row, name not in flagged)
+
+    def set_flagged_samples(self, names):
+        self._flagged_samples = set(names or [])
+
+    def toggle_issue_filter(self):
+        if getattr(self, "_only_issues_cb", None) is not None:
+            self._only_issues_cb.setChecked(not self._only_issues_cb.isChecked())
 
     def _on_table_selection(self):
         items = self._table.selectedItems()
