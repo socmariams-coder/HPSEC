@@ -736,6 +736,13 @@ class CalibratePanel(QWidget):
         self.metrics_table.setSelectionBehavior(QTableWidget.SelectItems)
         # Doble-click sobre fila → diàleg detall + reparació
         self.metrics_table.cellDoubleClicked.connect(self._on_metrics_row_double_clicked)
+
+        # Filtre: mostrar només rèpliques amb avisos/errors (Estat ⚠ o ✘)
+        self._only_issues_cb = QCheckBox("Només rèpliques amb avisos")
+        self._only_issues_cb.setStyleSheet("font-size: 11px; padding: 2px;")
+        self._only_issues_cb.toggled.connect(lambda _: self._apply_issue_filter())
+        metrics_layout.addWidget(self._only_issues_cb)
+
         metrics_layout.addWidget(self.metrics_table)
 
         content_layout.addWidget(self.metrics_group)
@@ -1869,6 +1876,10 @@ class CalibratePanel(QWidget):
                     item_status.setToolTip("\n".join(tooltip_lines))
             self.metrics_table.setItem(row, 11, item_status)
 
+            # Marcar la fila com "amb avisos" per al filtre (Estat ⚠ o ✘)
+            _row_flagged = item_status.text() in ("⚠", "✘")
+            item_rep.setData(Qt.UserRole + 7, _row_flagged)
+
             # Col 12: Checkbox outlier
             is_outlier = khp.get('is_outlier', False)
             cb = QCheckBox()
@@ -1918,6 +1929,7 @@ class CalibratePanel(QWidget):
                     # Merged-style: col 0 empty, text at col 1 spanning
                     item_empty = QTableWidgetItem("")
                     item_empty.setBackground(QColor(248, 249, 250))
+                    item_empty.setData(Qt.UserRole + 7, True)  # sub-fila d'anomalia
                     self.metrics_table.setItem(sub_row, 0, item_empty)
                     item_text = QTableWidgetItem(text)
                     item_text.setToolTip(label)
@@ -1934,6 +1946,32 @@ class CalibratePanel(QWidget):
                         self.metrics_table.setItem(sub_row, c, filler)
                     # Span col 1 across visible area
                     self.metrics_table.setSpan(sub_row, 1, 1, 11)
+
+        self._apply_issue_filter()
+
+    # --- Filtre "només rèpliques amb avisos" -----------------------------
+    def _apply_issue_filter(self):
+        """Amaga/mostra files segons el marcatge d'avisos (Qt.UserRole+7 a col 0)."""
+        table = getattr(self, "metrics_table", None)
+        if table is None:
+            return
+        on = getattr(self, "_only_issues_cb", None) is not None and self._only_issues_cb.isChecked()
+        for row in range(table.rowCount()):
+            if not on:
+                table.setRowHidden(row, False)
+                continue
+            item0 = table.item(row, 0)
+            flagged = bool(item0.data(Qt.UserRole + 7)) if item0 is not None else False
+            table.setRowHidden(row, not flagged)
+
+    def set_flagged_samples(self, names):
+        """API pel wizard (el Verificar marca l'estat per rèplica; sense ús directe)."""
+        self._flagged_samples = set(names or [])
+
+    def toggle_issue_filter(self):
+        """API pel wizard: activa/desactiva el filtre des del header."""
+        if getattr(self, "_only_issues_cb", None) is not None:
+            self._only_issues_cb.setChecked(not self._only_issues_cb.isChecked())
 
     def _on_metrics_row_double_clicked(self, row: int, _col: int):
         """Obre el diàleg de detall + reparació quan es fa doble-click a una fila."""
