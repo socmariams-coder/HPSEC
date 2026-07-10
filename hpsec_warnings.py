@@ -772,3 +772,26 @@ def samples_with_issues(issues: list, min_severity: str = "warning") -> set:
         if _SEVERITY_RANK.get(it.get("severity", "none"), 0) >= floor
         and it["sample"] != "(seqüència)"
     }
+
+
+# Blocatge DUR: condicions de seqüència on continuar no té sentit (Següent
+# desactivat de veritat, sense opció de nota). La resta de blockers són per
+# mostra: es poden superar deixant una nota obligatòria (traçabilitat).
+HARD_BLOCK_CODES = {
+    "IMP_NO_DATA", "IMP_MISSING_UIB", "IMP_MISSING_DAD",
+    "ANA_NO_CALIBRATION", "CAL_NO_KHP", "CAL_ALL_REPLICAS_INVALID",
+}
+
+
+def has_hard_block(data: dict) -> bool:
+    """True si el resultat conté una condició de seqüència que impedeix continuar."""
+    if not data:
+        return False
+    for w in (data.get("warnings_structured") or []):
+        if not isinstance(w, dict):
+            continue
+        if w.get("repaired") or w.get("dismissed"):
+            continue
+        if w.get("code") in HARD_BLOCK_CODES:
+            return True
+    return False
