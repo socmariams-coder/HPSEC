@@ -622,7 +622,7 @@ class SequenceState:
             try:
                 with open(notes_file, 'r', encoding='utf-8') as f:
                     notes_data = json.load(f)
-                for un in notes_data.get("notes", [])[-3:]:
+                for un in notes_data.get("notes", []):
                     stage = un.get("stage", "?")[:3].upper()
                     notes.append({
                         "stage": stage, "type": "USR",
@@ -662,7 +662,7 @@ class SequenceState:
                     "content": user_note[:80],
                     "reviewer": wc.get("reviewer", ""),
                 })
-        for un in data.get("user_notes", [])[-3:]:
+        for un in data.get("user_notes", []):
             if isinstance(un, dict):
                 notes.append({
                     "stage": stage, "type": "USR",

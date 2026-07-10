@@ -992,7 +992,7 @@ class DashboardPanel(QWidget):
         manual_notes = seq.notes.strip() if seq.notes else ""
 
         tooltip_parts = []
-        n_info = 0
+        user_texts = []  # notes escrites per la usuària (NOTE/USR), en ordre
 
         for jn in json_notes:
             ntype = jn.get("type", "")
@@ -1000,23 +1000,28 @@ class DashboardPanel(QWidget):
             content = jn.get("content", "")
 
             if ntype in ("NOTE", "USR"):
-                n_info += 1
-                tooltip_parts.append(f"[{stage}] {content}")
+                user_texts.append(content)
+                reviewer = jn.get("reviewer", "")
+                who = f" ({reviewer})" if reviewer else ""
+                tooltip_parts.append(f"[{stage}]{who} {content}")
 
         if manual_notes:
             tooltip_parts.insert(0, manual_notes)
 
-        # Preview: primera línia de notes manuals o recompte info
-        if manual_notes:
-            preview = manual_notes.split('\n')[0][:50]
-            if len(manual_notes) > 50 or '\n' in manual_notes:
-                preview += "..."
-        elif n_info:
-            preview = f"{n_info} {'nota' if n_info == 1 else 'notes'}"
+        # Preview: el TEXT real de la nota més recent (abans sortia "N notes")
+        latest = manual_notes or (user_texts[-1] if user_texts else "")
+        if latest:
+            preview = latest.split('\n')[0][:50]
+            if len(latest) > 50 or '\n' in latest:
+                preview += "…"
+            n_total = len(user_texts) + (1 if manual_notes else 0)
+            if n_total > 1:
+                preview += f"  (+{n_total - 1})"
         else:
             preview = ""
 
-        color = QColor("#1565C0") if (manual_notes or n_info) else QColor("#999")
+        has_notes = bool(manual_notes or user_texts)
+        color = QColor("#1565C0") if has_notes else QColor("#999")
         tooltip = "\n".join(tooltip_parts) if tooltip_parts else "Doble-clic per afegir notes"
 
         return preview, tooltip, color
@@ -1213,9 +1218,11 @@ class DashboardPanel(QWidget):
                 except Exception:
                     pass
 
-        # Carregar notes generals
+        # Carregar l'historial de notes manuals (user_notes.json) — NOMÉS lectura.
+        # La caixa d'escriptura és per a una nota NOVA (append), no per reescriure
+        # tot el bloc (abans un desat col·lapsava tot l'historial en una entrada).
         notes_file = data_path / "user_notes.json"
-        existing_notes_text = ""
+        manual_lines = []
         if notes_file.exists():
             try:
                 with open(notes_file, 'r', encoding='utf-8') as f:
@@ -1224,7 +1231,7 @@ class DashboardPanel(QWidget):
                     ts = n.get("timestamp", "")[:16].replace("T", " ")
                     reviewer = n.get("reviewer", "?")
                     text = n.get("note", "")
-                    existing_notes_text += f"[{ts}] ({reviewer}) {text}\n"
+                    manual_lines.append(f"[{ts}] ({reviewer}) {text}")
             except Exception:
                 pass
 
@@ -1235,26 +1242,41 @@ class DashboardPanel(QWidget):
         dialog.setModal(True)
         dl = QVBoxLayout(dialog)
 
+        if manual_lines:
+            dl.addWidget(QLabel("<b>Notes anteriors:</b>"))
+            hist_text = QTextEdit()
+            hist_text.setReadOnly(True)
+            hist_text.setPlainText("\n".join(manual_lines))
+            hist_text.setMaximumHeight(160)
+            dl.addWidget(hist_text)
+
         if obs_lines:
             dl.addWidget(QLabel("<b>Observacions (dels JSON):</b>"))
             obs_text = QTextEdit()
             obs_text.setReadOnly(True)
             obs_text.setPlainText("\n".join(obs_lines))
-            obs_text.setMaximumHeight(150)
+            obs_text.setMaximumHeight(120)
             dl.addWidget(obs_text)
 
-        dl.addWidget(QLabel("<b>Notes manuals:</b>"))
+        dl.addWidget(QLabel("<b>Nova nota:</b>"))
         notes_edit = QTextEdit()
-        notes_edit.setPlainText(existing_notes_text)
-        notes_edit.setPlaceholderText("Escriu notes aquí...")
+        notes_edit.setPlaceholderText("Escriu una nota nova (s'afegeix a l'historial)...")
         dl.addWidget(notes_edit, 1)
+
+        # Qui la fa
+        rev_row = QHBoxLayout()
+        rev_row.addWidget(QLabel("Nom o inicials:"))
+        reviewer_input = QLineEdit(getattr(self, "_last_note_reviewer", ""))
+        reviewer_input.setPlaceholderText("Ex: MGA")
+        rev_row.addWidget(reviewer_input, 1)
+        dl.addLayout(rev_row)
 
         btn_layout = QHBoxLayout()
         btn_cancel = QPushButton("Tancar")
         btn_cancel.clicked.connect(dialog.reject)
         btn_layout.addWidget(btn_cancel)
         btn_layout.addStretch()
-        btn_save = QPushButton("Guardar")
+        btn_save = QPushButton("Afegir nota")
         btn_save.setStyleSheet(
             "QPushButton { background: #3498DB; color: white; border: none; "
             "border-radius: 4px; padding: 6px 16px; font-weight: bold; }"
@@ -1264,19 +1286,42 @@ class DashboardPanel(QWidget):
 
         def _save():
             text = notes_edit.toPlainText().strip()
+            if not text:
+                dialog.accept()
+                return
+            reviewer = reviewer_input.text().strip() or "?"
+            self._last_note_reviewer = reviewer
             data_path.mkdir(parents=True, exist_ok=True)
-            notes_data = {"notes": []}
-            if text:
-                from datetime import datetime
-                notes_data["notes"].append({
-                    "timestamp": datetime.now().isoformat(),
-                    "reviewer": "dashboard",
-                    "note": text,
-                    "stage": "import",
-                })
-            with open(notes_file, 'w', encoding='utf-8') as f:
-                _json.dump(notes_data, f, indent=2, ensure_ascii=False, default=str)
-            self.main_window.set_status(f"Notes actualitzades: {seq.seq_name}", 3000)
+            # APPEND al store existent (no reescriure'l)
+            store = {"notes": []}
+            if notes_file.exists():
+                try:
+                    with open(notes_file, 'r', encoding='utf-8') as f:
+                        store = _json.load(f)
+                    if not isinstance(store.get("notes"), list):
+                        store = {"notes": []}
+                except Exception:
+                    store = {"notes": []}
+            from datetime import datetime
+            store["notes"].append({
+                "timestamp": datetime.now().isoformat(),
+                "reviewer": reviewer,
+                "note": text,
+                "stage": "manual",
+            })
+            try:
+                with open(notes_file, 'w', encoding='utf-8') as f:
+                    _json.dump(store, f, indent=2, ensure_ascii=False, default=str)
+            except Exception as e:
+                QMessageBox.warning(self, "Error", f"No s'ha pogut desar la nota:\n{e}")
+                return
+            # Refrescar la fila immediatament perquè la nota es vegi ja
+            try:
+                seq._build_dashboard_notes()
+                self._update_table_row(row, seq)
+            except Exception:
+                pass
+            self.main_window.set_status(f"Nota afegida: {seq.seq_name}", 3000)
             dialog.accept()
 
         btn_save.clicked.connect(_save)
