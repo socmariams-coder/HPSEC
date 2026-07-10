@@ -642,6 +642,13 @@ class AnalyzePanel(QWidget):
         _hint.setWordWrap(True)
         _hint.setStyleSheet("color:#555; font-size:11px; padding:2px 4px;")
         self._table_container_layout.addWidget(_hint)
+
+        # Filtre: mostrar només les mostres amb avisos/errors
+        self._only_issues_cb = QCheckBox("Només mostres amb avisos")
+        self._only_issues_cb.setStyleSheet("font-size:11px; padding:2px 4px;")
+        self._only_issues_cb.toggled.connect(lambda _: self._apply_issue_filter())
+        self._table_container_layout.addWidget(self._only_issues_cb)
+
         self._table_container_layout.addWidget(self._samples_table)
         self._table_container.setMinimumWidth(320)
 
@@ -1275,6 +1282,8 @@ class AnalyzePanel(QWidget):
             traceback.print_exc()
             logger.error(f"Error populating table: {e}")
             return
+        # Reaplica el filtre "només amb avisos" després de repoblar
+        self._apply_issue_filter()
         # Auto-selecció: primera mostra → poblar gràfica per defecte
         try:
             if not self._review_sample and self._sample_row_map:
@@ -1283,6 +1292,39 @@ class AnalyzePanel(QWidget):
                 self._show_review(first_name)
         except Exception as e:
             logger.debug("Auto-select first sample skipped: %s", e)
+
+    # --- Filtre "només mostres amb avisos" -------------------------------
+    def _flagged_sample_names(self) -> set:
+        """Noms de mostra amb warning/blocker, de les seves anomalies reals."""
+        try:
+            from hpsec_warnings import collect_sample_issues, samples_with_issues
+            issues = collect_sample_issues({"samples_grouped": self.samples_grouped})
+            return samples_with_issues(issues, "warning")
+        except Exception:
+            return set()
+
+    def _apply_issue_filter(self):
+        """Amaga/mostra files segons el filtre. Font: anomalies per mostra."""
+        table = getattr(self, "_samples_table", None)
+        if table is None:
+            return
+        on = getattr(self, "_only_issues_cb", None) is not None and self._only_issues_cb.isChecked()
+        flagged = self._flagged_sample_names() if on else set()
+        row_map = getattr(self, "_row_sample_map", {})
+        for row in range(table.rowCount()):
+            if not on:
+                table.setRowHidden(row, False)
+            else:
+                table.setRowHidden(row, row_map.get(row) not in flagged)
+
+    def set_flagged_samples(self, names):
+        """API pel wizard: quines mostres tenen avisos (per coherència de filtre)."""
+        self._flagged_samples = set(names or [])
+
+    def toggle_issue_filter(self):
+        """API pel wizard: activa/desactiva el filtre des del header."""
+        if getattr(self, "_only_issues_cb", None) is not None:
+            self._only_issues_cb.setChecked(not self._only_issues_cb.isChecked())
 
     def _populate_table_inner(self):
         """Internal table population (wrapped for safety)."""
