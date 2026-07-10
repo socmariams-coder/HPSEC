@@ -4262,6 +4262,119 @@ def _is_numeric_col(col_name):
         return False
 
 
+def _ana_load_notes(seq_path):
+    """Recull les notes de laboratori de la SEQ (llibreta).
+
+    Fonts: user_notes.json (notes manuals) + user_notes[] i warnings_confirmed
+    dels JSON d'etapa. Retorna llista {timestamp, stage, reviewer, text} ordenada.
+    """
+    from pathlib import Path
+    import json as _json
+
+    data_dir = Path(seq_path) / "CHECK" / "data"
+    notes = []
+
+    nf = data_dir / "user_notes.json"
+    if nf.exists():
+        try:
+            store = _json.load(open(nf, encoding="utf-8"))
+            for n in store.get("notes", []):
+                notes.append({
+                    "timestamp": n.get("timestamp", ""),
+                    "stage": (n.get("stage", "") or "manual").capitalize(),
+                    "reviewer": n.get("reviewer", ""),
+                    "text": n.get("note", ""),
+                })
+        except Exception:
+            pass
+
+    stage_files = {
+        "Importar": "import_manifest.json",
+        "Verificar": "calibration_result.json",
+        "Analitzar": "analysis_result.json",
+    }
+    for stage_label, fname in stage_files.items():
+        fp = data_dir / fname
+        if not fp.exists():
+            continue
+        try:
+            d = _json.load(open(fp, encoding="utf-8"))
+        except Exception:
+            continue
+        for n in d.get("user_notes", []) or []:
+            if isinstance(n, dict) and n.get("note"):
+                notes.append({
+                    "timestamp": n.get("timestamp", ""),
+                    "stage": stage_label,
+                    "reviewer": n.get("reviewer", ""),
+                    "text": n.get("note", ""),
+                })
+        wc = d.get("warnings_confirmed")
+        if isinstance(wc, dict) and wc.get("user_note"):
+            notes.append({
+                "timestamp": wc.get("timestamp", ""),
+                "stage": f"{stage_label} (avisos revisats)",
+                "reviewer": wc.get("reviewer", ""),
+                "text": wc.get("user_note", ""),
+            })
+
+    notes.sort(key=lambda n: n.get("timestamp", ""))
+    return notes
+
+
+def _ana_draw_notes_page(pdf, seq_path, page_num):
+    """Pàgina de notes de laboratori (llibreta) de la SEQ."""
+    import textwrap
+
+    notes = _ana_load_notes(seq_path)
+    fig = plt.figure(figsize=(8.27, 11.69))
+    fig.patch.set_facecolor('white')
+    fig.text(0.5, 0.96, "NOTES DE LABORATORI",
+             ha='center', va='top', fontsize=14, fontweight='bold',
+             color=COLORS["primary"])
+
+    if not notes:
+        fig.text(0.5, 0.5, "Cap nota registrada",
+                 ha='center', va='center', fontsize=13,
+                 fontweight='bold', color=COLORS["text_secondary"])
+        draw_report_footer(fig, page_num)
+        pdf.savefig(fig, dpi=150)
+        plt.close(fig)
+        return page_num + 1
+
+    y = 0.90
+    line_h = 0.021
+    for n in notes:
+        ts = (n.get("timestamp", "") or "")[:16].replace("T", " ")
+        stage = n.get("stage", "")
+        reviewer = n.get("reviewer", "")
+        who = f" · {reviewer}" if reviewer else ""
+        header = f"[{stage}] {ts}{who}"
+        fig.text(0.08, y, header, fontsize=8.5, fontweight='bold',
+                 color=COLORS["primary"], va='top')
+        y -= line_h
+        for line in textwrap.wrap(n.get("text", ""), width=95) or [""]:
+            fig.text(0.10, y, line, fontsize=8.5, color=COLORS["text"], va='top')
+            y -= line_h
+        y -= line_h * 0.4
+        if y < 0.08:  # nova pàgina si s'omple
+            draw_report_footer(fig, page_num)
+            pdf.savefig(fig, dpi=150)
+            plt.close(fig)
+            page_num += 1
+            fig = plt.figure(figsize=(8.27, 11.69))
+            fig.patch.set_facecolor('white')
+            fig.text(0.5, 0.96, "NOTES DE LABORATORI (cont.)",
+                     ha='center', va='top', fontsize=14, fontweight='bold',
+                     color=COLORS["primary"])
+            y = 0.90
+
+    draw_report_footer(fig, page_num)
+    pdf.savefig(fig, dpi=150)
+    plt.close(fig)
+    return page_num + 1
+
+
 def generate_analysis_report(seq_path, output_path=None, analysis_data=None):
     """
     Genera PDF d'analisi complet.
@@ -4320,7 +4433,9 @@ def generate_analysis_report(seq_path, output_path=None, analysis_data=None):
         next_page = _ana_draw_doc_areas_page(pdf, data, next_page)
         # Per-sample chromatograms (enhanced + heatmaps)
         next_page = _ana_draw_chromatogram_pages(pdf, data, page_start=next_page)
-        _ana_draw_anomalies_page(pdf, data, page_num=next_page)
+        next_page = _ana_draw_anomalies_page(pdf, data, page_num=next_page)
+        # Notes de laboratori (llibreta)
+        _ana_draw_notes_page(pdf, seq_path, page_num=next_page)
 
     print(f"  [OK] PDF generat: {pdf_path}")
     return str(pdf_path)
