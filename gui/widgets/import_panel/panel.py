@@ -15,7 +15,7 @@ from pathlib import Path
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QFrame, QTableWidget, QTableWidgetItem,
+    QFrame, QTableWidget, QTableWidgetItem, QCheckBox,
     QHeaderView, QMessageBox, QComboBox, QApplication
 )
 from PySide6.QtCore import Qt, Signal
@@ -118,6 +118,9 @@ class ImportPanel(QWidget):
     warnings_dismissed = Signal()  # Senyal quan s'han descartat els avisos
 
     # Columnes base (s'ajusten segons mode a _setup_table_columns)
+    # Rol per marcar files que requereixen atenció (sobreviu a l'ordenació)
+    FLAG_ROLE = Qt.UserRole + 7
+
     COL_INJ = 0
     COL_MOSTRA = 1
     COL_TIPUS = 2
@@ -237,6 +240,13 @@ class ImportPanel(QWidget):
         self.table_help.setStyleSheet("color: #666; font-size: 11px; padding: 2px;")
         self.table_help.setVisible(False)
         layout.addWidget(self.table_help)
+
+        # Filtre: mostrar només files que requereixen atenció
+        self._only_issues_cb = QCheckBox("Només files amb avisos")
+        self._only_issues_cb.setStyleSheet("font-size: 11px; padding: 2px;")
+        self._only_issues_cb.setVisible(False)
+        self._only_issues_cb.toggled.connect(lambda _: self._apply_issue_filter())
+        layout.addWidget(self._only_issues_cb)
 
         self.samples_table = QTableWidget()
         self.samples_table.setToolTip("Doble-clic per veure gràfica DOC + DAD 254nm")
@@ -1249,6 +1259,13 @@ class ImportPanel(QWidget):
             dad_item = self._create_semaphore_item(GREY, "DAD: sense dades")
         self.samples_table.setItem(row, self.COL_SEM_DAD, dad_item)
 
+        # Marcar la fila com "amb avisos" per al filtre (sobreviu a l'ordenació):
+        # requereix revisió, falta un senyal, o no té DOC Direct.
+        flagged = (bool(needs_review) or bool(missing_signals) or direct_pts == 0)
+        m_item = self.samples_table.item(row, self.COL_MOSTRA)
+        if m_item is not None:
+            m_item.setData(self.FLAG_ROLE, bool(flagged))
+
         # Prioritat combinada al semàfor DOC (per ordenació per defecte)
         # Menor valor = més atenció necessària
         priorities = [doc_item.data(Qt.UserRole), dad_item.data(Qt.UserRole)]
@@ -1373,6 +1390,32 @@ class ImportPanel(QWidget):
         self.samples_table.sortByColumn(self.COL_SEM_DOC, Qt.AscendingOrder)
         self.samples_table.setVisible(True)
         self.table_help.setVisible(True)
+        self._only_issues_cb.setVisible(True)
+        self._apply_issue_filter()
+
+    # --- Filtre "només files amb avisos" ---------------------------------
+    def _apply_issue_filter(self):
+        """Amaga/mostra files segons el marcatge d'atenció (FLAG_ROLE)."""
+        table = getattr(self, "samples_table", None)
+        if table is None:
+            return
+        on = getattr(self, "_only_issues_cb", None) is not None and self._only_issues_cb.isChecked()
+        for row in range(table.rowCount()):
+            if not on:
+                table.setRowHidden(row, False)
+                continue
+            m_item = table.item(row, self.COL_MOSTRA)
+            flagged = bool(m_item.data(self.FLAG_ROLE)) if m_item is not None else False
+            table.setRowHidden(row, not flagged)
+
+    def set_flagged_samples(self, names):
+        """API pel wizard (l'import marca l'atenció per fila; sense ús directe aquí)."""
+        self._flagged_samples = set(names or [])
+
+    def toggle_issue_filter(self):
+        """API pel wizard: activa/desactiva el filtre des del header."""
+        if getattr(self, "_only_issues_cb", None) is not None:
+            self._only_issues_cb.setChecked(not self._only_issues_cb.isChecked())
 
     def _add_simple_cell(self, row, col, text):
         """Afegeix una cel·la simple no editable."""
