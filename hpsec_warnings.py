@@ -119,6 +119,19 @@ ANOMALY_CATALOG = {
         "invalidates": False,
         "action": "Automàtic — verificar cromatograma DOC visualment",
     },
+    "IMP_NOTICE": {
+        # Avís genèric d'importació: recull els missatges de text del backend que
+        # no tenen un codi propi (abans es descartaven silenciosament). INFO per
+        # no alarmar; el text real es conserva al camp message.
+        "severity": WarningLevel.INFO,
+        "label": "Avís d'importació",
+        "icon": "ℹ",
+        "description": "Avís del procés d'importació.",
+        "stage": "import",
+        "repairable": False,
+        "invalidates": False,
+        "action": "Revisar el detall",
+    },
 
     # === Avisos de calibració (nivell seqüència) ===
     "CAL_NO_KHP": {

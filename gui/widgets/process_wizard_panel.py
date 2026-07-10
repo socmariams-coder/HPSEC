@@ -2188,11 +2188,16 @@ class ProcessWizardPanel(QWidget):
     @staticmethod
     def _state_from_data(data) -> str:
         """Estat de pestanya a partir del resultat: error (blocatge dur de
-        seqüència) / warning (mostres amb avisos) / ok (net)."""
-        from hpsec_warnings import has_hard_block, collect_sample_issues
+        seqüència) / warning (mostres amb warning o blocker) / ok.
+
+        Els avisos INFO (registrats però no problemàtics) NO posen la pestanya
+        en groc — es queda 'ok'."""
+        from hpsec_warnings import (has_hard_block, collect_sample_issues,
+                                    max_severity_of_issues)
         if has_hard_block(data):
             return "error"
-        return "warning" if collect_sample_issues(data) else "ok"
+        sev = max_severity_of_issues(collect_sample_issues(data))
+        return "warning" if sev in ("warning", "blocker") else "ok"
 
     def _on_import_completed(self, data):
         """Callback quan import completa."""

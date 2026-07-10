@@ -3179,13 +3179,23 @@ def _generate_import_warnings(result: dict) -> list:
         warnings.append(anomaly)
 
     # 3. Warnings del manifest (strings) — extreure info accionable
+    _skip_notices = (
+        "importat des de manifest",
+        "4-toc_calc no trobat",
+    )
     for w_str in result.get("warnings", []):
-        w_lower = w_str.lower() if isinstance(w_str, str) else ""
+        if not isinstance(w_str, str) or not w_str.strip():
+            continue
+        w_lower = w_str.lower()
+        if any(s in w_lower for s in _skip_notices):
+            continue
+        msg = w_str.strip().lstrip("\u26a0\ufe0f").strip()
         if "incompleta" in w_lower or "duplicat" in w_lower or "duplicada" in w_lower:
             anomaly = create_anomaly("IMP_INCOMPLETE")
-            # Usar el text original que ja és descriptiu
-            anomaly["message"] = w_str.lstrip("\u26a0\ufe0f ").strip()
-            warnings.append(anomaly)
+        else:
+            anomaly = create_anomaly("IMP_NOTICE")  # catch-all (INFO)
+        anomaly["message"] = msg
+        warnings.append(anomaly)
 
     # 4. Cromatogrames truncats (DOC massa curt)
     # COLUMN: mínim 30 min = 450 punts (dt=4s)
