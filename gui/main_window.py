@@ -63,6 +63,10 @@ class HPSECSuiteWindow(QMainWindow):
         # Aplicar estil
         self.setStyleSheet(STYLESHEET)
 
+        # Obrir aprofitant tota la pantalla (aspecte professional; abans s'obria
+        # a la mida mínima)
+        self.showMaximized()
+
     def _setup_ui(self):
         """Configura la interfície principal."""
         # Widget central
@@ -349,7 +353,7 @@ class HPSECSuiteWindow(QMainWindow):
 
         # Actualitzar títol
         suffix = f" [+{len(self.sibling_paths)}]" if self.sibling_paths else ""
-        self.setWindowTitle(f"HPSEC Suite - {seq_name}{suffix}")
+        self.setWindowTitle(f"HPSEC Suite — {seq_name}{suffix}")
 
         # Carregar al wizard (assegurar que existeix)
         self._ensure_wizard()

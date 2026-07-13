@@ -630,7 +630,7 @@ def classify_sample_status(doc_rep_data, dad_rep_data, comparison,
         if n_repaired > 0 and n_pending == 0:
             repair_color = COLOR_SUCCESS
             repair_text = f"R\u2713 ({n_repaired})"
-            repair_tooltip = "Reparacio aplicada \u2014 Clic per desfer o veure detalls"
+            repair_tooltip = "Reparaci\u00f3 aplicada \u2014 Clic per desfer o veure detalls"
         elif n_pending > 0:
             repair_color = COLOR_ERROR
             repair_text = "R" if can_repair else "\u26a0"

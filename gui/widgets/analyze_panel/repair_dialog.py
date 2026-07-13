@@ -403,7 +403,7 @@ class JaggedPeakRepairDialog(QDialog):
         self._targets = self._find_all_targets()
 
         n = len(self._targets)
-        self.setWindowTitle(f"Reparacio — {sample_name} ({n} senyals)")
+        self.setWindowTitle(f"Reparació — {sample_name} ({n} senyals)")
         # Mida adaptativa: 2 cards = compacte, 4 = mes gran
         if n <= 2:
             self.setMinimumSize(650, 350)

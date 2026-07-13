@@ -67,7 +67,7 @@ class TimeoutCompositionDialog(QDialog):
         self.sample_data = sample_data
         self.is_bp = is_bp
 
-        self.setWindowTitle(f"Composicio timeout — {sample_name}")
+        self.setWindowTitle(f"Composició timeout — {sample_name}")
         self.setMinimumSize(700, 500)
         self.resize(950, 650)
 
@@ -846,7 +846,7 @@ class TimeoutCompositionDialog(QDialog):
         logger.info(f"Composició aplicada a {self.sample_name} R{sel_key}")
 
         # Update UI to show applied state
-        self.apply_btn.setText("Composicio aplicada")
+        self.apply_btn.setText("Composició aplicada")
         self.apply_btn.setEnabled(False)
         self.apply_btn.setStyleSheet(
             "QPushButton { background-color: #95a5a6; color: white; "

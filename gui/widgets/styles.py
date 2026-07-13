@@ -9,6 +9,11 @@ Garanteix consistència visual a tota l'aplicació.
 from PySide6.QtGui import QFont, QColor
 from PySide6.QtCore import Qt
 
+# Font ÚNICA de color: el tema modern (gui/styles/theme.py). Aquest mòdul manté
+# els noms COLOR_* (molts panells hi depenen) però els valors surten del tema,
+# perquè no hi hagi dues paletes en conflicte.
+from gui.styles.theme import COLORS as _T
+
 
 # =============================================================================
 # LAYOUT CONSTANTS
@@ -50,67 +55,67 @@ TINY_FONT_SIZE = 10
 # COLORS
 # =============================================================================
 
-# Colors primaris
-COLOR_PRIMARY = "#2E86AB"       # Blau principal
-COLOR_PRIMARY_DARK = "#1A5276"  # Blau fosc
-COLOR_SECONDARY = "#2A9D8F"     # Verd-blau
+# Colors primaris (del tema)
+COLOR_PRIMARY = _T["primary"]            # Blau principal
+COLOR_PRIMARY_DARK = _T["primary_hover"] # Blau fosc (hover)
+COLOR_SECONDARY = _T["info"]             # Accent secundari
 
-# Colors d'estat
-COLOR_SUCCESS = "#27AE60"       # Verd èxit
-COLOR_SUCCESS_LIGHT = "#D5F5E3" # Verd clar (fons)
-COLOR_WARNING = "#F39C12"       # Taronja avís
-COLOR_WARNING_LIGHT = "#FCF3CF" # Groc clar (fons)
-COLOR_ERROR = "#E74C3C"         # Vermell error
-COLOR_ERROR_LIGHT = "#FADBD8"   # Rosa clar (fons)
-COLOR_PENDING = "#BDC3C7"       # Gris pendent
-COLOR_CURRENT = "#2E86AB"       # Blau fase actual (= PRIMARY)
-COLOR_CAL_BG = "#E8F0FE"        # Fons blau suau per SEQ_CAL
-COLOR_CAL_TEXT = "#1A56DB"       # Blau fosc per text CAL
+# Colors d'estat (del tema — semàfor únic a tota l'app)
+COLOR_SUCCESS = _T["success"]
+COLOR_SUCCESS_LIGHT = _T["success_bg"]
+COLOR_WARNING = _T["warning"]
+COLOR_WARNING_LIGHT = _T["warning_bg"]
+COLOR_ERROR = _T["error"]
+COLOR_ERROR_LIGHT = _T["error_bg"]
+COLOR_PENDING = _T["border_strong"]      # Gris pendent
+COLOR_CURRENT = _T["primary"]            # Fase actual (= PRIMARY)
+COLOR_CAL_BG = _T["primary_light"]       # Fons blau suau per SEQ_CAL
+COLOR_CAL_TEXT = _T["primary_hover"]     # Text CAL
 
-# Colors neutres
-COLOR_TEXT = "#2C3E50"          # Text principal
-COLOR_TEXT_SECONDARY = "#666666" # Text secundari
-COLOR_TEXT_MUTED = "#888888"    # Text apagat
-COLOR_BORDER = "#CCCCCC"        # Vores
-COLOR_BACKGROUND = "#FFFFFF"    # Fons blanc
+# Colors neutres (del tema)
+COLOR_TEXT = _T["text_primary"]
+COLOR_TEXT_SECONDARY = _T["text_secondary"]
+COLOR_TEXT_MUTED = _T["text_muted"]
+COLOR_BORDER = _T["border"]
+COLOR_BACKGROUND = _T["surface"]
 
 
 # =============================================================================
 # STYLESHEETS
 # =============================================================================
 
-# Barra d'avisos (warnings)
-STYLE_WARNING_BAR = """
-    QFrame {
-        background-color: #fff3cd;
-        border: 1px solid #ffc107;
+# Barra d'avisos (warnings) — tokens del tema
+STYLE_WARNING_BAR = f"""
+    QFrame {{
+        background-color: {COLOR_WARNING_LIGHT};
+        border: 1px solid {COLOR_WARNING};
         border-radius: 6px;
-    }
+    }}
 """
 
-STYLE_WARNING_TEXT = "color: #856404;"
+STYLE_WARNING_TEXT = f"color: {COLOR_WARNING};"
 
 # Barra d'error
-STYLE_ERROR_BAR = """
-    QFrame {
-        background-color: #f8d7da;
-        border: 1px solid #f5c6cb;
+STYLE_ERROR_BAR = f"""
+    QFrame {{
+        background-color: {COLOR_ERROR_LIGHT};
+        border: 1px solid {COLOR_ERROR};
         border-radius: 6px;
-    }
+    }}
 """
 
-STYLE_ERROR_TEXT = "color: #721c24;"
+STYLE_ERROR_TEXT = f"color: {COLOR_ERROR};"
 
 # Barra d'èxit
-STYLE_SUCCESS_BAR = """
-    QFrame {
-        background-color: #d4edda;
-        border: 1px solid #c3e6cb;
+STYLE_SUCCESS_BAR = f"""
+    QFrame {{
+        background-color: {COLOR_SUCCESS_LIGHT};
+        border: 1px solid {COLOR_SUCCESS};
         border-radius: 6px;
-    }
+    }}
 """
 
-STYLE_SUCCESS_TEXT = "color: #155724;"
+STYLE_SUCCESS_TEXT = f"color: {COLOR_SUCCESS};"
 
 # Placeholder text
 STYLE_PLACEHOLDER = f"color: {COLOR_TEXT_MUTED}; font-size: 14px;"
