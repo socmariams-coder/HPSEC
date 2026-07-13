@@ -214,7 +214,7 @@ class _RepairCard(QFrame):
 
         self._anchor_copy_btn = QPushButton("Copiar a les altres")
         self._anchor_copy_btn.setStyleSheet(
-            "QPushButton { font-size: 9px; padding: 1px 6px; color: #2E86AB; }")
+            "QPushButton { font-size: 9px; padding: 1px 6px; color: #2563EB; }")
         self._anchor_copy_btn.setToolTip(
             "Copia aquests ancoratges a totes les altres cards")
         anchor_row.addWidget(self._anchor_copy_btn)
@@ -257,7 +257,7 @@ class _RepairCard(QFrame):
             self._state_badge.setText(_badge('#999', 'descartat'))
             self.setStyleSheet(_ss('#DDD', '#FAFAFA'))
         elif self.state == "needs_repair":
-            self._state_badge.setText(_badge('#C0392B', 'pendent'))
+            self._state_badge.setText(_badge('#EF4444', 'pendent'))
             self.setStyleSheet(_ss('#E0C4C0', 'white'))
         else:
             self._state_badge.setText("")
@@ -304,7 +304,7 @@ class _RepairCard(QFrame):
         ax.clear()
 
         # Original
-        ax.plot(t_z, y_orig_z, color="#2E86AB", lw=1.0, label="Original")
+        ax.plot(t_z, y_orig_z, color="#2563EB", lw=1.0, label="Original")
 
         # Repaired preview
         if preview.get("was_repaired"):

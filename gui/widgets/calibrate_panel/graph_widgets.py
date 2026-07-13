@@ -422,7 +422,7 @@ class KHPReplicaGraphWidget(QWidget):
             t_label = first_to.get('t_start_min', 0)
             if affects_main_peak:
                 ax.annotate(f'!! TO@{t_label:.1f} PIC!', xy=(0.02, 0.88),
-                           xycoords='axes fraction', fontsize=6, color='#C0392B',
+                           xycoords='axes fraction', fontsize=6, color='#EF4444',
                            va='top', fontweight='bold')
             else:
                 ax.annotate(f'TO@{t_label:.1f}', xy=(0.02, 0.88),
@@ -765,10 +765,10 @@ class HistoryBarWidget(QWidget):
                 edge_colors.append('#1E8449')
             elif is_outlier or not is_valid:
                 colors.append('#E74C3C')
-                edge_colors.append('#C0392B')
+                edge_colors.append('#EF4444')
             else:
                 colors.append('#5DADE2')
-                edge_colors.append('#2E86AB')
+                edge_colors.append('#2563EB')
 
         x = range(len(seq_names))
         self._bars = list(ax.bar(x, values, color=colors, edgecolor=edge_colors,

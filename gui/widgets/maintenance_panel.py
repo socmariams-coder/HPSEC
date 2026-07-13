@@ -40,7 +40,7 @@ METHOD_COLORS = {
     "Canvi volum injecció": "#2980B9",
     "Canvi sensibilitat UIB": "#16A085",
     "Canvi mètode processament": "#D35400",
-    "Canvi reactiu/consumible": "#C0392B",
+    "Canvi reactiu/consumible": "#EF4444",
     "Observació": "#7F8C8D",
 }
 
@@ -134,7 +134,7 @@ class MaintenancePanel(QWidget):
 
         self.summary_labels = {}
         for cat_name, color in [("Netejes", "#F39C12"), ("Cartutxos", "#9B59B6"),
-                                 ("Tecnics", "#E74C3C"), ("Total", "#2E86AB")]:
+                                 ("Tecnics", "#E74C3C"), ("Total", "#2563EB")]:
             item_layout = QHBoxLayout()
             item_layout.setSpacing(4)
 

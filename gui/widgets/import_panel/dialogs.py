@@ -96,7 +96,7 @@ class ChromatogramPreviewDialog(QDialog):
             self._plot_data(ax1, ax2, sample_name, replica, imported_data)
 
             ax1.set_xlabel("Temps (min)")
-            ax1.set_ylabel("DOC (mAU)", color="#2E86AB")
+            ax1.set_ylabel("DOC (mAU)", color="#2563EB")
             ax2.set_ylabel("DAD 254nm (mAU)", color="#E67E22")
             ax1.set_title(f"{sample_name} - Rèplica {replica}")
             # Només mostrar llegenda si hi ha dades
@@ -139,7 +139,7 @@ class ChromatogramPreviewDialog(QDialog):
             t = direct["t"]
             y = direct.get("y") if direct.get("y") is not None else direct.get("y_raw")
             if y is not None:
-                ax1.plot(t, y, color="#2E86AB", label="DOC Direct", linewidth=1)
+                ax1.plot(t, y, color="#2563EB", label="DOC Direct", linewidth=1)
 
         uib = rep_data.get("uib", {})
         if uib and uib.get("t") is not None:

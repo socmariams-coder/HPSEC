@@ -257,7 +257,7 @@ class ProcessWizardPanel(QWidget):
 
         self.seq_label = QLabel("")
         self.seq_label.setFont(QFont("Segoe UI", 11, QFont.Bold))
-        self.seq_label.setStyleSheet("color: #2E86AB;")
+        self.seq_label.setStyleSheet("color: #2563EB;")
         layout.addWidget(self.seq_label)
 
         self.seq_info = QLabel()
@@ -295,10 +295,10 @@ class ProcessWizardPanel(QWidget):
         self.pdf_btn.setFixedWidth(50)
         self.pdf_btn.setStyleSheet("""
             QPushButton {
-                background-color: #2E86AB; color: white; border: none;
+                background-color: #2563EB; color: white; border: none;
                 border-radius: 4px; padding: 6px; font-weight: bold;
             }
-            QPushButton:hover { background-color: #1A5276; }
+            QPushButton:hover { background-color: #1D4ED8; }
         """)
         self.pdf_btn.setToolTip("Generar report PDF d'anàlisi")
         self.pdf_btn.setVisible(False)
@@ -399,7 +399,7 @@ class ProcessWizardPanel(QWidget):
                     border-radius: 12px; padding: 4px 14px;
                     font-size: 11px; font-weight: bold;
                 }
-                QPushButton:hover { background-color: #C0392B; }
+                QPushButton:hover { background-color: #EF4444; }
             """,
             "error": """
                 QPushButton {
@@ -902,7 +902,7 @@ class ProcessWizardPanel(QWidget):
 
                 header = QLabel(
                     f"<b>{reviewer}</b> · "
-                    f"<span style='color:#2E86AB'>[{stage_display}]</span> · "
+                    f"<span style='color:#2563EB'>[{stage_display}]</span> · "
                     f"<span style='color:#888'>{ts}</span>"
                 )
                 header.setTextFormat(Qt.RichText)
@@ -1389,10 +1389,10 @@ class ProcessWizardPanel(QWidget):
             self.note_btn.setToolTip(f"{n} nota{'s' if n > 1 else ''} - Clic per veure")
             self.note_btn.setStyleSheet("""
                 QPushButton {
-                    background-color: #2E86AB; color: white; border: none;
+                    background-color: #2563EB; color: white; border: none;
                     border-radius: 4px; padding: 6px; font-size: 13px; font-weight: bold;
                 }
-                QPushButton:hover { background-color: #236B8E; }
+                QPushButton:hover { background-color: #1D4ED8; }
             """)
         else:
             self.note_btn.setText("\U0001f4dd")

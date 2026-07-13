@@ -76,7 +76,7 @@ class _SortableImportItem(QTableWidgetItem):
 def load_sample_types_config():
     """Carrega configuració de tipus de mostra."""
     default_types = {
-        "MOSTRA": {"label": "MOSTRA", "color": "#2E86AB", "patterns": []},
+        "MOSTRA": {"label": "MOSTRA", "color": "#2563EB", "patterns": []},
         "PATRÓ_CAL": {"label": "PATRÓ_CAL", "color": "#2A9D8F", "patterns": ["KHP"]},
         "PATRÓ_REF": {"label": "PATRÓ_REF", "color": "#9B59B6", "patterns": ["REF", "QC"]},
         "CONTROL": {"label": "CONTROL", "color": "#F6AE2D", "patterns": ["NaOH", "CONTROL"]},
@@ -210,7 +210,7 @@ class ImportPanel(QWidget):
         info_layout.setSpacing(16)
 
         self.total_label = QLabel()
-        self.total_label.setStyleSheet("font-weight: bold; color: #2E86AB;")
+        self.total_label.setStyleSheet("font-weight: bold; color: #2563EB;")
         info_layout.addWidget(self.total_label)
 
         # Botó per obrir carpeta SEQ
@@ -924,7 +924,7 @@ class ImportPanel(QWidget):
 
         self.total_label.setText(" · ".join(info_parts))
         self.total_label.setStyleSheet(
-            "font-weight: bold; color: #E74C3C;" if has_warning else "font-weight: bold; color: #2E86AB;"
+            "font-weight: bold; color: #E74C3C;" if has_warning else "font-weight: bold; color: #2563EB;"
         )
 
         # Comptar fitxers per tipus de senyal
@@ -1006,7 +1006,7 @@ class ImportPanel(QWidget):
         if original_name != sample_name:
             name_item = QTableWidgetItem(original_name)
             name_item.setToolTip(f"Nom únic: {sample_name}\nNom MasterFile: {original_name}")
-            name_item.setForeground(QBrush(QColor("#2E86AB")))
+            name_item.setForeground(QBrush(QColor("#2563EB")))
         else:
             name_item = QTableWidgetItem(sample_name)
         name_item.setFlags(name_item.flags() & ~Qt.ItemIsEditable)

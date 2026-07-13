@@ -1343,7 +1343,7 @@ class DashboardPanel(QWidget):
             self._loading_overlay.setAlignment(Qt.AlignCenter)
             self._loading_overlay.setStyleSheet(
                 "background-color: rgba(255, 255, 255, 200);"
-                "color: #2E86AB; font-size: 16px; font-weight: bold;"
+                "color: #2563EB; font-size: 16px; font-weight: bold;"
                 "border-radius: 8px;"
             )
         self._loading_overlay.setText(f"⏳ Carregant {seq_name}...")

@@ -554,7 +554,7 @@ class CalibratePanel(QWidget):
         self.compact_header.setWordWrap(True)
         self.compact_header.setTextFormat(Qt.RichText)
         self.compact_header.setStyleSheet(
-            "QLabel { background-color: #EBF5FB; border: 1px solid #AED6F1; "
+            "QLabel { background-color: #DBEAFE; border: 1px solid #AED6F1; "
             "border-radius: 6px; padding: 10px 14px; font-size: 12px; }"
         )
         header_row.addWidget(self.compact_header, 1)
@@ -570,7 +570,7 @@ class CalibratePanel(QWidget):
         self._toc_align_group = QGroupBox("Assignació TOC — DAD 254")
         self._toc_align_group.setVisible(False)
         self._toc_align_group.setStyleSheet(
-            "QGroupBox { font-weight: bold; color: #1A5276; border: 2px solid #2E86AB; "
+            "QGroupBox { font-weight: bold; color: #1D4ED8; border: 2px solid #2563EB; "
             "border-radius: 6px; margin-top: 8px; padding-top: 12px; }"
             "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; }")
         toc_align_layout = QVBoxLayout(self._toc_align_group)
@@ -661,7 +661,7 @@ class CalibratePanel(QWidget):
         self.cal_line_group = QGroupBox("Recta de calibració")
         self.cal_line_group.setVisible(False)
         self.cal_line_group.setStyleSheet(
-            "QGroupBox { font-weight: bold; color: #1A5276; border: 2px solid #2E86AB; "
+            "QGroupBox { font-weight: bold; color: #1D4ED8; border: 2px solid #2563EB; "
             "border-radius: 6px; margin-top: 8px; padding-top: 12px; }"
             "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; }"
         )
@@ -779,7 +779,7 @@ class CalibratePanel(QWidget):
                 border-radius: 10px; font-size: 11px; font-weight: bold;
                 color: #7F8C8D;
             }
-            QPushButton:hover { background: #3498DB; color: white; border-color: #2E86AB; }
+            QPushButton:hover { background: #3498DB; color: white; border-color: #2563EB; }
         """)
         self.history_info_btn.setToolTip("Clic per veure llegenda i detalls")
         self.history_info_btn.clicked.connect(self._show_history_legend)
@@ -1031,7 +1031,7 @@ class CalibratePanel(QWidget):
                 icon = "✗"
 
             is_active = (path == self._active_sibling_path)
-            bg_color = "#EBF5FB" if is_active else "#FAFAFA"
+            bg_color = "#DBEAFE" if is_active else "#FAFAFA"
 
             card.setStyleSheet(
                 f"QFrame {{ background: {bg_color}; border: 2px solid {border_color}; "
@@ -1074,7 +1074,7 @@ class CalibratePanel(QWidget):
             btn.setStyleSheet(
                 "QPushButton { padding: 2px 8px; border: 1px solid #ccc; "
                 "border-radius: 3px; font-size: 11px; background: white; }"
-                "QPushButton:hover { background: #2E86AB; color: white; }"
+                "QPushButton:hover { background: #2563EB; color: white; }"
             )
             btn.setFixedHeight(22)
             _path = path  # captura per closure
@@ -1099,7 +1099,7 @@ class CalibratePanel(QWidget):
         for card in self._sibling_cards:
             card_path = card.property("sibling_path")
             is_active = (card_path == path)
-            bg = "#EBF5FB" if is_active else "#FAFAFA"
+            bg = "#DBEAFE" if is_active else "#FAFAFA"
             # Re-aplicar estil mantenint border original
             style = card.styleSheet()
             if "background:" in style:
@@ -1142,7 +1142,7 @@ class CalibratePanel(QWidget):
             current = self.compact_header.text()
             if f"[{name}]" not in current:
                 self.compact_header.setText(
-                    f'<span style="color: #2E86AB; font-size: 11px;">[{name}]</span> {current}'
+                    f'<span style="color: #2563EB; font-size: 11px;">[{name}]</span> {current}'
                 )
 
     def _on_progress(self, pct, msg):
@@ -2532,7 +2532,7 @@ class CalibratePanel(QWidget):
         self.delay_group = QGroupBox("Diagn\u00f2stic Delay HPLC\u2194TOC")
         self.delay_group.setVisible(False)
         self.delay_group.setStyleSheet(
-            "QGroupBox { font-weight: bold; color: #1A5276; border: 2px solid #E67E22; "
+            "QGroupBox { font-weight: bold; color: #1D4ED8; border: 2px solid #E67E22; "
             "border-radius: 6px; margin-top: 8px; padding-top: 12px; }"
             "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; }"
         )

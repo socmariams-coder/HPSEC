@@ -38,7 +38,7 @@ except ImportError:
 
 # Colors
 _SRC_COLORS = {
-    "1": "#2E86AB",   # blue — R1
+    "1": "#2563EB",   # blue — R1
     "2": "#E67E22",   # orange — R2
     "interp": "#888888",  # grey — interpolation
 }

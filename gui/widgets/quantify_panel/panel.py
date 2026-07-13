@@ -118,18 +118,18 @@ class QuantifyPanel(QWidget):
         actions_row.setSpacing(6)
         self._apply_btn = QPushButton("▶ Aplicar quantificació")
         self._apply_btn.setStyleSheet(
-            "QPushButton { background: #2E86AB; color: white; padding: 6px 14px;"
+            "QPushButton { background: #2563EB; color: white; padding: 6px 14px;"
             " border: none; border-radius: 4px; font-size: 11px; font-weight: bold; }"
-            "QPushButton:hover { background: #1f6080; }"
+            "QPushButton:hover { background: #1D4ED8; }"
             "QPushButton:disabled { background: #adb5bd; }")
         self._apply_btn.clicked.connect(self._run_quantify)
         actions_row.addWidget(self._apply_btn)
 
         self._pdf_btn = QPushButton("📄 PDF")
         self._pdf_btn.setStyleSheet(
-            "QPushButton { background: white; color: #2E86AB; padding: 6px 12px;"
-            " border: 1px solid #2E86AB; border-radius: 4px; font-size: 11px; }"
-            "QPushButton:hover { background: #EBF5FB; }"
+            "QPushButton { background: white; color: #2563EB; padding: 6px 12px;"
+            " border: 1px solid #2563EB; border-radius: 4px; font-size: 11px; }"
+            "QPushButton:hover { background: #DBEAFE; }"
             "QPushButton:disabled { color: #adb5bd; border-color: #ced4da; }")
         self._pdf_btn.setEnabled(False)
         self._pdf_btn.clicked.connect(self._generate_pdf)
@@ -343,7 +343,7 @@ class QuantifyPanel(QWidget):
                     f"&nbsp;·&nbsp;intercept={in_u:.2f}")
             if not parts:
                 self._cal_info_label.setText(
-                    "<span style='color:#c0392b'>"
+                    "<span style='color:#EF4444'>"
                     "⚠ Cap recta de calibració activa per aquest mode.</span> "
                     "Per activar-ne una: processa una SEQ de calibració (nom amb "
                     "<b>_CAL</b>) o consulta l'estat a "
@@ -356,7 +356,7 @@ class QuantifyPanel(QWidget):
         except Exception as e:
             logger.warning("Error info calibració: %s", e)
             self._cal_info_label.setText(
-                f"<span style='color:#c0392b'>Error: {e}</span>")
+                f"<span style='color:#EF4444'>Error: {e}</span>")
 
     def _goto_global_calibration(self, _link=None):
         """Porta l'usuari al tab Calibració Global (escenari sense recta)."""
@@ -370,7 +370,7 @@ class QuantifyPanel(QWidget):
     def _run_quantify(self):
         if not self._analysis_result:
             self._status_label.setText(
-                "<span style='color:#c0392b'>✗ Cal completar Analitzar primer.</span>")
+                "<span style='color:#EF4444'>✗ Cal completar Analitzar primer.</span>")
             return
         self._apply_btn.setEnabled(False)
         self._status_label.setText("Quantificant…")
@@ -398,7 +398,7 @@ class QuantifyPanel(QWidget):
         n = sum(1 for sg in result.get("samples_grouped", {}).values()
                 if (sg.get("quantification") or {}).get("concentration_ppm_direct") is not None)
         self._status_label.setText(
-            f"<span style='color:#28a745'>✓ Quantificat ({n} mostres)</span>")
+            f"<span style='color:#22C55E'>✓ Quantificat ({n} mostres)</span>")
         self._persist_result()
         self._render_results()
         self.quantification_completed.emit(result)
@@ -407,7 +407,7 @@ class QuantifyPanel(QWidget):
     def _on_quantify_error(self, msg: str):
         self._apply_btn.setEnabled(True)
         self._status_label.setText(
-            f"<span style='color:#c0392b'>✗ Error: {msg}</span>")
+            f"<span style='color:#EF4444'>✗ Error: {msg}</span>")
 
     def _persist_result(self):
         if not self._quantification_result:
@@ -433,7 +433,7 @@ class QuantifyPanel(QWidget):
             or self._quantification_result.get("seq_path")
         if not seq_path:
             self._status_label.setText(
-                "<span style='color:#c0392b'>✗ Sense seq_path</span>")
+                "<span style='color:#EF4444'>✗ Sense seq_path</span>")
             return
         self._pdf_btn.setEnabled(False)
         self._status_label.setText("Generant PDF…")
@@ -443,18 +443,18 @@ class QuantifyPanel(QWidget):
                 seq_path, analysis_data=self._quantification_result)
             if pdf_path:
                 self._status_label.setText(
-                    f"<span style='color:#28a745'>✓ PDF: {os.path.basename(pdf_path)}</span>")
+                    f"<span style='color:#22C55E'>✓ PDF: {os.path.basename(pdf_path)}</span>")
                 try:
                     os.startfile(pdf_path)
                 except Exception:
                     pass
             else:
                 self._status_label.setText(
-                    "<span style='color:#c0392b'>✗ Error generant PDF</span>")
+                    "<span style='color:#EF4444'>✗ Error generant PDF</span>")
         except Exception as e:
             logger.exception("Error PDF")
             self._status_label.setText(
-                f"<span style='color:#c0392b'>✗ {e}</span>")
+                f"<span style='color:#EF4444'>✗ {e}</span>")
         finally:
             self._pdf_btn.setEnabled(True)
 
@@ -521,7 +521,7 @@ class QuantifyPanel(QWidget):
                 delta_txt = "—"
                 n_txt = "—"
                 estat = "✗ " + (reason or "no vàlida")
-                estat_color = "#c0392b"
+                estat_color = "#EF4444"
             else:
                 n = sd.get("n", 0)
                 mean_d = sd.get("mean")
@@ -541,7 +541,7 @@ class QuantifyPanel(QWidget):
                 else:
                     delta_txt = "—"
                 estat = "✓"
-                estat_color = "#28a745"
+                estat_color = "#22C55E"
 
             cells = [name, n_txt, ppm_d_txt, rsd_txt, ppm_u_txt, delta_txt, estat]
             for c, val in enumerate(cells):
@@ -553,7 +553,7 @@ class QuantifyPanel(QWidget):
                     try:
                         rsd_v = float(rsd_txt)
                         if rsd_v > 10:
-                            item.setForeground(QBrush(QColor("#c0392b")))
+                            item.setForeground(QBrush(QColor("#EF4444")))
                         elif rsd_v > 5:
                             item.setForeground(QBrush(QColor("#d4a017")))
                     except ValueError:
@@ -740,7 +740,7 @@ class QuantifyPanel(QWidget):
         if is_bp:
             # BP: una sola barra plena, no stacked
             bars_per_frac["BP"] = ax.bar(x, ppm_direct_total, w,
-                                          color="#2E86AB", alpha=0.85,
+                                          color="#2563EB", alpha=0.85,
                                           label="DOC (BP)")
         else:
             for fn in FRACTION_ORDER:
@@ -772,11 +772,11 @@ class QuantifyPanel(QWidget):
         if selected and str(selected) in keys:
             sel_idx = keys.index(str(selected))
             ax.axvspan(sel_idx - w/2 - 0.05, sel_idx + w/2 + 0.05,
-                       alpha=0.06, color="#2E86AB", zorder=0)
+                       alpha=0.06, color="#2563EB", zorder=0)
             # I etiqueta sota la barra
             ax.text(sel_idx, -max(ppm_direct_total) * 0.05 if ppm_direct_total else 0,
                     "★ sel", ha="center", va="top",
-                    fontsize=8, color="#2E86AB", style="italic")
+                    fontsize=8, color="#2563EB", style="italic")
 
         ax.set_xticks(x)
         ax.set_xticklabels(labels, fontsize=9)
@@ -904,7 +904,7 @@ class QuantifyPanel(QWidget):
         else:
             x = list(range(len(names)))
             ax.bar(x, means, yerr=sds, capsize=3,
-                   color="#2E86AB", alpha=0.85, ecolor="#1f6080")
+                   color="#2563EB", alpha=0.85, ecolor="#1D4ED8")
             ax.set_xticks(x)
             ax.set_xticklabels(names, rotation=45, ha="right", fontsize=8)
             ax.set_ylabel("ppm DOC Direct (mitjana ± SD)", fontsize=9)

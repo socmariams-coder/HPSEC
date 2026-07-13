@@ -411,7 +411,7 @@ class AnalyzePanel(QWidget):
         self._review_compose_btn.setStyleSheet(
             "QPushButton { border: 1px solid #3498DB; border-radius: 3px;"
             " padding: 4px 10px; font-size: 11px; color: #3498DB; }"
-            "QPushButton:hover { background: #EBF5FB; }")
+            "QPushButton:hover { background: #DBEAFE; }")
         self._review_compose_btn.clicked.connect(self._on_review_compose)
         nav_row.addWidget(self._review_compose_btn)
 
@@ -1099,7 +1099,7 @@ class AnalyzePanel(QWidget):
                         "#7D6608"),
             "info": ("background: #D6EAF8; border: 1px solid #2980B9; "
                      "border-radius: 6px; padding: 10px;",
-                     "#1A5276"),
+                     "#1D4ED8"),
         }
         frame_style, text_color = colors.get(level, colors["info"])
         icon = {"error": "\u274c", "warning": "\u26a0\ufe0f", "info": "\u2139\ufe0f"}.get(level, "")
@@ -1463,7 +1463,7 @@ class AnalyzePanel(QWidget):
             sep_font = QFont()
             sep_font.setBold(True)
             sep_item.setFont(sep_font)
-            sep_item.setForeground(QBrush(QColor("#2E86AB")))
+            sep_item.setForeground(QBrush(QColor("#2563EB")))
             table.setItem(row, 0, sep_item)
             table.setSpan(row, 0, 1, 3)
             for c in range(3):
@@ -1548,7 +1548,7 @@ class AnalyzePanel(QWidget):
             "QComboBox { font-size: 11px; padding: 2px 6px; min-width: 110px;"
             " border: 1px solid #ced4da; border-radius: 3px;"
             " background: white; color: #495057; }"
-            "QComboBox:hover { border-color: #2E86AB; }"
+            "QComboBox:hover { border-color: #2563EB; }"
             "QComboBox::drop-down { border: none; width: 16px; }")
         combo.setMinimumHeight(22)
 
@@ -1957,7 +1957,7 @@ class AnalyzePanel(QWidget):
             y1 = np.asarray(r1_data["y_doc"], dtype=float)
             t2 = np.asarray(r2_data["t_doc"], dtype=float)
             y2 = np.asarray(r2_data["y_doc"], dtype=float)
-            ax_top.plot(t1, y1, color="#2E86AB", linewidth=1.4,
+            ax_top.plot(t1, y1, color="#2563EB", linewidth=1.4,
                         label=f"R{rep_keys[0]}", alpha=0.85)
             ax_top.plot(t2, y2, color="#A23B72", linewidth=1.4,
                         label=f"R{rep_keys[1]}", alpha=0.85)
@@ -1978,7 +1978,7 @@ class AnalyzePanel(QWidget):
             diff = y1_i - y2_i
             ax_bot.plot(common_t, diff, color="#666", linewidth=1.0)
             ax_bot.fill_between(common_t, 0, diff,
-                                 where=(diff >= 0), color="#2E86AB", alpha=0.3)
+                                 where=(diff >= 0), color="#2563EB", alpha=0.3)
             ax_bot.fill_between(common_t, 0, diff,
                                  where=(diff < 0), color="#A23B72", alpha=0.3)
             ax_bot.axhline(0, color="#aaa", linewidth=0.5)
@@ -2006,7 +2006,7 @@ class AnalyzePanel(QWidget):
             d_area = area_r1 - area_r2
             d_area_pct = (d_area / area_r1 * 100) if area_r1 else 0
 
-            r2_text_color = "#28a745" if pearson >= 0.99 else "#d4a017"
+            r2_text_color = "#22C55E" if pearson >= 0.99 else "#d4a017"
             stats_html = (
                 f"<b>Pearson r²:</b> "
                 f"<span style='color:{r2_text_color};'>{pearson:.4f}</span> · "
@@ -2124,7 +2124,7 @@ class AnalyzePanel(QWidget):
         ax = self._review_figure.add_subplot(111)
 
         replicas = sample_data.get("replicas", {})
-        colors = ['#2E86AB', '#E74C3C', '#F39C12', '#27AE60']
+        colors = ['#2563EB', '#E74C3C', '#F39C12', '#27AE60']
 
         for i, (rk, rd) in enumerate(sorted(
                 replicas.items(),
@@ -2230,8 +2230,8 @@ class AnalyzePanel(QWidget):
         is_bp = "BP" in method.upper() if method else False
         ax.set_xlim(0, 12 if is_bp else 70)
         ax.set_xlabel("min", fontsize=8)
-        ax.set_ylabel("DOC (ppb)", fontsize=8, color="#2E86AB")
-        ax.tick_params(labelsize=7, axis='y', colors="#2E86AB")
+        ax.set_ylabel("DOC (ppb)", fontsize=8, color="#2563EB")
+        ax.tick_params(labelsize=7, axis='y', colors="#2563EB")
         ax.tick_params(labelsize=7, axis='x')
         ax.spines['top'].set_visible(False)
 
@@ -2782,7 +2782,7 @@ class AnalyzePanel(QWidget):
         if not hasattr(self, '_cat_buttons'):
             return
         STYLES = {
-            "sample":  ("#2E86AB", "#fff"),
+            "sample":  ("#2563EB", "#fff"),
             "blank":   ("#95a5a6", "#fff"),
             "control": ("#888",    "#fff"),
             "khp":     ("#1565C0", "#fff"),

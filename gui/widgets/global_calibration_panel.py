@@ -342,7 +342,7 @@ class GlobalCalibrationPanel(QWidget):
             self._cal_table.setItem(i, 0, QTableWidgetItem(s['name']))
 
             m_item = QTableWidgetItem(s['method'])
-            m_item.setForeground(QColor('#C0392B' if s['method'] == 'BP' else '#2E86C1'))
+            m_item.setForeground(QColor('#EF4444' if s['method'] == 'BP' else '#2E86C1'))
             self._cal_table.setItem(i, 1, m_item)
 
             self._cal_table.setItem(i, 2, QTableWidgetItem(str(s['date'])[:10]))
@@ -703,7 +703,7 @@ class CalibrationLineView(QWidget):
         self._align_group = QGroupBox("Alineació TOC — DAD 254")
         self._align_group.setVisible(False)
         self._align_group.setStyleSheet(
-            "QGroupBox { font-weight: bold; color: #1A5276; border: 1px solid #AED6F1; "
+            "QGroupBox { font-weight: bold; color: #1D4ED8; border: 1px solid #AED6F1; "
             "border-radius: 4px; margin-top: 6px; padding-top: 10px; }"
             "QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 3px; }")
         align_layout = QVBoxLayout(self._align_group)
@@ -1625,7 +1625,7 @@ class CalibrationLineView(QWidget):
         self.seq_cal_group = QGroupBox("Regressió de Calibració (SEQ_CAL)")
         self.seq_cal_group.setVisible(False)
         self.seq_cal_group.setStyleSheet(
-            "QGroupBox { font-weight: bold; color: #1A5276; border: 2px solid #27AE60; "
+            "QGroupBox { font-weight: bold; color: #1D4ED8; border: 2px solid #27AE60; "
             "border-radius: 6px; margin-top: 8px; padding-top: 14px; }"
             "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 6px; }"
         )
@@ -1635,7 +1635,7 @@ class CalibrationLineView(QWidget):
         # --- 1. Header compacte horitzontal (info + selectors) ---
         header_frame = QFrame()
         header_frame.setStyleSheet(
-            "QFrame { background: #EBF5FB; border-radius: 4px; padding: 6px; }"
+            "QFrame { background: #DBEAFE; border-radius: 4px; padding: 6px; }"
         )
         header_layout = QHBoxLayout(header_frame)
         header_layout.setContentsMargins(10, 6, 10, 6)
@@ -1644,7 +1644,7 @@ class CalibrationLineView(QWidget):
         self.seq_cal_info = QLabel()
         self.seq_cal_info.setWordWrap(True)
         self.seq_cal_info.setStyleSheet(
-            "color: #1A5276; font-weight: normal; font-size: 11px; background: transparent;"
+            "color: #1D4ED8; font-weight: normal; font-size: 11px; background: transparent;"
         )
         header_layout.addWidget(self.seq_cal_info, 1)
 
@@ -1660,7 +1660,7 @@ class CalibrationLineView(QWidget):
         signal_row.setSpacing(6)
         self.seq_cal_signal_label = QLabel("Senyal:")
         self.seq_cal_signal_label.setStyleSheet(
-            "font-weight: bold; color: #1A5276; font-size: 11px;"
+            "font-weight: bold; color: #1D4ED8; font-size: 11px;"
         )
         signal_row.addWidget(self.seq_cal_signal_label)
 
