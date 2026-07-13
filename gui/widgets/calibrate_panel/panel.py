@@ -48,6 +48,7 @@ from .graph_widgets import KHPReplicaGraphWidget, HistoryBarWidget, CalibrationL
 from gui.widgets.styles import (
     PANEL_MARGINS, PANEL_SPACING, STYLE_GROUPBOX,
     COLOR_SUCCESS, COLOR_WARNING, COLOR_ERROR, COLOR_TEXT_SECONDARY,
+    COLOR_SUCCESS_LIGHT, COLOR_WARNING_LIGHT, COLOR_ERROR_LIGHT,
     create_subtitle_font, apply_panel_layout
 )
 
@@ -1780,7 +1781,7 @@ class CalibratePanel(QWidget):
             fwhm = khp.get('fwhm_doc', 0)
             item_fwhm = QTableWidgetItem(f"{fwhm:.2f}" if fwhm > 0 else "-")
             if fwhm > FWHM_THRESHOLD:
-                item_fwhm.setBackground(QColor(255, 200, 100))
+                item_fwhm.setBackground(QColor(COLOR_WARNING_LIGHT))
                 item_fwhm.setToolTip(f"FWHM elevat (>{FWHM_THRESHOLD} min)")
             self.metrics_table.setItem(row, 7, item_fwhm)
 
@@ -1788,7 +1789,7 @@ class CalibratePanel(QWidget):
             snr = khp.get('snr', 0)
             item_snr = QTableWidgetItem(f"{snr:.0f}" if snr > 0 else "-")
             if 0 < snr < 10:
-                item_snr.setBackground(QColor(255, 200, 100))
+                item_snr.setBackground(QColor(COLOR_WARNING_LIGHT))
             self.metrics_table.setItem(row, 8, item_snr)
 
             # Col 9: Shift (segons)
@@ -1802,11 +1803,11 @@ class CalibratePanel(QWidget):
                 bg_status = bigauss.get('status', 'INVALID')
                 item_r2 = QTableWidgetItem(f"{r2:.3f}")
                 if bg_status == 'VALID':
-                    item_r2.setBackground(QColor(150, 255, 150))
+                    item_r2.setBackground(QColor(COLOR_SUCCESS_LIGHT))
                 elif bg_status == 'CHECK':
-                    item_r2.setBackground(QColor(255, 255, 150))
+                    item_r2.setBackground(QColor(COLOR_WARNING_LIGHT))
                 else:
-                    item_r2.setBackground(QColor(255, 200, 100))
+                    item_r2.setBackground(QColor(COLOR_WARNING_LIGHT))
                 asym = bigauss.get('asymmetry', 0)
                 sym = khp.get('symmetry', 0)
                 tip = f"Fit {bg_status}\nR\u00b2={r2:.4f}\nAsimetria={asym:.2f}"
@@ -1827,12 +1828,12 @@ class CalibratePanel(QWidget):
             if 'calibration_anomalies' not in khp:
                 # Dades anteriors al sistema d'anomalies — sense info QA/QC
                 item_status = QTableWidgetItem("?")
-                item_status.setBackground(QColor(220, 220, 220))
+                item_status.setBackground(QColor("#E2E8F0"))
                 item_status.setToolTip("Sense info QA/QC \u2014 reimportar per obtenir-la")
             elif not raw_anomalies:
                 # calibration_anomalies existeix i és buit → tot OK
                 item_status = QTableWidgetItem("\u2714")
-                item_status.setBackground(QColor(150, 255, 150))
+                item_status.setBackground(QColor(COLOR_SUCCESS_LIGHT))
                 item_status.setToolTip("Sense anomalies")
             else:
                 classified = classify_anomalies(cal_anomalies)
@@ -1841,16 +1842,16 @@ class CalibratePanel(QWidget):
 
                 if has_blockers:
                     status_text = "\u2718"
-                    color = QColor(255, 150, 150)
+                    color = QColor(COLOR_ERROR_LIGHT)
                 elif has_warnings:
                     status_text = "\u26a0"
-                    color = QColor(255, 200, 100)
+                    color = QColor(COLOR_WARNING_LIGHT)
                 elif cal_anomalies:
                     status_text = "\u2139"
-                    color = QColor(255, 255, 150)
+                    color = QColor(COLOR_WARNING_LIGHT)
                 else:
                     status_text = "\u2714"
-                    color = QColor(150, 255, 150)
+                    color = QColor(COLOR_SUCCESS_LIGHT)
 
                 item_status = QTableWidgetItem(status_text)
                 item_status.setBackground(color)
