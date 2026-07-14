@@ -3076,28 +3076,23 @@ class CalibratePanel(QWidget):
             self.delay_counts_label.setText("-")
 
         if is_bp:
-            # BP: l'alineació del DOC es fa PER INJECCIÓ amb el DAD 254
-            # (reassign_bp_by_dad254), NO amb el net delay. Aquest desfàs és un
-            # residu DOC↔254, no un delay corregible amb el net delay.
             if shift_abs < 0.5:
                 color = "#27AE60"
                 bg = "#E8F8F5"
                 icon = "\u2714"
-                text = f"{icon} Desf\u00e0s DOC\u2194254 petit ({shift_sec:.1f}s) \u2014 alineaci\u00f3 BP correcta."
+                text = f"{icon} Shift KHP petit \u2014 delay probablement correcte."
             elif shift_abs < 2.0:
                 color = "#E67E22"
                 bg = "#FEF9E7"
                 icon = "\u26a0"
-                text = (f"{icon} Desf\u00e0s DOC\u2194254 moderat ({shift_sec:.1f}s). "
-                        "L'alineaci\u00f3 BP es fa per injecci\u00f3 amb el DAD 254; "
-                        "aquest residu no es corregeix amb el net delay.")
+                text = (f"{icon} Shift KHP moderat ({shift_sec:.1f}s). "
+                        "Pot indicar un delay imprec\u00eds. Revisar el cromatograma DOC.")
             else:
                 color = "#E74C3C"
                 bg = "#FDEDEC"
                 icon = "\u2718"
-                text = (f"{icon} Desf\u00e0s DOC\u2194254 gran ({shift_sec:.1f}s). "
-                        "Possible pic DOC mal detectat en alguna injecci\u00f3. "
-                        "L'alineaci\u00f3 BP no dep\u00e8n del net delay.")
+                text = (f"{icon} Shift KHP gran ({shift_sec:.1f}s). "
+                        "Les files TOC poden estar mal assignades.")
         else:
             color = "#E67E22"
             bg = "#FEF9E7"
@@ -3112,9 +3107,7 @@ class CalibratePanel(QWidget):
         self.delay_quality_text.setText(text)
 
         # Botó correcció: visible si shift > threshold
-        # Botó correcció: NOMÉS COLUMN (en BP el net delay no mou
-        # l'alineació, que es fa per injecció amb el DAD 254).
-        show_btn = (not is_bp) and shift_abs > 2.0
+        show_btn = (is_bp and shift_abs >= 0.5) or shift_abs > 2.0
         if show_btn:
             new_delay = current_delay - shift_min
             self.delay_apply_btn.setText(
