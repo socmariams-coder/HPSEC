@@ -919,10 +919,19 @@ def recommend_replica(r1_result, r2_result=None, comparison=None, mode="COLUMN")
     return _recommend_replica_multi(replicas_dict, pairwise, mode)
 
 
+# Anomalies EXCLUSIVES del senyal UIB: no han d'invalidar la quantificació DOC
+# Direct (que es mesura independentment). Excepció: mostres només-UIB, on el
+# Direct s'estima a partir de l'UIB i per tant sí que en depèn.
+UIB_ONLY_CODES = {"UIB_SATURATED", "IRREGULAR_TOP_UIB", "UIB_NO_BASELINE"}
+
+
 def _score_replica_doc(rep_key, rep_result):
     """Puntua una rèplica per DOC: anomalies + SNR. Retorna (score, reason)."""
     anomalies = rep_result.get("anomalies", [])
     codes = get_anomaly_codes(anomalies)
+    # El DOC Direct no s'invalida per problemes només-UIB (senyal independent)
+    if not rep_result.get("is_uib_only"):
+        codes = codes - UIB_ONLY_CODES
     snr = rep_result.get("snr_info", {}).get("snr_direct", 0) or 0
 
     irreparable_codes = {c for c, e in ANOMALY_CATALOG.items()

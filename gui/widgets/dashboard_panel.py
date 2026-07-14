@@ -348,10 +348,20 @@ class DashboardPanel(QWidget):
 
         self._loading_overlay = None
         self._is_loading = False  # Evita doble-clic mentre carrega
+        self._loaded_once = False
         self._setup_ui()
         # Defer: carregar seqüències DESPRÉS que la finestra sigui visible
         from PySide6.QtCore import QTimer
         QTimer.singleShot(0, self.refresh_sequences)
+
+    def showEvent(self, event):
+        """Refresca en tornar al dashboard (p. ex. des del wizard) perquè les
+        notes i estats afegits durant el processament es vegin al moment.
+        El primer show ja el cobreix el QTimer del constructor."""
+        super().showEvent(event)
+        if self._loaded_once and not self._is_loading:
+            self.refresh_sequences()
+        self._loaded_once = True
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
