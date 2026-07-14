@@ -3075,30 +3075,40 @@ class CalibratePanel(QWidget):
         else:
             self.delay_counts_label.setText("-")
 
+        # El KHP és la referència de delay d'aquesta SEQ. En BP el DOC del KHP
+        # s'alinea pel DAD 254 i el shift mesurat (= -shift_min) ÉS el delay
+        # físic; el net delay del MasterFile ha de coincidir-hi perquè les
+        # injeccions SENSE DAD quedin ben alineades. Corregir = fixar el net
+        # delay al delay mesurat pel KHP. En COLUMN el shift respon al net delay
+        # (correcció relativa clàssica).
         if is_bp:
-            if shift_abs < 0.5:
-                color = "#27AE60"
-                bg = "#E8F8F5"
-                icon = "\u2714"
-                text = f"{icon} Shift KHP petit \u2014 delay probablement correcte."
-            elif shift_abs < 2.0:
-                color = "#E67E22"
-                bg = "#FEF9E7"
-                icon = "\u26a0"
-                text = (f"{icon} Shift KHP moderat ({shift_sec:.1f}s). "
-                        "Pot indicar un delay imprec\u00eds. Revisar el cromatograma DOC.")
+            khp_delay = -shift_min  # delay físic mesurat pel KHP (DAD254 -> DOC)
+            self._delay_new_value = khp_delay
+            khp_delay_sec = khp_delay * 60
+            delta = current_delay - khp_delay
+            delta_abs = abs(delta)
+            self.delay_shift_label.setText(
+                f"KHP mesura {khp_delay_sec:.1f}s ({khp_delay:.2f} min)")
+            if delta_abs < 0.1:
+                color, bg, icon = "#27AE60", "#E8F8F5", "✔"
+                text = (f"{icon} El net delay coincideix amb el mesurat pel KHP "
+                        f"({khp_delay:.2f} min). Alineacio correcta.")
+                show_btn = False
             else:
-                color = "#E74C3C"
-                bg = "#FDEDEC"
-                icon = "\u2718"
-                text = (f"{icon} Shift KHP gran ({shift_sec:.1f}s). "
-                        "Les files TOC poden estar mal assignades.")
+                if delta_abs < 1.0:
+                    color, bg, icon = "#E67E22", "#FEF9E7", "⚠"
+                else:
+                    color, bg, icon = "#E74C3C", "#FDEDEC", "✘"
+                text = (f"{icon} El net delay del MasterFile ({current_delay:.2f} min) "
+                        f"no coincideix amb el mesurat pel KHP ({khp_delay:.2f} min). "
+                        f"Les injeccions sense DAD poden quedar mal alineades.")
+                show_btn = True
         else:
-            color = "#E67E22"
-            bg = "#FEF9E7"
-            icon = "\u26a0"
+            self._delay_new_value = current_delay - shift_min
+            color, bg, icon = "#E67E22", "#FEF9E7", "⚠"
             text = (f"{icon} Shift KHP gran per COLUMN ({shift_sec:.1f}s). "
-                    "Normalment no afecta l'an\u00e0lisi per\u00f2 pot indicar un problema.")
+                    "Normalment no afecta l'analisi pero pot indicar un problema.")
+            show_btn = shift_abs > 2.0
 
         self.delay_quality_frame.setStyleSheet(
             f"QFrame {{ background-color: {bg}; border: 1px solid {color}; "
@@ -3106,18 +3116,21 @@ class CalibratePanel(QWidget):
         )
         self.delay_quality_text.setText(text)
 
-        # Botó correcció: visible si shift > threshold
-        show_btn = (is_bp and shift_abs >= 0.5) or shift_abs > 2.0
+        # Boto correccio
         if show_btn:
-            new_delay = current_delay - shift_min
-            self.delay_apply_btn.setText(
-                f"Corregir delay ({-shift_min:+.2f} min) i reimportar"
-            )
+            new_delay = self._delay_new_value
+            if is_bp:
+                self.delay_apply_btn.setText(
+                    f"Fixar net delay a {new_delay:.2f} min (mesurat pel KHP) i reimportar"
+                )
+            else:
+                self.delay_apply_btn.setText(
+                    f"Corregir delay ({-shift_min:+.2f} min) i reimportar"
+                )
             self.delay_apply_btn.setVisible(True)
             self.delay_apply_btn.setEnabled(True)
         else:
             self.delay_apply_btn.setVisible(False)
-
         self.delay_group.setVisible(True)
 
     def _delay_apply_and_reimport(self):
@@ -3126,7 +3139,7 @@ class CalibratePanel(QWidget):
 
         old_delay = self._delay_original or 0
         shift = self._delay_shift_min
-        new_delay = old_delay - shift
+        new_delay = getattr(self, '_delay_new_value', old_delay - shift)
         mf_path = self._delay_mf_path
 
         if mf_path is None:
