@@ -1196,9 +1196,16 @@ class DashboardPanel(QWidget):
         self._open_in_wizard(seq)
 
     def _edit_notes_popup(self, row, seq: SequenceState):
-        """Obre un diàleg per editar les notes (observacions JSON + notes manuals)."""
+        """Diàleg de notes de la SEQ: llibreta editable (afegir/editar/esborrar).
+
+        Les notes manuals (user_notes.json) es poden editar i esborrar
+        individualment. Les observacions dels JSON d'etapa (avisos confirmats)
+        es mostren a sota, en només-lectura, com a traça del processament."""
         import json as _json
-        from PySide6.QtWidgets import QDialog, QTextEdit
+        from datetime import datetime
+        from PySide6.QtWidgets import (
+            QDialog, QTextEdit, QScrollArea, QWidget, QFrame,
+        )
 
         seq_path = seq.source_path
         if not seq_path:
@@ -1206,74 +1213,107 @@ class DashboardPanel(QWidget):
             return
 
         data_path = Path(seq_path) / "CHECK" / "data"
-
-        # Carregar observacions dels JSONs
-        obs_lines = []
-        json_files = {
-            "Importar": "import_manifest.json",
-            "Verificar": "calibration_result.json",
-            "Analitzar": "analysis_result.json",
-        }
-        for stage_label, filename in json_files.items():
-            json_file = data_path / filename
-            if json_file.exists():
-                try:
-                    with open(json_file, 'r', encoding='utf-8') as f:
-                        data = _json.load(f)
-                    for n in data.get("user_notes", []):
-                        ts = n.get("timestamp", "")[:16].replace("T", " ")
-                        reviewer = n.get("reviewer", "?")
-                        text = n.get("note", "")
-                        obs_lines.append(f"[{stage_label}] {ts} ({reviewer}): {text}")
-                except Exception:
-                    pass
-
-        # Carregar l'historial de notes manuals (user_notes.json) — NOMÉS lectura.
-        # La caixa d'escriptura és per a una nota NOVA (append), no per reescriure
-        # tot el bloc (abans un desat col·lapsava tot l'historial en una entrada).
         notes_file = data_path / "user_notes.json"
-        manual_lines = []
+
+        # Carregar notes manuals (editables)
+        stored_notes = []
         if notes_file.exists():
             try:
                 with open(notes_file, 'r', encoding='utf-8') as f:
-                    notes_data = _json.load(f)
-                for n in notes_data.get("notes", []):
-                    ts = n.get("timestamp", "")[:16].replace("T", " ")
-                    reviewer = n.get("reviewer", "?")
-                    text = n.get("note", "")
-                    manual_lines.append(f"[{ts}] ({reviewer}) {text}")
+                    nd = _json.load(f)
+                if isinstance(nd.get("notes"), list):
+                    stored_notes = nd["notes"]
             except Exception:
                 pass
 
+        # Observacions dels JSON d'etapa (avisos confirmats) — només lectura
+        obs_lines = []
+        for stage_label, filename in (("Importar", "import_manifest.json"),
+                                      ("Verificar", "calibration_result.json"),
+                                      ("Analitzar", "analysis_result.json")):
+            jf = data_path / filename
+            if not jf.exists():
+                continue
+            try:
+                with open(jf, 'r', encoding='utf-8') as f:
+                    data = _json.load(f)
+            except Exception:
+                continue
+            for n in data.get("user_notes", []) or []:
+                if isinstance(n, dict) and n.get("note"):
+                    obs_lines.append(f"[{stage_label}] ({n.get('reviewer','?')}) {n.get('note')}")
+            wc = data.get("warnings_confirmed")
+            if isinstance(wc, dict) and wc.get("user_note"):
+                obs_lines.append(f"[{stage_label} · avisos] ({wc.get('reviewer','?')}) {wc.get('user_note')}")
+
         dialog = QDialog(self)
         dialog.setWindowTitle(f"Notes — {seq.seq_name}")
-        dialog.setMinimumWidth(500)
-        dialog.setMinimumHeight(400)
+        dialog.setMinimumWidth(540)
+        dialog.setMinimumHeight(440)
         dialog.setModal(True)
         dl = QVBoxLayout(dialog)
 
-        if manual_lines:
-            dl.addWidget(QLabel("<b>Notes anteriors:</b>"))
-            hist_text = QTextEdit()
-            hist_text.setReadOnly(True)
-            hist_text.setPlainText("\n".join(manual_lines))
-            hist_text.setMaximumHeight(160)
-            dl.addWidget(hist_text)
+        # --- Notes manuals editables ---
+        dl.addWidget(QLabel("<b>Notes</b> (edita el text o esborra-les):"))
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setMinimumHeight(180)
+        holder = QWidget()
+        rows_layout = QVBoxLayout(holder)
+        rows_layout.setContentsMargins(0, 0, 0, 0)
+        rows_layout.setSpacing(6)
+        scroll.setWidget(holder)
+        dl.addWidget(scroll, 1)
 
-        if obs_lines:
-            dl.addWidget(QLabel("<b>Observacions (dels JSON):</b>"))
-            obs_text = QTextEdit()
-            obs_text.setReadOnly(True)
-            obs_text.setPlainText("\n".join(obs_lines))
-            obs_text.setMaximumHeight(120)
-            dl.addWidget(obs_text)
+        note_rows = []  # (orig_dict, QTextEdit)
 
+        def _add_note_row(note):
+            frame = QFrame()
+            frame.setStyleSheet(
+                "QFrame { border: 1px solid #E2E8F0; border-radius: 4px; }")
+            fl = QHBoxLayout(frame)
+            fl.setContentsMargins(6, 4, 6, 4)
+            fl.setSpacing(6)
+            edit = QTextEdit(note.get("note", ""))
+            edit.setMaximumHeight(52)
+            meta = note.get("reviewer", "") or ""
+            ts = (note.get("timestamp", "") or "")[:10]
+            tip = f"{meta} · {ts}" if (meta or ts) else ""
+            if tip:
+                edit.setToolTip(tip)
+            fl.addWidget(edit, 1)
+            del_btn = QPushButton("🗑")
+            del_btn.setFixedWidth(34)
+            del_btn.setToolTip("Esborrar aquesta nota")
+            fl.addWidget(del_btn)
+            rows_layout.addWidget(frame)
+            entry = (note, edit)
+            note_rows.append(entry)
+
+            def _del():
+                if entry in note_rows:
+                    note_rows.remove(entry)
+                frame.setParent(None)
+                frame.deleteLater()
+            del_btn.clicked.connect(_del)
+
+        for n in stored_notes:
+            if isinstance(n, dict):
+                _add_note_row(n)
+
+        if not stored_notes:
+            _empty = QLabel("Encara no hi ha notes. Afegeix-ne una a sota.")
+            _empty.setStyleSheet("color:#94A3B8; font-size:11px;")
+            rows_layout.addWidget(_empty)
+        rows_layout.addStretch()
+
+        # --- Nova nota ---
         dl.addWidget(QLabel("<b>Nova nota:</b>"))
-        notes_edit = QTextEdit()
-        notes_edit.setPlaceholderText("Escriu una nota nova (s'afegeix a l'historial)...")
-        dl.addWidget(notes_edit, 1)
+        new_edit = QTextEdit()
+        new_edit.setMaximumHeight(60)
+        new_edit.setPlaceholderText("Escriu una nota nova…")
+        dl.addWidget(new_edit)
 
-        # Qui la fa
         rev_row = QHBoxLayout()
         rev_row.addWidget(QLabel("Nom o inicials:"))
         reviewer_input = QLineEdit(getattr(self, "_last_note_reviewer", ""))
@@ -1281,57 +1321,65 @@ class DashboardPanel(QWidget):
         rev_row.addWidget(reviewer_input, 1)
         dl.addLayout(rev_row)
 
+        # --- Observacions (només lectura) ---
+        if obs_lines:
+            dl.addWidget(QLabel("<b>Observacions del processament</b> (només lectura):"))
+            obs_text = QTextEdit()
+            obs_text.setReadOnly(True)
+            obs_text.setPlainText("\n".join(obs_lines))
+            obs_text.setMaximumHeight(90)
+            dl.addWidget(obs_text)
+
         btn_layout = QHBoxLayout()
-        btn_cancel = QPushButton("Tancar")
+        btn_cancel = QPushButton("Cancel·lar")
         btn_cancel.clicked.connect(dialog.reject)
         btn_layout.addWidget(btn_cancel)
         btn_layout.addStretch()
-        btn_save = QPushButton("Afegir nota")
+        btn_save = QPushButton("Desar")
+        btn_save.setProperty("primary", True)
         btn_save.setStyleSheet(
-            "QPushButton { background: #3498DB; color: white; border: none; "
-            "border-radius: 4px; padding: 6px 16px; font-weight: bold; }"
-        )
+            "QPushButton { background: #2563EB; color: white; border: none; "
+            "border-radius: 4px; padding: 6px 16px; font-weight: bold; }")
         btn_layout.addWidget(btn_save)
         dl.addLayout(btn_layout)
 
         def _save():
-            text = notes_edit.toPlainText().strip()
-            if not text:
-                dialog.accept()
-                return
-            reviewer = reviewer_input.text().strip() or "?"
-            self._last_note_reviewer = reviewer
+            reviewer = reviewer_input.text().strip()
+            if reviewer:
+                self._last_note_reviewer = reviewer
+            # Reconstruir la llista: notes editades (no buides) en ordre + nova
+            out = []
+            for orig, edit in note_rows:
+                txt = edit.toPlainText().strip()
+                if not txt:
+                    continue  # esborrada (buida)
+                out.append({
+                    "timestamp": orig.get("timestamp", "") or datetime.now().isoformat(),
+                    "reviewer": orig.get("reviewer", "") or (reviewer or "?"),
+                    "note": txt,
+                    "stage": orig.get("stage", "manual"),
+                })
+            new_txt = new_edit.toPlainText().strip()
+            if new_txt:
+                out.append({
+                    "timestamp": datetime.now().isoformat(),
+                    "reviewer": reviewer or "?",
+                    "note": new_txt,
+                    "stage": "manual",
+                })
             data_path.mkdir(parents=True, exist_ok=True)
-            # APPEND al store existent (no reescriure'l)
-            store = {"notes": []}
-            if notes_file.exists():
-                try:
-                    with open(notes_file, 'r', encoding='utf-8') as f:
-                        store = _json.load(f)
-                    if not isinstance(store.get("notes"), list):
-                        store = {"notes": []}
-                except Exception:
-                    store = {"notes": []}
-            from datetime import datetime
-            store["notes"].append({
-                "timestamp": datetime.now().isoformat(),
-                "reviewer": reviewer,
-                "note": text,
-                "stage": "manual",
-            })
             try:
                 with open(notes_file, 'w', encoding='utf-8') as f:
-                    _json.dump(store, f, indent=2, ensure_ascii=False, default=str)
+                    _json.dump({"notes": out}, f, indent=2, ensure_ascii=False, default=str)
             except Exception as e:
-                QMessageBox.warning(self, "Error", f"No s'ha pogut desar la nota:\n{e}")
+                QMessageBox.warning(self, "Error", f"No s'han pogut desar les notes:\n{e}")
                 return
-            # Refrescar la fila immediatament perquè la nota es vegi ja
             try:
                 seq._build_dashboard_notes()
                 self._update_table_row(row, seq)
             except Exception:
                 pass
-            self.main_window.set_status(f"Nota afegida: {seq.seq_name}", 3000)
+            self.main_window.set_status(f"Notes desades: {seq.seq_name}", 3000)
             dialog.accept()
 
         btn_save.clicked.connect(_save)
