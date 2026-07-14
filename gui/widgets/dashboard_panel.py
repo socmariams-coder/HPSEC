@@ -696,15 +696,14 @@ class DashboardPanel(QWidget):
         self.table.setRowCount(0)
 
         for seq in self.filtered_sequences:
-            # SEQ_CAL van al panel de calibració, no al dashboard
-            if "_CAL" in seq.seq_name.upper():
-                continue
-
             row = self.table.rowCount()
             self.table.insertRow(row)
 
-            is_cal = False
-            cal_bg = None
+            # Seqüència de calibratge: es mostra marcada (abans se saltava amb
+            # 'continue' i passava desapercebuda). El dashboard és el punt
+            # d'ancoratge, també per les calibracions.
+            is_cal = getattr(seq, "is_cal", False)
+            cal_bg = QColor(COLOR_CAL_BG) if is_cal else None
 
             # Col CHECK: checkbox
             item_check = QTableWidgetItem()
@@ -714,10 +713,10 @@ class DashboardPanel(QWidget):
                 item_check.setBackground(cal_bg)
             self.table.setItem(row, COL_CHECK, item_check)
 
-            # Col NAME: Nom (amb indicador de siblings, sense prefix [CAL])
-            display_name = seq.seq_name
+            # Col NAME: Nom (marca CAL + indicador de siblings)
+            display_name = f"🔧 {seq.seq_name}" if is_cal else seq.seq_name
             if seq.siblings:
-                display_name = f"{seq.seq_name} [+{len(seq.siblings)}]"
+                display_name = f"{display_name} [+{len(seq.siblings)}]"
             item_name = SortableTableItem(display_name)
             # UserRole = número SEQ per ordenació numèrica descendent
             seq_num_match = re.match(r'(\d+)', seq.seq_name)

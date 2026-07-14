@@ -123,6 +123,10 @@ class SequenceState:
     def __post_init__(self):
         """Inicialitza i detecta l'estat."""
         self.seq_name = os.path.basename(self.seq_path)
+        # Seqüència de calibratge (_CAL al nom): es processa pel flux de
+        # Calibració Global, no pel wizard de 5 passos. El dashboard l'ha de
+        # marcar clarament perquè no passi desapercebuda.
+        self.is_cal = "_CAL" in self.seq_name.upper()
         self._check_data_path = os.path.join(self.seq_path, "CHECK", "data")
         self.refresh()
 
