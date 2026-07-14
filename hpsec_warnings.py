@@ -747,8 +747,13 @@ def collect_sample_issues(data: dict) -> list:
         if _SEVERITY_RANK.get(sev, 0) > _SEVERITY_RANK.get(entry["severity"], 0):
             entry["severity"] = sev
 
-    # Anàlisi: anomalies per rèplica + avisos de comparació de rèpliques
+    # Anàlisi: anomalies per rèplica + avisos de comparació de rèpliques.
+    # Els blancs i controls (MQ, NaOH...) tenen senyal baix per naturalesa: les
+    # seves anomalies (BELOW_LOD...) són esperades i NO es marquen a la taula,
+    # així que tampoc compten aquí (coherència amb el semàfor de la fila).
     for name, sg in (data.get("samples_grouped") or {}).items():
+        if (sg.get("sample_type") or "").upper() in ("BLANK", "CONTROL"):
+            continue
         for rep in (sg.get("replicas") or {}).values():
             for a in (rep.get("anomalies") or []):
                 _add(name, a)

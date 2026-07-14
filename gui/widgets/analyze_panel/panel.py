@@ -1294,22 +1294,18 @@ class AnalyzePanel(QWidget):
             logger.debug("Auto-select first sample skipped: %s", e)
 
     # --- Filtre "només mostres amb avisos" -------------------------------
-    def _flagged_sample_names(self) -> set:
-        """Noms de mostra amb warning/blocker, de les seves anomalies reals."""
-        try:
-            from hpsec_warnings import collect_sample_issues, samples_with_issues
-            issues = collect_sample_issues({"samples_grouped": self.samples_grouped})
-            return samples_with_issues(issues, "warning")
-        except Exception:
-            return set()
-
     def _apply_issue_filter(self):
-        """Amaga/mostra files segons el filtre. Font: anomalies per mostra."""
+        """Amaga/mostra files segons el filtre.
+
+        Font: self._flagged_rows, construït a la població de la taula amb el
+        MATEIX estat que pinta el semàfor (classify_sample_status). Així el
+        filtre coincideix exactament amb les marques ⚠/✘ visibles i no mostra
+        blancs/controls sense marca (p. ex. MQ)."""
         table = getattr(self, "_samples_table", None)
         if table is None:
             return
         on = getattr(self, "_only_issues_cb", None) is not None and self._only_issues_cb.isChecked()
-        flagged = self._flagged_sample_names() if on else set()
+        flagged = getattr(self, "_flagged_rows", set())
         row_map = getattr(self, "_row_sample_map", {})
         for row in range(table.rowCount()):
             if not on:
@@ -1318,7 +1314,7 @@ class AnalyzePanel(QWidget):
                 table.setRowHidden(row, row_map.get(row) not in flagged)
 
     def set_flagged_samples(self, names):
-        """API pel wizard: quines mostres tenen avisos (per coherència de filtre)."""
+        """API pel wizard (l'analyze marca per fila; sense ús directe aquí)."""
         self._flagged_samples = set(names or [])
 
     def toggle_issue_filter(self):
@@ -1332,6 +1328,10 @@ class AnalyzePanel(QWidget):
         table.setRowCount(0)
         self._sample_row_map = {}
         self._row_sample_map = {}
+        # Mostres amb marca visible (⚠/✘) — font única del filtre "només amb
+        # avisos", perquè coincideixi exactament amb el semàfor de la fila.
+        # Els blancs/controls NO s'hi afegeixen (no tenen semàfor).
+        self._flagged_rows = set()
 
         # v2.2.0+: blancs i controls sempre visibles (selector eliminat)
         show_blank = True
@@ -1394,8 +1394,10 @@ class AnalyzePanel(QWidget):
                 doc_rep, dad_rep, comparison, sample_data=sample_data)
             if sc == COLOR_ERROR:
                 n_error += 1
+                self._flagged_rows.add(name)
             elif sc == COLOR_WARNING:
                 n_warning += 1
+                self._flagged_rows.add(name)
             else:
                 n_ok += 1
 
@@ -1484,6 +1486,8 @@ class AnalyzePanel(QWidget):
                 kcomp = sample_data.get("comparison", {})
                 (ksc, _, _, _, _, _) = classify_sample_status(
                     kdoc, kdad, kcomp, sample_data=sample_data)
+                if ksc in (COLOR_ERROR, COLOR_WARNING):
+                    self._flagged_rows.add(name)
                 self._fill_sample_row(table, row, name, sample_data,
                                       kdoc, kdad, kcomp, status_color=ksc)
 
