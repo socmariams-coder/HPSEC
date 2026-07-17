@@ -6,6 +6,44 @@ consultar quan es necessiti el context històric d'un tema concret.
 
 > Last updated: 2026-07-17
 
+### Règims instrumentals: l'esdeveniment és CANDIDAT, les dades decideixen (2026-07-17)
+
+**Pregunta (usuària):** com treballar per blocs si les seqs no són comparables? No pot ser
+"cada SEQ_CAL obre bloc" (una calibració de validació que no canvia res el partiria), ni
+"cada canvi de columna obre bloc" (la 305 porta columna substituïda i es comporta idèntica).
+
+**Regla implementada — cap de les dues coses obre bloc per si sola; només el canvi
+CONFIRMAT PER LES DADES:**
+1. Un esdeveniment (canvi columna/detector/guany, al Manteniment) registra un **candidat
+   pendent** (`regime_pending_events` a Calibration_Reference.json). No parteix res.
+2. El primer KHP/SEQ_CAL posterior el resol amb el **test d'equivalència** del RF contra
+   la vigent (llindars QC existents: warning 15% / fail 25%):
+   - dins tolerància → candidat **descartat**, el bloc continua (cas 305);
+   - fora → **règim nou** amb frontera a la **data de l'esdeveniment** (cas 306: tot el
+     que s'ha corregut amb la columna nova pertany al règim nou).
+3. Una SEQ_CAL que trenca **sense esdeveniment registrat** obre règim a la seva data
+   d'adquisició (`source='cal_break'`) + warning "investigar què ha canviat".
+4. Una SEQ_CAL **equivalent** s'ofereix com a **VALIDACIÓ**: la recta vigent es manté,
+   queda apuntada a `validations[]` de la calibració (quan i amb quina desviació es va
+   reconfirmar). El bloc no es parteix.
+5. Zona 15–25% (warning): ni valida ni trenca — calibració nova dins el mateix bloc,
+   candidats intactes.
+
+**On viu:** `regimes[]` + `regime_pending_events[]` a Calibration_Reference.json (font
+única). Backend a hpsec_calibrate.py: `get_regime_for_date`, `start_new_regime`,
+`add_pending_regime_event`, `check_calibration_equivalence`,
+`resolve_regime_on_calibration`, `register_calibration_validation`,
+`filter_history_by_regime`. Les calibracions noves porten `regime_id`. Les fronteres són
+SEMPRE dates d'ADQUISICIÓ (per això calia el fix seq_date del mateix dia). GUI:
+diàlegs a `CalibrationLineView._on_apply_calibration` (Cal.Global) i checkbox "candidat a
+règim" al diàleg de canvis metodològics del Manteniment (categories noves "Canvi columna"
+i "Canvi detector/guany", pre-marcades).
+
+**PENDENT de cablejar:** `filter_history_by_regime()` als consumidors de l'historial
+(comparatives "N més recents", `fit_calibration_from_history`, Levey-Jennings) perquè
+operin només dins el bloc de la seq. El helper i els règims ja existeixen; el filtre
+encara no s'aplica enlloc per defecte.
+
 ### La finestra d'integració NO s'ha de tocar: el blocker ja protegeix la calibració (2026-07-17)
 
 **Conclusió: es TANCA el pendent "ancorar la finestra d'integració al 254 / limitar-la a

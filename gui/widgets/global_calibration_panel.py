@@ -3368,6 +3368,85 @@ class CalibrationLineView(QWidget):
         retroactive = self._cal_retroactive_chk.isChecked()
         cal_signal = (self._seq_cal_regression or {}).get('signal', 'direct')
 
+        # --- Test d'equivalència amb la vigent (règims de comparabilitat) ---
+        # Una SEQ_CAL que passa el test és una VALIDACIÓ: no substitueix la recta
+        # ni parteix el bloc. Només un canvi confirmat per les dades obre règim.
+        from hpsec_calibrate import (
+            check_calibration_equivalence, resolve_regime_on_calibration,
+            register_calibration_validation, get_seq_acquisition_date,
+            get_pending_regime_events,
+        )
+        mode_key_eq = "bp" if is_bp else "column"
+        uib_sens_eq = self._seq_cal_sensitivity if cal_signal == 'uib' else None
+        seq_acq_date = (get_seq_acquisition_date(self._seq_path)
+                        if self._seq_path else None) or valid_from
+        equiv = check_calibration_equivalence(
+            rf_new, signal_scope=cal_signal,
+            uib_sensitivity=uib_sens_eq, mode=mode_key_eq)
+        verdict = equiv.get('verdict')
+        dev = equiv.get('deviation_pct') or 0.0
+
+        if verdict == 'equivalent':
+            resp = QMessageBox.question(
+                self, "Equivalent a la calibració vigent",
+                f"El RF nou ({rf_new:.1f}) es desvia {dev:+.1f}% de la vigent "
+                f"({equiv.get('rf_reference'):.1f}), dins la tolerància del "
+                f"{equiv.get('warning_pct'):.0f}%.\n\n"
+                "És una VALIDACIÓ: la calibració vigent es manté i el bloc de "
+                "comparabilitat continua (els candidats a canvi de règim "
+                "pendents es descarten).\n\n"
+                "  Sí → registrar com a VALIDACIÓ de la vigent (recomanat)\n"
+                "  No → aplicar igualment com a calibració nova",
+                QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
+                QMessageBox.Yes,
+            )
+            if resp == QMessageBox.Cancel:
+                return
+            resolve_regime_on_calibration(seq_acq_date, 'equivalent',
+                                          seq_name=self._seq_name)
+            if resp == QMessageBox.Yes:
+                ok = register_calibration_validation(
+                    self._seq_name, seq_acq_date, rf_new, dev,
+                    signal_scope=cal_signal, uib_sensitivity=uib_sens_eq,
+                    mode=mode_key_eq)
+                self._cal_apply_status.setText(
+                    f"Validació registrada sobre la vigent ({dev:+.1f}%)"
+                    if ok else "No s'ha pogut registrar la validació")
+                return
+        elif verdict == 'warning':
+            QMessageBox.warning(
+                self, "Zona ambigua",
+                f"El RF nou ({rf_new:.1f}) es desvia {dev:+.1f}% de la vigent "
+                f"({equiv.get('rf_reference'):.1f}) — entre el llindar de warning "
+                f"({equiv.get('warning_pct'):.0f}%) i el de trencament "
+                f"({equiv.get('fail_pct'):.0f}%).\n\n"
+                "Ni valida la vigent ni confirma un canvi de règim: s'aplicarà com a "
+                "calibració nova dins el mateix bloc, i els candidats pendents "
+                "queden com estan.",
+                QMessageBox.Ok,
+            )
+        elif verdict == 'break':
+            n_pending = len(get_pending_regime_events())
+            if n_pending:
+                pending_txt = (f"Hi ha {n_pending} esdeveniment(s) candidat(s) al "
+                               "Manteniment: la frontera serà la data de l'esdeveniment "
+                               "més antic (la causa física del canvi).")
+            else:
+                pending_txt = ("CAP esdeveniment registrat al Manteniment: la frontera "
+                               "serà la data d'adquisició d'aquesta SEQ. Val la pena "
+                               "investigar què ha canviat a l'instrument.")
+            resp = QMessageBox.warning(
+                self, "Canvi de règim detectat",
+                f"El RF nou ({rf_new:.1f}) es desvia {dev:+.1f}% de la vigent "
+                f"({equiv.get('rf_reference'):.1f}) — supera el llindar del "
+                f"{equiv.get('fail_pct'):.0f}%.\n\n"
+                "Les seqüències noves NO són comparables amb el bloc anterior: "
+                f"s'obrirà un RÈGIM NOU.\n{pending_txt}\n\nContinuar?",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes,
+            )
+            if resp != QMessageBox.Yes:
+                return
+
         retro_count = sum(1 for cb in self._retro_seq_checkboxes if cb.isChecked()) if retroactive else 0
         msg = (
             f"S'aplicarà la nova calibració:\n\n"
@@ -3388,6 +3467,15 @@ class CalibrationLineView(QWidget):
         )
         if resp != QMessageBox.Yes:
             return
+
+        # Trencament confirmat: obrir el règim ABANS d'add_calibration perquè la
+        # calibració nova quedi estampada amb el regime_id que li correspon.
+        if verdict == 'break':
+            regime_res = resolve_regime_on_calibration(
+                seq_acq_date, 'break', seq_name=self._seq_name,
+                detail=(f"RF {rf_new:.1f} vs vigent "
+                        f"{equiv.get('rf_reference'):.1f} ({dev:+.1f}%)"))
+            logger.info("Règim nou en aplicar %s: %s", self._seq_name, regime_res)
 
         # --- Aplicar ---
         self._cal_apply_btn.setEnabled(False)

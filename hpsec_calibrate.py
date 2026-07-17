@@ -494,6 +494,323 @@ def get_active_global_calibration(signal='direct', sensitivity=None):
     return None
 
 
+# =============================================================================
+# RÈGIMS INSTRUMENTALS (blocs de comparabilitat)
+# =============================================================================
+# Un règim és un període en què les seqüències són comparables entre elles
+# (mateixa resposta de l'instrument). Regla acordada (2026-07-17):
+#
+#   - Un ESDEVENIMENT (canvi de columna, detector...) NO obre règim per si sol:
+#     es registra com a CANDIDAT pendent. La 305 ho demostra: columna
+#     substituïda i comportament idèntic — mateix bloc.
+#   - Qui decideix són LES DADES: el primer KHP/SEQ_CAL posterior resol el
+#     candidat via test d'equivalència del RF contra la calibració vigent.
+#       · equivalent  → candidat DESCARTAT, el bloc continua a través del canvi
+#       · break       → règim nou amb frontera a la DATA DE L'ESDEVENIMENT
+#   - Una calibració que trenca sense cap esdeveniment registrat obre règim a
+#     la seva data d'ADQUISICIÓ (source='cal_break') — i és senyal d'investigar.
+#   - Una SEQ_CAL de validació que passa el test NO parteix el bloc: es
+#     registra com a validació de la calibració vigent (register_calibration_validation).
+#
+# Persistència: Calibration_Reference.json, claus top-level `regimes` i
+# `regime_pending_events`. Les dates de frontera són SEMPRE d'adquisició
+# (vegeu get_seq_acquisition_date), mai de processament.
+
+
+def _ensure_reference_skeleton(ref):
+    """Retorna ref o una estructura mínima v3.0 si encara no existeix el fitxer."""
+    if ref is not None:
+        return ref
+    return {'version': '3.0', 'calibrations': [], 'active_calibration_ids': {}}
+
+
+def get_regimes(ref=None):
+    """Llista de règims instrumentals, ordenats per data d'inici."""
+    if ref is None:
+        ref = load_calibration_reference()
+    if not ref:
+        return []
+    return sorted(ref.get('regimes', []), key=lambda r: r.get('start_date', ''))
+
+
+def get_regime_for_date(seq_date, ref=None):
+    """
+    Règim que conté una data (d'ADQUISICIÓ), o None.
+
+    None és legítim: abans del primer règim definit no hi ha bloc assignable
+    (i si no s'ha definit mai cap règim, tot l'historial és un únic bloc implícit).
+    """
+    if not seq_date:
+        return None
+    date = seq_date.strftime('%Y-%m-%d') if hasattr(seq_date, 'strftime') else str(seq_date)[:10]
+    for regime in reversed(get_regimes(ref)):
+        start = regime.get('start_date', '')
+        end = regime.get('end_date')
+        if date >= start and (not end or date <= end):
+            return regime
+    return None
+
+
+def start_new_regime(start_date, reason, source='manual', seq_ref=None):
+    """
+    Obre un règim nou i tanca l'anterior el dia abans.
+
+    NO cridar directament des del flux de calibració: la porta d'entrada és
+    resolve_regime_on_calibration(), que aplica la regla "les dades decideixen".
+
+    Args:
+        start_date: data d'inici (frontera) — data d'ADQUISICIÓ o d'esdeveniment
+        reason: motiu llegible (què va canviar)
+        source: 'event' (esdeveniment confirmat), 'cal_break' (calibració no
+                equivalent sense esdeveniment), 'manual'
+        seq_ref: SEQ que confirma/origina el règim
+
+    Returns:
+        regime_id o None si no s'ha pogut desar
+    """
+    from datetime import timedelta
+    ref = _ensure_reference_skeleton(load_calibration_reference())
+    regimes = ref.setdefault('regimes', [])
+    start = str(start_date)[:10]
+
+    for r in regimes:
+        if not r.get('end_date') and r.get('start_date', '') < start:
+            try:
+                prev_end = (datetime.strptime(start, '%Y-%m-%d')
+                            - timedelta(days=1)).strftime('%Y-%m-%d')
+                r['end_date'] = prev_end
+            except (ValueError, TypeError):
+                r['end_date'] = start
+
+    regime_id = f"REG_{start.replace('-', '')}"
+    existing = {r.get('regime_id') for r in regimes}
+    n = 2
+    while regime_id in existing:
+        regime_id = f"REG_{start.replace('-', '')}_{n}"
+        n += 1
+
+    regimes.append({
+        'regime_id': regime_id,
+        'start_date': start,
+        'end_date': None,
+        'reason': reason,
+        'source': source,
+        'seq_ref': seq_ref or '',
+        'created': datetime.now().isoformat(),
+    })
+    if save_calibration_reference(ref):
+        logger.info("Règim nou %s des de %s (%s): %s", regime_id, start, source, reason)
+        return regime_id
+    return None
+
+
+def add_pending_regime_event(event_date, description, seq_ref='', source='event'):
+    """
+    Registra un CANDIDAT a canvi de règim (esdeveniment sospitós: canvi de
+    columna, detector, guany...). No parteix cap bloc: quedarà confirmat o
+    descartat pel primer KHP/SEQ_CAL posterior (resolve_regime_on_calibration).
+
+    Returns:
+        event_id o None si no s'ha pogut desar
+    """
+    ref = _ensure_reference_skeleton(load_calibration_reference())
+    events = ref.setdefault('regime_pending_events', [])
+    event_id = f"EVT_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{len(events)}"
+    events.append({
+        'event_id': event_id,
+        'date': str(event_date)[:10],
+        'description': description,
+        'seq_ref': seq_ref or '',
+        'source': source,
+        'resolved': None,  # None = pendent; 'dismissed' | 'confirmed'
+        'created': datetime.now().isoformat(),
+    })
+    if save_calibration_reference(ref):
+        return event_id
+    return None
+
+
+def get_pending_regime_events(ref=None):
+    """Candidats a canvi de règim encara no resolts per cap KHP posterior."""
+    if ref is None:
+        ref = load_calibration_reference()
+    if not ref:
+        return []
+    return [e for e in ref.get('regime_pending_events', []) if not e.get('resolved')]
+
+
+def check_calibration_equivalence(rf_new, signal_scope='direct', uib_sensitivity=None,
+                                  mode='column'):
+    """
+    Compara un RF nou amb la calibració vigent del mateix àmbit.
+
+    Llindars: qc_thresholds de Calibration_Reference (warning 15% / fail 25%
+    per defecte — els mateixos del QC Levey-Jennings).
+
+    Returns:
+        dict amb:
+          verdict: 'equivalent' (dins warning) | 'warning' (entre warning i fail)
+                   | 'break' (>= fail) | 'no_reference' (no hi ha vigent)
+          deviation_pct (amb signe), rf_reference, rf_new, warning_pct, fail_pct,
+          reference_cal_id
+    """
+    ref = load_calibration_reference()
+    thresholds = (ref or {}).get('qc_thresholds', {})
+    warn_pct = thresholds.get('rf_mass_deviation_warning_pct', 15)
+    fail_pct = thresholds.get('rf_mass_deviation_fail_pct', 25)
+
+    result = {
+        'verdict': 'no_reference', 'deviation_pct': None,
+        'rf_reference': None, 'rf_new': rf_new,
+        'warning_pct': warn_pct, 'fail_pct': fail_pct,
+        'reference_cal_id': None,
+    }
+    current = get_active_global_calibration(signal=signal_scope, sensitivity=uib_sensitivity)
+    if not current:
+        return result
+    rf_ref = _extract_rf_from_cal(current, mode, signal=signal_scope)
+    if not rf_ref:
+        return result
+
+    deviation = (float(rf_new) - float(rf_ref)) / float(rf_ref) * 100.0
+    abs_dev = abs(deviation)
+    if abs_dev < warn_pct:
+        verdict = 'equivalent'
+    elif abs_dev < fail_pct:
+        verdict = 'warning'
+    else:
+        verdict = 'break'
+
+    result.update({
+        'verdict': verdict, 'deviation_pct': deviation,
+        'rf_reference': float(rf_ref), 'reference_cal_id': current.get('id'),
+    })
+    return result
+
+
+def resolve_regime_on_calibration(seq_date, verdict, seq_name='', detail=''):
+    """
+    Aplica la decisió de règim un cop un KHP/SEQ_CAL ha passat el test
+    d'equivalència. És l'ÚNICA porta que converteix candidats en fronteres.
+
+      equivalent → tots els candidats pendents fins a seq_date es DESCARTEN
+                   (el bloc continua a través de l'esdeveniment; cas 305)
+      warning    → no es toca res (zona ambigua: ni valida ni trenca)
+      break      → el candidat pendent MÉS ANTIC (<= seq_date) es confirma i
+                   la frontera és la SEVA data (la causa física és
+                   l'esdeveniment; cas 306). Sense candidats: frontera a
+                   seq_date amb source='cal_break' + warning (investigar).
+
+    Args:
+        seq_date: data d'ADQUISICIÓ de la SEQ que aporta l'evidència
+        verdict: sortida de check_calibration_equivalence()['verdict']
+
+    Returns:
+        dict {action: 'none'|'dismissed'|'new_regime', ...}
+    """
+    date = str(seq_date)[:10] if seq_date else ''
+    if not date:
+        logger.warning("resolve_regime_on_calibration: sense data d'adquisició — no es resol res")
+        return {'action': 'none'}
+
+    ref = load_calibration_reference()
+    if ref is None:
+        return {'action': 'none'}
+
+    events = ref.setdefault('regime_pending_events', [])
+    pending = [e for e in events if not e.get('resolved') and e.get('date', '') <= date]
+    now = datetime.now().isoformat()
+
+    if verdict in ('equivalent',):
+        for e in pending:
+            e['resolved'] = 'dismissed'
+            e['resolved_by'] = seq_name
+            e['resolved_at'] = now
+            e['resolution_detail'] = detail or f"RF equivalent a la vigent ({seq_name})"
+        if pending:
+            save_calibration_reference(ref)
+            logger.info("Règims: %d candidat(s) descartat(s) per %s (equivalent)",
+                        len(pending), seq_name)
+        return {'action': 'dismissed', 'n_events': len(pending)}
+
+    if verdict == 'break':
+        if pending:
+            event = sorted(pending, key=lambda e: e.get('date', ''))[0]
+            event['resolved'] = 'confirmed'
+            event['resolved_by'] = seq_name
+            event['resolved_at'] = now
+            save_calibration_reference(ref)
+            boundary = event.get('date', date)
+            reason = f"{event.get('description', 'esdeveniment')} — confirmat per {seq_name}"
+            regime_id = start_new_regime(boundary, reason, source='event', seq_ref=seq_name)
+        else:
+            boundary = date
+            reason = (detail or
+                      f"Calibració {seq_name} no equivalent a la vigent — "
+                      "CAP esdeveniment registrat (investigar què ha canviat)")
+            regime_id = start_new_regime(boundary, reason, source='cal_break', seq_ref=seq_name)
+            logger.warning("Règims: %s trenca l'equivalència sense esdeveniment registrat "
+                           "— règim nou a %s. Revisar el registre de Manteniment.",
+                           seq_name, boundary)
+        return {'action': 'new_regime', 'regime_id': regime_id, 'boundary': boundary}
+
+    return {'action': 'none'}
+
+
+def register_calibration_validation(seq_name, seq_date, rf_observed, deviation_pct,
+                                    signal_scope='direct', uib_sensitivity=None,
+                                    mode='column'):
+    """
+    Registra una SEQ_CAL de VALIDACIÓ sobre la calibració vigent: la recta es
+    manté, el bloc no es parteix, i la validació queda a `validations[]` de la
+    calibració (traçabilitat: quan i amb quina desviació es va reconfirmar).
+    """
+    ref = load_calibration_reference()
+    if not ref:
+        return False
+    current = get_active_global_calibration(signal=signal_scope, sensitivity=uib_sensitivity)
+    cal_id = (current or {}).get('id')
+    target = next((c for c in ref.get('calibrations', []) if c.get('id') == cal_id), None)
+    if target is None:
+        return False
+    target.setdefault('validations', []).append({
+        'seq_name': seq_name,
+        'seq_date': str(seq_date)[:10] if seq_date else '',
+        'mode': (mode or 'column').lower(),
+        'rf_observed': float(rf_observed) if rf_observed is not None else None,
+        'deviation_pct': float(deviation_pct) if deviation_pct is not None else None,
+        'registered': datetime.now().isoformat(),
+    })
+    return save_calibration_reference(ref)
+
+
+def filter_history_by_regime(entries, ref_date=None, regime=None):
+    """
+    Filtra entrades de KHP_History al règim que conté ref_date (o al règim
+    donat). És el helper per a la norma "no barrejar seqs de règims diferents":
+    comparatives, "les N més recents" i fit_calibration_from_history han
+    d'operar sobre entrades d'UN sol bloc.
+
+    Si no hi ha cap règim definit que contingui la data, retorna les entrades
+    tal qual (tot l'historial és un únic bloc implícit). Les entrades SENSE
+    data queden excloses quan es filtra: no són assignables a cap bloc.
+    """
+    if regime is None:
+        regime = get_regime_for_date(ref_date)
+    if not regime:
+        return entries
+    start = regime.get('start_date', '')
+    end = regime.get('end_date')
+    out = []
+    for e in entries:
+        d = str(e.get('seq_date') or e.get('date') or '')[:10]
+        if not d:
+            continue
+        if d >= start and (not end or d <= end):
+            out.append(e)
+    return out
+
+
 def _extract_rf_from_cal(cal, mode, signal=None):
     """Extreu rf_mass_cal d'una entrada de calibració (suporta format planer i nested)."""
     rf_mass_cal = cal.get('rf_mass_cal', {})
@@ -967,6 +1284,11 @@ def add_calibration(rf_mass_cal_values, source, valid_from, r2=None, n_points=No
     # Guardar dades completes de regressió
     if regression_data:
         new_cal['regression_data'] = _sanitize_regression_data(regression_data)
+
+    # Règim instrumental que conté la data d'inici (si n'hi ha de definits)
+    regime = get_regime_for_date(valid_from_date, ref=ref)
+    if regime:
+        new_cal['regime_id'] = regime.get('regime_id')
 
     ref['calibrations'].insert(0, new_cal)
 

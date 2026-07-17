@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QGroupBox,
     QTableWidget, QTableWidgetItem, QHeaderView, QComboBox, QMessageBox,
     QFileDialog, QSizePolicy, QDialog, QFormLayout, QLineEdit, QTextEdit,
-    QDateEdit, QSplitter,
+    QDateEdit, QSplitter, QCheckBox,
 )
 from PySide6.QtCore import Qt, QTimer, QDate
 from PySide6.QtGui import QFont, QColor
@@ -27,6 +27,8 @@ METHOD_LOG_PATH = Path(os.environ.get(
 )) / "method_log.json"
 
 METHOD_CATEGORIES = [
+    "Canvi columna",
+    "Canvi detector/guany",
     "Canvi protocol preparació",
     "Canvi volum injecció",
     "Canvi sensibilitat UIB",
@@ -36,12 +38,23 @@ METHOD_CATEGORIES = [
 ]
 
 METHOD_COLORS = {
+    "Canvi columna": "#C0392B",
+    "Canvi detector/guany": "#B03A8E",
     "Canvi protocol preparació": "#8E44AD",
     "Canvi volum injecció": "#2980B9",
     "Canvi sensibilitat UIB": "#16A085",
     "Canvi mètode processament": "#D35400",
     "Canvi reactiu/consumible": "#EF4444",
     "Observació": "#7F8C8D",
+}
+
+# Categories que fan SOSPITAR un canvi de règim instrumental. No l'obren:
+# registren un candidat que el següent KHP confirmarà o descartarà
+# (un canvi de columna amb resposta idèntica NO parteix el bloc — cas 305).
+REGIME_SUSPECT_CATEGORIES = {
+    "Canvi columna",
+    "Canvi detector/guany",
+    "Canvi sensibilitat UIB",
 }
 
 # Intentar importar pandas
@@ -642,6 +655,22 @@ class MaintenancePanel(QWidget):
         seq_edit.setPlaceholderText("Ex: 111_SEQ (opcional)")
         form.addRow("SEQ referència:", seq_edit)
 
+        regime_chk = QCheckBox(
+            "Candidat a règim nou de calibració\n"
+            "(el següent KHP el confirmarà o descartarà — no parteix cap bloc ara)"
+        )
+        regime_chk.setToolTip(
+            "Marca-ho si el canvi pot alterar la resposta de l'instrument (columna,\n"
+            "detector, guany...). El primer KHP/SEQ_CAL posterior farà el test\n"
+            "d'equivalència: si el RF segueix dins tolerància, el candidat es descarta\n"
+            "i el bloc continua; si trenca, s'obre règim nou amb frontera en aquesta data."
+        )
+        form.addRow("", regime_chk)
+        cat_combo.currentTextChanged.connect(
+            lambda cat: regime_chk.setChecked(cat in REGIME_SUSPECT_CATEGORIES)
+        )
+        regime_chk.setChecked(cat_combo.currentText() in REGIME_SUSPECT_CATEGORIES)
+
         # Botons
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
@@ -669,10 +698,25 @@ class MaintenancePanel(QWidget):
                 "description": desc,
                 "seq_ref": seq_edit.text().strip(),
                 "added_at": datetime.now().isoformat(),
+                "regime_candidate": regime_chk.isChecked(),
             }
             self.method_changes.append(entry)
             self._save_method_log()
             self._refresh_method_table()
+
+            if regime_chk.isChecked():
+                try:
+                    from hpsec_calibrate import add_pending_regime_event
+                    add_pending_regime_event(
+                        entry["date"], desc,
+                        seq_ref=entry["seq_ref"], source="event",
+                    )
+                except Exception as e:
+                    QMessageBox.warning(
+                        self, "Avís",
+                        "El canvi s'ha desat, però no s'ha pogut registrar el "
+                        f"candidat a règim:\n{e}"
+                    )
 
     def _delete_method_change(self):
         """Elimina el canvi metodològic seleccionat."""

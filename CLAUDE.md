@@ -85,6 +85,19 @@ Mark features as DONE only when code is fully functional end-to-end, not when pl
 - [x] Calibration: v3.0 independent per signal_scope/uib_sensitivity — DONE (migració automàtica v2→v3)
 - [x] Calibration: sistema de reparació de pics UNIFICAT — el diàleg d'Analitzar (JaggedPeakRepairDialog) a tot arreu (taula mètriques, detall KHP via repair_requested, Cal.Global); overrides existents carregats a les cards, sync només-modificats (no esborra reparacions en tancar), Δ% real via recompute_area_with_repair, navegació ◀▶ entre grups/punts — DONE (2026-07-15, verificat fum GUI offscreen)
 - [x] Calibration: UIB intercept independent a quantify_sample — DONE
+- [x] **Calibration: règims instrumentals (blocs de comparabilitat)** — DONE (2026-07-17)
+  - `regimes[]` + `regime_pending_events[]` a Calibration_Reference.json (font única)
+  - Esdeveniment (canvi columna/detector) = CANDIDAT pendent, no parteix bloc; el
+    primer KHP posterior el confirma (règim nou, frontera a la data de l'esdeveniment)
+    o el descarta (equivalent → el bloc continua)
+  - `check_calibration_equivalence` (llindars QC 15/25%), `resolve_regime_on_calibration`,
+    `register_calibration_validation`, `filter_history_by_regime` (hpsec_calibrate.py)
+  - Aplicar SEQ_CAL (Cal.Global): equivalent→oferta VALIDACIÓ (no obre règim),
+    break→règim nou abans d'add_calibration (regime_id estampat a la cal nova)
+  - Manteniment: categories "Canvi columna"/"Canvi detector/guany" + checkbox candidat
+  - Fronteres SEMPRE amb data d'ADQUISICIÓ (get_seq_acquisition_date)
+- [ ] Calibration: cablejar `filter_history_by_regime()` als consumidors de l'historial
+  (comparatives "N més recents", fit_calibration_from_history, Levey-Jennings) — PENDING
 - [x] GlobalCalibrationPanel: vista resum sense SEQ_CAL (taula params, scatter, historial) — DONE
 - [x] GlobalCalibrationPanel: SEQ_CAL auto-flow (Direct→UIB→resum) — DONE
 - [x] Export: KHP chromatogram PNGs a CHECK/data/khp_plots/ — DONE (save_all_khp_chromatograms)

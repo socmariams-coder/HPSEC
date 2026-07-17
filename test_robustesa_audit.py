@@ -227,6 +227,97 @@ def test_seq_date_es_adquisicio_no_processament():
 
 
 # ---------------------------------------------------------------------------
+def test_regims_instrumentals():
+    """Blocs de comparabilitat: un esdeveniment NOMÉS és candidat; qui decideix
+    són les dades (equivalència del RF amb la vigent). Cas 305: canvi de columna
+    innocu -> el bloc continua. Cas 306: canvi confirmat -> règim nou amb
+    frontera a la data de l'ESDEVENIMENT. Validació que passa -> no parteix res."""
+    print("\n[regims] esdeveniment = candidat; les dades decideixen la frontera")
+    import hpsec_calibrate as hc
+
+    tmpdir = tempfile.mkdtemp()
+    ref_path = os.path.join(tmpdir, "Calibration_Reference.json")
+    orig_path_fn = hc.get_calibration_reference_path
+    hc.get_calibration_reference_path = lambda: ref_path
+    hc._cal_ref_cache, hc._cal_ref_mtime = None, 0
+    try:
+        json.dump({
+            "version": "3.0",
+            "calibrations": [{
+                "id": "CAL_TEST", "signal_scope": "direct", "uib_sensitivity": None,
+                "rf_mass_cal": {"column": 800.0, "bp": 900.0},
+                "intercept": {"column": 0, "bp": 0},
+                "valid_from": "2026-01-01", "valid_to": None, "is_active": True,
+            }],
+            "active_calibration_ids": {"direct": "CAL_TEST"},
+            "qc_thresholds": {"rf_mass_deviation_warning_pct": 15,
+                              "rf_mass_deviation_fail_pct": 25},
+        }, open(ref_path, "w", encoding="utf-8"))
+
+        # Test d'equivalència: els tres veredictes amb els llindars del QC
+        check("+5% -> equivalent",
+              hc.check_calibration_equivalence(840)["verdict"] == "equivalent")
+        check("+18% -> warning (zona ambigua)",
+              hc.check_calibration_equivalence(944)["verdict"] == "warning")
+        check("+30% -> break",
+              hc.check_calibration_equivalence(1040)["verdict"] == "break")
+
+        # Cas 305: canvi de columna + KHP equivalent -> candidat descartat, cap bloc nou
+        hc.add_pending_regime_event("2026-07-01", "Canvi columna", source="event")
+        res = hc.resolve_regime_on_calibration("2026-07-07", "equivalent",
+                                               seq_name="305_SEQ_CAL")
+        check("equivalent -> candidat descartat i CAP règim nou",
+              res["action"] == "dismissed" and hc.get_regimes() == [])
+        check("no queden candidats pendents", hc.get_pending_regime_events() == [])
+
+        # Cas 306: canvi de columna + KHP que trenca -> frontera a la data de l'ESDEVENIMENT
+        hc.add_pending_regime_event("2026-07-10", "Canvi columna", source="event")
+        res = hc.resolve_regime_on_calibration("2026-07-14", "break",
+                                               seq_name="306_SEQ_CAL")
+        check("break -> règim nou", res["action"] == "new_regime")
+        check("frontera a la data de l'esdeveniment, no de la SEQ",
+              res["boundary"] == "2026-07-10")
+        reg = hc.get_regime_for_date("2026-07-14")
+        check("la SEQ posterior cau dins el règim nou",
+              bool(reg) and reg["start_date"] == "2026-07-10")
+        check("una data anterior a la frontera NO hi cau",
+              hc.get_regime_for_date("2026-07-05") is None)
+
+        # Break SENSE esdeveniment registrat -> frontera a la data de la SEQ (cal_break)
+        res = hc.resolve_regime_on_calibration("2026-08-01", "break",
+                                               seq_name="310_SEQ_CAL")
+        check("sense candidat -> frontera a la data d'adquisició de la SEQ",
+              res["boundary"] == "2026-08-01")
+        regs = hc.get_regimes()
+        check("el règim anterior queda tancat el dia abans",
+              regs[0].get("end_date") == "2026-07-31")
+        check("el nou porta source=cal_break", regs[1].get("source") == "cal_break")
+
+        # Validació: es desa a la calibració vigent sense tocar res més
+        ok = hc.register_calibration_validation("305_SEQ_CAL", "2026-07-07", 812.0, 1.5)
+        ref = hc.load_calibration_reference()
+        vals = ref["calibrations"][0].get("validations", [])
+        check("validació desada a la calibració vigent",
+              ok and len(vals) == 1 and vals[0]["seq_name"] == "305_SEQ_CAL")
+        check("la calibració vigent segueix sent la mateixa",
+              ref["active_calibration_ids"]["direct"] == "CAL_TEST")
+
+        # Filtre d'historial per règim (norma "no barrejar règims")
+        entries = [{"seq_date": "2026-07-12", "seq_name": "A"},
+                   {"seq_date": "2026-06-01", "seq_name": "B"},
+                   {"seq_date": "", "seq_name": "C"}]
+        noms = [e["seq_name"]
+                for e in hc.filter_history_by_regime(entries, ref_date="2026-07-14")]
+        check("filtre per règim: només entrades del bloc (sense data -> fora)",
+              noms == ["A"])
+        check("sense règim que contingui la data -> historial sencer (bloc implícit)",
+              hc.filter_history_by_regime(entries, ref_date="2026-01-15") == entries)
+    finally:
+        hc.get_calibration_reference_path = orig_path_fn
+        hc._cal_ref_cache, hc._cal_ref_mtime = None, 0
+
+
+# ---------------------------------------------------------------------------
 def test_autofix_columns_synthetic():
     """S6/291: un full amb dades a les columnes '.1' (G-L) i originals buides
     s'ha de corregir (i quedar disponible per a TOTS els consumidors)."""
@@ -270,6 +361,7 @@ if __name__ == "__main__":
               test_fair_data_package,
               test_pre_margin_single_source,
               test_seq_date_es_adquisicio_no_processament,
+              test_regims_instrumentals,
               test_autofix_columns_synthetic,
               test_291_doc_direct_recovered):
         try:
