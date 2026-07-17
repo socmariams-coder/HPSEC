@@ -66,7 +66,8 @@ from hpsec_core import (
 KHP_INTEGRATION_CAP_MIN = 4.0
 
 # Import funcions d'identificació des de hpsec_import (Single Source of Truth)
-from hpsec_import import is_khp, extract_khp_conc, obtenir_seq
+from hpsec_import import (is_khp, extract_khp_conc, obtenir_seq, load_manifest,
+                          read_master_date, read_master_acquisition_start)
 
 # Funcions de baseline i utilitàries
 from hpsec_core import mode_robust, get_baseline_value, get_baseline_stats
@@ -3773,6 +3774,60 @@ def _get_reference_area(mode, conc_ppm, volume_uL, doc_mode, uib_sensitivity):
     return None
 
 
+def get_seq_acquisition_date(seq_path):
+    """
+    Data d'ADQUISICIÓ d'una SEQ (YYYY-MM-DD), llegida del manifest d'importació.
+
+    És la data en què es va córrer la seqüència a l'instrument — NO la data en què
+    es va processar amb la Suite. És la que determina a quin règim instrumental
+    pertany la seqüència, i per tant quina calibració li correspon. La data de
+    processament es desa a part (`date_processed`).
+
+    Fonts, en ordre de fiabilitat:
+      1. Segell de l'INSTRUMENT: primera 'Injection Acquired Date' del full
+         1-HPLC-SEQ (`read_master_acquisition_start`). És el registre real de
+         l'adquisició; el camp Date del 0-INFO s'omple a mà i pot tenir errors
+         (293_SEQ_CAL: 0-INFO deia 2026-02-10, l'instrument 2026-02-19).
+      2. Manifest d'importació (`sequence.date`), si el segell no hi és.
+      3. Camp Date del full 0-INFO (`read_master_date`), últim recurs.
+
+    Returns:
+        str 'YYYY-MM-DD', o None si cap font no en porta.
+        None és un resultat legítim: el caller ha de decidir, no inventar-se-la.
+    """
+    def _norm(raw):
+        if not raw:
+            return None
+        if hasattr(raw, 'strftime'):
+            return raw.strftime('%Y-%m-%d')
+        text = str(raw).strip()
+        return text[:10] if len(text) >= 10 else None
+
+    # 1. Segell de l'instrument (el més fiable)
+    try:
+        d = read_master_acquisition_start(seq_path)
+        if d:
+            return d
+    except Exception:
+        pass
+
+    # 2. Manifest d'importació
+    try:
+        manifest = load_manifest(seq_path)
+    except Exception:
+        manifest = None
+    if manifest:
+        d = _norm((manifest.get('sequence') or {}).get('date'))
+        if d:
+            return d
+
+    # 3. Camp Date del 0-INFO (a mà; últim recurs)
+    try:
+        return _norm(read_master_date(seq_path))
+    except Exception:
+        return None
+
+
 def register_calibration(seq_path, khp_data, khp_source, mode="COLUMN"):
     """
     Registra una nova calibració a l'històric.
@@ -3801,9 +3856,18 @@ def register_calibration(seq_path, khp_data, khp_source, mode="COLUMN"):
 
     rf = area / conc
 
-    seq_date = khp_data.get('seq_date', '')
+    # Data d'ADQUISICIÓ (no la de processament): fixa el règim instrumental de la
+    # seqüència i, per tant, quina calibració li toca. Prioritat: la que porti el
+    # khp_data → el manifest. Si no n'hi ha cap, es deixa buida amb avís: posar-hi
+    # now() equival a datar la seqüència el dia que es va reprocessar, cosa que
+    # trencava en silenci tota selecció per data (verificat 2026-07-17: les 15
+    # seqüències de l'historial tenien la data de processament).
+    seq_date = khp_data.get('seq_date') or get_seq_acquisition_date(seq_path)
     if not seq_date:
-        seq_date = datetime.now().isoformat()
+        logger.warning(
+            "register_calibration: %s sense data d'adquisicio al manifest — "
+            "l'entrada no es podra assignar a cap regim per data", seq_name)
+        seq_date = ''
 
     is_bp = khp_data.get('is_bp', False)
     # Volum: prioritat manifest → heurístic → warning si cap
@@ -3909,9 +3973,9 @@ def register_calibration(seq_path, khp_data, khp_source, mode="COLUMN"):
         "cal_id": generate_calibration_id(),
         "seq_name": seq_name,
         "seq_path": os.path.basename(seq_path),  # Relatiu: només nom SEQ
-        "date": seq_date,
-        "seq_date": seq_date,
-        "date_processed": datetime.now().isoformat(),
+        "date": seq_date,          # = seq_date; alies històric, el llegeixen les comparatives
+        "seq_date": seq_date,      # ADQUISICIÓ (instrument) — fixa el règim
+        "date_processed": datetime.now().isoformat(),  # PROCESSAMENT (Suite)
         "mode": mode,
         "khp_name": khp_name,  # Nom del KHP (ex: "KHP2", "KHP2_50")
         "khp_file": khp_data.get('filename', 'N/A'),

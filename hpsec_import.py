@@ -578,6 +578,44 @@ def read_master_date(seq_folder):
     return ""
 
 
+def read_master_acquisition_start(seq_folder):
+    """
+    Data d'inici d'adquisició segons l'INSTRUMENT: la primera 'Injection Acquired
+    Date' del full 1-HPLC-SEQ.
+
+    És més fiable que el camp Date del full 0-INFO, que s'omple a mà i pot portar
+    errors de picatge (verificat 2026-07-17: coincideix a 12 de 13 seqüències; a la
+    293_SEQ_CAL el 0-INFO deia 2026-02-10 i la primera injecció és del 2026-02-19).
+
+    Es pren la PRIMERA injecció: una seqüència llarga dura més de 15 h i creua la
+    mitjanit (293: 19/02 10:15 → 20/02 05:42), de manera que la data d'acabament no
+    identifica la seqüència.
+
+    Returns:
+        str 'YYYY-MM-DD', o None si el full no hi és o no té timestamps
+        (formats antics no porten 1-HPLC-SEQ).
+    """
+    xls = glob.glob(os.path.join(seq_folder, "*.xlsx"))
+    for f in xls:
+        if "~$" in os.path.basename(f):
+            continue
+        try:
+            df = pd.read_excel(f, sheet_name="1-HPLC-SEQ", engine="openpyxl")
+        except Exception:
+            continue
+        col = next((c for c in df.columns if "Acquired Date" in str(c)), None)
+        if col is None:
+            continue
+        # Format Agilent MM/DD/YYYY HH:MM:SS; si no, deixar inferir pandas
+        dates = pd.to_datetime(df[col], errors="coerce", format="%m/%d/%Y %H:%M:%S")
+        if dates.isna().all():
+            dates = pd.to_datetime(df[col], errors="coerce")
+        dates = dates.dropna()
+        if len(dates):
+            return dates.min().strftime("%Y-%m-%d")
+    return None
+
+
 def llegir_masterfile_nou(filepath):
     """
     Llegeix el nou format MasterFile.

@@ -186,6 +186,47 @@ def test_pre_margin_single_source():
 
 
 # ---------------------------------------------------------------------------
+def test_seq_date_es_adquisicio_no_processament():
+    """La data d'una entrada de KHP_History ha de ser la d'ADQUISICIÓ (instrument),
+    mai la de processament. `register_calibration` queia a datetime.now() en silenci
+    quan el khp_data no portava seq_date — que era SEMPRE."""
+    print("\n[regim] seq_date = data d'adquisicio, no de processament")
+    import hpsec_calibrate as hc
+
+    # El helper ha de retornar None (no una data inventada) si no hi ha cap font
+    tmp = tempfile.mkdtemp()
+    check("sense manifest ni MasterFile -> None (no s'inventa la data)",
+          hc.get_seq_acquisition_date(tmp) is None)
+
+    # Amb manifest, ha de treure sequence.date normalitzada a YYYY-MM-DD
+    seq = tempfile.mkdtemp()
+    dfold = os.path.join(seq, "CHECK", "data")
+    os.makedirs(dfold, exist_ok=True)
+    json.dump({"sequence": {"name": "T", "date": "2026-03-03 00:00:00"}},
+              open(os.path.join(dfold, "import_manifest.json"), "w", encoding="utf-8"))
+    check("del manifest -> YYYY-MM-DD",
+          hc.get_seq_acquisition_date(seq) == "2026-03-03")
+
+    # Dades reals: cap entrada de l'historial pot portar data de processament
+    hist_seq = r"C:\Users\maria\Proyectos\Dades3\298_SEQ"
+    if os.path.isdir(hist_seq):
+        check("298_SEQ: data d'adquisicio real (2026-03-03)",
+              hc.get_seq_acquisition_date(hist_seq) == "2026-03-03")
+        hist = hc.load_khp_history(hist_seq)
+        if hist:
+            # seq_date i date han de coincidir; date_processed ha d'existir a part
+            check("historial: seq_date == date a totes les entrades",
+                  all(str(e.get("seq_date"))[:10] == str(e.get("date"))[:10] for e in hist))
+            check("historial: date_processed conservada a totes",
+                  all(e.get("date_processed") for e in hist))
+            # El 293 es de febrer: si torna a sortir amb data d'estiu, el bug ha tornat
+            f293 = [e for e in hist if e.get("seq_name") == "293_SEQ_CAL"]
+            if f293:
+                check("293_SEQ_CAL datada al febrer (no el dia del reprocessament)",
+                      all(str(e.get("seq_date"))[:7] == "2026-02" for e in f293))
+
+
+# ---------------------------------------------------------------------------
 def test_autofix_columns_synthetic():
     """S6/291: un full amb dades a les columnes '.1' (G-L) i originals buides
     s'ha de corregir (i quedar disponible per a TOTS els consumidors)."""
@@ -228,6 +269,7 @@ if __name__ == "__main__":
               test_303_analyze_ok,
               test_fair_data_package,
               test_pre_margin_single_source,
+              test_seq_date_es_adquisicio_no_processament,
               test_autofix_columns_synthetic,
               test_291_doc_direct_recovered):
         try:
