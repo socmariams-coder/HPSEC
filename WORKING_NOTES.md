@@ -6,6 +6,30 @@ consultar quan es necessiti el context històric d'un tema concret.
 
 > Last updated: 2026-07-17
 
+### Volums de dades per al DMP + neteja PER_SAMPLE òrfena (2026-07-17)
+
+**Volums reals (303_SEQ, 8 mostres, 15 inj, ~216 MB):** Export3d 145 MB (67%) · CSV cru
+39 MB (18%) · CHECK 25 MB (11%, dels quals analysis_result.json SOL són 23,4 MB perquè
+porta els cromatogrames sencers dins) · RESULTATS 5,6 MB (2,6%) · MasterFile 1,5 MB.
+**El 86% és dada crua d'instrument.** Per mostra (2 rèpliques): ~40 MB cru (conservar
+sempre; comprimit ~8-12 MB) + ~1,5 MB entregable + ~3,5 MB cache interna. Projecció:
+100 SEQ/any ≈ 21 GB (≈6 GB comprimit).
+
+**PER_SAMPLE/ era un ORFE i s'ha esborrat (script `neteja_per_sample.py`):** cap codi de
+la Suite actual l'escrivia ni el llegia (cerca de "PER_SAMPLE", "csv_companion" i
+"$schema_version" sense cap hit fora d'un comentari). Restes d'un export per-mostra
+antic substituït pel paquet FAIR v2 (traces/ + results_SEC.csv). Esborrades 6 carpetes
+(292/297/298/300/303 arrel + 303/RESULTATS), 1,7 MB, previ simulacre.
+
+**Pendents detectats (NO fets):**
+- Noms de fitxer de RESULTATS sense número de SEQ ({sample}_HPSEC_C.xlsx, SUMMARY.xlsx):
+  col·lisions en copiar diverses SEQ a una carpeta compartida. Afegir SEQ al nom.
+- analysis_result.json (23 MB): separar decisions manuals (selecció rèpliques,
+  reparacions — no regenerables, ~0,1 MB) dels arrays de cromatogrames (regenerables,
+  ~22 MB, duplicats amb CSV/ i traces/). Refactor amb risc — planificar, no improvisar.
+- Export FAIR: afegir regime_id + fronteres de règim a fulla ID, metadata.json i
+  datapackage.json (traçabilitat de blocs).
+
 ### Règims instrumentals: l'esdeveniment és CANDIDAT, les dades decideixen (2026-07-17)
 
 **Pregunta (usuària):** com treballar per blocs si les seqs no són comparables? No pot ser
