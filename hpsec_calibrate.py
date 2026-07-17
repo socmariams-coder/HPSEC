@@ -5424,6 +5424,9 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
             result["khp_area_direct"] = primary['area']
             result["shift_direct"] = primary['shift_min']
             result["rf_direct"] = primary.get('rf', 0)
+            # rf_mass d'UN sol punt (el nivell alt), no el pendent de la recta: no és
+            # comparable amb el rf_mass_cal de Calibration_Reference, que surt de la
+            # regressió sobre tots els nivells (293: 810,8 aquí vs 795 de la recta).
             result["rf_mass_direct"] = primary.get('rf_mass', 0)
             # Info si hi ha múltiples condicions
             if len(calibrations_direct) > 1:

@@ -4,7 +4,59 @@ Historial detallat de decisions i troballes per sessió. Separat de
 CLAUDE.md perquè el context de sessió no carregui ~700 línies de diari;
 consultar quan es necessiti el context històric d'un tema concret.
 
-> Last updated: 2026-07-15
+> Last updated: 2026-07-17
+
+### La finestra d'integració NO s'ha de tocar: el blocker ja protegeix la calibració (2026-07-17)
+
+**Conclusió: es TANCA el pendent "ancorar la finestra d'integració al 254 / limitar-la a
+n·FWHM". Es va implementar, es va provar contra les dades reals, i es va REVERTIR perquè
+empitjora el sistema.** Cap canvi de codi al motor (revertit); el valor de la sessió és la
+troballa.
+
+**1. L'escapada de finestra és real i és VIVA** (no és un artefacte de JSON antic: el motor
+d'avui reprodueix exactament les àrees desades, comprovat injecció a injecció a la 306).
+Mesurat sobre les 32 injeccions de 293/305/306, amplada de finestra en múltiples del FWHM:
+
+| | màx x·FWHM | escapades |
+|---|---|---|
+| 293 (columna sana) | 18,6 | cap |
+| 305 (columna sana) | 12,3 | cap |
+| 306 (columna substituïda) | **56,7** | 0,25 R1 (54,6 min = 40,9·FWHM) · 0,25 R2 (56,7) · 0,5 R2 (26,3) |
+
+**2. PERÒ l'escapada NO corromp la calibració acceptada.** A la 306, les dues rèpliques de
+0,25 i les dues de 0,5 ja porten `KHP_PEAK_NON_GAUSSIAN` (BLOCKER, `invalidates=True`) —
+precisament PERQUÈ la finestra ampla fa que el fit bigaussià no quadri. Aquests nivells no
+entren mai a la calibració. L'escapada afecta l'àrea MOSTRADA i el diagnòstic, no el resultat.
+
+**3. El guard n·FWHM és ACTIVAMENT NOCIU.** Amb finestra estreta el pic torna a ajustar-se a
+una gaussiana → el blocker DESAPAREIX → dues injeccions genuïnament trencades passen de
+correctament rebutjades a admeses com a punts vàlids. Verificat (llindar 22·FWHM, generós:
+no dispara mai a 293/305):
+
+| | sense guard | amb guard |
+|---|---|---|
+| 0,25 ppm | àrea 12.583, `KHP_PEAK_NON_GAUSSIAN` ×2 → nivell INVÀLID | àrea 876, només warning → nivell ADMÈS |
+| 0,5 ppm | àrea 3.408, `KHP_PEAK_NON_GAUSSIAN` ×2 → nivell INVÀLID | àrea **550**, només warning → nivell ADMÈS |
+
+El 0,5 ppm queda per SOTA del 0,25 (550 < 876): sobreviu la rèplica trencada. Les injeccions
+de 0,25 i 0,5 de la 306 són dolentes de debò — les rèpliques no concorden en ALÇADA neta
+(0,25: h_net 617 vs 65 · 0,5: 1.136 vs 444), que la finestra no explica. El blocker les
+rebutja per la raó correcta encara que hi arribi per una via indirecta.
+
+**Norma que se'n deriva:** no substituir una detecció que rebutja bé per una correcció que
+maquilla l'entrada del detector. Si el pic no és gaussià amb la finestra que el programa obre,
+el senyal té un problema real; estrènyer la finestra només amaga el símptoma.
+
+**4. `rf_mass_direct` NO és el pendent de la recta — és el RF d'un sol punt** (el nivell alt).
+Comprovat exactament: 293 → 1.621,68/2,0 µg = **810,84** · 306 → 19.520,875/2,0 = **9.760,44**.
+Per això surt idèntic amb guard i sense. **No confondre amb els pendents publicats** (293: 795
+de la regressió sobre els 6 nivells; Calibration_Reference: 793,9). No són la mateixa magnitud
+i no s'han de comparar — cap discrepància, però és un parany fàcil.
+
+**Correcció a documentació existent:** l'avís de `informe_calibracions/LLEGEIX-ME.md` ("l'àrea
+del DOC de la 306 no és fiable") és cert per a les àrees de 0,25/0,5 que hi apareixen, però cal
+matisar que aquests punts ja estan bloquejats i no entren a cap calibració. La conclusió del v4
+sobre COLUMN no depèn d'això.
 
 ### Informe d'integració 305/306 + la columna nova és PITJOR que la que substitueix (2026-07-15)
 
@@ -120,8 +172,10 @@ de 876. Figura: `informe_calibracions/integracio_306_diagnostic.png`.
 **Norma acordada:** no barrejar ni comparar seqs de règims diferents; calibració nova i
 independent per al règim nou; velles vs noves només com a diagnòstic.
 
-**PENDENT:** ancorar la finestra d'integració al 254 (o limitar-la a n·FWHM) quan la baseline
-derivi; revisar la conclusió de l'informe v4 sobre COLUMN.
+**PENDENT:** ~~ancorar la finestra d'integració al 254 (o limitar-la a n·FWHM) quan la baseline
+derivi~~ → **TANCAT 2026-07-17: NO es fa** (implementat, provat i revertit — treu el blocker que
+ja rebutja aquestes injeccions; vegeu l'entrada del 17/07 a dalt). Revisar la conclusió de
+l'informe v4 sobre COLUMN: segueix pendent, i NO depèn de la integració.
 
 ### DIAGNOSI: reparació de pics a calibració ≠ reparació a SEQ normal (2026-07-14)
 

@@ -71,13 +71,21 @@ vs 10). Regenerar-lo amb `--bp` **canviaria els números de BP de l'informe**. P
 `extreu_dades.py` no el toca per defecte. Cal decidir si es reprocessa l'informe sencer
 amb les dades noves de BP.
 
-**L'àrea del DOC de la 306 no és fiable.** La integració de la Suite hi obre finestres de
-10,6 a 54,6 min (el pic té un FWHM d'1,5 min; la finestra correcta són ~5–6 min) perquè,
-amb la línia de base alta i derivant, la projecció tangent no troba el final del pic i
-s'empassa senyal que no és KHP. Reintegrant amb finestra estreta ancorada al 254, la
-recta de la 306 passa de R² 0,607 a **R² 0,9996** (RF_mass 9.319). Les àrees de la 306 que
-apareixen a l'informe són les de la Suite, tal com les calcula el programa avui. La 293 i
-la 305 no estan afectades (sobre-integració ×1,1–1,4 i base plana).
+**L'àrea del DOC de la 306 a 0,25 i 0,5 ppm no és fiable.** La integració de la Suite hi obre
+finestres de fins a 54,6 min (el pic té un FWHM d'1,5 min; la finestra correcta són ~5–6 min)
+perquè, amb la línia de base alta i derivant, la projecció tangent no troba el final del pic i
+s'empassa senyal que no és KHP. Les àrees de la 306 que apareixen a l'informe són les de la
+Suite, tal com les calcula el programa avui. La 293 i la 305 no estan afectades
+(sobre-integració ×1,1–1,4 i base plana).
+
+**Matís important (verificat 2026-07-17):** aquests punts **ja estan bloquejats** i no entren a
+cap calibració — les dues rèpliques de 0,25 i les de 0,5 porten `KHP_PEAK_NON_GAUSSIAN`
+(blocker), precisament perquè la finestra ampla fa que el fit bigaussià no quadri. A més, les
+injeccions són dolentes de debò: les rèpliques no concorden en alçada neta (0,25: 617 vs 65 ·
+0,5: 1.136 vs 444), cosa que la finestra no explica. Reintegrar-les amb finestra estreta
+(R² 0,9996 / RF_mass 9.319) és un exercici de DIAGNÒSTIC: aplicat al programa, faria
+desaparèixer el blocker i admetria aquestes injeccions com a punts vàlids. Es va implementar,
+provar i revertir per aquest motiu — vegeu `WORKING_NOTES.md` (2026-07-17).
 
 ## Estructura de l'informe
 
