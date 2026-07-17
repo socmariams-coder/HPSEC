@@ -32,7 +32,7 @@ from hpsec_calibrate import (
     calibrate_from_import, load_khp_history, load_local_calibrations,
     get_all_active_calibrations, get_rf_mass_cal,
     get_active_global_calibration,
-    load_manual_repairs, set_manual_repair, remove_manual_repair, manual_repair_key,
+    load_manual_repairs, remove_manual_repair, manual_repair_key,
 )
 from hpsec_config import get_config
 
@@ -2023,20 +2023,33 @@ class CalibratePanel(QWidget):
         dialog = KHPDetailDialog(khp, signal=signal, parent=self,
                                  has_manual_repair=has_manual)
         dialog.outlier_toggled.connect(self._on_detail_outlier_toggled)
-        dialog.repair_applied.connect(self._on_detail_repair_applied)
         dialog.repair_undone.connect(self._on_detail_repair_undone)
+
+        # "Reparar pic" al detall → tancar el detall i obrir el diàleg de
+        # reparació unificat (el mateix que a Analitzar) per aquest grup
+        def _go_repair():
+            dialog.accept()
+            self._open_calib_repair_for(khp)
+        dialog.repair_requested.connect(_go_repair)
+
         dialog.exec()
 
-    def _build_repair_adapter(self, conc, signal):
+    def _build_repair_adapter(self, conc, signal, name=None, seq_path=None):
         """Adapta les rèpliques KHP (concentració + senyal) a la forma que espera
         JaggedPeakRepairDialog (replicas amb t_doc + y_doc_net/y_doc_uib_net).
 
         Llegeix de calibrations_direct/uib (TOTES les concentracions, cada entrada
-        porta la seva llista 'replicas'), no del primari khp_data_direct."""
+        porta la seva llista 'replicas'), no del primari khp_data_direct.
+
+        Amb name+seq_path, injecta a cada rèplica el context de calibració:
+        override existent (card neix 'repaired' amb els seus ancoratges) i
+        _peak_ctx (preview amb recompute_area_with_repair, com el persistit)."""
         import re as _re
+        from ..analyze_panel.repair_dialog import make_calibration_replica_entry
         res = self.calibration_data or {}
         cals_key = 'calibrations_direct' if signal == 'direct' else 'calibrations_uib'
         y_key = 'y_doc_net' if signal == 'direct' else 'y_doc_uib_net'
+        overrides = load_manual_repairs(seq_path) if (seq_path and name) else {}
         replicas = {}
         is_bp = False
         for cal in (res.get(cals_key) or []):
@@ -2050,12 +2063,10 @@ class CalibratePanel(QWidget):
                 m = _re.search(r'R(\d+)', d.get('filename', '') or '')
                 rk = m.group(1) if m else str(d.get('replica_num', 1))
                 is_bp = bool(d.get('is_bp', is_bp))
-                replicas[rk] = {
-                    't_doc': np.asarray(t, dtype=float),
-                    y_key: np.asarray(y, dtype=float),
-                    'is_bp': bool(d.get('is_bp', False)),
-                    'anomalies': [],
-                }
+                override = overrides.get(manual_repair_key(name, rk, signal)) if name else None
+                replicas[rk] = make_calibration_replica_entry(
+                    d, y_key, signal, bool(d.get('is_bp', False)),
+                    override=override)
         return {'replicas': replicas}, is_bp
 
     def _on_calib_repair_clicked(self):
@@ -2066,12 +2077,47 @@ class CalibratePanel(QWidget):
         if not khp:
             QMessageBox.information(self, "Reparar pic", "Selecciona una rèplica de la taula.")
             return
+        self._open_calib_repair_for(khp)
+
+    def _metrics_repair_groups(self):
+        """Grups (conc_ppm, senyal) distints en l'ordre de les files de metrics_table.
+
+        Retorna [(key, primera_fila, khp), ...]. Les sub-files d'anomalies (sense
+        dict khp a col 0) se salten. Unitat de navegació del diàleg de reparació."""
+        groups = []
+        seen = set()
+        table = getattr(self, 'metrics_table', None)
+        if table is None:
+            return groups
+        for row in range(table.rowCount()):
+            item = table.item(row, 0)
+            khp = item.data(Qt.UserRole) if item is not None else None
+            if not isinstance(khp, dict):
+                continue
+            _n, _r, sig = self._khp_repair_identity(khp)
+            key = (khp.get('conc_ppm', 0), sig)
+            if key not in seen:
+                seen.add(key)
+                groups.append((key, row, khp))
+        return groups
+
+    def _open_calib_repair_for(self, khp: dict):
+        """Obre el diàleg de reparació (el d'Analitzar) per al grup concentració ×
+        senyal del khp donat, amb els overrides existents carregats als cards.
+
+        Al tancar, només es persisteixen els cards MODIFICATS en la sessió
+        (els overrides no tocats es conserven). La navegació ◀▶ passa al grup
+        anterior/següent de la taula de mètriques; la recalibració es fa un sol
+        cop quan es tanca l'últim diàleg de la cadena."""
+        from PySide6.QtWidgets import QMessageBox
+        from ..analyze_panel.repair_dialog import sync_repair_cards_to_overrides
         seq_path = self.main_window.seq_path
         if not seq_path or not self.calibration_data:
             return
         name, _replica, signal = self._khp_repair_identity(khp)
         conc = khp.get('conc_ppm', 0)
-        adapter, is_bp = self._build_repair_adapter(conc, signal)
+        adapter, is_bp = self._build_repair_adapter(conc, signal, name=name,
+                                                    seq_path=seq_path)
         if not adapter['replicas']:
             QMessageBox.information(
                 self, "Reparar pic",
@@ -2087,27 +2133,36 @@ class CalibratePanel(QWidget):
         method = "BP" if is_bp else "COLUMN"
         title = f"{name} {signal.upper()} ({conc:g} ppm)"
         dialog = JaggedPeakRepairDialog(title, adapter, method, force=True, parent=self)
-        dialog.exec()
 
-        # Sincronitzar overrides amb l'estat final dels cards (aplicats / desfets)
-        existing = load_manual_repairs(seq_path)
-        changed = False
-        for card in getattr(dialog, '_cards', []):
-            rk = getattr(card, 'rep_key', None)
-            sig = getattr(card, 'signal_type', signal)
-            if rk is None:
-                continue
-            key = manual_repair_key(name, rk, sig)
-            if getattr(card, 'state', '') == 'repaired':
-                set_manual_repair(seq_path, name, rk, sig,
-                                  card._anchor_left_spin.value(),
-                                  card._anchor_right_spin.value(),
-                                  getattr(dialog, '_factor', None))
-                changed = True
-            elif key in existing:
-                remove_manual_repair(seq_path, name, rk, sig)
-                changed = True
-        if changed:
+        def _on_navigate(direction):
+            dialog.close()
+            groups = self._metrics_repair_groups()
+            keys = [g[0] for g in groups]
+            cur = (conc, signal)
+            if cur not in keys:
+                return
+            new_idx = keys.index(cur) + direction
+            if not (0 <= new_idx < len(groups)):
+                return
+            _key, first_row, khp_new = groups[new_idx]
+            self.metrics_table.setCurrentCell(first_row, 0)
+            self._open_calib_repair_for(khp_new)
+
+        dialog.navigate_requested.connect(_on_navigate)
+
+        # La navegació obre el diàleg següent de forma niada (dins l'exec del
+        # handler): la recalibració s'ajorna fins que la cadena es desfà (depth 0).
+        self._repair_nav_depth = getattr(self, '_repair_nav_depth', 0) + 1
+        try:
+            dialog.exec()
+            changed, _reps = sync_repair_cards_to_overrides(
+                dialog, seq_path, name, signal)
+            if changed:
+                self._repair_recalc_pending = True
+        finally:
+            self._repair_nav_depth -= 1
+        if self._repair_nav_depth == 0 and getattr(self, '_repair_recalc_pending', False):
+            self._repair_recalc_pending = False
             self.main_window.set_status("Reparació desada — recalculant calibració…", 3000)
             self._run_calibrate()
 
@@ -2132,40 +2187,6 @@ class CalibratePanel(QWidget):
         state = 2 if is_outlier else 0  # Qt.Checked = 2, Qt.Unchecked = 0
         self._on_metrics_outlier_toggled(replica_num, signal, state,
                                          getattr(self, '_detail_conc', None))
-
-    def _on_detail_repair_applied(self, replica_num: int, signal: str, repaired_data: dict):
-        """Desa la reparació manual (ancoratges) com a override persistent i recalcula.
-
-        L'override es reaplica de forma determinista a calibrate_from_import, de manera
-        que el camí en viu i el persistit són idèntics. Reversible amb desfer.
-        """
-        from PySide6.QtWidgets import QMessageBox
-        try:
-            seq_path = self.main_window.seq_path
-            identity = getattr(self, '_repair_identity', None)
-            if not seq_path or not identity:
-                return
-            name, replica, sig = identity
-            new_area = float(repaired_data.get('new_area', 0))
-
-            ok = set_manual_repair(
-                seq_path, name, replica, sig,
-                repaired_data.get('anchor_left_t'),
-                repaired_data.get('anchor_right_t'))
-            if not ok:
-                QMessageBox.warning(self, "Reparació",
-                                    "No s'ha pogut guardar la reparació manual.")
-                return
-
-            QMessageBox.information(
-                self, "Reparació guardada",
-                f"Reparació manual de {name} R{replica} desada "
-                f"(àrea ≈ {new_area:.2f}).\nRecalculant la calibració…")
-            # Re-executar la calibració: l'override s'aplica i la recta s'actualitza
-            self._run_calibrate()
-        except Exception as exc:
-            QMessageBox.warning(self, "Reparació",
-                                f"No s'ha pogut guardar la reparació: {exc}")
 
     def _on_detail_repair_undone(self, replica_num: int, signal: str):
         """Esborra la reparació manual desada (desfer) i recalcula."""

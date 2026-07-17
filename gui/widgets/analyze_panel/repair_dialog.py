@@ -108,6 +108,90 @@ def _compute_preview(t, y, factor, is_bp, anchor_left_t=None, anchor_right_t=Non
     }
 
 
+def make_calibration_replica_entry(d, y_key, signal, is_bp, override=None):
+    """Construeix l'entrada de rèplica de l'adaptador de calibració per al diàleg.
+
+    d: dict de rèplica d'analizar_khp_data (t_doc, y_doc, peak_info, area...).
+    Injecta:
+      - _peak_ctx: context del pic (peak_idx/left_idx/right_idx/baseline/area)
+        perquè el preview usi recompute_area_with_repair (idèntic al persistit).
+      - Si hi ha override desat (manual_repairs.json): estat 'repaired' amb els
+        seus ancoratges (_manual_repair) i backup del senyal perquè "Desfer"
+        funcioni dins el diàleg.
+    """
+    t = np.asarray(d.get("t_doc"), dtype=float)
+    y = np.asarray(d.get("y_doc"), dtype=float)
+    entry = {
+        "t_doc": t,
+        y_key: y,
+        "is_bp": bool(is_bp),
+        "anomalies": [],
+    }
+
+    peak_info = d.get("peak_info") or {}
+    peak_idx = peak_info.get("peak_idx")
+    left_idx = peak_info.get("left_idx",
+                             peak_info.get("peak_left_idx", d.get("peak_left_idx")))
+    right_idx = peak_info.get("right_idx",
+                              peak_info.get("peak_right_idx", d.get("peak_right_idx")))
+    if peak_idx is not None and left_idx is not None and right_idx is not None:
+        entry["_peak_ctx"] = {
+            "peak_idx": int(peak_idx),
+            "left_idx": int(left_idx),
+            "right_idx": int(right_idx),
+            "baseline": peak_info.get("baseline_level", 0) or 0,
+            # Àrea de referència PRE-override: així el Δ% del preview coincideix
+            # amb el que persistirà apply_manual_repair_to_khp (que parteix de
+            # l'àrea sense la reparació manual).
+            "area": d.get("area_pre_manual", d.get("area")),
+        }
+
+    if override:
+        entry["anomalies"] = [{
+            "code": f"IRREGULAR_TOP_{signal.upper()}",
+            "repaired": True,
+            "repair_info": {},
+        }]
+        entry["_manual_repair"] = override
+        entry[f"{y_key}_original"] = y.copy()
+
+    return entry
+
+
+def sync_repair_cards_to_overrides(dialog, seq_path, name, default_signal):
+    """Persisteix als overrides (manual_repairs.json) NOMÉS els cards modificats
+    en aquesta sessió del diàleg. Cards no tocats no es toquen (els overrides
+    existents es conserven tal qual).
+
+    Returns:
+        (changed, repaired_reps): si s'ha escrit res, i les rèpliques desades.
+    """
+    from hpsec_calibrate import (
+        load_manual_repairs, set_manual_repair, remove_manual_repair,
+        manual_repair_key,
+    )
+    existing = load_manual_repairs(seq_path)
+    changed = False
+    repaired_reps = []
+    for card in getattr(dialog, "_cards", []):
+        rk = getattr(card, "rep_key", None)
+        sig = getattr(card, "signal_type", default_signal)
+        if rk is None or not getattr(card, "_session_modified", False):
+            continue
+        key = manual_repair_key(name, rk, sig)
+        if getattr(card, "state", "") == "repaired":
+            set_manual_repair(seq_path, name, rk, sig,
+                              card._anchor_left_spin.value(),
+                              card._anchor_right_spin.value(),
+                              getattr(dialog, "_factor", None))
+            changed = True
+            repaired_reps.append(rk)
+        elif key in existing:
+            remove_manual_repair(seq_path, name, rk, sig)
+            changed = True
+    return changed, repaired_reps
+
+
 # =====================================================================
 # RepairCard — un panell per cada rèplica × senyal
 # =====================================================================
@@ -115,7 +199,16 @@ def _compute_preview(t, y, factor, is_bp, anchor_left_t=None, anchor_right_t=Non
 class _RepairCard(QFrame):
     """Card amb gràfic + params per una rèplica × senyal."""
 
-    def __init__(self, rep_key, signal_type, state, t, y_original, is_bp, factor, parent=None):
+    def __init__(self, rep_key, signal_type, state, t, y_original, is_bp, factor,
+                 saved_anchors=None, peak_ctx=None, parent=None):
+        """
+        Args:
+            saved_anchors: tupla (left_t, right_t) d'un override desat — inicialitza
+                els ancoratges manuals abans del primer preview.
+            peak_ctx: dict {peak_idx, left_idx, right_idx, baseline, area} del pic
+                d'analizar_khp_data — si present, el preview usa
+                recompute_area_with_repair (idèntic al que es persisteix).
+        """
         super().__init__(parent)
         self.rep_key = rep_key
         self.signal_type = signal_type
@@ -124,6 +217,8 @@ class _RepairCard(QFrame):
         self.y_original = y_original
         self.is_bp = is_bp
         self._factor = factor
+        self._peak_ctx = peak_ctx
+        self._session_modified = False  # True si l'usuari ha aplicat/desfet/descartat
 
         self.setFrameStyle(QFrame.StyledPanel | QFrame.Plain)
         self.setStyleSheet(
@@ -139,6 +234,18 @@ class _RepairCard(QFrame):
         self._canvas = None
 
         self._setup_ui()
+        # Override desat: aplicar els seus ancoratges abans del primer preview
+        if saved_anchors is not None and len(self.t) > 0:
+            a_left, a_right = saved_anchors
+            if a_left is not None and a_right is not None:
+                self._updating_anchors = True
+                self._anchor_left_spin.setRange(float(self.t[0]), float(self.t[-1]))
+                self._anchor_right_spin.setRange(float(self.t[0]), float(self.t[-1]))
+                self._anchor_left_spin.setValue(float(a_left))
+                self._anchor_right_spin.setValue(float(a_right))
+                self._updating_anchors = False
+                self._anchor_left_manual = float(a_left)
+                self._anchor_right_manual = float(a_right)
         self._update_preview(factor)
 
     def _setup_ui(self):
@@ -242,6 +349,34 @@ class _RepairCard(QFrame):
         self._anchor_right_manual = None
         self._update_preview(self._factor)
 
+    def _apply_peak_ctx_preview(self, factor):
+        """Recalcula el preview amb recompute_area_with_repair (context de pic).
+
+        Sobreescriu y_repaired/repair_info del preview i afegeix ctx_area_orig/
+        ctx_area_new perquè el Δ% mostri l'efecte real sobre l'àrea de calibració.
+        Si el recàlcul no és possible, deixa el preview estàndard intacte.
+        """
+        from hpsec_core import recompute_area_with_repair
+        pc = self._peak_ctx
+        try:
+            res = recompute_area_with_repair(
+                self.t, self.y_original,
+                pc.get("peak_idx"), pc.get("left_idx"), pc.get("right_idx"),
+                pc.get("baseline", 0), self.is_bp,
+                anchor_left_t=self._anchor_left_manual,
+                anchor_right_t=self._anchor_right_manual,
+                factor=factor, original_area=pc.get("area"))
+        except Exception:
+            res = None
+        if not res:
+            return
+        self._preview["y_repaired"] = np.asarray(res["y_repaired"])
+        self._preview["was_repaired"] = True
+        if res.get("repair_info"):
+            self._preview["repair_info"] = res["repair_info"]
+        self._preview["ctx_area_orig"] = pc.get("area")
+        self._preview["ctx_area_new"] = res["new_area"]
+
     def _update_state_badge(self):
         """Update the visual state badge (minimal style)."""
         def _ss(border, bg):
@@ -270,6 +405,13 @@ class _RepairCard(QFrame):
             self.t, self.y_original, factor, self.is_bp,
             anchor_left_t=self._anchor_left_manual,
             anchor_right_t=self._anchor_right_manual)
+
+        # Context de pic (calibració): el preview usa recompute_area_with_repair
+        # (finestra de pic + baseline) perquè el Δ% mostrat sigui exactament el
+        # que persistirà apply_manual_repair_to_khp. Fallback silenciós al
+        # comportament estàndard si el context no és aplicable.
+        if self._peak_ctx and self._preview:
+            self._apply_peak_ctx_preview(factor)
 
         if not self._preview or not self._ax:
             return
@@ -356,6 +498,10 @@ class _RepairCard(QFrame):
         areas_r = preview.get("areas_rep", {})
         a_o = areas_o.get("total", 0) or 0
         a_r = areas_r.get("total", 0) or 0
+        if preview.get("ctx_area_new") is not None:
+            # Àrees del context de pic (coincideixen amb el que es persistirà)
+            a_o = preview.get("ctx_area_orig") or 0
+            a_r = preview.get("ctx_area_new") or 0
         delta_pct = ((a_r - a_o) / a_o * 100) if a_o else 0
         sm_o = preview.get("smooth_orig", {})
         sm_r = preview.get("smooth_rep", {})
@@ -398,6 +544,20 @@ class JaggedPeakRepairDialog(QDialog):
         from hpsec_core import REPAIR_FACTOR
         self._factor = REPAIR_FACTOR
         self._default_factor = REPAIR_FACTOR
+
+        # Claus (rep_key, signal) modificades en aquesta sessió — font de veritat
+        # per _session_modified dels cards (sobreviu la reassignació de cards a
+        # _refresh_after_action).
+        self._modified_keys = set()
+
+        # Si algun override carregat (calibració) porta factor, usar-lo d'inici
+        for _rd in (sample_data.get("replicas") or {}).values():
+            if not isinstance(_rd, dict):
+                continue
+            _mr = _rd.get("_manual_repair")
+            if isinstance(_mr, dict) and _mr.get("factor") is not None:
+                self._factor = float(_mr["factor"])
+                break
 
         # Trobar tots els targets (auto-detectats o tots si force)
         self._targets = self._find_all_targets()
@@ -556,11 +716,23 @@ class JaggedPeakRepairDialog(QDialog):
             rep_data = replicas.get(rep_key, {})
             t, y_original = _get_signal_arrays(rep_data, signal_type, state)
 
+            # Context de calibració (opcional): override desat + context de pic
+            saved_anchors = None
+            peak_ctx = None
+            if isinstance(rep_data, dict):
+                _mr = rep_data.get("_manual_repair")
+                if (isinstance(_mr, dict)
+                        and _mr.get("anchor_left_t") is not None
+                        and _mr.get("anchor_right_t") is not None):
+                    saved_anchors = (_mr["anchor_left_t"], _mr["anchor_right_t"])
+                peak_ctx = rep_data.get("_peak_ctx")
+
             # Pre-check if anomaly detected
             is_detected = state in ("needs_repair", "repaired")
             card = _RepairCard(
                 rep_key, signal_type, state, t, y_original,
-                self.is_bp, self._factor, parent=self
+                self.is_bp, self._factor,
+                saved_anchors=saved_anchors, peak_ctx=peak_ctx, parent=self
             )
             card.checkbox.setChecked(is_detected)
 
@@ -669,6 +841,8 @@ class JaggedPeakRepairDialog(QDialog):
             if result.get("repaired"):
                 n_ok += 1
                 card.state = "repaired"
+                card._session_modified = True
+                self._modified_keys.add((card.rep_key, card.signal_type))
                 self._any_changed = True
 
                 # Traçabilitat
@@ -722,6 +896,8 @@ class JaggedPeakRepairDialog(QDialog):
             if mark_dismissed(anomalies, anom_key):
                 n_ok += 1
                 card.state = "dismissed"
+                card._session_modified = True
+                self._modified_keys.add((card.rep_key, card.signal_type))
                 self._any_changed = True
 
         self._update_sample_validity()
@@ -751,6 +927,8 @@ class JaggedPeakRepairDialog(QDialog):
             if result.get("undone"):
                 n_ok += 1
                 card.state = "needs_repair"
+                card._session_modified = True
+                self._modified_keys.add((card.rep_key, card.signal_type))
                 self._any_changed = True
 
         if n_ok > 0:
@@ -804,6 +982,11 @@ class JaggedPeakRepairDialog(QDialog):
                 card.state = state
                 card.t = t
                 card.y_original = y_original
+                # Reassignar el context per-rèplica: l'ordre dels targets pot
+                # canviar després d'una acció i els cards es remapegen sencers
+                card._peak_ctx = (rep_data.get("_peak_ctx")
+                                  if isinstance(rep_data, dict) else None)
+                card._session_modified = (rep_key, signal_type) in self._modified_keys
                 card.checkbox.setChecked(state in ("needs_repair", "repaired"))
                 card._update_state_badge()
                 card.update_factor(self._factor)

@@ -1112,11 +1112,20 @@ def repair_irregular_top_in_replica(sample_result, signal="direct", factor=None,
     anomalies = sample_result.get("anomalies", [])
     if not mark_repaired(anomalies, anom_key, repair_info=repair_info):
         # Fallback per strings antics (backward compat)
+        _marked = False
         for old_key in [anom_key, "BATMAN_DIRECT" if signal == "direct" else "BATMAN_UIB"]:
             if old_key in anomalies:
                 anomalies.remove(old_key)
                 anomalies.append(f"{anom_key}_REPAIRED")
+                _marked = True
                 break
+        if not _marked:
+            # Reparació forçada sense anomalia prèvia (p.ex. des de calibració,
+            # on l'adaptador arriba amb anomalies=[]): registrar l'entrada
+            # perquè l'estat 'repaired' quedi reflectit i sigui consultable.
+            anomalies.append({"code": anom_key, "repaired": True,
+                              "repair_info": repair_info})
+    sample_result["anomalies"] = anomalies
     sample_result[irr_key] = False
     sample_result[f"{irr_key}_repaired"] = True
     sample_result[f"{irr_key}_repair_info"] = {

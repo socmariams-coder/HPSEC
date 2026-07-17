@@ -3,18 +3,18 @@
 Permet:
   - Veure el cromatograma amb pic, baseline i límits d'integració
   - Veure el fit bigaussià
-  - Forçar reparació (paràbola) per pics dubtosos
+  - Obrir el diàleg de reparació unificat (repair_requested, gestionat pel panell)
+  - Desfer una reparació manual desada
   - Marcar/desmarcar com a outlier manualment
 """
 from __future__ import annotations
 
 import numpy as np
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QFont
+from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFrame,
-    QSizePolicy, QMessageBox, QDoubleSpinBox, QCheckBox,
+    QSizePolicy, QMessageBox,
 )
 
 try:
@@ -30,7 +30,7 @@ except Exception:
 class KHPDetailDialog(QDialog):
     """Diàleg de revisió i reparació d'una rèplica KHP."""
 
-    repair_applied = Signal(int, str, dict)   # rep_num, signal, new_data
+    repair_requested = Signal()               # obrir el diàleg de reparació unificat
     repair_undone = Signal(int, str)          # rep_num, signal
     outlier_toggled = Signal(int, str, bool)  # rep_num, signal, is_outlier
 
@@ -48,8 +48,6 @@ class KHPDetailDialog(QDialog):
         self.khp_data = khp_data
         self.signal = signal
         self._has_manual_repair = bool(has_manual_repair)
-        self._repaired_data = None  # Resultat de reparació pendent d'aplicar
-        self._anchors_inited = False
 
         rep_num = khp_data.get('replica_num', 1)
         conc = khp_data.get('conc_ppm', 0)
@@ -112,48 +110,19 @@ class KHPDetailDialog(QDialog):
         self._metrics_layout.addWidget(self._metrics_label)
         layout.addWidget(metrics_frame)
 
-        # Ancoratges manuals de la paràbola (mateixa capacitat que el diàleg d'anàlisi)
-        anchor_row = QHBoxLayout()
-        anchor_row.setSpacing(4)
-        self._manual_anchors_cb = QCheckBox("Ancoratges manuals")
-        self._manual_anchors_cb.setToolTip(
-            "Tria tu els ancoratges E (esquerre) i D (dret) de la paràbola, com al diàleg "
-            "d'anàlisi. Desactivat = automàtic (comportament d'abans)."
-        )
-        self._manual_anchors_cb.toggled.connect(self._on_manual_toggled)
-        anchor_row.addWidget(self._manual_anchors_cb)
-        self._anchor_left_spin = QDoubleSpinBox()
-        self._anchor_left_spin.setPrefix("E "); self._anchor_left_spin.setSuffix(" min")
-        self._anchor_left_spin.setDecimals(2); self._anchor_left_spin.setSingleStep(0.05)
-        self._anchor_left_spin.setEnabled(False)
-        self._anchor_left_spin.setToolTip("Ancoratge esquerre de la paràbola")
-        anchor_row.addWidget(self._anchor_left_spin)
-        self._anchor_right_spin = QDoubleSpinBox()
-        self._anchor_right_spin.setPrefix("D "); self._anchor_right_spin.setSuffix(" min")
-        self._anchor_right_spin.setDecimals(2); self._anchor_right_spin.setSingleStep(0.05)
-        self._anchor_right_spin.setEnabled(False)
-        self._anchor_right_spin.setToolTip("Ancoratge dret de la paràbola")
-        anchor_row.addWidget(self._anchor_right_spin)
-        anchor_row.addStretch()
-        layout.addLayout(anchor_row)
-
         # Botons
         btn_row = QHBoxLayout()
-        self._btn_repair = QPushButton("⚙ Previsualitzar reparació")
+        self._btn_repair = QPushButton("🔧 Reparar pic")
         self._btn_repair.setToolTip(
-            "Reparar el pic amb una paràbola (force=True).\n"
-            "Amb 'Ancoratges manuals' actiu, ajusta E/D i torna a previsualitzar fins que quedi bé."
+            "Obrir el diàleg de reparació de pics (el mateix que al pas Analitzar):\n"
+            "factor + ancoratges amb preview en viu, per totes les rèpliques del punt."
         )
-        self._btn_repair.clicked.connect(self._on_repair_clicked)
+        self._btn_repair.setStyleSheet(
+            "QPushButton { border: 1px solid #E67E22; border-radius: 3px;"
+            " padding: 6px 12px; color: #E67E22; font-weight: bold; }"
+            "QPushButton:hover { background: #FEF9E7; }")
+        self._btn_repair.clicked.connect(self.repair_requested.emit)
         btn_row.addWidget(self._btn_repair)
-
-        self._btn_apply = QPushButton("✓ Aplicar reparació")
-        self._btn_apply.setEnabled(False)
-        self._btn_apply.setStyleSheet(
-            "QPushButton { background: #C8E6C9; color: #1B5E20; padding: 6px 12px; font-weight: bold; }"
-            "QPushButton:disabled { background: #EEEEEE; color: #AAAAAA; }")
-        self._btn_apply.clicked.connect(self._apply_repair)
-        btn_row.addWidget(self._btn_apply)
 
         # Desfer reparació manual (només si n'hi ha una de desada)
         self._btn_undo = QPushButton("↺ Desfer reparació manual")
@@ -221,14 +190,7 @@ class KHPDetailDialog(QDialog):
             y_rep = np.asarray(y_repaired)
             if not np.allclose(y_rep, y, atol=1e-6):
                 ax.plot(t, y_rep, '--', color='red', lw=1.4, alpha=0.85,
-                       label='reparat (auto)')
-
-        # Senyal reparat NOU (pendent d'aplicar)
-        if self._repaired_data is not None:
-            y_new = self._repaired_data.get('y_repaired')
-            if y_new is not None:
-                ax.plot(t, y_new, ':', color='#1976D2', lw=2.0, alpha=0.9,
-                       label='reparat (force, pendent)')
+                       label='reparat')
 
         # Baseline
         ax.axhline(baseline, color='brown', lw=1.4, ls='-', alpha=0.7,
@@ -285,12 +247,6 @@ class KHPDetailDialog(QDialog):
         lines.append(f"Bigauss: status={bg.get('status', '?'):<8} R²={bg.get('r2', 0):.4f}  asym={bg.get('asymmetry', 1.0):.2f}")
         lines.append(f"SNR: {khp.get('snr', 0):.1f}    Shift vs 254: {khp.get('shift_sec', 0):+.1f} s")
 
-        if self._repaired_data:
-            new_area = self._repaired_data.get('new_area', 0)
-            delta_pct = ((new_area - area) / area * 100) if area > 0 else 0
-            lines.append("")
-            lines.append(f"📊 Reparat (pendent): àrea = {new_area:.2f} (Δ {delta_pct:+.2f}%)")
-
         if anomalies:
             lines.append("")
             lines.append("Anomalies:")
@@ -303,72 +259,6 @@ class KHPDetailDialog(QDialog):
 
         self._metrics_label.setText('<br>'.join(line.replace(' ', '&nbsp;') for line in lines))
 
-    def _on_manual_toggled(self, checked: bool):
-        """Activa/desactiva els camps d'ancoratge manual i els inicialitza."""
-        self._anchor_left_spin.setEnabled(checked)
-        self._anchor_right_spin.setEnabled(checked)
-        if checked and not self._anchors_inited:
-            t = np.asarray(self.khp_data.get('t_doc', []))
-            peak_info = self.khp_data.get('peak_info') or {}
-            p_idx = peak_info.get('peak_idx')
-            is_bp = bool(self.khp_data.get('is_bp', False))
-            if len(t) > 5 and p_idx is not None and 0 <= p_idx < len(t):
-                lo, hi = float(np.min(t)), float(np.max(t))
-                self._anchor_left_spin.setRange(lo, hi)
-                self._anchor_right_spin.setRange(lo, hi)
-                w = 0.4 if is_bp else 0.8
-                self._anchor_left_spin.setValue(max(lo, float(t[p_idx]) - w))
-                self._anchor_right_spin.setValue(min(hi, float(t[p_idx]) + w))
-                self._anchors_inited = True
-
-    def _on_repair_clicked(self):
-        """Aplica reparació amb paràbola (force=True) i mostra el resultat."""
-        try:
-            from hpsec_core import recompute_area_with_repair
-        except ImportError as e:
-            QMessageBox.warning(self, "Error", f"Imports fallits: {e}")
-            return
-
-        t = np.asarray(self.khp_data.get('t_doc', []))
-        peak_info = self.khp_data.get('peak_info') or {}
-        p_idx = peak_info.get('peak_idx')
-        l_idx = peak_info.get('left_idx', peak_info.get('peak_left_idx'))
-        r_idx = peak_info.get('right_idx', peak_info.get('peak_right_idx'))
-        baseline = peak_info.get('baseline_level', 0) or 0
-        is_bp = bool(self.khp_data.get('is_bp', False))
-
-        if not (len(t) > 5 and p_idx is not None and l_idx is not None and r_idx is not None):
-            QMessageBox.warning(self, "Reparació", "Falten dades del pic per reparar.")
-            return
-
-        al = ar = None
-        if self._manual_anchors_cb.isChecked():
-            al = self._anchor_left_spin.value()
-            ar = self._anchor_right_spin.value()
-
-        try:
-            res = recompute_area_with_repair(
-                t, self.khp_data.get('y_doc', []), p_idx, l_idx, r_idx,
-                baseline, is_bp, anchor_left_t=al, anchor_right_t=ar)
-        except Exception as e:
-            QMessageBox.warning(self, "Reparació", f"Error a la reparació: {e}")
-            return
-
-        if not res:
-            QMessageBox.information(
-                self, "Reparació",
-                "La paràbola no ha pogut reparar el pic\n"
-                "(possiblement els ancoratges no han trobat punts vàlids)."
-            )
-            return
-
-        self._repaired_data = res
-
-        # Re-render amb el repair pendent + habilitar Aplicar
-        self._render_chromatogram()
-        self._render_metrics()
-        self._btn_apply.setEnabled(True)
-
     def _undo_repair(self):
         """Demana esborrar la reparació manual desada i emet repair_undone."""
         if QMessageBox.question(
@@ -379,15 +269,6 @@ class KHPDetailDialog(QDialog):
             return
         rep_num = self.khp_data.get('replica_num', 1)
         self.repair_undone.emit(rep_num, self.signal)
-        self.accept()
-
-    def _apply_repair(self):
-        """Confirma la reparació, emet el senyal i tanca (el panell recalcula i informa)."""
-        if not self._repaired_data:
-            return
-        rep_num = self.khp_data.get('replica_num', 1)
-        # El panell desa l'override i re-executa la calibració (mostra el seu propi avís).
-        self.repair_applied.emit(rep_num, self.signal, self._repaired_data)
         self.accept()
 
     def _on_toggle_outlier(self):

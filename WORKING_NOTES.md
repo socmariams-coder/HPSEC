@@ -4,7 +4,251 @@ Historial detallat de decisions i troballes per sessió. Separat de
 CLAUDE.md perquè el context de sessió no carregui ~700 línies de diari;
 consultar quan es necessiti el context històric d'un tema concret.
 
-> Last updated: 2026-06-26
+> Last updated: 2026-07-15
+
+### Informe d'integració 305/306 + la columna nova és PITJOR que la que substitueix (2026-07-15)
+
+**Entregable:** `Proyectos\Informe_integracio_DOC_305_306_v2.docx` (9 seccions, 4 figures, 6 taules).
+Generadors permanents: `compara_integracions.py` (anàlisi + taules) · `fes_figures_integracio.py`
+(4 figures, **totes amb les 3 seqs 293/305/306** per demanda de la usuària) · `gen_docx_integracio.py`.
+
+**El defecte de la finestra hi és SEMPRE, però només mossega amb base no plana.** Amplada de la
+finestra del programa en múltiples del FWHM: 293 mediana 10,3 (màx 18,6) · 305 mediana 9,7 (màx
+12,3) · 306 mediana 13,0 (màx **40,9**). Les 32 injeccions superen 6×FWHM (una integració correcta
+= ~4×FWHM). Sobre-integració resultant: 293 ×1,05–1,44 · 305 ×1,02–1,20 · **306 ×1,07 a ×15,0**
+(un cas ×173). Depèn de la CONCENTRACIÓ (el senyal aliè capturat és constant, el pic minva): a la
+306 inverteix l'ordre dels punts (0,25 ppm → 12.583 > 3 ppm → 11.564). **Les estructures tardanes
+(pics ~31 i ~36 min, altiplà 44–72 min) hi són a TOTES les seqs**; a la 305 la finestra s'atura
+abans, a la 306 se les empassa.
+
+**Rectes (integració vigent → estreta ancorada ±2·FWHM + base local):**
+293: 795/R²0,9998 → 757/R²0,9996 · 305: 7.868/R²0,9982 → 7.718/R²0,9988 · **306: 6.193/R²0,607 →
+9.319/R²0,9996**. A 293 i 305 el criteri és indiferent; a la 306 ho decideix tot.
+
+**NO CONVERGEIXEN:** amb la mateixa integració estreta, 306 dona RF 9.319 vs 305 7.718 (+21%).
+A 5 ppm l'alçada neta és IDÈNTICA (10.756 = 10.756 ppb) però el FWHM difereix (1,48 vs 1,60) i
+l'àrea +15%. Eixamplament a alçada constant amb massa constant (254 ho confirma) → l'excés d'àrea
+NO ve de la mostra. Dos factors oberts: (a) la base de 1.400–2.000 ppb amb deriva interna pot no
+quedar descrita per una recta ajustada als flancs; (b) el pic de 254 de la 306 és 17% més baix que
+el de la 305 (101,6 vs 122,6 mAU) amb la mateixa massa, més del que explicaria el 8% d'eixamplament.
+
+**HI HAVIA MOTIU PER CANVIAR LA COLUMNA? Des de les dades: NO.** Eficiència mesurada al pic de 254
+(DAD inline; el DOC no serveix, hi afegeix l'eixamplament del transfer):
+| | 293 (20/02) | 305 (07/07) | 306 (14/07) |
+|---|---|---|---|
+| t_ret | 20,87 | **20,89** (+0,02) | 21,93 (+1,06) |
+| FWHM | 0,318 | **0,307** (×0,97) | 0,372 (×1,17) |
+| plats N | 23.957 | **25.775** (×1,08) | 19.319 (**×0,81**) |
+| asimetria USP | 2,06 | 1,73 | **0,89 (frontal)** |
+
+La columna de la 305, cinc mesos després de la 293, anava IGUAL O MILLOR: mateixa retenció, pic
+igual d'estret, +8% de plats, millor simetria. Cap indicador de degradació. **La columna nova (306)
+té −19% de plats, pics +17% i asimetria 0,89 = FRONTAL** (no cua): canvi de règim de forma, no
+desgast; compatible amb buits/canals al llit o columna no equilibrada. Motius no cromatogràfics
+(pressió, fuites, antiguitat, manteniment programat) no són observables aquí → registre del lab.
+
+### La 305 separa els dos efectes + informe v5 (2026-07-15)
+
+**Seq nova 305_SEQ_CAL** (COLUMN, 400 µL, 07/07): mateix detector, mode, volum i mètode que
+la 306 (14/07); **només difereix en la columna** (substituïda entre totes dues). Cronologia
+real: 293 (20/02) → 304 BP (07/07) → **305 (07/07)** → 306 (14/07).
+
+**La 305 és NETA i aïlla la causa:** pics gaussians (R² fit 0,994–0,999), t_ret constant
+21,93 min, rèpliques concordants a tot el rang, 254 nm sense deriva, UIB amb fons 597 (marge)
+i **recta RF_mass=7.868, intercept=160, R²=0,9982** (0,25–5 ppm) — usable tal com surt, sense
+reintegrar. Contrast amb la 306: fons ×47,5, deriva i caigudes, 254 fins a −7 mAU, UIB saturat
+ja a la BASE (999,6), pics no gaussians a 0,25/0,5 ppm, R² 0,607.
+
+**Confirmació del guany del detector amb 3 sèries independents:** alçada neta del DOC a 5 ppm
+×7,5 (305) · ×7,6 (306) · ×8,2 (304 BP). A la 305 el factor és estable a TOT el rang (×8,1 /
+×7,9 / ×8,6 / ×7,5). Fons del DOC (mediana vs seq anterior del mode): ×22,7 (305), ×47,5 (306),
+×12 (304). Pic 254: ×1,10 (305), ×1,09 (304), degradat a la 306 (×0,58 a 0,25 ppm).
+→ El guany NO acompanya el canvi de columna (la 305 també en porta una de diferent de la 293):
+la inestabilitat és **específica de la columna instal·lada per a la 306**.
+
+**Informe v5** (`Proyectos\Informe_calibracions_COLUMN_BP_v5.docx`): Taula 1 amb 5 columnes
+(293→305 · 293→306 · 292→304 · interpretació), §4 reescrit (efecte exclusiu de la 306), figures
+de COLUMN amb 3 panells, Taula 3 nova d'injeccions de la 305. Verificat: 6 figures, 6 taules,
+capçaleres blanc-sobre-teal correctes a totes.
+
+**CADENA REPARADA (deute meu):** a la v4 només es va desar `gen_docx.py` + les sortides; els
+scripts d'extracció i de figures eren d'un sol ús i no es van persistir → l'informe no es podia
+regenerar. Ara la carpeta té els tres passos: `extreu_dades.py` (valida contra les files
+publicades: 293 i 306 coincideixen exactament) → `fes_figures.py` → `gen_docx.py`.
+Notes tècniques: els noms de mostra a 4-TOC_CALC són `KHP{codi}_R{n}`; el `y_doc` de
+`replicas_info_uib` va corregit de base i NO serveix per a la figura d'UIB (cal el CSV cru
+UTF-16 de `CSV/*UIB1B.CSV`, on es veu el fons real: 50,8 / 659,7 / 999,62); el `y_dad_254` del
+JSON sí que és cru.
+
+**bp_data.json CONGELAT:** els calibration_result.json de 292/304 s'han reprocessat i ara tenen
+menys rèpliques (292: 9 vs 12 publicades; 304: 8 vs 10). Regenerar-lo canviaria els números de
+BP de l'informe → `extreu_dades.py` no el toca sense `--bp`. PENDENT de decidir.
+
+### El salt de magnitud ×8: guany, no sensibilitat + la integració de la 306 (2026-07-15)
+
+**Pregunta (usuària):** salt important de magnitud del senyal sense explicació; és bo per a la
+sensibilitat?; a la calibració actual s'agafa àrea d'un segon pic que no toca; cal analitzar a
+fons els cromatogrames de COLUMN i les seves integracions per a la darrera seq.
+
+**1. El ×8 NO és sensibilitat, és ESCALA (guany).** BP 292→304: alçada de pic ×8 (227→1.854 ppb
+a 5 ppm) però soroll ×6,6–12,3 (0,084→0,554 a 5 ppm; 0,263→3,225 a 0,25 ppm) i baseline ×11,8
+(27→320 ppb). S/N no millora; a baixa concentració empitjora.
+
+**2. Es PERD el fons d'escala.** Reproductibilitat entre rèpliques a la 306: 0,25 ppm → h_net
+617 vs 15 ppb; 0,5 ppm → 1.137 vs 444 (×2,6). A ≥1 ppm: 2–3% (bona). A la 293 totes les
+rèpliques quadraven fins i tot a 0,1 ppm. El règim nou inutilitza 0,25–0,5 ppm tot i el ×8.
+
+**3. Descomposició neta del factor (COLUMN, integració correcta):** àrea ×11,9 = alçada ×7,6
+(guany del detector; coincideix amb el ×8 de BP) × eixamplament ×1,35–1,55 (FWHM 1,13→1,53 min,
+efecte exclusiu de la columna nova). Quadra amb els dos efectes separats de l'informe v4, ara
+quantificats i separats numèricament.
+
+**4. LA 306 NO ESTÀ PERDUDA — ho estava la integració.** Amb finestra estreta ancorada al 254
+(±2·FWHM, baseline local): RF_mass=9.319, intercept=−559, **R²=0,9996** (0,25–5 ppm). Amb la
+integració vigent: RF_mass=6.193, intercept=5.630, **R²=0,607**. Això CONTRADIU la conclusió
+"COLUMN no és aprofitable" de l'informe v4 — cal revisar-la. Referència 293 amb la mateixa
+integració estreta: RF_mass=757, intercept=4,5, R²=0,9996 → factor real COLUMN ×12,3.
+
+**5. Causa del bug d'integració (= el "segon pic"):** amb baseline alta i derivant (~1.000–2.000
+ppb a la 306) la projecció tangent de `find_peak_boundaries` no troba el final del pic i la
+finestra s'escapa: **10,6 a 54,6 min** d'amplada quan el FWHM és 1,5 min (correcte ~5–6 min).
+Sobre-integració ×1,1 a ×15 (×173 en una injecció trencada). A la 293 la mateixa funció només
+sobre-integra ×1,1–1,4 → el bug NOMÉS es dispara amb baseline alta/derivant. A 0,25 ppm la
+finestra va de 5 a 60 min i s'empassa l'altiplà de 44–60 min, que no és KHP: A=13.133 en lloc
+de 876. Figura: `informe_calibracions/integracio_306_diagnostic.png`.
+
+**Norma acordada:** no barrejar ni comparar seqs de règims diferents; calibració nova i
+independent per al règim nou; velles vs noves només com a diagnòstic.
+
+**PENDENT:** ancorar la finestra d'integració al 254 (o limitar-la a n·FWHM) quan la baseline
+derivi; revisar la conclusió de l'informe v4 sobre COLUMN.
+
+### DIAGNOSI: reparació de pics a calibració ≠ reparació a SEQ normal (2026-07-14)
+
+**Pregunta (usuària):** el sistema de reparació de pics de calibració és igual al d'una SEQ
+normal? No permet passar d'una mostra a una altra. → Confirmat: NO són iguals. Hi ha TRES
+camins de reparació amb comportaments diferents. Només diagnosi (cap canvi de codi).
+
+**Camí A — SEQ normal (Analitzar):** `JaggedPeakRepairDialog` via `_open_dialog_with_nav`
+(analyze_panel/panel.py:2439). Multi-card (totes rèpliques×senyals), factor global 0,50–1,20
+amb preview en viu, ancoratges per card en viu + "Copiar a les altres", Aplicar/Desfer/Descartar,
+i navegació ◀▶ entre mostres (`navigate_requested` connectat a panel.py:2502: tanca el diàleg
+i obre el mateix per la mostra anterior/següent).
+
+**Camí B — Calibració, botó "Reparar pic"** (calibrate_panel/panel.py:2061 i
+global_calibration_panel.py:2522): obre EL MATEIX diàleg amb un adaptador, però:
+1. **Botons ◀▶ morts**: el diàleg els pinta sempre, però `navigate_requested` NOMÉS es
+   connecta a analyze_panel. A calibració clicar-los no fa res. ← la queixa de la usuària.
+2. L'adaptador porta només les rèpliques d'UNA concentració × UN senyal, amb `anomalies=[]`
+   → totes les cards neixen "needs_repair", mai "repaired".
+3. **BUG pèrdua de dades**: al tancar, el panell "sincronitza" cards→overrides: si la card
+   no està 'repaired' i existeix override desat → `remove_manual_repair`
+   (calibrate_panel/panel.py:2107-2109; global_calibration_panel.py:2591-2593). Com que els
+   overrides existents mai es carreguen a les cards, obrir "Reparar pic" sobre una rèplica JA
+   reparada i tancar sense tocar res ESBORRA la reparació desada en silenci i recalcula sense ella.
+4. **Δ%àrea del preview ≠ efecte real**: el preview integra amb `calcular_fraccions_temps`
+   (tot el cromatograma); el que es persisteix es reaplica amb `recompute_area_with_repair`
+   (finestra de pic + baseline d'analizar_khp_data). El cim reparat dibuixat sí que és idèntic
+   (repair_with_parabola force=True), però l'àrea anunciada i la que arriba a la recta no
+   es calculen igual.
+
+**Camí C — Calibració, doble clic / "Detall"** → `KHPDetailDialog` (khp_detail_dialog.py),
+una sola rèplica × senyal:
+- Sense navegació (ni entre rèpliques ni concentracions); en Aplicar es tanca sol (accept()).
+- Sense control de factor (REPAIR_FACTOR=0,85 fix; `set_manual_repair` sense factor → None,
+  mentre que el camí B sí que persisteix el factor).
+- Sense preview en viu: cada canvi d'ancoratge → tornar a clicar "Previsualitzar reparació".
+- Virtut: preview = persistit (tots dos via `recompute_area_with_repair`, la funció canònica).
+
+**Persistència comuna:** overrides a manual_repairs (CHECK/data), reaplicats deterministes a
+`calibrate_from_import` (hpsec_calibrate.py:4801/4876/4903) via `apply_manual_repair_to_khp`.
+
+**Proposta (pendent de decisió):** (1) connectar `navigate_requested` a calibració per navegar
+entre files de la taula de mètriques; (2) carregar overrides existents a les cards com a
+'repaired' — mata el bug d'esborrat silenciós; (3) unificar el càlcul d'àrea del preview amb
+`recompute_area_with_repair`; (4) unificar B i C en un sol diàleg de reparació per calibració
+(factor + preview en viu + navegació).
+
+### (2026-07-15) FIX: unificació del sistema de reparació de pics (A = B = C)
+
+Decisió usuària: "tots han de funcionar igual" → el diàleg d'Analitzar (`JaggedPeakRepairDialog`)
+és l'únic sistema de reparació a tot arreu. Implementats els 4 punts de la proposta de la diagnosi.
+
+**repair_dialog.py** (analyze_panel):
+- `_RepairCard` accepta `saved_anchors` (tupla d'un override desat → inicialitza els spins i els
+  ancoratges manuals ABANS del primer preview) i `peak_ctx` (dict peak_idx/left_idx/right_idx/
+  baseline/area d'analizar_khp_data). Amb `peak_ctx`, el preview recalcula amb
+  `recompute_area_with_repair` → el Δ% mostrat és exactament el que persistirà
+  `apply_manual_repair_to_khp` (fix BUG Δ% enganyós). Fallback silenciós al càlcul estàndard
+  (fraccions) si no hi ha context. Sense `peak_ctx` ni `_manual_repair` res no canvia (camí A intacte).
+- El diàleg llegeix `_manual_repair` i `_peak_ctx` de cada rèplica de l'adaptador; el factor
+  global s'inicialitza amb el primer override que en porti.
+- `_session_modified` per card + `_modified_keys` a nivell de diàleg. El set del diàleg és la
+  font de veritat perquè `_refresh_after_action` remapeja cards→targets (l'ordre dels targets
+  canvia quan una anomalia passa d'auto-force a registrada) i el flag ha de seguir la RÈPLICA,
+  no el widget. El remapeig també reassigna `_peak_ctx`.
+- Helpers de mòdul compartits pels dos panells de calibració:
+  `make_calibration_replica_entry` (entrada d'adaptador amb `_peak_ctx`, i si hi ha override:
+  estat 'repaired' + `_manual_repair` + backup `y_*_original` perquè "Desfer" funcioni) i
+  `sync_repair_cards_to_overrides` (persisteix NOMÉS cards amb `_session_modified`: repaired →
+  `set_manual_repair`, no-repaired amb clau existent → `remove_manual_repair`; cards no tocades
+  NO es toquen — fix BUG pèrdua de dades silenciosa).
+
+**hpsec_analyze.py** `repair_irregular_top_in_replica`: si `mark_repaired` retorna False i el
+fallback de strings tampoc troba res (adaptador de calibració amb `anomalies=[]`), s'AFEGEIX
+`{"code": anom_key, "repaired": True, "repair_info": ...}` a la llista — fix del BUG "Aplicar
+no persisteix mai al camí B" (l'estat 'repaired' ara sobreviu `_refresh_after_action` i la
+sincronització del panell el veu). Per al camí A no canvia res (l'anomalia sempre existeix).
+
+**calibrate_panel/panel.py**:
+- `_build_repair_adapter(conc, signal, name=, seq_path=)` injecta per rèplica l'override
+  existent (`manual_repairs.json`) i el `_peak_ctx` via el helper compartit.
+- Lògica d'obertura extreta de `_on_calib_repair_clicked` a `_open_calib_repair_for(khp)`.
+  Navegació ◀▶ connectada: unitats = grups (conc_ppm, senyal) distints en l'ordre de les files
+  de `metrics_table` (`_metrics_repair_groups`; les sub-files d'anomalies, sense dict khp a
+  col 0 UserRole, se salten). Navegar = tancar, seleccionar la primera fila del grup nou i
+  reobrir. La recalibració (`_run_calibrate`, worker async) es fa UN sol cop quan es tanca
+  l'últim diàleg de la cadena (guard `_repair_nav_depth` / `_repair_recalc_pending`) — així la
+  taula no es reconstrueix sota els peus mentre es navega.
+- Detall KHP (`_open_khp_detail`): `repair_requested` → tanca el detall i crida
+  `_open_calib_repair_for(khp)`. `_on_detail_repair_applied` eliminat (senyal sense emissor,
+  verificat amb grep). `set_manual_repair` fora dels imports del panell (ja només l'usa el helper).
+
+**khp_detail_dialog.py** (camí C fusionat): eliminada la UI pròpia de reparació (fila
+d'ancoratges, "Previsualitzar reparació", "Aplicar reparació", `_on_repair_clicked`/
+`_apply_repair`/`_on_manual_toggled`/`_repaired_data`/`_anchors_inited`) i el senyal
+`repair_applied`. Nou botó "🔧 Reparar pic" que emet `repair_requested = Signal()`. Es manté:
+cromatograma (amb overlay del senyal reparat si n'hi ha), mètriques, "Desfer reparació manual"
+i el toggle outlier.
+
+**global_calibration_panel.py** `_repair_seq_cal_entry`: adaptador via helper compartit
+(overrides carregats → cards neixen 'repaired'); sync només-modificats; navegació ◀▶ per
+`self._seq_cal_entries` (índex ±1, reobrint el mateix mètode; si el diàleg venia del preview
+del punt, `parent_dialog.accept()` en navegar); recàlcul (`parent_panel.load_seq_cal`) un sol
+cop al final de la cadena. El missatge del PROMIG es conserva; l'avís "no s'ha aplicat cap
+reparació" desapareix — tancar sense tocar res ara és un no-op legítim (abans esborrava overrides).
+
+**Desviacions del pla (justificades):**
+- `_session_modified` per card sol no era segur: `_refresh_after_action` reassigna els cards
+  als targets reordenats i el flag hauria quedat al widget equivocat → `_modified_keys`
+  (rep_key, signal) al diàleg com a font de veritat, i el flag per card se'n deriva.
+- `_peak_ctx.area` usa `area_pre_manual` quan existeix (no l'`area` actual): amb override ja
+  aplicat, `area` porta la reparació; el recompute ha de partir de l'àrea pre-override, igual
+  que fa `apply_manual_repair_to_khp` en reprocessar.
+- El sync es va extreure a un helper compartit a repair_dialog.py (en lloc de duplicar-lo als
+  dos panells) perquè el comportament sigui idèntic per construcció.
+- Recalibració ajornada al final de la cadena de navegació (no per diàleg): `_run_calibrate` /
+  `load_seq_cal` reconstrueixen la taula de forma asíncrona i haurien invalidat les files
+  mentre l'usuari encara navega.
+
+**Verificat:** `py_compile` dels 5 fitxers OK; `test_robustesa_audit.py` 28/28 OK; fum GUI
+offscreen (33 asserts OK): camí A intacte (2 cards, preview estàndard, apply → 'repaired' +
+`_session_modified` + anomalia dict registrada), card amb `_manual_repair`+`_peak_ctx` neix
+'repaired' amb anchors 21,4/22,6 i factor 0,90 carregats, `ctx_area_new` del preview ==
+`recompute_area_with_repair` (persistit), undo → 'needs_repair', cicle BUG 2 (anomalies=[] →
+apply → refresh → segueix 'repaired'), sync amb overrides desats: tancar sense tocar NO escriu
+i conserva els overrides / undo d'una rèplica n'esborra només aquella, i `KHPDetailDialog`
+emet `repair_requested` amb la UI antiga absent.
 
 ### Selecció robusta de rèplica a la calibració KHP (2026-06-26)
 

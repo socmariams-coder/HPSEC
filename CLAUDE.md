@@ -83,7 +83,7 @@ Mark features as DONE only when code is fully functional end-to-end, not when pl
 - [x] Wizard SEQ_CAL: resum regressió al pas 4 (ReviewSummaryPanel) — DONE
 - [x] GlobalCalibrationPanel: convertit a consulta-only (sense aplicar/requantificar) — DONE
 - [x] Calibration: v3.0 independent per signal_scope/uib_sensitivity — DONE (migració automàtica v2→v3)
-- [x] Calibration: reparació pic amb ANCORATGES MANUALS al detall KHP (paritat amb anàlisi) — DONE (2026-06-25, pendent verificació GUI)
+- [x] Calibration: sistema de reparació de pics UNIFICAT — el diàleg d'Analitzar (JaggedPeakRepairDialog) a tot arreu (taula mètriques, detall KHP via repair_requested, Cal.Global); overrides existents carregats a les cards, sync només-modificats (no esborra reparacions en tancar), Δ% real via recompute_area_with_repair, navegació ◀▶ entre grups/punts — DONE (2026-07-15, verificat fum GUI offscreen)
 - [x] Calibration: UIB intercept independent a quantify_sample — DONE
 - [x] GlobalCalibrationPanel: vista resum sense SEQ_CAL (taula params, scatter, historial) — DONE
 - [x] GlobalCalibrationPanel: SEQ_CAL auto-flow (Direct→UIB→resum) — DONE
