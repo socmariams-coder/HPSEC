@@ -318,6 +318,31 @@ def test_regims_instrumentals():
 
 
 # ---------------------------------------------------------------------------
+def test_analysis_result_compacte():
+    """analysis_result.json: la llista plana 'samples' no porta arrays a disc
+    (unica copia dels senyals: samples_grouped). El Quantificar reescrivia el
+    dict cru i re-inflava el fitxer a >20 MB."""
+    print("\n[compacta] strip_flat_sample_arrays: sense duplicar senyals a disc")
+    from hpsec_analyze import strip_flat_sample_arrays, ANALYSIS_FLAT_ARRAY_KEYS
+
+    original = {
+        "samples": [{"name": "A", "replica": "1", "area_total": 5.0,
+                     "t_doc": [0.1, 0.2], "y_doc_net": [1.0, 2.0],
+                     "df_dad": {"254": [3, 4]}}],
+        "samples_grouped": {"A": {"replicas": {"1": {"t_doc": [0.1, 0.2]}}}},
+    }
+    slim = strip_flat_sample_arrays(original)
+    s0 = slim["samples"][0]
+    check("la llista plana perd els arrays",
+          not any(k in s0 for k in ANALYSIS_FLAT_ARRAY_KEYS))
+    check("els escalars es conserven", s0["area_total"] == 5.0 and s0["name"] == "A")
+    check("samples_grouped queda INTACTE (unica copia dels senyals)",
+          slim["samples_grouped"]["A"]["replicas"]["1"]["t_doc"] == [0.1, 0.2])
+    check("l'original en memoria NO es muta (la GUI conserva els arrays)",
+          "t_doc" in original["samples"][0])
+
+
+# ---------------------------------------------------------------------------
 def test_autofix_columns_synthetic():
     """S6/291: un full amb dades a les columnes '.1' (G-L) i originals buides
     s'ha de corregir (i quedar disponible per a TOTS els consumidors)."""
@@ -362,6 +387,7 @@ if __name__ == "__main__":
               test_pre_margin_single_source,
               test_seq_date_es_adquisicio_no_processament,
               test_regims_instrumentals,
+              test_analysis_result_compacte,
               test_autofix_columns_synthetic,
               test_291_doc_direct_recovered):
         try:

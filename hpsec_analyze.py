@@ -3467,6 +3467,32 @@ from hpsec_import import get_data_folder
 
 from hpsec_utils import NumpyEncoder, _atomic_write_json
 
+# La llista plana 'samples' NO porta arrays a disc: la GUI redibuixa des de
+# 'samples_grouped', que és l'única còpia persistida dels senyals. Qualsevol
+# writer d'analysis_result.json ha de passar per strip_flat_sample_arrays()
+# (el Quantificar reescrivia el dict cru i re-inflava el fitxer a 23 MB).
+ANALYSIS_FLAT_ARRAY_KEYS = ("t_doc", "y_doc_net", "y_doc_uib_net",
+                            "y_doc_direct_net", "df_dad",
+                            "y_doc_net_pre_composition")
+
+
+def strip_flat_sample_arrays(result):
+    """
+    Retorna una còpia superficial de `result` amb les entrades de la llista
+    plana 'samples' sense els camps d'array (ANALYSIS_FLAT_ARRAY_KEYS).
+    No muta l'original: les dades en memòria conserven els arrays.
+    """
+    samples = result.get("samples")
+    if not samples:
+        return result
+    out = dict(result)
+    out["samples"] = [
+        {k: v for k, v in s.items() if k not in ANALYSIS_FLAT_ARRAY_KEYS}
+        if isinstance(s, dict) else s
+        for s in samples
+    ]
+    return out
+
 
 def save_analysis_result(analysis_data, output_path=None):
     """
@@ -3597,15 +3623,13 @@ def save_analysis_result(analysis_data, output_path=None):
 
     # Resumir mostres. La llista plana 'samples' NO la redibuixa la GUI (usa
     # 'samples_grouped'); per no duplicar MB, la persistim SENSE els arrays de
-    # senyal (que segueixen a samples_grouped i a PER_SAMPLE/). Estalvi ~50%.
-    _ARRAY_KEYS = ("t_doc", "y_doc_net", "y_doc_uib_net", "y_doc_direct_net",
-                   "df_dad", "y_doc_net_pre_composition")
+    # senyal (única còpia: samples_grouped). Estalvi ~50%.
     for sample in analysis_data.get("samples", []):
         if sample.get("analysis_type") == "light":
             entry = summarize_light_sample(sample)
         else:
             entry = summarize_sample(sample)
-        for _ak in _ARRAY_KEYS:
+        for _ak in ANALYSIS_FLAT_ARRAY_KEYS:
             entry.pop(_ak, None)
         result["samples"].append(entry)
 
@@ -3649,9 +3673,10 @@ def save_analysis_result(analysis_data, output_path=None):
             result["samples_grouped"][sample_name] = grouped_entry
 
     # Guardar (ATÒMIC; encoder NumpyEncoder únic per a aquest fitxer — abans
-    # Quantificar el reescrivia amb un encoder diferent)
+    # Quantificar el reescrivia amb un encoder diferent). Sense indentació:
+    # el fitxer és intern (cap humà l'edita) i la indentació l'inflava un 40%.
     try:
-        _atomic_write_json(output_path, result, indent=2, ensure_ascii=False,
+        _atomic_write_json(output_path, result, indent=None, ensure_ascii=False,
                            cls=NumpyEncoder)
         return output_path
     except Exception as e:

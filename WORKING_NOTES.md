@@ -6,6 +6,29 @@ consultar quan es necessiti el context històric d'un tema concret.
 
 > Last updated: 2026-07-17
 
+### analysis_result.json aprimat: el Quantificar re-inflava el fitxer (2026-07-17)
+
+**Arrel:** el writer canònic (`save_analysis_result`) ja treia els arrays de la llista
+plana `samples` des del febrer (a593d2e, "estalvi ~50%") — però
+`QuantifyPanel._persist_result()` reescrivia el dict CRU en memòria i els tornava a
+posar (303: 24 MB). `requantify_analysis_json` (retroactiu) no re-inflava però desava
+amb indent=2 (+40%).
+
+**Fix (tots els writers passen pel mateix embut):**
+- `hpsec_analyze.py`: `ANALYSIS_FLAT_ARRAY_KEYS` + `strip_flat_sample_arrays()` a nivell
+  de mòdul (font única; no muta l'original — la GUI conserva els arrays en memòria).
+- Els 3 writers (save_analysis_result, QuantifyPanel._persist_result,
+  requantify_analysis_json) fan strip + `indent=None` (fitxer intern, ningú l'edita).
+- `migra_compacta_analysis.py`: aprima els fitxers existents (simulacre + --aplicar amb
+  .bak). Aplicat: 5 fitxers, 52 → 20 MB (−62%). SENSE pèrdua: senyals sencers a
+  samples_grouped, decisions manuals intactes.
+- Verificat: fitxer aprimat carrega via `_restore_dataframes` (df_dad → DataFrame) i
+  `SequenceState` (dashboard analyze_state='ok'). Suite 54/54.
+
+**Regla que en queda:** cap writer d'analysis_result.json pot escriure el dict cru;
+sempre `strip_flat_sample_arrays()` + indent=None. La única còpia persistida dels
+senyals és `samples_grouped`.
+
 ### Volums de dades per al DMP + neteja PER_SAMPLE òrfena (2026-07-17)
 
 **Volums reals (303_SEQ, 8 mostres, 15 inj, ~216 MB):** Export3d 145 MB (67%) · CSV cru

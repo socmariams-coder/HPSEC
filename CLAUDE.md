@@ -98,6 +98,15 @@ Mark features as DONE only when code is fully functional end-to-end, not when pl
   - Fronteres SEMPRE amb data d'ADQUISICIÓ (get_seq_acquisition_date)
 - [ ] Calibration: cablejar `filter_history_by_regime()` als consumidors de l'historial
   (comparatives "N més recents", fit_calibration_from_history, Levey-Jennings) — PENDING
+- [x] Storage: analysis_result.json compacte — DONE (2026-07-17)
+  - Regla: cap writer escriu el dict cru; sempre `strip_flat_sample_arrays()` + indent=None
+  - La llista plana `samples` no porta arrays a disc (única còpia: samples_grouped)
+  - 3 writers unificats (save_analysis_result, QuantifyPanel._persist_result,
+    requantify_analysis_json); `migra_compacta_analysis.py` per fitxers antics (52→20 MB)
+- [ ] Export: número de SEQ als noms de fitxer de RESULTATS ({sample}_{SEQ}_HPSEC_C.xlsx,
+  {SEQ}_SUMMARY.xlsx) per evitar col·lisions en carpetes compartides — PENDING
+- [ ] Export FAIR: regime_id + fronteres de règim a fulla ID, metadata.json i
+  datapackage.json — PENDING
 - [x] GlobalCalibrationPanel: vista resum sense SEQ_CAL (taula params, scatter, historial) — DONE
 - [x] GlobalCalibrationPanel: SEQ_CAL auto-flow (Direct→UIB→resum) — DONE
 - [x] Export: KHP chromatogram PNGs a CHECK/data/khp_plots/ — DONE (save_all_khp_chromatograms)

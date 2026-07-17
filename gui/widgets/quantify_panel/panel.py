@@ -418,11 +418,15 @@ class QuantifyPanel(QWidget):
             return
         json_path = os.path.join(seq_path, "CHECK", "data", "analysis_result.json")
         try:
-            # Atòmic + NumpyEncoder (mateix encoder que save_analysis_result;
-            # abans default=str convertia números en text — no impecable)
+            # Atòmic + NumpyEncoder (mateix encoder que save_analysis_result).
+            # strip_flat_sample_arrays: la llista plana 'samples' no porta arrays
+            # a disc — escriure el dict cru re-inflava el fitxer a >20 MB
+            # (l'única còpia persistida dels senyals és samples_grouped).
             from hpsec_utils import NumpyEncoder, _atomic_write_json
-            _atomic_write_json(json_path, self._quantification_result,
-                               indent=2, ensure_ascii=False, cls=NumpyEncoder)
+            from hpsec_analyze import strip_flat_sample_arrays
+            _atomic_write_json(json_path,
+                               strip_flat_sample_arrays(self._quantification_result),
+                               indent=None, ensure_ascii=False, cls=NumpyEncoder)
         except Exception as e:
             logger.error("Error persistint quantificació: %s", e)
 

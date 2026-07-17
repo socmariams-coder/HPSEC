@@ -1536,9 +1536,13 @@ def requantify_analysis_json(json_path, new_rf_direct, new_intercept_direct,
     data["calibration_fingerprint"] = compute_calibration_fingerprint()
     data["requantified_at"] = datetime.now().isoformat()
 
-    # Guardar
+    # Guardar. strip_flat_sample_arrays: la llista plana 'samples' no porta
+    # arrays a disc (fitxers antics encara en duen — aprofitem per aprimar-los).
+    # indent=None: fitxer intern, la indentació l'inflava un 40%.
     try:
-        _atomic_write_json(json_path, data, indent=2, ensure_ascii=False)
+        from hpsec_analyze import strip_flat_sample_arrays  # local: evita import circular
+        data = strip_flat_sample_arrays(data)
+        _atomic_write_json(json_path, data, indent=None, ensure_ascii=False)
         result["success"] = True
         result["samples_updated"] = n_updated
     except Exception as e:
