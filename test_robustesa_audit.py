@@ -318,6 +318,40 @@ def test_regims_instrumentals():
 
 
 # ---------------------------------------------------------------------------
+def test_formula_quantificacio_unica():
+    """La fórmula ppm i la seva inversa RF viuen en UNA funció (hpsec_core).
+    Abans estaven copiades a 5+7 llocs; el test fixa el contracte i la
+    consistència forward/invers perquè no tornin a divergir."""
+    print("\n[formula] area_to_ppm / area_to_rf_mass — font única")
+    from hpsec_core import area_to_ppm, area_to_rf_mass
+
+    # Model origin (intercept=0): ppm = area*1000/(rf*vol)
+    check("origin: 800 area, rf=800, vol=400 -> 2.5 ppm",
+          abs(area_to_ppm(800.0, 800.0, 400.0) - 2.5) < 1e-9)
+    # Model intercept: es resta abans de dividir
+    check("intercept=80: (880-80)*1000/(800*400) -> 2.5 ppm",
+          abs(area_to_ppm(880.0, 800.0, 400.0, intercept=80.0) - 2.5) < 1e-9)
+    # Clamp de negatius: area < intercept -> 0, mai negatiu
+    check("area sota l'intercept -> 0 (mai ppm negatiu)",
+          area_to_ppm(50.0, 800.0, 400.0, intercept=80.0) == 0.0)
+    # Guardes: rf o vol no positius -> 0, sense ZeroDivision
+    check("rf=0 -> 0.0 (sense excepció)", area_to_ppm(800.0, 0, 400.0) == 0.0)
+    check("vol=0 -> 0.0 (sense excepció)", area_to_ppm(800.0, 800.0, 0) == 0.0)
+
+    # Inversa: rf d'un punt de calibració
+    check("rf_mass: area=800, conc=2.5, vol=400 -> 800",
+          abs(area_to_rf_mass(800.0, 2.5, 400.0) - 800.0) < 1e-9)
+    check("conc=0 -> 0.0 (blanc, sense excepció)",
+          area_to_rf_mass(800.0, 0, 400.0) == 0.0)
+
+    # Consistència forward/invers: quantificar amb el RF derivat d'un punt
+    # ha de retornar la concentració d'aquell punt (model origin).
+    rf = area_to_rf_mass(1234.0, 3.0, 400.0)
+    check("forward(invers(x)) == x (round-trip origin)",
+          abs(area_to_ppm(1234.0, rf, 400.0) - 3.0) < 1e-9)
+
+
+# ---------------------------------------------------------------------------
 def test_analysis_result_compacte():
     """analysis_result.json: la llista plana 'samples' no porta arrays a disc
     (unica copia dels senyals: samples_grouped). El Quantificar reescrivia el
@@ -387,6 +421,7 @@ if __name__ == "__main__":
               test_pre_margin_single_source,
               test_seq_date_es_adquisicio_no_processament,
               test_regims_instrumentals,
+              test_formula_quantificacio_unica,
               test_analysis_result_compacte,
               test_autofix_columns_synthetic,
               test_291_doc_direct_recovered):

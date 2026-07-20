@@ -2766,7 +2766,8 @@ class CalibrationLineView(QWidget):
         conc = entry.get('conc_ppm', 0)
         vol = entry.get('volume_uL', 0)
         if conc > 0 and vol > 0:
-            entry['rf_mass'] = new_area * 1000 / (conc * vol)
+            from hpsec_core import area_to_rf_mass
+            entry['rf_mass'] = area_to_rf_mass(new_area, conc, vol)
         if new_a254 and new_area:
             entry['a254_doc_ratio'] = new_area / new_a254
         entry['selection'] = {

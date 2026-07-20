@@ -391,7 +391,8 @@ class CalibratePanel(QWidget):
             rep['t_retention'] = rep.get('t_max', 0)
             rep_area = rep.get('area', 0)
             if rep_area > 0 and conc > 0 and volume > 0:
-                rep['rf_mass_doc'] = rep_area * 1000 / (conc * volume)
+                from hpsec_core import area_to_rf_mass
+                rep['rf_mass_doc'] = area_to_rf_mass(rep_area, conc, volume)
             else:
                 rep['rf_mass_doc'] = rf_mass
             if 'fwhm_doc' not in rep:

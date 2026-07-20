@@ -1087,6 +1087,48 @@ def calc_peak_area(t, y, left_idx, right_idx, baseline):
     return trapezoid(y_seg, t_seg) if len(t_seg) > 1 else 0.0
 
 
+# =============================================================================
+# QUANTIFICACIÓ — fórmula única (font de veritat)
+# =============================================================================
+# El model de calibració (CLAUDE.md v3.0) és:
+#   ppm = (Area - intercept) * 1000 / (rf_mass_cal * volume_uL)
+# i la seva inversa, el RF d'un punt de calibració:
+#   rf_mass = Area * 1000 / (conc_ppm * volume_uL) = Area / µg DOC injectat
+# Aquestes dues funcions són l'ÚNICA implementació. Abans la fórmula estava
+# copiada a 5 llocs (quantify_sample, quantify_with_global_calibration,
+# requantify_analysis_json, LOD/LOQ, composition_dialog) i la inversa a 7 més;
+# qualsevol asimetria entre còpies (una que no clampés negatius, una guarda
+# oblidada) donava ppm diferents segons el camí. NO editar la fórmula en cap
+# altre lloc: cridar sempre aquestes.
+
+
+def area_to_ppm(area, rf_mass, volume_uL, intercept=0.0):
+    """
+    Concentració (ppm) des d'àrea: ppm = max(0, area - intercept) * 1000 /
+    (rf_mass * volume_uL).
+
+    L'intercept es resta abans de clampar a 0 (model 'intercept'); amb
+    intercept=0 queda el model 'origin'. Retorna 0.0 si rf_mass o volume_uL
+    no són positius (evita ZeroDivision; el caller decideix si vol None).
+    """
+    if not rf_mass or rf_mass <= 0 or not volume_uL or volume_uL <= 0:
+        return 0.0
+    area_corrected = max(0.0, area - (intercept or 0.0))
+    return area_corrected * 1000.0 / (rf_mass * volume_uL)
+
+
+def area_to_rf_mass(area, conc_ppm, volume_uL):
+    """
+    RF_mass d'un punt de calibració (inversa d'area_to_ppm sense intercept):
+    rf_mass = area * 1000 / (conc_ppm * volume_uL) = area / µg DOC injectat.
+
+    Retorna 0.0 si conc_ppm o volume_uL no són positius (blancs, volum absent).
+    """
+    if not conc_ppm or conc_ppm <= 0 or not volume_uL or volume_uL <= 0:
+        return 0.0
+    return area * 1000.0 / (conc_ppm * volume_uL)
+
+
 def calc_pearson(t1, y1, t2, y2):
     """Calculate Pearson correlation between two chromatograms."""
     if t1 is None or t2 is None or len(t1) < 10 or len(t2) < 10:

@@ -55,6 +55,8 @@ from hpsec_core import (
     repair_with_parabola,
     recompute_area_with_repair,
     expand_with_cap,
+    area_to_ppm,
+    area_to_rf_mass,
     TIMEOUT_CONFIG
 )
 
@@ -1016,10 +1018,9 @@ def quantify_with_global_calibration(area, volume_uL, signal='direct', mode='col
     # Obtenir intercept per-mode (0 si origin)
     intercept = get_calibration_intercept(signal, mode, seq_date, sensitivity=sensitivity)
 
-    # Fórmula única: ppm = (Area - intercept) × 1000 / (rf_mass_cal × volume)
-    # Si intercept = 0 (origin), queda: ppm = Area × 1000 / (rf_mass_cal × volume)
-    area_corrected = max(0, area - intercept)  # No permetre àrees negatives
-    concentration_ppm = area_corrected * 1000 / (rf_mass_cal * volume_uL)
+    # Fórmula única (hpsec_core.area_to_ppm). Si intercept = 0 (origin),
+    # queda ppm = Area × 1000 / (rf_mass_cal × volume).
+    concentration_ppm = area_to_ppm(area, rf_mass_cal, volume_uL, intercept=intercept)
 
     return {
         'success': True,
@@ -1079,8 +1080,8 @@ def validate_khp_qc(khp_data, seq_date=None, signal='direct', mode='column', sen
         area = khp_data.get('area', 0)
         conc = khp_data.get('conc_ppm', 0)
         volume = khp_data.get('volume_uL', 0)
-        if area > 0 and conc > 0 and volume > 0:
-            rf_mass_measured = area * 1000 / (conc * volume)
+        if area > 0:
+            rf_mass_measured = area_to_rf_mass(area, conc, volume)
 
     if rf_mass_measured <= 0:
         return {
@@ -1441,9 +1442,8 @@ def requantify_analysis_json(json_path, new_rf_direct, new_intercept_direct,
         return result
 
     def _apply_formula(area, rf, intercept):
-        """Calcula ppm des d'àrea: ppm = max(0, area - intercept) * 1000 / (rf * vol)."""
-        area_corrected = max(0, area - intercept)
-        return area_corrected * 1000 / (rf * volume_uL) if volume_uL > 0 and rf > 0 else 0
+        """ppm des d'àrea (hpsec_core.area_to_ppm), volume_uL fixat de l'àmbit."""
+        return area_to_ppm(area, rf, volume_uL, intercept=intercept)
 
     samples_grouped = data.get("samples_grouped", {})
     n_updated = 0
@@ -2406,278 +2406,6 @@ def compare_khp_historical(current_area, current_concentration_ratio, seq_path, 
 
     return result
 
-
-def validate_khp_for_alignment(t_doc, y_doc, t_dad, y_a254, t_uib=None, y_uib=None,
-                               method="COLUMN", repair_irregular_top=True,
-                               seq_path=None, conc_ppm=None, volume_uL=None,
-                               doc_mode=None, uib_sensitivity=None,
-                               timeout_info=None):
-    """
-    Valida si el KHP és adequat per calcular shifts d'alineament.
-
-    Aquesta funció ha de cridar-se ABANS de calcular els shifts per assegurar
-    que les dades KHP són fiables.
-
-    Criteris de validació:
-    1. RATIO_LOW: ratio A254/DOC < 0.015 indica contaminació
-    2. TIMEOUT_HS: timeout detectat a zona HS (18-23 min per COLUMN)
-    3. NO_PEAK: no es pot identificar pic clar
-    4. INTENSITY_EXTREME: intensitat molt diferent de l'esperat
-    5. IRREGULAR_TOP: pic amb cim irregular (jagged/batman, artefacte detector)
-    6. HISTORICAL_DEVIATION: àrea desvia significativament de l'històric
-
-    Args:
-        t_doc, y_doc: Senyal DOC (Direct o UIB)
-        t_dad, y_a254: Senyal A254
-        t_uib, y_uib: Senyal UIB (opcional)
-        method: "COLUMN" o "BP"
-        repair_irregular_top: Si True, repara pics amb cim irregular per millorar precisió t_max
-        seq_path: Path de la SEQ (per comparació històrica)
-        conc_ppm: Concentració KHP en ppm (per comparació històrica)
-        volume_uL: Volum d'injecció en µL (per comparació històrica)
-
-    Returns:
-        dict amb:
-            - valid: bool
-            - issues: list de problemes detectats
-            - warnings: list d'avisos
-            - metrics: dict amb mètriques calculades
-            - y_doc_clean: senyal DOC netejat (si irregular top reparat)
-            - t_max_corrected: t_max corregit si irregular top reparat
-    """
-    result = {
-        "valid": True,
-        "issues": [],
-        "warnings": [],
-        "metrics": {},
-        "y_doc_clean": None,
-        "t_max_corrected": None,
-    }
-
-    # Verificar dades mínimes
-    if t_doc is None or y_doc is None or len(t_doc) < 50:
-        result["valid"] = False
-        result["issues"].append("INSUFFICIENT_DOC_DATA")
-        return result
-
-    if t_dad is None or y_a254 is None or len(t_dad) < 50:
-        result["valid"] = False
-        result["issues"].append("INSUFFICIENT_DAD_DATA")
-        return result
-
-    # Netejar dades
-    t_doc = np.asarray(t_doc, dtype=float)
-    y_doc = np.asarray(y_doc, dtype=float)
-    y_a254 = np.asarray(y_a254, dtype=float)
-
-    # === 0. DETECTAR I REPARAR CIM IRREGULAR (jagged/batman, si activat) ===
-    if method == "COLUMN":
-        peak_zone = (t_doc >= 15) & (t_doc <= 30)
-    else:
-        peak_zone = (t_doc >= 0) & (t_doc <= 5)
-
-    t_peak_zone = t_doc[peak_zone]
-    y_peak_zone = y_doc[peak_zone]
-
-    irregular_top_info = None
-    y_doc_working = y_doc.copy()
-
-    if len(t_peak_zone) > 20:
-        irregular_top_info = detect_irregular_top(t_peak_zone, y_peak_zone, top_pct=0.20, min_valley_depth=0.02)
-        smoothness_info = calc_top_smoothness(t_peak_zone, y_peak_zone)
-        smoothness_val = smoothness_info.get("smoothness", 100.0)
-        result["metrics"]["irregular_top_detected"] = irregular_top_info.get("is_irregular_top", False)
-        result["metrics"]["smoothness"] = smoothness_val
-
-        is_irregular = irregular_top_info.get("is_irregular_top", False)
-        # ROUGH_TOP (smoothness < 70) NO és criteri fiable per reparar —
-        # dóna falsos positius sistemàtics. Només reparar amb IRREGULAR_TOP real.
-        needs_repair = is_irregular
-
-        if is_irregular:
-            result["warnings"].append(
-                f"IRREGULAR_TOP: Detectat cim irregular (profunditat {irregular_top_info.get('max_depth', 0)*100:.1f}%)"
-            )
-
-            if repair_irregular_top:
-                try:
-                    y_repaired, repair_info, was_repaired = repair_with_parabola(
-                        t_peak_zone, y_peak_zone
-                    )
-                    if was_repaired:
-                        y_doc_working[peak_zone] = y_repaired
-                        result["y_doc_clean"] = y_doc_working
-                        result["metrics"]["irregular_top_repaired"] = True
-                        result["warnings"].append("IRREGULAR_TOP_REPAIRED: Pic reparat amb paràbola")
-
-                        idx_max_repaired = np.argmax(y_repaired)
-                        t_max_corrected = t_peak_zone[idx_max_repaired]
-                        result["t_max_corrected"] = float(t_max_corrected)
-                except Exception as e:
-                    result["metrics"]["irregular_top_repair_error"] = str(e)
-
-    # Trobar pics - usar y_doc_working (reparat si cim irregular)
-    idx_max_doc = np.argmax(y_doc_working)
-    idx_max_a254 = np.argmax(y_a254)
-    t_max_doc = t_doc[idx_max_doc]
-    t_max_a254 = t_dad[idx_max_a254]
-
-    result["metrics"]["t_max_doc"] = float(t_max_doc)
-    result["metrics"]["t_max_a254"] = float(t_max_a254)
-    result["metrics"]["intensity_doc"] = float(np.max(y_doc_working))
-    result["metrics"]["intensity_a254"] = float(np.max(y_a254))
-
-    # === 1. VERIFICAR POSICIÓ PIC ===
-    if method == "COLUMN":
-        if not (15 <= t_max_doc <= 28):
-            result["warnings"].append(f"PEAK_POSITION_UNUSUAL: t_max={t_max_doc:.1f} min (esperat 18-25)")
-        if not (15 <= t_max_a254 <= 28):
-            result["warnings"].append(f"A254_PEAK_POSITION_UNUSUAL: t_max={t_max_a254:.1f} min")
-    else:
-        if not (0.3 <= t_max_doc <= 5):
-            result["warnings"].append(f"PEAK_POSITION_UNUSUAL: t_max={t_max_doc:.1f} min (esperat 0.5-3)")
-
-    # === 2. CALCULAR RATIO A254/DOC ===
-    if method == "COLUMN":
-        t_start = max(0, t_max_doc - 5)
-        t_end = t_max_doc + 8
-    else:
-        t_start = max(0, t_max_doc - 1)
-        t_end = t_max_doc + 2
-
-    # Àrea DOC - usar y_doc_working (reparat si cim irregular)
-    mask_doc = (t_doc >= t_start) & (t_doc <= t_end)
-    if np.sum(mask_doc) > 5:
-        baseline_doc = np.percentile(y_doc_working[mask_doc], 5)
-        y_doc_corr = y_doc_working[mask_doc] - baseline_doc
-        y_doc_corr[y_doc_corr < 0] = 0
-        area_doc = np.trapezoid(y_doc_corr, t_doc[mask_doc])
-    else:
-        area_doc = 0
-
-    # Àrea A254
-    mask_a254 = (t_dad >= t_start) & (t_dad <= t_end)
-    if np.sum(mask_a254) > 5:
-        baseline_a254 = np.percentile(y_a254[mask_a254], 5)
-        y_a254_corr = y_a254[mask_a254] - baseline_a254
-        y_a254_corr[y_a254_corr < 0] = 0
-        area_a254 = np.trapezoid(y_a254_corr, t_dad[mask_a254])
-    else:
-        area_a254 = 0
-
-    # Calcular ratio
-    if area_doc > 0:
-        ratio = area_a254 / area_doc
-        result["metrics"]["ratio_a254_doc"] = float(ratio)
-        result["metrics"]["area_doc"] = float(area_doc)
-        result["metrics"]["area_a254"] = float(area_a254)
-
-        if ratio < 0.015:
-            result["valid"] = False
-            result["issues"].append(f"RATIO_LOW: {ratio:.4f} < 0.015 (possible contaminació)")
-        elif ratio < 0.020:
-            result["warnings"].append(f"RATIO_BORDERLINE: {ratio:.4f}")
-    else:
-        result["valid"] = False
-        result["issues"].append("NO_DOC_AREA: No s'ha pogut calcular àrea DOC")
-
-    # === 3. DETECTAR TIMEOUT A ZONA HS (només COLUMN) ===
-    if method == "COLUMN":
-        _ti = timeout_info or {}
-        result["metrics"]["timeout_info"] = {
-            "has_timeout": _ti.get("n_timeouts", 0) > 0,
-            "count": _ti.get("n_timeouts", 0),
-        }
-
-        for to in _ti.get("timeouts", []):
-            t_start_to = to.get("t_start_min", 0)
-            t_end_to = to.get("t_end_min", 0)
-            if t_start_to <= 23 and t_end_to >= 18:
-                result["valid"] = False
-                result["issues"].append(
-                    f"TIMEOUT_HS: Timeout {to.get('duration_sec', 0):.0f}s a {t_start_to:.1f}-{t_end_to:.1f} min"
-                )
-                break
-
-    # === 4. VERIFICAR INTENSITAT ===
-    # Thresholds basats en valors típics per cada mode:
-    # COLUMN: KHP típic 400-800 mAU (volum 400µL), 100-200 mAU (volum 100µL)
-    # BP: KHP típic 150-300 mAU (volum 100µL)
-    intensity = np.max(y_doc)
-    result["metrics"]["intensity_doc"] = float(intensity)
-
-    if method == "COLUMN":
-        # COLUMN: rang normal 100-1500, extrem >3000 o <30
-        if intensity < 30:
-            result["valid"] = False
-            result["issues"].append(f"INTENSITY_TOO_LOW: {intensity:.0f} mAU (min 30)")
-        elif intensity < 80:
-            result["warnings"].append(f"INTENSITY_LOW: {intensity:.0f} mAU (típic >100)")
-        elif intensity > 3000:
-            result["valid"] = False
-            result["issues"].append(f"INTENSITY_EXTREME: {intensity:.0f} mAU (>3x normal, possible error concentració)")
-        elif intensity > 1500:
-            result["warnings"].append(f"INTENSITY_HIGH: {intensity:.0f} mAU")
-    else:
-        # BP: rang normal 100-600, extrem >1500 o <30
-        if intensity < 30:
-            result["valid"] = False
-            result["issues"].append(f"INTENSITY_TOO_LOW: {intensity:.0f} mAU (min 30)")
-        elif intensity < 80:
-            result["warnings"].append(f"INTENSITY_LOW: {intensity:.0f} mAU (típic >100)")
-        elif intensity > 1500:
-            result["valid"] = False
-            result["issues"].append(f"INTENSITY_EXTREME: {intensity:.0f} mAU (>3x normal, possible error concentració)")
-        elif intensity > 800:
-            result["warnings"].append(f"INTENSITY_HIGH: {intensity:.0f} mAU")
-
-    # === 5. VERIFICAR COHERÈNCIA PICS ===
-    diff_peaks = abs(t_max_doc - t_max_a254)
-    result["metrics"]["peak_diff_min"] = float(diff_peaks)
-
-    if diff_peaks > 2.0:
-        result["warnings"].append(f"PEAK_MISMATCH: DOC i A254 difereixen {diff_peaks:.1f} min")
-
-    # === 6. COMPARACIÓ HISTÒRICA (si tenim paràmetres) ===
-    if seq_path and conc_ppm is not None and volume_uL is not None:
-        try:
-            # Calcular àrea del pic principal per comparar
-            # Usar y_doc_working (reparat si cim irregular)
-            area_doc = result["metrics"].get("area_doc", 0)
-            area_total = np.trapezoid(np.maximum(y_doc_working - np.percentile(y_doc_working, 5), 0), t_doc) if len(y_doc_working) > 5 else 0
-            concentration_ratio = area_doc / area_total if area_total > 0 else 0
-
-            historical = compare_khp_historical(
-                current_area=area_doc,
-                current_concentration_ratio=concentration_ratio,
-                seq_path=seq_path,
-                mode=method,
-                conc_ppm=conc_ppm,
-                volume_uL=volume_uL,
-                doc_mode=doc_mode,
-                uib_sensitivity=uib_sensitivity
-            )
-
-            result["metrics"]["historical_comparison"] = {
-                "status": historical.get("status", "UNKNOWN"),
-                "area_deviation_pct": historical.get("area_deviation_pct", 0),
-                "n_calibrations": historical.get("historical_stats", {}).get("n_calibrations", 0) if historical.get("historical_stats") else 0,
-            }
-
-            if historical.get("status") == "INVALID":
-                for issue in historical.get("issues", []):
-                    result["valid"] = False
-                    result["issues"].append(f"HISTORICAL: {issue}")
-            elif historical.get("status") == "WARNING":
-                for warn in historical.get("warnings", []):
-                    result["warnings"].append(f"HISTORICAL: {warn}")
-            elif historical.get("status") == "INSUFFICIENT_DATA":
-                result["warnings"].append(f"HISTORICAL: Dades insuficients per comparar ({method}, {conc_ppm}ppm, {volume_uL}µL)")
-
-        except Exception as e:
-            result["warnings"].append(f"HISTORICAL: Error en comparació: {e}")
-
-    return result
 
 
 # =============================================================================
@@ -3902,7 +3630,7 @@ def analizar_khp_data(t_doc, y_doc_net, metadata, df_dad=None, config=None):
     rf_doc = peak_info['area'] / conc if conc > 0 else 0.0
 
     # RF_MASS = Area × 1000 / (Concentració × Volum) = Area / µg DOC injectat
-    rf_mass_doc = peak_info['area'] * 1000 / (conc * volume_uL) if conc > 0 and volume_uL > 0 else 0.0
+    rf_mass_doc = area_to_rf_mass(peak_info['area'], conc, volume_uL)
 
     # RF i RF_MASS per 254nm
     rf_254 = a254_area / conc if conc > 0 and a254_area > 0 else 0.0
@@ -4292,8 +4020,8 @@ def register_calibration(seq_path, khp_data, khp_source, mode="COLUMN"):
 
     # rf_mass = Area / µg DOC (normalitzat per massa injectada)
     rf_mass = khp_data.get('rf_mass', 0)
-    if rf_mass == 0 and area > 0 and conc > 0 and volume > 0:
-        rf_mass = area * 1000 / (conc * volume)
+    if rf_mass == 0 and area > 0:
+        rf_mass = area_to_rf_mass(area, conc, volume)
 
     entry = {
         "cal_id": generate_calibration_id(),
@@ -5497,7 +5225,7 @@ def calibrate_from_import(imported_data, config=None, progress_callback=None):
                 vol = cal['volume_uL']
                 if conc > 0 and vol > 0:
                     cal['rf'] = cal['area'] / conc  # RF tradicional (àrea/ppm)
-                    cal['rf_mass'] = cal['area'] * 1000 / (conc * vol)  # RF normalitzat per massa (àrea/µg DOC)
+                    cal['rf_mass'] = area_to_rf_mass(cal['area'], conc, vol)  # àrea/µg DOC
                     # Crear camp específic segons doc_source (Direct o UIB)
                     doc_source = cal.get('doc_source', 'direct')
                     if doc_source == 'uib':

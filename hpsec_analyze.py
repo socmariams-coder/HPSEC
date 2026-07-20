@@ -57,6 +57,7 @@ from hpsec_core import (
     format_timeout_status,
     TIMEOUT_CONFIG,
     calc_snr,
+    area_to_ppm,
     detect_irregular_top,
     detect_main_peak,
     find_peak_boundaries,
@@ -87,7 +88,6 @@ from hpsec_calibrate import (
     get_all_active_calibrations,
     get_rf_mass_cal,
     get_calibration_intercept,
-    quantify_with_global_calibration
 )
 
 # Import sistema d'avisos estructurats
@@ -1318,10 +1318,10 @@ def quantify_sample(sample_result, calibration_data, mode="COLUMN", seq_date=Non
 
     use_global = rf_mass_direct is not None and rf_mass_direct > 0
 
-    # Fórmula única: ppm = (Area - intercept) × 1000 / (rf_mass × volume)
+    # Fórmula única a hpsec_core.area_to_ppm; wrapper local només per fixar
+    # volume_uL i el default d'intercept d'aquest àmbit (Direct).
     def apply_formula(area, rf_mass, intercept=intercept_direct):
-        area_corrected = max(0, area - intercept)
-        return area_corrected * 1000 / (rf_mass * volume_uL)
+        return area_to_ppm(area, rf_mass, volume_uL, intercept=intercept)
 
     # =========================================================================
     # QUANTIFICACIÓ DOC DIRECT
@@ -1391,9 +1391,9 @@ def quantify_sample(sample_result, calibration_data, mode="COLUMN", seq_date=Non
         # LOD/LOQ: usar formula sense intercept (l'intercept corregeix biaix,
         # no afecta el limit de deteccio que es basat en soroll)
         if lod_area > 0:
-            result["lod_ppm"] = float(lod_area * 1000 / (rf_mass_direct * volume_uL))
+            result["lod_ppm"] = float(area_to_ppm(lod_area, rf_mass_direct, volume_uL))
         if loq_area > 0:
-            result["loq_ppm"] = float(loq_area * 1000 / (rf_mass_direct * volume_uL))
+            result["loq_ppm"] = float(area_to_ppm(loq_area, rf_mass_direct, volume_uL))
         ppm_d = result.get("concentration_ppm_direct")
         if ppm_d is not None and result["lod_ppm"]:
             result["below_lod"] = ppm_d < result["lod_ppm"]

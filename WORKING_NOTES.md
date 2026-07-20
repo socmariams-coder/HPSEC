@@ -6,6 +6,32 @@ consultar quan es necessiti el context històric d'un tema concret.
 
 > Last updated: 2026-07-17
 
+### Refactor tanda segura P2+P3: fórmula única + codi mort (2026-07-17)
+
+**Context:** auditoria d'arquitectura (subagent) va prioritzar el deute real. Tanda segura
+(sense canvi de comportament) = P2 fórmula única + P3 codi mort. P1 (unificar els dos
+pipelines d'anàlisi de pic, mostres vs KHP) queda per a sessió dedicada — pot moure
+números i cal validar KHP per KHP.
+
+**P2 — fórmula de quantificació única:** `ppm = (Area-intercept)*1000/(rf*vol)` estava
+copiada a 5 llocs i la inversa (`rf = area*1000/(conc*vol)`) a 7. Ara: `hpsec_core.area_to_ppm()`
+i `area_to_rf_mass()` són l'única implementació. Substituïts 11 call sites: quantify_sample
+(+LOD/LOQ), quantify_with_global_calibration, requantify_analysis_json, analizar_khp_data,
+register_calibration, un bloc de calibrate_from_import, composition_dialog, global_calibration_panel,
+calibrate_panel. Guardes uniformes (rf/vol>0 → 0.0) i clamp de negatius al mateix lloc.
+Verificat: 16/16 ppm reals reproduïts EXACTE (la funció és numèricament idèntica a les
+inline que substitueix). `hpsec_analyze` tenia import mort de quantify_with_global_calibration
+(importada, mai cridada perquè reimplementava la fórmula inline) — tret.
+
+**P3 — codi mort (~500 línies):** `validate_khp_for_alignment` (hpsec_calibrate, 272 línies,
+0 crides — verificat repo sencer) i `_realign_bp_by_dad254` (hpsec_import, 229 línies, 0
+crides; les germanes reassign_bp_by_dad254 i _relocate_bp_windows SÍ que s'usen — només
+_realign era mort). Esborrats per rang de línia exacte, costures verificades.
+
+**Regla que en queda:** cap còpia nova de la fórmula ppm/rf — cridar sempre area_to_ppm /
+area_to_rf_mass. Test test_formula_quantificacio_unica fixa el contracte + round-trip.
+Suite 62/62.
+
 ### analysis_result.json aprimat: el Quantificar re-inflava el fitxer (2026-07-17)
 
 **Arrel:** el writer canònic (`save_analysis_result`) ja treia els arrays de la llista

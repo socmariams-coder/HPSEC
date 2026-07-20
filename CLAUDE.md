@@ -103,6 +103,14 @@ Mark features as DONE only when code is fully functional end-to-end, not when pl
   - La llista plana `samples` no porta arrays a disc (única còpia: samples_grouped)
   - 3 writers unificats (save_analysis_result, QuantifyPanel._persist_result,
     requantify_analysis_json); `migra_compacta_analysis.py` per fitxers antics (52→20 MB)
+- [x] Refactor: fórmula de quantificació única — DONE (2026-07-17)
+  - `hpsec_core.area_to_ppm()` i `area_to_rf_mass()` són l'ÚNICA implementació
+  - Abans: forward copiada a 5 llocs + inversa a 7. NO reescriure la fórmula enlloc més
+  - Substituïts 11 call sites (analyze, calibrate, composition_dialog, 2 panells)
+  - Verificat: 16/16 ppm reals reproduïts exacte (sense canvi numèric)
+- [x] Cleanup: codi mort eliminat (~500 línies) — DONE (2026-07-17)
+  - `validate_khp_for_alignment` (calibrate, 272 l., 0 usos) + `_realign_bp_by_dad254`
+    (import, 229 l., 0 usos) + import mort quantify_with_global_calibration a analyze
 - [ ] Export: número de SEQ als noms de fitxer de RESULTATS ({sample}_{SEQ}_HPSEC_C.xlsx,
   {SEQ}_SUMMARY.xlsx) per evitar col·lisions en carpetes compartides — PENDING
 - [ ] Export FAIR: regime_id + fronteres de règim a fulla ID, metadata.json i

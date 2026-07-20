@@ -696,7 +696,8 @@ class TimeoutCompositionDialog(QDialog):
         if not vol:
             vol = 400 if not self.is_bp else 100
         if rf and rf > 0 and area > 0:
-            return max(0, (area - intercept)) * 1000 / (rf * vol)
+            from hpsec_core import area_to_ppm
+            return area_to_ppm(area, rf, vol, intercept=intercept)
         return None
 
     def _draw_fraction_bars(self, t_out, y_out):
