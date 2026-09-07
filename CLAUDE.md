@@ -120,8 +120,14 @@ Mark features as DONE only when code is fully functional end-to-end, not when pl
     (import, 229 l., 0 usos) + import mort quantify_with_global_calibration a analyze
 - [ ] Export: número de SEQ als noms de fitxer de RESULTATS ({sample}_{SEQ}_HPSEC_C.xlsx,
   {SEQ}_SUMMARY.xlsx) per evitar col·lisions en carpetes compartides — PENDING
-- [ ] Export FAIR: regime_id + fronteres de règim a fulla ID, metadata.json i
-  datapackage.json — PENDING
+- [x] Export FAIR: regime_id + fronteres de règim a fulla ID, metadata.json i
+  datapackage.json — DONE (2026-09-07)
+  - Font única: `hpsec_calibrate.get_regime_traceability(seq_date)` (per data
+    d'ADQUISICIÓ; retorna sempre dict amb `in_defined_regime` — mai None)
+  - Fulla ID: secció `=== REGIME ===` (id/finestra/motiu/origen o "bloc únic implícit")
+  - metadata.json: clau `regime` (seq_path → get_seq_acquisition_date)
+  - datapackage.json: `hpsec.regime` (només si hi ha règim; absent altrament)
+  - Test a `test_regims_instrumentals` (dins règim / abans del 1r). Suite 66/66
 - [x] GlobalCalibrationPanel: vista resum sense SEQ_CAL (taula params, scatter, historial) — DONE
 - [x] GlobalCalibrationPanel: SEQ_CAL auto-flow (Direct→UIB→resum) — DONE
 - [x] Export: KHP chromatogram PNGs a CHECK/data/khp_plots/ — DONE (save_all_khp_chromatograms)

@@ -340,6 +340,26 @@ def _build_id_sheet(sample_name, sample_data, calibration_data, mode, is_dual):
     except Exception:
         pass
 
+    # --- 8b. REGIME (bloc de comparabilitat instrumental) ---
+    try:
+        from hpsec_calibrate import get_regime_traceability
+        reg = get_regime_traceability(sample_data.get("seq_date", ""))
+        rows.append(("=== REGIME ===", ""))
+        if reg.get("in_defined_regime"):
+            rows.append(("Regime_ID", reg.get("regime_id", "")))
+            rows.append(("Regime_Start", reg.get("regime_start_date", "")))
+            rows.append(("Regime_End", reg.get("regime_end_date") or "obert (vigent)"))
+            if reg.get("regime_reason"):
+                rows.append(("Regime_Reason", reg["regime_reason"]))
+            if reg.get("regime_source"):
+                rows.append(("Regime_Source", reg["regime_source"]))
+        else:
+            rows.append(("Regime", "bloc únic implícit"))
+            if reg.get("note"):
+                rows.append(("Regime_Note", reg["note"]))
+    except Exception:
+        pass
+
     # --- 9. ANOMALIES ---
     rows.append(("=== ANOMALIES ===", ""))
     anomalies = sample_data.get("anomalies", [])
@@ -1522,6 +1542,14 @@ def write_metadata_json(
                 cal_info[key] = calibration_data[key]
         if cal_info:
             metadata["calibration"] = cal_info
+
+    # Règim instrumental de la SEQ (bloc de comparabilitat) — font única
+    try:
+        from hpsec_calibrate import get_regime_traceability, get_seq_acquisition_date
+        _acq = get_seq_acquisition_date(seq_path) if seq_path else None
+        metadata["regime"] = get_regime_traceability(_acq)
+    except Exception:
+        pass
 
     # === RESUM PER ETAPA DEL PIPELINE (el més rellevant de cada fase) ===
     pipeline = {}

@@ -6,6 +6,34 @@ consultar quan es necessiti el context històric d'un tema concret.
 
 > Last updated: 2026-09-07
 
+### Traçabilitat de règim al paquet FAIR (2026-09-07)
+
+**Context:** els règims ja es calculaven i es consumien internament, però NO sortien al
+paquet de dades. Qui rep un dataset exportat no sabia a quin bloc instrumental pertany la
+SEQ (i per tant si és comparable amb un altre dataset). Tancat aquest pendent del 17/07.
+
+**Font única:** `hpsec_calibrate.get_regime_traceability(seq_date)` — a partir de la data
+d'ADQUISICIÓ retorna SEMPRE un dict amb estat explícit (`in_defined_regime` True/False,
+mai None). Dins de règim: id + finestra (start/end, end=None → obert) + motiu + origen.
+Fora: nota que distingeix "cap règim definit (bloc únic implícit)" de "data anterior al 1r
+règim". Les tres sortides beuen d'aquí perquè diguin exactament el mateix.
+
+**Cablejat a les tres sortides FAIR:**
+- **Fulla ID** (`_build_id_sheet`, hpsec_export): secció nova `=== REGIME ===` després de
+  CALIBRATION. Files Regime_ID/Start/End/Reason/Source, o "bloc únic implícit" + nota.
+- **metadata.json** (`write_metadata_json`): clau `regime` (data d'adquisició via
+  `get_seq_acquisition_date(seq_path)`).
+- **datapackage.json** (`_build_datapackage`, hpsec_fair): dins `hpsec.regime`, i NOMÉS si
+  hi ha règim assignable (si no, la clau no s'afegeix — no embruta el descriptor). El
+  càlcul es fa a `generate_data_package` (té seq_path → data d'adquisició).
+
+**Verificació:** helper provat als 3 estats (dins / abans del 1r / cap règim); test nou a
+`test_regims_instrumentals` (dins règim → id+finestra; abans → in_defined_regime=False +
+nota). `_build_datapackage` amb regime=None no afegeix la clau. Suite 66/66.
+
+**Regla que en queda:** cap sortida FAIR calcula el règim pel seu compte; sempre
+`get_regime_traceability`. La data de referència és la d'ADQUISICIÓ (com les fronteres).
+
 ### Cablejat de filter_history_by_regime als consumidors de l'historial (2026-09-07)
 
 **Context:** el motor de règims (17/07) ja existia i les calibracions porten `regime_id`,

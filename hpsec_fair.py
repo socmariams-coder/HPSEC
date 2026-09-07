@@ -361,7 +361,7 @@ def _slug(s):
 
 
 def _build_datapackage(seq_name, seq_date, mode, target_wls, results_cols,
-                       trace_resources, calibration_data, config):
+                       trace_resources, calibration_data, config, regime=None):
     def fields(colspec):
         out = []
         for name, typ, unit, desc in colspec:
@@ -425,6 +425,7 @@ def _build_datapackage(seq_name, seq_date, mode, target_wls, results_cols,
             "analysis_date": seq_date,
             "mode": mode,
             "calibration": cal,
+            **({"regime": regime} if regime else {}),
         },
         "resources": resources,
     }
@@ -533,8 +534,18 @@ def generate_data_package(samples_grouped, output_dir, mode="COLUMN",
     _write_rows(os.path.join(output_dir, "results_SEC.csv"), rows)
 
     # --- datapackage.json ---
+    # Règim instrumental (bloc de comparabilitat) — per data d'ADQUISICIÓ
+    regime = None
+    try:
+        from hpsec_calibrate import get_regime_traceability, get_seq_acquisition_date
+        _acq = get_seq_acquisition_date(seq_path) if seq_path else None
+        regime = get_regime_traceability(_acq or seq_date)
+    except Exception:
+        regime = None
+
     dp = _build_datapackage(seq_name, seq_date, mode, trace_wls or target_wls,
-                            results_cols, trace_resources, calibration_data, config)
+                            results_cols, trace_resources, calibration_data, config,
+                            regime=regime)
     _atomic_write(os.path.join(output_dir, "datapackage.json"),
                   json.dumps(dp, indent=2, ensure_ascii=False))
 

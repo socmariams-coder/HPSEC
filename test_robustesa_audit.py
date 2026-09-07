@@ -338,6 +338,16 @@ def test_regims_instrumentals():
                   implicit is not None and implicit["n_calibrations"] == 7)
         finally:
             hc.load_khp_history = orig_load
+
+        # TRAÇABILITAT FAIR: get_regime_traceability (font única per ID/metadata/datapackage)
+        tr_in = hc.get_regime_traceability("2026-07-14")  # dins REG_20260710
+        check("traçabilitat: SEQ dins règim -> id + finestra + in_defined_regime",
+              tr_in["in_defined_regime"] and tr_in["regime_id"] == "REG_20260710"
+              and tr_in["regime_start_date"] == "2026-07-10")
+        tr_out = hc.get_regime_traceability("2026-06-01")  # abans de tot règim
+        check("traçabilitat: SEQ abans del 1r règim -> in_defined_regime=False + nota",
+              tr_out["in_defined_regime"] is False
+              and "anterior" in (tr_out.get("note") or ""))
     finally:
         hc.get_calibration_reference_path = orig_path_fn
         hc._cal_ref_cache, hc._cal_ref_mtime = None, 0

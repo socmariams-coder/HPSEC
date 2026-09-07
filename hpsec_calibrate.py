@@ -813,6 +813,44 @@ def filter_history_by_regime(entries, ref_date=None, regime=None):
     return out
 
 
+def get_regime_traceability(seq_date, ref=None):
+    """
+    Bloc de traçabilitat del règim instrumental d'una SEQ, per als exports FAIR
+    (fulla ID, metadata.json, datapackage.json). Font ÚNICA perquè les tres
+    sortides diguin exactament el mateix.
+
+    seq_date és la data d'ADQUISICIÓ (les fronteres de règim també ho són).
+    Retorna sempre un dict amb estat explícit (mai None): així el consumidor no
+    ha de decidir res, només serialitza.
+
+      - Dins d'un règim definit: id + finestra + motiu + origen.
+      - Fora de tot règim: `in_defined_regime=False` + nota que distingeix
+        "cap règim definit (bloc únic implícit)" de "data anterior al 1r règim".
+    """
+    date = (seq_date.strftime('%Y-%m-%d') if hasattr(seq_date, 'strftime')
+            else (str(seq_date)[:10] if seq_date else ''))
+    regime = get_regime_for_date(date, ref) if date else None
+    if regime:
+        return {
+            'seq_acquisition_date': date,
+            'regime_id': regime.get('regime_id'),
+            'regime_start_date': regime.get('start_date'),
+            'regime_end_date': regime.get('end_date'),  # None = obert (vigent)
+            'regime_reason': regime.get('reason'),
+            'regime_source': regime.get('source'),
+            'in_defined_regime': True,
+        }
+    n_regimes = len(get_regimes(ref))
+    return {
+        'seq_acquisition_date': date,
+        'regime_id': None,
+        'in_defined_regime': False,
+        'note': ('cap règim definit — historial és un bloc únic implícit'
+                 if n_regimes == 0
+                 else 'data anterior al primer règim definit'),
+    }
+
+
 def _extract_rf_from_cal(cal, mode, signal=None):
     """Extreu rf_mass_cal d'una entrada de calibració (suporta format planer i nested)."""
     rf_mass_cal = cal.get('rf_mass_cal', {})
