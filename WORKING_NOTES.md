@@ -4,7 +4,41 @@ Historial detallat de decisions i troballes per sessió. Separat de
 CLAUDE.md perquè el context de sessió no carregui ~700 línies de diari;
 consultar quan es necessiti el context històric d'un tema concret.
 
-> Last updated: 2026-07-17
+> Last updated: 2026-09-07
+
+### Cablejat de filter_history_by_regime als consumidors de l'historial (2026-09-07)
+
+**Context:** el motor de règims (17/07) ja existia i les calibracions porten `regime_id`,
+però el filtre `filter_history_by_regime()` NO s'aplicava enlloc per defecte —
+comparatives i QC seguien barrejant blocs no comparables (justament el que els règims
+venien a evitar). Tancat el pendent.
+
+**Consumidors reals (i quins NO ho eren):**
+- **Comparativa "N més recents" (`get_historical_khp_stats`)** — CABLEJAT. Nou paràmetre
+  `ref_date` (default: es dedueix de la SEQ amb `get_seq_acquisition_date`). Just després
+  de `load_khp_history` s'aplica `filter_history_by_regime(history, ref_date)`. Si no hi ha
+  règim que contingui la data → retorna l'històric sencer (bloc implícit): CAP canvi de
+  comportament en projectes sense règims definits. `compare_khp_historical` reenvia
+  `ref_date` (el caller a `add_historical_comparison`/hpsec_calibrate 5624 no canvia: la
+  data es dedueix de `seq_path`).
+- **Levey-Jennings (`history_panel._update_graphs`, gràfic 7)** — CABLEJAT. El LJ compara
+  cada KHP contra la recta VIGENT; la vigent pertany al seu règim, així que les entrades
+  d'altres blocs no hi són comparables (mostrarien desviacions espúries — cas del salt ×8).
+  Ara es filtren pel règim de la calibració activa (`active_cal['regime_id']` → regime; si
+  no en porta, `get_regime_for_date(valid_from)`). Suptitle nou quan s'exclou res:
+  "Règim de la calibració vigent (finestra) · N KHP d'altres règims exclosos".
+- **`fit_calibration_from_history` — NO és consumidor d'historial a la Suite viva.** Els dos
+  únics call sites (global_calibration_panel 2061/2809) operen sobre els punts del SEQ_CAL
+  EN CURS (mateix dia = mateix règim per definició), no sobre l'span històric. No s'hi toca.
+  (Els usos sobre historial sencer només viuen a `archive/` scripts de diagnòstic.)
+
+**Verificació:** test nou a `test_regims_instrumentals`: amb REG_20260710 obert,
+`get_historical_khp_stats` d'una SEQ del bloc nou compta 4 KHP (dins règim) i no 7;
+amb `ref_date` anterior a tot règim compta els 7 (bloc implícit). Suite 64/64.
+
+**Regla que en queda:** tota lectura de KHP_History per comparar amb la SEQ actual passa
+per `filter_history_by_regime`. Si algun dia `fit_calibration_from_history` s'alimenta de
+l'historial sencer (auto-fit multi-SEQ), caldrà filtrar-lo abans igual que la comparativa.
 
 ### Refactor tanda segura P2+P3: fórmula única + codi mort (2026-07-17)
 

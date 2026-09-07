@@ -2176,12 +2176,15 @@ def validate_integration_baseline(t, y, left_idx, right_idx, peak_idx, baseline_
 
 def get_historical_khp_stats(seq_path, mode="COLUMN", conc_ppm=None, volume_uL=None,
                              doc_mode=None, uib_sensitivity=None,
-                             n_recent=10, exclude_outliers=True):
+                             n_recent=10, exclude_outliers=True, ref_date=None):
     """
     Obté estadístiques de les calibracions KHP històriques.
 
     Filtra per mode, concentració, volum, doc_mode i sensibilitat UIB
-    per comparar "pomes amb pomes".
+    per comparar "pomes amb pomes". A més, restringeix l'històric al RÈGIM
+    instrumental de la SEQ actual: no es comparen KHP de blocs no comparables
+    (p.ex. abans/després d'un canvi de detector). Si no hi ha cap règim
+    definit que contingui la data, l'històric és un únic bloc implícit.
 
     Args:
         seq_path: Path de la SEQ actual (per trobar KHP_History.json)
@@ -2192,6 +2195,8 @@ def get_historical_khp_stats(seq_path, mode="COLUMN", conc_ppm=None, volume_uL=N
         uib_sensitivity: 700 o 1000 (ppb). Només aplica si doc_mode conté UIB.
         n_recent: Nombre de calibracions recents a considerar
         exclude_outliers: Excloure calibracions marcades com outlier
+        ref_date: Data d'ADQUISICIÓ de la SEQ per determinar el règim. Si None,
+                  es dedueix de seq_path (get_seq_acquisition_date).
 
     Returns:
         Dict amb estadístiques o None si no hi ha prou dades:
@@ -2208,6 +2213,15 @@ def get_historical_khp_stats(seq_path, mode="COLUMN", conc_ppm=None, volume_uL=N
         }
     """
     history = load_khp_history(seq_path)
+    if not history:
+        return None
+
+    # Restringir al règim instrumental de la SEQ actual (no barrejar blocs).
+    # Si no hi ha règim que contingui la data, filter_history_by_regime retorna
+    # l'històric tal qual (bloc únic implícit) → cap canvi de comportament.
+    if ref_date is None:
+        ref_date = get_seq_acquisition_date(seq_path)
+    history = filter_history_by_regime(history, ref_date=ref_date)
     if not history:
         return None
 
@@ -2294,7 +2308,7 @@ def get_historical_khp_stats(seq_path, mode="COLUMN", conc_ppm=None, volume_uL=N
 
 def compare_khp_historical(current_area, current_concentration_ratio, seq_path, mode="COLUMN",
                           conc_ppm=None, volume_uL=None, doc_mode=None, uib_sensitivity=None,
-                          exclude_outliers=True):  # C12/C17: SEMPRE excloure outliers
+                          exclude_outliers=True, ref_date=None):  # C12/C17: SEMPRE excloure outliers
     """
     Compara el KHP actual amb l'històric.
 
@@ -2325,7 +2339,7 @@ def compare_khp_historical(current_area, current_concentration_ratio, seq_path, 
     """
     stats = get_historical_khp_stats(seq_path, mode, conc_ppm=conc_ppm, volume_uL=volume_uL,
                                      doc_mode=doc_mode, uib_sensitivity=uib_sensitivity,
-                                     exclude_outliers=exclude_outliers)
+                                     exclude_outliers=exclude_outliers, ref_date=ref_date)
 
     result = {
         'status': 'OK',

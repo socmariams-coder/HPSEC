@@ -312,6 +312,32 @@ def test_regims_instrumentals():
               noms == ["A"])
         check("sense règim que contingui la data -> historial sencer (bloc implícit)",
               hc.filter_history_by_regime(entries, ref_date="2026-01-15") == entries)
+
+        # CABLEJAT: get_historical_khp_stats restringeix l'històric al règim de la
+        # SEQ. Amb REG_20260710 obert, una SEQ del bloc nou NO ha de comparar-se
+        # amb KHP d'abans de la frontera. Monkeypatch de load_khp_history per
+        # servir un històric controlat (la ubicació real ve de config global).
+        khp_hist = (
+            [{"mode": "COLUMN", "area": 790.0 + k, "conc_ppm": 2, "volume_uL": 400,
+              "date": f"2026-07-1{k}", "seq_date": f"2026-07-1{k}"} for k in range(4)]  # dins règim
+            + [{"mode": "COLUMN", "area": 795.0 + k, "conc_ppm": 2, "volume_uL": 400,
+                "date": f"2026-06-0{k+1}", "seq_date": f"2026-06-0{k+1}"} for k in range(3)]  # abans
+        )
+        orig_load = hc.load_khp_history
+        hc.load_khp_history = lambda seq_path: list(khp_hist)
+        try:
+            in_reg = hc.get_historical_khp_stats(
+                "SEQ_FALSA", mode="COLUMN", conc_ppm=2, volume_uL=400,
+                ref_date="2026-07-14")
+            check("stats només compta els KHP del règim de la SEQ (4, no 7)",
+                  in_reg is not None and in_reg["n_calibrations"] == 4)
+            implicit = hc.get_historical_khp_stats(
+                "SEQ_FALSA", mode="COLUMN", conc_ppm=2, volume_uL=400,
+                ref_date="2026-01-15")  # abans de tot règim -> bloc implícit sencer
+            check("ref_date fora de tot règim -> històric sencer (7)",
+                  implicit is not None and implicit["n_calibrations"] == 7)
+        finally:
+            hc.load_khp_history = orig_load
     finally:
         hc.get_calibration_reference_path = orig_path_fn
         hc._cal_ref_cache, hc._cal_ref_mtime = None, 0

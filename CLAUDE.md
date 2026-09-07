@@ -96,8 +96,15 @@ Mark features as DONE only when code is fully functional end-to-end, not when pl
     break→règim nou abans d'add_calibration (regime_id estampat a la cal nova)
   - Manteniment: categories "Canvi columna"/"Canvi detector/guany" + checkbox candidat
   - Fronteres SEMPRE amb data d'ADQUISICIÓ (get_seq_acquisition_date)
-- [ ] Calibration: cablejar `filter_history_by_regime()` als consumidors de l'historial
-  (comparatives "N més recents", fit_calibration_from_history, Levey-Jennings) — PENDING
+- [x] Calibration: cablejar `filter_history_by_regime()` als consumidors de l'historial — DONE (2026-09-07)
+  - Comparativa "N més recents" (`get_historical_khp_stats`): nou `ref_date` (default =
+    data d'adquisició de la SEQ), filtra just després de `load_khp_history`; sense règim →
+    bloc implícit sencer (cap canvi). `compare_khp_historical` reenvia `ref_date`.
+  - Levey-Jennings (`history_panel` gràfic 7): filtrat pel règim de la calibració vigent
+    (`regime_id` de l'activa) + suptitle amb els KHP exclosos.
+  - `fit_calibration_from_history` NO s'hi toca: els call sites vius operen sobre punts del
+    SEQ_CAL en curs (mateix règim), no sobre l'span històric.
+  - Test a `test_regims_instrumentals` (4 dins règim vs 7 al bloc implícit). Suite 64/64.
 - [x] Storage: analysis_result.json compacte — DONE (2026-07-17)
   - Regla: cap writer escriu el dict cru; sempre `strip_flat_sample_arrays()` + indent=None
   - La llista plana `samples` no porta arrays a disc (única còpia: samples_grouped)

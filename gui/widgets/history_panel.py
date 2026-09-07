@@ -27,6 +27,8 @@ from hpsec_calibrate import (
     get_active_global_calibration,
     get_rf_mass_cal,
     get_calibration_intercept,
+    get_regimes,
+    get_regime_for_date,
 )
 
 import logging
@@ -1438,13 +1440,38 @@ class HistoryPanel(QWidget):
         # Obtenir calibració vigent
         active_cal = get_active_global_calibration()
 
+        # Restringir el Levey-Jennings al RÈGIM de la calibració vigent: la recta
+        # vigent pertany al seu bloc, i les desviacions d'entrades d'altres règims
+        # (p.ex. abans d'un canvi de detector) no són comparables amb ella.
+        active_regime = None
+        if active_cal:
+            rid = active_cal.get('regime_id')
+            if rid:
+                active_regime = next(
+                    (r for r in get_regimes() if r.get('regime_id') == rid), None)
+            if active_regime is None:
+                active_regime = get_regime_for_date(
+                    active_cal.get('valid_from') or active_cal.get('date')
+                    or active_cal.get('date_processed'))
+        reg_start = active_regime.get('start_date', '') if active_regime else ''
+        reg_end = active_regime.get('end_date') if active_regime else None
+
         # Recollir desviacions separades per mode
         lj_data = {'COLUMN': {'dev': [], 'x': [], 'cals': []},
                    'BP':     {'dev': [], 'x': [], 'cals': []}}
+        n_lj_out_of_regime = 0
 
         for i, cal_entry in enumerate(sorted_cals):
             if not is_valids[i]:
                 continue
+
+            # Fora del règim de la vigent → no comparable amb la recta actual
+            if active_regime:
+                d = str(cal_entry.get('seq_date') or cal_entry.get('date')
+                        or cal_entry.get('date_processed') or '')[:10]
+                if not d or d < reg_start or (reg_end and d > reg_end):
+                    n_lj_out_of_regime += 1
+                    continue
 
             area = areas_d[i]
             conc = concs[i]
@@ -1624,6 +1651,15 @@ class HistoryPanel(QWidget):
             ax7.text(0.5, 0.5, msg, ha='center', va='center', fontsize=12, color='gray')
             ax7.set_xlim(0, 1)
             ax7.set_ylim(0, 1)
+
+        # Nota d'abast: el LJ només mostra el règim de la calibració vigent
+        if active_regime and n_lj_out_of_regime > 0:
+            win = active_regime.get('start_date', '?')
+            win += f" → {active_regime['end_date']}" if active_regime.get('end_date') else " → vigent"
+            self.lj_figure.suptitle(
+                f"Règim de la calibració vigent ({win}) · "
+                f"{n_lj_out_of_regime} KHP d'altres règims exclosos",
+                fontsize=7, color='#7F8C8D', y=0.99)
 
         self.lj_figure.tight_layout()
         self.lj_canvas.draw()
