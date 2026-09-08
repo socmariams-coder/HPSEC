@@ -56,14 +56,16 @@ Mark features as DONE only when code is fully functional end-to-end, not when pl
 - [x] Analyze backend: quantify_sample with rf_direct/rf_uib separate — DONE (v1.6.0)
 - [x] Analyze backend: R² DAD per 6 wavelengths (pearson_per_wavelength) — DONE (v1.6.0)
 - [x] Dashboard panel — DONE
-- [x] Analyze panel: taula unificada DOC+DAD (14 cols: Sel DOC, Sel DAD, SNR, SNR_254, R²_DOC, R²_DAD, HCI) — DONE (851f0b1)
+- [x] Analyze panel: taula unificada DOC+DAD (Sel DOC, Sel DAD, SNR, SNR_254, R²_DOC, R²_DAD) — DONE (851f0b1)
 - [x] Analyze panel: dropdowns rèplica independents DOC vs DAD + opció "Cap" — DONE
 - [x] Analyze panel: detail dialog grid layout (DOC|UIB + DAD pairs + fraction table) — DONE (851f0b1)
 - [x] Analyze panel: Batman repair button in detail dialog (repair_with_parabola) — DONE
 - [x] Analyze panel: sample_valid flag (ambdues rèpliques amb anomalies no reparables) — DONE
-- [x] Analyze panel: HCI (Humic Character Index) column with PCA+LDA model — DONE
-- [x] Analyze backend: HCI compute_hci() from Export3D (hpsec_humic.py, no sklearn) — DONE
-- [x] Export: HCI + HCI_Character columns in SUMMARY.xlsx — DONE
+- [~] HCI (Humic Character Index) — RETIRAT del pipeline (2026-09-08). Índex espectral
+  exploratori tret de la Suite: sense càlcul (Fase 9), sense columna/detall a Analitzar,
+  sense camps a SUMMARY/FAIR/PDF. `hpsec_humic.py` + `humic_lda_model.json` mòguts a
+  `research/humic_exploration/`. Recuperable de l'historial de git. Motiu: simplificació
+  del pipeline (l'anàlisi espectral viu com a exploració, no com a lliurable).
 - [ ] Analyze panel: mostrar bigaussian (R², asym, quality) per BP — PENDING
 - [ ] Analyze panel: mostrar timeouts amb icones/tooltip — PENDING
 - [x] Analyze backend: UIB timeout estimation from DOC Direct pattern — DONE (estimate_timeout_for_uib + _estimate_uib_timeouts_from_sequence)
@@ -256,12 +258,11 @@ Mark features as DONE only when code is fully functional end-to-end, not when pl
   - 7 tabs (era 8): Processar, Exportar, Mostres, Històric, Cal.Global, Manteniment, Config
   - `show_dashboard()` / `_show_wizard()` per navegació stacked
   - Tots els índexs de tab actualitzats (Exportar 2→1, Cal.Global 5→4, etc.)
-- [ ] **Anàlisi espectral DAD avançada** — PENDING (FUTUR)
-  - DAD actual: adquisició fins 400 nm
-  - E₂/E₃ (A₂₅₄/A₃₆₅): factible. S₂₇₅₋₂₉₅ i SR: factibles. E₄/E₆: NO (fora rang)
-  - HCI ja calculat (hpsec_humic.py) però amagat a la UI — fer visible
-  - Idea: tabs separats "Analitzar DOC" i "Analitzar DAD"
-  - Correlació DOC↔DAD com a exploració futura
+- [ ] **Anàlisi espectral DAD avançada** — EXPLORACIÓ EXTERNA (fora del pipeline)
+  - Decisió 2026-09-08: l'anàlisi espectral (índexs DAD) NO va a la Suite; viu com a
+    exploració a `research/`. El HCI ja s'ha retirat del pipeline (veure a dalt).
+  - DAD actual: adquisició fins 400 nm. E₂/E₃, S₂₇₅₋₂₉₅, SR factibles; E₄/E₆ NO (fora rang)
+  - Correlació DOC↔DAD com a exploració futura (material d'aprenentatge, no lliurable)
 - [ ] **Tab Exportar: redisseny com a empaquetador standalone** — PENDING (FUTUR)
   - Actual: duplicat del wizard pas 4, depèn de `processed_data` (no funciona sol)
   - Objectiu: seleccionar SEQ ja processada → empaquetar fitxers existents → carpeta/ZIP
@@ -294,7 +295,8 @@ All exploratory scripts and results live in `research/` — NOT part of the prod
 - Output: `rf_bb_analysis/`, `rf_bb_fingerprint/`, `rf_bb_temporal/`
 
 ### Integration status
-- [x] HCI (Humic Character Index) integrated into Suite (hpsec_humic.py + model JSON) — DONE
+- [~] HCI (Humic Character Index) — RETIRAT del pipeline (2026-09-08). `hpsec_humic.py` +
+  model JSON tornen a `research/humic_exploration/`; l'anàlisi espectral és exploració, no Suite
 - [ ] BB fingerprint integration — BLOCKED (temporal alignment not verified, no reference standards for BB)
 - [ ] BB organic/inorganic metrics as single-sample report — PENDING (needs alignment verification first)
 

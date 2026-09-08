@@ -4049,7 +4049,7 @@ def _ana_draw_sample_header(fig, sg, sample_name):
     comparison = sg.get("comparison") or {}
     sample_valid = sg.get("sample_valid", True)
 
-    # Line 1: name | ppm Direct | ppm UIB | HCI
+    # Line 1: name | ppm Direct | ppm UIB
     title_color = COLORS["danger"] if not sample_valid else COLORS["primary"]
     fig.text(0.04, 0.97, sample_name, va='top', fontsize=12,
              fontweight='bold', color=title_color)
@@ -4061,10 +4061,6 @@ def _ana_draw_sample_header(fig, sg, sample_name):
         line1_parts.append(f"DOC: {ppm_d:.2f} ppm")
     if ppm_u is not None:
         line1_parts.append(f"UIB: {ppm_u:.2f} ppm")
-    hci = quant.get("hci")
-    hci_char = quant.get("hci_character", "")
-    if hci is not None:
-        line1_parts.append(f"HCI={hci:.2f} ({hci_char})")
     if not sample_valid:
         line1_parts.append("NO VÀLIDA")
     if line1_parts:

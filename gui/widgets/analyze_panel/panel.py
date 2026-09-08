@@ -2591,10 +2591,6 @@ class AnalyzePanel(QWidget):
                     selected_replica, calibration_data,
                     mode=mode, seq_date=seq_date
                 )
-                hci = selected_replica.get("hci")
-                if hci is not None:
-                    quantification["hci"] = hci
-                    quantification["hci_character"] = selected_replica.get("hci_character", "")
                 sample_data["quantification"] = quantification
         except Exception as e:
             logger.error(f"Error recalculant quantificacio: {e}")

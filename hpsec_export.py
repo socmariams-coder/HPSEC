@@ -904,8 +904,6 @@ def _build_summary_rows(samples_grouped, mode="COLUMN", config=None,
                 "Anomalies": "",
                 "Max_Severity": "",
                 "Warnings": "",
-                "HCI": None,
-                "HCI_Character": "",
             }))
             continue
 
@@ -970,8 +968,6 @@ def _build_summary_rows(samples_grouped, mode="COLUMN", config=None,
             "Warnings": "; ".join(
                 (w.get("code", "") if isinstance(w, dict) else str(w)) for w in all_warnings
             ) if all_warnings else "",
-            "HCI": quantification.get("hci"),
-            "HCI_Character": quantification.get("hci_character", ""),
         }))
 
     return summary_rows

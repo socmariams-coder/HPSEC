@@ -164,14 +164,6 @@ class SampleDetailDialog(QDialog):
         if ppm_parts:
             h.addWidget(QLabel(" | ".join(ppm_parts)))
 
-        # HCI
-        hci = quant.get("hci")
-        if hci is not None:
-            char = quant.get("hci_character", "")
-            colors = {"HA": "#E74C3C", "FA": "#3498DB"}
-            c = colors.get(char[:2], "#27AE60") if char else "#27AE60"
-            h.addWidget(QLabel(f"<b style='color:{c}'>HCI {hci:.1f} ({char})</b>"))
-
         h.addStretch()
 
         # Selector repliques (info only — real selection in panel.py combos)

@@ -4,7 +4,38 @@ Historial detallat de decisions i troballes per sessió. Separat de
 CLAUDE.md perquè el context de sessió no carregui ~700 línies de diari;
 consultar quan es necessiti el context històric d'un tema concret.
 
-> Last updated: 2026-09-07
+> Last updated: 2026-09-08
+
+### Simplificació del pipeline — Tall 1: retirada del HCI (índex espectral) (2026-09-08)
+
+**Rumb (usuària):** simplificar el pipeline traient el que no és tronc. Dues coses surten:
+(1) l'anàlisi espectroscòpic implementat com a índex (HCI) i (2) la consolidació COLUMN↔BP
+(a programari a part). Tall 1 fet = HCI; Tall 2 (BP) planificat a banda.
+
+**Per què el HCI surt:** és una fulla terminal — es calculava i s'arrossegava a UI/exports,
+però cap decisió del pipeline depenia d'ell. L'anàlisi espectral passa a ser exploració
+(research/), no lliurable.
+
+**Retirat net (costures, totes eren opcionals):**
+- Càlcul: `_asample_hci_and_pack` → `_asample_pack` a hpsec_analyze (Fase 9); fora el bloc
+  `compute_hci`. El senyal-packing es manté intacte.
+- Propagació: trets els 4 blocs `quantification["hci"]=…` (hpsec_analyze ×3, analyze_panel ×1).
+- UI: fora la línia HCI del diàleg de detall (analyze_panel/dialogs).
+- Exports: fora `HCI`/`HCI_Character` de SUMMARY (hpsec_export), `hci`/`hci_character` del
+  dataset FAIR (hpsec_fair: schema + fila), i la línia HCI del PDF (hpsec_reports).
+- Fitxers: `hpsec_humic.py` + `humic_lda_model.json` → `research/humic_exploration/` (git mv;
+  segueixen trackejats allà → backup preservat; recuperables de l'historial).
+- `dad_export3d_path` es MANTÉ (el fa servir l'export FAIR per la DAD RAW full-λ, no només HCI);
+  només s'ha corregit el comentari.
+
+**Verificació:** imports nets (cap `from hpsec_humic`), AST 7 fitxers, GUI offscreen OK,
+suite 66/66, dataset FAIR ja no porta columnes hci.
+
+**Pendent — Tall 2 (BP↔COLUMN):** SURT NOMÉS la consolidació/comparació COLUMN↔BP
+(`find_bp_for_samples`, secció "Consolidació BP" del Revisar, fulla `ID_BP`, columnes BP a
+SUMMARY, indicador ⟳ is_bp_stale) → programari a part. **El mode BP (processar una SEQ BP
+sola) ES MANTÉ a la Suite.** Cal pla escrit abans de tallar (toca Revisar, exports,
+sequence_state, dashboard).
 
 ### Traçabilitat de règim al paquet FAIR (2026-09-07)
 

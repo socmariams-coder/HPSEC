@@ -158,8 +158,6 @@ def _results_columns(target_wls):
         ("valid", "boolean", "", "Whether the selected replica passed quality checks"),
         ("conc_ppm_doc", "number", "mg C/L", "DOC concentration from the direct TOC signal"),
         ("conc_ppm_uib", "number", "mg C/L", "DOC concentration from the UV-persulfate (UIB) signal"),
-        ("hci", "number", "", "Humic Character Index"),
-        ("hci_character", "string", "", "Qualitative humic character label"),
         ("doc_area_total", "number", "a.u.*min", "Total integrated DOC peak area"),
     ]
     for fr in FRACTIONS:
@@ -215,8 +213,6 @@ def _results_row(sample_name, sample, seq_name, seq_date, mode, target_wls,
         "conc_ppm_doc": _num(q.get("concentration_ppm_direct")
                              or q.get("concentration_ppm"), 4),
         "conc_ppm_uib": _num(q.get("concentration_ppm_uib"), 4),
-        "hci": _num(q.get("hci"), 4),
-        "hci_character": q.get("hci_character", ""),
         "doc_area_total": _num(doc.get("total"), 3),
     }
     total_doc = doc.get("total") or 0

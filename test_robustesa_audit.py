@@ -161,7 +161,7 @@ def test_fair_data_package():
                                     "areas": {"DOC": {"BioP": 10.0, "HS": 20.0, "total": 40.0,
                                                       "HS_pct": 50.0},
                                               "A254": {"HS": 5.0, "total": 8.0}}}},
-                 "quantification": {"concentration_ppm_direct": 3.4, "hci": 0.7}}}
+                 "quantification": {"concentration_ppm_direct": 3.4}}}
     out = tempfile.mkdtemp()
     generate_data_package(sg, out, mode="COLUMN", seq_name="TEST", seq_date="2026-01-15")
     check("genera results + datapackage + README", all(

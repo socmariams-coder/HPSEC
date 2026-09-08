@@ -2109,8 +2109,8 @@ def _asample_column_metrics(sig, config, result, areas):
         result["n_peaks_254_HS"] = n_peaks_per_wl.get("A254", {}).get("HS")
 
 
-def _asample_hci_and_pack(sig, sample_data, result):
-    """Fase 9 — HCI (només COLUMN) i empaquetat de senyals al result."""
+def _asample_pack(sig, sample_data, result):
+    """Fase 9 — empaquetat de senyals processats al result."""
     t_doc = sig["t_doc"]
     y_doc_net = sig["y_doc_net"]
     y_doc_direct_net = sig["y_doc_direct_net"]
@@ -2118,20 +2118,6 @@ def _asample_hci_and_pack(sig, sample_data, result):
     df_dad = sig["df_dad"]
     is_bp = sig["is_bp"]
     is_dual = sig["is_dual"]
-
-    # =========================================================================
-    # HCI (Humic Character Index) — només COLUMN, mai BP/BLANK/CONTROL
-    # =========================================================================
-    dad_export3d_path = sample_data.get("dad_export3d_path")
-    if dad_export3d_path and not is_bp:
-        try:
-            from hpsec_humic import compute_hci
-            hci_result = compute_hci(dad_export3d_path)
-            if hci_result:
-                result["hci"] = hci_result["hci"]
-                result["hci_character"] = hci_result["character"]
-        except Exception as e:
-            logger.debug("HCI computation skipped: %s", e)
 
     # Guardar dades processades
     result["t_doc"] = t_doc
@@ -2277,7 +2263,7 @@ def analyze_sample(sample_data, calibration_data=None, config=None):
         sig, config, result, peak_info, timeout_positions)
     _asample_areas_uib(sig, sample_data, config, result, areas)
     _asample_column_metrics(sig, config, result, areas)
-    _asample_hci_and_pack(sig, sample_data, result)
+    _asample_pack(sig, sample_data, result)
     _asample_estimate_direct_from_uib(sig, sample_data, config, result)
 
     return result
@@ -2421,7 +2407,7 @@ def _flatten_samples_for_processing(imported_data, data_mode="DUAL"):
                     df_dad_raw = analyze_dad(df_dad_raw)
                 flat_sample["df_dad"] = df_dad_raw
 
-            # Propagar path Export3D original per HCI (necessita 101 wavelengths)
+            # Propagar path Export3D original (export FAIR: DAD RAW full λ, 101 wl)
             if dad.get("path"):
                 flat_sample["dad_export3d_path"] = dad["path"]
 
@@ -2793,7 +2779,7 @@ def analyze_sequence(imported_data, calibration_data=None, config=None,
         config: Configuració
         progress_callback: Funció callback per reportar progrés
         do_quantify: Si True (default), aplica calibració (àrea → ppm) inline.
-            Si False, només qualitatiu (àrees, SNR, R², HCI, anomalies) i la
+            Si False, només qualitatiu (àrees, SNR, R², anomalies) i la
             quantificació queda pendent. La quantificació es pot aplicar després
             amb quantify_sequence(). [v1.7.0]
 
@@ -3082,11 +3068,6 @@ def analyze_sequence(imported_data, calibration_data=None, config=None,
                 # Usar calibració específica segons volum d'injecció
                 sample_cal = get_sample_calibration(selected_sample)
                 quantification = quantify_sample(selected_sample, sample_cal, mode=mode)
-                # HCI del doc_replica seleccionat
-                hci = selected_sample.get("hci")
-                if hci is not None:
-                    quantification["hci"] = hci
-                    quantification["hci_character"] = selected_sample.get("hci_character", "")
                 sample_group["quantification"] = quantification
 
         elif len(replica_keys) == 1:
@@ -3114,11 +3095,6 @@ def analyze_sequence(imported_data, calibration_data=None, config=None,
                     # Usar calibració específica segons volum d'injecció
                     sample_cal = get_sample_calibration(r1)
                     quantification = quantify_sample(r1, sample_cal, mode=mode)
-                    # HCI
-                    hci = r1.get("hci")
-                    if hci is not None:
-                        quantification["hci"] = hci
-                        quantification["hci_character"] = r1.get("hci_character", "")
                     sample_group["quantification"] = quantification
 
         # Detectar composabilitat de timeouts entre rèpliques
@@ -3426,12 +3402,6 @@ def quantify_sequence(analysis_result, seq_path=None, mode=None, seq_date=None,
         sample_cal = _get_sample_cal(selected_sample)
         quantification = quantify_sample(selected_sample, sample_cal, mode=mode,
                                           seq_date=seq_date)
-        # HCI
-        hci = selected_sample.get("hci")
-        if hci is not None:
-            quantification["hci"] = hci
-            quantification["hci_character"] = selected_sample.get("hci_character", "")
-
         # Compatibilitat: 'concentration_ppm_direct' és el de la seleccionada
         # (com fins ara). Els nous camps per_replica + statistics afegeixen
         # info per a estadística i UI.
