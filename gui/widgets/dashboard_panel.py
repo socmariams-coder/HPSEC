@@ -878,10 +878,7 @@ class DashboardPanel(QWidget):
                     if cal_bg:
                         item.setBackground(cal_bg)
                 elif state == 'warning':
-                    if phase_name == "Exportar" and seq.is_bp_stale:
-                        item.setText("⟳")
-                    else:
-                        item.setText("⚠")
+                    item.setText("⚠")
                     item.setForeground(QColor(COLOR_WARNING))
                     tooltip_parts = []
                     if phase_name == "Importar" and seq.import_incomplete:

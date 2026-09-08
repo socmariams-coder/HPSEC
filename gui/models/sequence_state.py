@@ -448,20 +448,13 @@ class SequenceState:
             # reservar-se per avisos reals de nivell superior (ex: "Missing DOC data").
             self.config_fingerprint = data.get('config_fingerprint', '')
 
-        # De la revisió — BP info
-        self.review_bp_name = None
-        self.review_bp_mtime = None
+        # De la revisió — mostres descartades
         if self.review_status.data:
-            bp_info = self.review_status.data.get('bp_info', {})
-            self.review_bp_name = bp_info.get('bp_seq_name')
-            self.review_bp_mtime = bp_info.get('bp_analysis_mtime')
             discarded = self.review_status.data.get('discarded_samples', [])
             if discarded:
                 self.review_warnings.append(
                     f"{len(discarded)} mostr{'a' if len(discarded) == 1 else 'es'} descartad{'a' if len(discarded) == 1 else 'es'}"
                 )
-            if self.is_bp_stale:
-                self.review_warnings.append(f"BP {self.review_bp_name} actualitzada")
 
         # Fallback: si no hi ha manifest, llegir inventari del MasterFile
         if self.n_samples == 0 and self.n_inj_master == 0:
@@ -834,25 +827,7 @@ class SequenceState:
             discarded = self.review_status.data.get('discarded_samples', [])
             if discarded:
                 return 'warning'
-        if self.is_bp_stale:
-            return 'warning'
         return 'ok'
-
-    @property
-    def is_bp_stale(self) -> bool:
-        """True si la BP vinculada s'ha re-analitzat des de l'última revisió."""
-        if not self.review_status.completed:
-            return False
-        bp_name = getattr(self, 'review_bp_name', None)
-        bp_mtime = getattr(self, 'review_bp_mtime', None)
-        if not bp_name or not bp_mtime:
-            return False
-        bp_path = os.path.join(os.path.dirname(self.seq_path), bp_name)
-        bp_analysis = os.path.join(bp_path, "CHECK", "data", "analysis_result.json")
-        if not os.path.exists(bp_analysis):
-            return False
-        current_mtime = os.path.getmtime(bp_analysis)
-        return current_mtime > bp_mtime
 
     @property
     def current_phase(self) -> Phase:

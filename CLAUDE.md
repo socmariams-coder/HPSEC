@@ -168,7 +168,7 @@ Mark features as DONE only when code is fully functional end-to-end, not when pl
 - [x] Wizard: "Generar Resultats" exports to SEQ/RESULTATS/ (Excels) + SEQ/CHECK/ (SUMMARY) — DONE
 - [x] Export panel redissenyat — auto-generació + export addicional — DONE
   - Part 1: results_frame (auto-generació Excels+SUMMARY a SEQ/RESULTATS/ + SEQ/CHECK/)
-  - Part 2: consolidació BP (sense canvis)
+  - Part 2: (històric) consolidació BP — RETIRADA 2026-09-08 (veure tall 2 més avall)
   - Part 3: "Export addicional" — checkboxes contingut + destí (carpeta o ZIP)
   - Checkboxes: Excels, SUMMARY, RAW CSVs, PROCESSED CSVs, CSV SUMMARY, PDF, metadata.json
   - Destí: carpeta (SharePoint/OneDrive/local) o ZIP (amb temp dir)
@@ -209,17 +209,17 @@ Mark features as DONE only when code is fully functional end-to-end, not when pl
 - [x] Analyze: BLANK (MQ) → anàlisi completa + quantificació (no light) — DONE
 - [x] Analyze: PR exclusió quantificació configurable (no_quantification_patterns) — DONE
 - [x] Analyze: menú contextual "Excloure/Incloure quantificació" per mostra — DONE
-- [x] **⚡ Consolidació BP+COLUMN al Revisar (Pas 4)** — DONE (Fases 1-5)
-  - Pla complet a `~/.claude/plans/synthetic-tinkering-hoare.md` (6 fases)
-  - Fix: review_result.json s'escriu al completar generació → dashboard Revisar funcional
-  - Secció BP al Revisar: taula mostres vinculades + dropdown override SEQ BP
-  - BPDiscoveryWorker + _BPReloadWorker (cerca background + canvi dropdown)
-  - find_bp_for_samples() a hpsec_consolidate.py (proximitat + nom)
-  - export_sequence() accepta bp_resolved pre-resolt (evita doble cerca)
-  - Dashboard: indicador ⟳ quan BP actualitzada post-revisió (is_bp_stale)
-  - sequence_state.py: review_bp_name, review_bp_mtime, is_bp_stale property
-  - [x] Cleanup: ConsolidatePanel eliminat (488 línies mortes) — Fase 6
-  - Fitxers: review_summary_panel.py, hpsec_export.py, sequence_state.py, dashboard_panel.py, hpsec_consolidate.py
+- [~] **Consolidació COLUMN↔BP — EXTRETA a programari a part** (2026-09-08, tall 2 simplificació)
+  - La comparació/consolidació COLUMN↔BP surt de la Suite: la Suite processa COLUMN i BP
+    com a modes independents i NO els vincula. **El mode BP (processar una SEQ BP sola) es manté.**
+  - Codi mogut a `bp_consolidation_tool/bp_consolidation.py` (mòdul standalone autocontingut +
+    README). Ja estava ORFE dins la Suite (desconnectat al refactor de juliol): find_bp_for_samples
+    i companyia no tenien cap cridador; ID_BP ja no era a l'export; no hi ha compare_panel.
+  - `hpsec_consolidate.py` aprimat a 2 utilitats vives: `extract_seq_number` + `detect_seq_type`
+    (usades per history_panel, samples_db, hpsec_calibrate).
+  - Vestigi net: `bp_info` (escrit sempre buit) tret d'export_panel + hpsec_export;
+    `review_bp_name/mtime` + `is_bp_stale` + indicador ⟳ del dashboard eliminats (mai s'activaven).
+  - Verificat: cap ref colgada, GUI offscreen OK, suite 66/66.
 - [x] Config backend: config fingerprint (SHA-256 16 chars) per detectar obsolescència — DONE
 - [x] Config backend: migració batman_max_sep → batman_max_sep_min — DONE
 - [x] Config backend: REPROCESS_SECTIONS/FUTURE_SECTIONS/IMMEDIATE_SECTIONS constants — DONE
@@ -267,7 +267,7 @@ Mark features as DONE only when code is fully functional end-to-end, not when pl
   - Actual: duplicat del wizard pas 4, depèn de `processed_data` (no funciona sol)
   - Objectiu: seleccionar SEQ ja processada → empaquetar fitxers existents → carpeta/ZIP
   - Export "net": mostres + KHP, sense blancs/controls/NaOH
-  - COLUMN+BP combinats per mostra (via `find_bp_for_samples`)
+  - (NO combinar COLUMN+BP: la consolidació COLUMN↔BP viu fora, a `bp_consolidation_tool/`)
   - ZIP: nom automàtic + triar carpeta (no nom fitxer)
   - Pendent definir: multi-SEQ, agrupació per campanya, relació amb inventari mostres
 

@@ -692,7 +692,6 @@ def export_sequence(
         "n_errors": 0,
         "files": [],
         "errors": [],
-        "bp_info": None,
         "raw_files": [],
         "processed_files": [],
     }

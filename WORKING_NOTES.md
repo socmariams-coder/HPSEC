@@ -6,6 +6,35 @@ consultar quan es necessiti el context històric d'un tema concret.
 
 > Last updated: 2026-09-08
 
+### Simplificació — Tall 2: extreure la consolidació COLUMN↔BP (2026-09-08)
+
+**Troballa que va reduir el tall:** la consolidació/comparació COLUMN↔BP JA estava
+DESCONNECTADA de la Suite (refactor de simplificació de juliol). `find_bp_for_samples` i
+totes les germanes (find_matching_bp_sequence, load_bp_data_for_sample, consolidate_sample_data,
+find_related_sequences, find_all_sample_versions, add_bp_sheet_to_excel) NO tenien cap
+cridador; `ID_BP` ja no era a l'export; no existeix `compare_panel`. El vestigi `bp_info`
+s'escrivia SEMPRE buit (`{}`/`None`) → `is_bp_stale` no s'activava mai. Per tant no calia
+cirurgia: era codi mort + un vestigi.
+
+**Fet:**
+1. **Extret** a `bp_consolidation_tool/bp_consolidation.py` (mòdul standalone autocontingut,
+   còpia pròpia d'extract_seq_number/detect_seq_type/_normalize_sample_name; només depèn de
+   `hpsec_import.load_manifest` via import diferit opcional) + README que explica què és i que
+   ja estava orfe. Llavor del programari a part; NO reescrit ni revalidat.
+2. **`hpsec_consolidate.py` aprimat** a les 2 utilitats VIVES: `extract_seq_number` +
+   `detect_seq_type` (usades per history_panel, samples_db_panel, hpsec_samples_db,
+   hpsec_calibrate). De 546 → ~75 línies.
+3. **Vestigi net:** `bp_info` tret d'export_panel (`{}`) i hpsec_export (`None`);
+   `review_bp_name/mtime` + property `is_bp_stale` + branca ⟳ del dashboard eliminats a
+   sequence_state + dashboard_panel (la lògica de mostres descartades es manté).
+
+**Regla:** el mode BP (processar una SEQ BP sola, mode="BP" pel pipeline analyze/export)
+ES MANTÉ intacte. El que ha sortit és NOMÉS vincular COLUMN amb BP. Si es reprèn com a
+programa, el punt d'entrada és `find_bp_for_samples`.
+
+**Verificació:** cap referència colgada (grep), AST 6 fitxers, GUI offscreen OK, seed importa
+i és autocontingut, suite 66/66.
+
 ### Simplificació del pipeline — Tall 1: retirada del HCI (índex espectral) (2026-09-08)
 
 **Rumb (usuària):** simplificar el pipeline traient el que no és tronc. Dues coses surten:

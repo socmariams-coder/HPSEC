@@ -1036,7 +1036,6 @@ class ExportPanel(QWidget):
                 "n_exported": n_exported,
                 "n_skipped": 0,
                 "discarded_samples": discarded,
-                "bp_info": {},
                 "dataset_path": str(Path(seq_path) / "RESULTATS" / "datapackage.json"),
             }
 
