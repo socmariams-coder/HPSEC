@@ -125,20 +125,44 @@ def _provenance(sample, config, net_delay_min):
     anomalies = rep.get("anomalies") or []
     anom_codes = ";".join(
         (a.get("code", "") if isinstance(a, dict) else str(a)) for a in anomalies)
+    # Bloc de procedència persistit per mostra (font única, v2.3)
+    prov = rep.get("provenance") or {}
+    align = prov.get("alignment") or {}
+    base = prov.get("baseline") or {}
+    smooth = prov.get("smoothing") or {}
+    repair = prov.get("repair") or {}
+    pbound = prov.get("peak_boundaries") or {}
+    rep_d = repair.get("direct") or {}
+    rep_u = repair.get("uib") or {}
+    bd = base.get("direct") or {}
+    _nd = align.get("net_delay_min")
     return {
         "injection_index": rep.get("injection_index"),
         "doc_replica": sel.get("doc"),
         "dad_replica": sel.get("dad"),
-        "smoothing_method": "Savitzky-Golay",
-        "smoothing_window": chrom.get("smoothing_window"),
-        "smoothing_order": chrom.get("smoothing_order"),
-        "baseline_method": "statistical-mode",
-        "net_delay_min": _num(net_delay_min, 3),
+        # Alineació temporal (abans no quedava registrada enlloc)
+        "shift_direct_min": _num(align.get("shift_direct_min"), 4),
+        "shift_uib_min": _num(align.get("shift_uib_min"), 4),
+        "net_delay_min": _num(_nd if _nd is not None else net_delay_min, 3),
+        "smoothing_method": smooth.get("method") or "Savitzky-Golay",
+        "smoothing_window": smooth.get("window") or chrom.get("smoothing_window"),
+        "smoothing_order": smooth.get("polyorder") or chrom.get("smoothing_order"),
+        "baseline_method": base.get("method") or "statistical-mode",
+        "baseline_value_direct": (_num(bd.get("value"), 4)
+                                  if bd.get("type") == "scalar" else None),
+        "peak_boundary_method": pbound.get("method"),
         "rf_mass_cal_doc": q.get("rf_mass_cal_used"),
         "intercept_doc": q.get("intercept"),
         "volume_uL": q.get("volume_uL") or rep.get("inj_volume"),
+        "volume_source": q.get("volume_source") or (prov.get("volume") or {}).get("source_import"),
         "calibration_source": q.get("calibration_source"),
-        "repaired": bool(sample.get("repaired")),
+        # QUINA recta i QUIN règim (abans només un fingerprint de seqüència)
+        "calibration_id_doc": q.get("calibration_id_direct"),
+        "calibration_id_uib": q.get("calibration_id_uib"),
+        "regime_id": q.get("regime_id"),
+        "repaired": bool(sample.get("repaired") or rep_d.get("applied") or rep_u.get("applied")),
+        "repaired_direct": bool(rep_d.get("applied")),
+        "repaired_uib": bool(rep_u.get("applied")),
         "anomalies": anom_codes,
     }
 
@@ -176,16 +200,26 @@ def _results_columns(target_wls):
         ("injection_index", "integer", "", "Index of the injection used"),
         ("doc_replica", "string", "", "Selected DOC replica"),
         ("dad_replica", "string", "", "Selected DAD (UV) replica"),
+        ("shift_direct_min", "number", "min", "Time-shift applied to the DOC-Direct signal during alignment"),
+        ("shift_uib_min", "number", "min", "Time-shift applied to the DOC-UIB signal during alignment"),
+        ("net_delay_min", "number", "min", "Applied HPLC-to-TOC time offset"),
         ("smoothing_method", "string", "", "Signal smoothing method"),
         ("smoothing_window", "integer", "points", "Savitzky-Golay window length"),
         ("smoothing_order", "integer", "", "Savitzky-Golay polynomial order"),
         ("baseline_method", "string", "", "Baseline estimation method"),
-        ("net_delay_min", "number", "min", "Applied HPLC-to-TOC time offset"),
+        ("baseline_value_direct", "number", "a.u.", "DOC-Direct baseline offset subtracted (if scalar)"),
+        ("peak_boundary_method", "string", "", "Peak integration-limit method"),
         ("rf_mass_cal_doc", "number", "a.u.*min/ug", "Response factor used for DOC quantification"),
         ("intercept_doc", "number", "a.u.*min", "Calibration intercept used for DOC"),
         ("volume_uL", "number", "uL", "Injection volume used for quantification"),
+        ("volume_source", "string", "", "Origin of the injection volume (manifest/0-INFO/calibration/assumed)"),
         ("calibration_source", "string", "", "Origin of the calibration applied"),
-        ("repaired", "boolean", "", "Whether the peak apex was repaired"),
+        ("calibration_id_doc", "string", "", "Identifier of the DOC calibration curve applied"),
+        ("calibration_id_uib", "string", "", "Identifier of the UIB calibration curve applied (if any)"),
+        ("regime_id", "string", "", "Instrumental regime (comparability block) of the sequence"),
+        ("repaired", "boolean", "", "Whether any peak apex was repaired (DOC or UIB)"),
+        ("repaired_direct", "boolean", "", "Whether the DOC-Direct peak apex was repaired"),
+        ("repaired_uib", "boolean", "", "Whether the DOC-UIB peak apex was repaired"),
         ("anomalies", "string", "", "Semicolon-separated quality anomaly codes"),
     ]
     return cols + prov

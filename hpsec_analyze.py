@@ -88,6 +88,9 @@ from hpsec_calibrate import (
     get_all_active_calibrations,
     get_rf_mass_cal,
     get_calibration_intercept,
+    get_calibration_for_date,
+    get_active_global_calibration,
+    get_regime_traceability,
 )
 
 # Import sistema d'avisos estructurats
@@ -1128,12 +1131,27 @@ def repair_irregular_top_in_replica(sample_result, signal="direct", factor=None,
     sample_result["anomalies"] = anomalies
     sample_result[irr_key] = False
     sample_result[f"{irr_key}_repaired"] = True
-    sample_result[f"{irr_key}_repair_info"] = {
+
+    # Geometria completa i serialitzable de la reparació MANUAL (font única).
+    _mc = repair_info.get("coeffs")
+    _geom = {
+        "method": "parabola_tangent",
+        "mode": "manual",
+        "factor": factor,
         "t_max": repair_info.get("t_max"),
         "y_max_original": repair_info.get("y_max_original"),
         "y_max_theoretical": repair_info.get("y_max_theoretical"),
-        "coeffs": repair_info.get("coeffs"),
+        "coeffs": ([float(c) for c in _mc] if _mc is not None else None),
+        "anchor_left": [repair_info.get("t_anchor_left"),
+                        repair_info.get("y_anchor_left")],
+        "anchor_right": [repair_info.get("t_anchor_right"),
+                         repair_info.get("y_anchor_right")],
     }
+    sample_result[f"{irr_key}_repair_info"] = _geom
+    # Reflectir-ho al bloc de procedència (el que llegeixen FAIR i el full ID)
+    _prov = sample_result.setdefault("provenance", {})
+    _prov_rep = _prov.setdefault("repair", {"direct": {}, "uib": {}})
+    _prov_rep[signal] = {"applied": True, "geometry": _geom}
 
     # Recalcular àrees amb senyal reparat
     try:
@@ -1148,11 +1166,7 @@ def repair_irregular_top_in_replica(sample_result, signal="direct", factor=None,
         repair_result["areas_recalc_error"] = str(e)
 
     repair_result["repaired"] = True
-    repair_result["repair_info"] = {
-        "t_max": repair_info.get("t_max"),
-        "y_max_original": repair_info.get("y_max_original"),
-        "y_max_theoretical": repair_info.get("y_max_theoretical"),
-    }
+    repair_result["repair_info"] = _geom
 
     return repair_result
 
@@ -1315,6 +1329,27 @@ def quantify_sample(sample_result, calibration_data, mode="COLUMN", seq_date=Non
     intercept_direct = get_calibration_intercept(signal='direct', mode=mode_key, seq_date=seq_date)
     intercept_uib = get_calibration_intercept(signal='uib', mode=mode_key, seq_date=seq_date,
                                                sensitivity=uib_sensitivity)
+
+    # Traçabilitat: QUINA calibració (id) i QUIN règim s'apliquen a aquesta mostra.
+    # Abans només quedava un fingerprint a nivell de seqüència; ara cada mostra
+    # grava l'id de la recta Direct/UIB i l'id + finestra del règim instrumental.
+    def _resolve_cal_id(signal, sensitivity=None):
+        try:
+            cal = (get_calibration_for_date(seq_date, signal=signal, sensitivity=sensitivity)
+                   if seq_date else
+                   get_active_global_calibration(signal=signal, sensitivity=sensitivity))
+            return cal.get("id") if cal else None
+        except Exception:
+            return None
+
+    result["calibration_id_direct"] = _resolve_cal_id("direct")
+    result["calibration_id_uib"] = _resolve_cal_id("uib", uib_sensitivity)
+    try:
+        _reg = get_regime_traceability(seq_date)
+    except Exception:
+        _reg = {}
+    result["regime_id"] = _reg.get("regime_id")
+    result["regime_window"] = [_reg.get("regime_start_date"), _reg.get("regime_end_date")]
 
     use_global = rf_mass_direct is not None and rf_mass_direct > 0
 
@@ -1514,9 +1549,22 @@ def _asample_prepare_signals(sample_data, calibration_data, config, result):
     # S'aplica shift a TOTS els senyals (raw i net) per mantenir coherència.
     # EXCEPCIÓ BP: les finestres ja estan alineades per reassign_bp_by_dad254,
     # el shift DOC-DAD no s'ha d'aplicar (ja incorporat a les finestres).
+    _align = {
+        "applied": False,
+        "shift_direct_min": 0.0,
+        "shift_uib_min": 0.0,
+        "shift_min": 0.0,
+        "uib_interpolated_to_direct": False,
+        "net_delay_min": (calibration_data or {}).get("net_delay_min"),
+        "skipped_reason": ("BP: finestres ja alineades (reassign_bp_by_dad254)"
+                           if is_bp else None),
+    }
     if calibration_data and not is_bp:
         shift_uib = calibration_data.get("shift_uib") or calibration_data.get("shift_min_u") or 0.0
         shift_direct = calibration_data.get("shift_direct") or calibration_data.get("shift_min") or 0.0
+        _align["applied"] = True
+        _align["shift_direct_min"] = float(shift_direct)
+        _align["shift_uib_min"] = float(shift_uib)
 
         if is_dual:
             # UIB: interpolar a escala t_doc (referencia Direct)
@@ -1552,6 +1600,7 @@ def _asample_prepare_signals(sample_data, calibration_data, config, result):
                     y_doc_direct_net_precomp = apply_shift(t_doc, t_doc, y_doc_direct_net_precomp, shift_direct)
         else:
             shift = calibration_data.get("shift", 0.0)
+            _align["shift_min"] = float(shift)
             if abs(shift) > 0.001:
                 y_doc = apply_shift(t_doc, t_doc, y_doc, shift)
                 if y_doc_net_precomp is not None:
@@ -1603,6 +1652,38 @@ def _asample_prepare_signals(sample_data, calibration_data, config, result):
             result["error"] = "BASELINE_MISSING"
             result["error_message"] = "Dades sense correcció de baseline. Cal tornar a importar la seqüència."
             return None
+
+    # --- Traçabilitat de la Fase 1 (alineació, baseline, suavitzat) ---
+    _align["uib_interpolated_to_direct"] = bool(is_dual)
+
+    def _baseline_summary(v):
+        if v is None:
+            return None
+        try:
+            arr = np.asarray(v, dtype=float)
+            if arr.ndim == 0 or arr.size == 1:
+                return {"type": "scalar", "value": float(arr.reshape(-1)[0])}
+            return {"type": "array", "n": int(arr.size),
+                    "min": float(np.nanmin(arr)), "max": float(np.nanmax(arr)),
+                    "mean": float(np.nanmean(arr))}
+        except Exception:
+            return {"type": "unknown"}
+
+    prov = result.setdefault("provenance", {})
+    prov["alignment"] = _align
+    prov["baseline"] = {
+        "applied": True,
+        "source": "import",  # la baseline es calcula i resta a import (no aquí)
+        "method": sample_data.get("baseline_method"),
+        "direct": _baseline_summary(sample_data.get("baseline_direct")),
+        "uib": _baseline_summary(sample_data.get("baseline_uib")),
+    }
+    prov["smoothing"] = {"method": "savitzky_golay", "window": 11, "polyorder": 3}
+    prov["volume"] = {
+        "value_uL": sample_data.get("inj_volume"),
+        "source_import": sample_data.get("inj_volume_source"),
+        # (l'origen en fase de quantificació queda a quantification.volume_source)
+    }
 
     return {
         "t_doc": t_doc,
@@ -1703,10 +1784,18 @@ def _asample_detect_peak_and_repairs(sig, sample_data, config, result,
                     y_doc_uib_net = y_doc_uib_net.copy()
                     y_doc_uib_net[uib_seg_mask] = y_uib_seg_rep
                     result["irregular_top_uib_repaired"] = True
+                    _uc = uib_repair_info.get("coeffs")
                     result["irregular_top_uib_repair_info"] = {
+                        "method": "parabola_tangent",
+                        "mode": "auto",
                         "t_max": uib_repair_info.get("t_max"),
                         "y_max_original": uib_repair_info.get("y_max_original"),
                         "y_max_theoretical": uib_repair_info.get("y_max_theoretical"),
+                        "coeffs": ([float(c) for c in _uc] if _uc is not None else None),
+                        "anchor_left": [uib_repair_info.get("t_anchor_left"),
+                                        uib_repair_info.get("y_anchor_left")],
+                        "anchor_right": [uib_repair_info.get("t_anchor_right"),
+                                         uib_repair_info.get("y_anchor_right")],
                     }
                     logger.info(f"{seq_name}/{sample_name}: UIB irregular_top auto-repaired")
                 else:
@@ -1743,6 +1832,27 @@ def _asample_detect_peak_and_repairs(sig, sample_data, config, result,
         result["uib_saturated"] = False
 
     result["peak_info"] = peak_info
+
+    # --- Traçabilitat de la Fase 3 (límits, reparació, saturació) ---
+    prov = result.setdefault("provenance", {})
+    prov["peak_boundaries"] = {
+        "method": peak_info.get("boundary_method"),
+        "threshold_pct": peak_info.get("boundary_threshold_pct"),
+        "on_repaired_signal": peak_info.get("boundary_on_repaired_signal"),
+    }
+    prov["repair"] = {
+        "direct": {
+            "applied": bool(result.get("irregular_top_direct_repaired")),
+            "area_original": peak_info.get("area_original"),
+            "area_repaired": peak_info.get("area_repaired"),
+            "geometry": peak_info.get("repair_geometry"),
+        },
+        "uib": {
+            "applied": bool(result.get("irregular_top_uib_repaired")),
+            "geometry": result.get("irregular_top_uib_repair_info"),
+        },
+    }
+    prov["saturation"] = {"uib_saturated": bool(result.get("uib_saturated"))}
 
     sig["y_doc_uib_net"] = y_doc_uib_net
     return peak_info, y_smooth
@@ -2238,6 +2348,10 @@ def analyze_sample(sample_data, calibration_data=None, config=None):
         "uib_sensitivity": sample_data.get("uib_sensitivity"),
         "processed": False,
         "anomalies": [],
+        # Traçabilitat: bloc únic de procedència (cada transformació del senyal).
+        # El poblen els helpers _asample_* i quantify_sample; el persisteix
+        # summarize_sample; el llegeixen el full ID i l'export FAIR.
+        "provenance": {},
     }
     # Traçabilitat sibling (packs)
     if sample_data.get("source_seq"):
@@ -2304,6 +2418,9 @@ def _flatten_samples_for_processing(imported_data, data_mode="DUAL"):
                 "replica": str(rep_num),
                 "sample_type": sample_type,
                 "inj_volume": inj_info.get("inj_volume"),  # Volum d'injecció en µL
+                # Origen del volum resolt a import (masterfile_col/0-INFO/FALLBACK).
+                # Abans es perdia aquí; es necessita per a la traçabilitat FAIR.
+                "inj_volume_source": inj_info.get("inj_volume_source"),
                 "injection_index": inj_info.get("line_num"),  # Ordre d'injecció al MasterFile
                 "uib_sensitivity": uib_sensitivity,  # ppb (700/1000) per detecció saturació
             }
@@ -3580,6 +3697,24 @@ def save_analysis_result(analysis_data, output_path=None):
             "direct_estimation_factor": sample.get("direct_estimation_factor"),
             "irregular_top_direct": sample.get("irregular_top_direct"),
             "irregular_top_direct_info": sample.get("irregular_top_direct_info"),
+            # --- Traçabilitat: bloc únic de procedència + flags abans descartats ---
+            "provenance": sample.get("provenance", {}),
+            "irregular_top_direct_repaired": sample.get("irregular_top_direct_repaired"),
+            "irregular_top_uib_repaired": sample.get("irregular_top_uib_repaired"),
+            "irregular_top_uib_repair_info": sample.get("irregular_top_uib_repair_info"),
+            "uib_saturated": sample.get("uib_saturated"),
+            "fwhm_uib": sample.get("fwhm_uib"),
+            "fwhm_254": sample.get("fwhm_254"),
+            "symmetry_254": sample.get("symmetry_254"),
+            "sb_hs_ratio": sample.get("sb_hs_ratio"),
+            "sb_hs_ratio_uib": sample.get("sb_hs_ratio_uib"),
+            "doc_254_ratio": sample.get("doc_254_ratio"),
+            "mode": sample.get("mode"),
+            "uib_sensitivity": sample.get("uib_sensitivity"),
+            "timeout_in_peak": sample.get("timeout_in_peak"),
+            "timeout_in_peak_uib": sample.get("timeout_in_peak_uib"),
+            "source_seq": sample.get("source_seq"),
+            "original_rep_num": sample.get("original_rep_num"),
             "bigaussian_doc": sample.get("bigaussian_doc"),
             "bigaussian_254": sample.get("bigaussian_254"),
             "fwhm_doc": sample.get("fwhm_doc"),

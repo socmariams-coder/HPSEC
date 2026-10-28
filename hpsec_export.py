@@ -225,33 +225,81 @@ def _build_id_sheet(sample_name, sample_data, calibration_data, mode, is_dual):
     rows.append(("File_MasterFile", sample_data.get("master_file", "")))
 
     # --- 4. PROCESSING ---
+    # Font de traçabilitat: el bloc 'provenance' persistit per mostra (v2.3).
+    # Es manté la lectura antiga a nivell superior com a fallback (compat).
     rows.append(("=== PROCESSING ===", ""))
+    prov = sample_data.get("provenance") or {}
+    p_align = prov.get("alignment") or {}
+    p_base = prov.get("baseline") or {}
+    p_smooth = prov.get("smoothing") or {}
+    p_bound = prov.get("peak_boundaries") or {}
+    p_repair = prov.get("repair") or {}
+    q_id = sample_data.get("quantification") or {}
+
     shift_direct = sample_data.get("shift_direct")
+    if shift_direct is None:
+        shift_direct = p_align.get("shift_direct_min")
     shift_uib = sample_data.get("shift_uib")
+    if shift_uib is None:
+        shift_uib = p_align.get("shift_uib_min")
     if shift_direct is not None:
-        rows.append(("Shift_Direct_sec", round(shift_direct * 60, 2)))
+        rows.append(("Shift_Direct_sec", round(float(shift_direct) * 60, 2)))
     if is_dual and shift_uib is not None:
-        rows.append(("Shift_UIB_sec", round(shift_uib * 60, 2)))
+        rows.append(("Shift_UIB_sec", round(float(shift_uib) * 60, 2)))
+    if p_align.get("net_delay_min") is not None:
+        rows.append(("Net_Delay_min", round(float(p_align["net_delay_min"]), 3)))
+
     baseline_direct = sample_data.get("baseline_direct")
+    if baseline_direct is None and (p_base.get("direct") or {}).get("type") == "scalar":
+        baseline_direct = p_base["direct"].get("value")
     baseline_uib = sample_data.get("baseline_uib")
+    if baseline_uib is None and (p_base.get("uib") or {}).get("type") == "scalar":
+        baseline_uib = p_base["uib"].get("value")
     if baseline_direct is not None:
         rows.append(("Baseline_Direct_mAU", round(float(baseline_direct), 3)))
     if is_dual and baseline_uib is not None:
         rows.append(("Baseline_UIB_mAU", round(float(baseline_uib), 3)))
-    # Smoothing & integration config
-    try:
-        from hpsec_config import get_config
-        cfg = get_config()
-        rows.append(("Smoothing_Window_SG", cfg.get("smoothing", {}).get("sg_window_points", "")))
-        rows.append(("Baseline_Method", cfg.get("baseline", {}).get("method", "mode")))
-    except Exception:
-        pass
+    # Suavitzat (del bloc provenance; fallback a config)
+    if p_smooth.get("window") is not None:
+        rows.append(("Smoothing_Window_SG", p_smooth.get("window")))
+        rows.append(("Smoothing_Order_SG", p_smooth.get("polyorder")))
+    else:
+        try:
+            from hpsec_config import get_config
+            cfg = get_config()
+            rows.append(("Smoothing_Window_SG", cfg.get("smoothing", {}).get("sg_window_points", "")))
+        except Exception:
+            pass
+    rows.append(("Baseline_Method", p_base.get("method") or "mode"))
     rows.append(("DOC_Target_DT_min", 0.0667))
-    # Integration limits
+    # Integration limits (provenance → peak_info com a fallback)
     peak_limits = sample_data.get("peak_limits", {})
-    if peak_limits:
-        rows.append(("Integration_T_Start_min", peak_limits.get("t_start", "")))
-        rows.append(("Integration_T_End_min", peak_limits.get("t_end", "")))
+    peak_info = sample_data.get("peak_info", {}) or {}
+    t_start = peak_limits.get("t_start", peak_info.get("t_start"))
+    t_end = peak_limits.get("t_end", peak_info.get("t_end"))
+    if t_start is not None:
+        rows.append(("Integration_T_Start_min", t_start))
+    if t_end is not None:
+        rows.append(("Integration_T_End_min", t_end))
+    if p_bound.get("method"):
+        rows.append(("Integration_Method", p_bound.get("method")))
+    # Reparació de cim (batman/irregular): estat + geometria
+    rd = (p_repair.get("direct") or {})
+    ru = (p_repair.get("uib") or {})
+    if rd.get("applied") or ru.get("applied"):
+        rows.append(("Peak_Repaired_Direct", bool(rd.get("applied"))))
+        if is_dual:
+            rows.append(("Peak_Repaired_UIB", bool(ru.get("applied"))))
+        _g = rd.get("geometry") or ru.get("geometry") or {}
+        if _g.get("mode"):
+            rows.append(("Repair_Mode", _g.get("mode")))
+    # Calibració i règim aplicats a aquesta mostra
+    if q_id.get("calibration_id_direct"):
+        rows.append(("Calibration_ID_DOC", q_id.get("calibration_id_direct")))
+    if q_id.get("calibration_id_uib"):
+        rows.append(("Calibration_ID_UIB", q_id.get("calibration_id_uib")))
+    if q_id.get("regime_id"):
+        rows.append(("Regime_ID", q_id.get("regime_id")))
 
     # --- 5. SIGNAL QUALITY ---
     rows.append(("=== SIGNAL QUALITY ===", ""))

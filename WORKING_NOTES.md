@@ -6,6 +6,55 @@ consultar quan es necessiti el context històric d'un tema concret.
 
 > Last updated: 2026-10-28
 
+### Traçabilitat completa per mostra (bloc `provenance`) + FAIR en bloc (2026-10-28)
+
+**Objectiu de la usuària:** abans de generar cap FAIR, tancar PERFECTAMENT la
+traçabilitat — que CADA transformació del senyal quedi enregistrada dins la pròpia
+mostra (reproduïbilitat). Després ella reprocessa (reparar batmans a la Suite) i es
+genera el FAIR en bloc. "Tancar primer tot, o seria feina en va."
+
+**Auditoria prèvia (2 subagents):** els resultats es desaven per mostra, però la
+*procedència* era incompleta. Coll d'ampolla = la llista blanca de `summarize_sample`.
+Buits: G1 shift d'alineació (no es desava enlloc), G2 baseline, G3 suavitzat, G4/G5
+geometria de reparació (UIB auto = silenciós), G6 calibration_id/regime_id per mostra,
+G7 origen del volum a import, G8 mètode de límits. El FAIR (`generate_data_package`) ja
+es podia generar des de disc, però NO hi havia cap procés en bloc.
+
+**Solució — bloc únic `provenance` per rèplica (font única):**
+- `hpsec_core.detect_main_peak`: captura la geometria de reparació AUTO (coeffs,
+  àncores, t_max, y_max) a `peak_info["repair_geometry"]` + `boundary_method`/`_threshold_pct`.
+- `hpsec_analyze._asample_prepare_signals`: grava `provenance.alignment`
+  (shift_direct/uib_min, net_delay, uib_interpolated), `provenance.baseline`
+  (valor + mètode), `provenance.smoothing` (SG 11/3), `provenance.volume` (valor + origen import).
+- `_asample_detect_peak_and_repairs`: `provenance.peak_boundaries`, `provenance.repair`
+  (direct/uib amb geometria i àrees abans/després), `provenance.saturation`.
+- `quantify_sample`: grava `calibration_id_direct`, `calibration_id_uib`, `regime_id`,
+  `regime_window` (via get_calibration_for_date/get_active_global_calibration/get_regime_traceability).
+- `repair_irregular_top_in_replica` (reparació MANUAL de batmans): guarda geometria
+  completa (coeffs+àncores) i reflecteix `provenance.repair[signal]` + repair_history.
+- `summarize_sample`: PERSISTEIX `provenance` + flags abans descartats (irregular_top_*
+  _repaired, uib_saturated, fwhm_uib/254, ratios, mode, timeouts, source_seq…).
+- `_flatten_samples_for_processing`: propaga `inj_volume_source` (G7).
+- Consumidors: `hpsec_fair._provenance` + `_results_columns` emeten shift_direct/uib_min,
+  net_delay, baseline_value_direct, peak_boundary_method, volume_source, calibration_id_doc/uib,
+  regime_id, repaired_direct/uib a `results_SEC.csv`. `hpsec_export._build_id_sheet` llegeix
+  del `provenance` (shift/base/límits) + afegeix files Calibration_ID_DOC/UIB i Regime_ID.
+
+**Canvis ADDITIUS** (no toquen cap càlcul numèric). `test_robustesa_audit.py` 66/66 OK.
+Verificat en anàlisi fresca: shift_direct_min, baseline, cal_id (CAL_20260626_092621_DIRECT),
+regime (REG_20260514), volume_source apareixen a `provenance` i al `results_SEC.csv`;
+round-trip JSON OK amb NumpyEncoder.
+
+**Nou: `hpsec_fair_batch.py`** — generador FAIR en bloc. Recorre SEQ ja analitzades
+(load_analysis_result, sense re-importar), resol data/calibració/règim i emet el paquet
+Frictionless a `<SEQ>/RESULTATS/FAIR/`. `--all` o llista de SEQ, `--into`, `--zip`. Provat
+sobre 5 SEQ (290/298/299/300/303) → genera datapackage.json + results_SEC.csv + traces +
+README. Degrada bé amb fitxers antics (columnes presents, valors buits fins reprocessar).
+
+**⚠️ PENDENT (usuària):** reprocessar les SEQ a la Suite (reparar batmans) perquè el
+`analysis_result.json` nou porti el `provenance` complet; LLAVORS executar
+`python hpsec_fair_batch.py --all` per generar els FAIR definitius.
+
 ### FIX visor: crash PR + regressió de mostres (2026-10-28)
 
 **Símptoma inicial:** el visor petava en algunes seqüències amb `TypeError:

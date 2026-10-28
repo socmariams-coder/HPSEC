@@ -2455,6 +2455,7 @@ def detect_main_peak(t, y, min_prominence_pct=5.0, is_bp=None):
     irregular_top_info = None
     smoothness_info = None
     irregular_top_repaired = False
+    repair_geometry = None  # traçabilitat: geometria de la reparació (serialitzable)
     y_for_boundaries = y  # per defecte, senyal original
 
     # Segment al voltant del pic per detecció (±5 min COLUMN, ±3 min BP)
@@ -2483,6 +2484,23 @@ def detect_main_peak(t, y, min_prominence_pct=5.0, is_bp=None):
                 # Aplicar reparació al senyal complet per find_peak_boundaries
                 y_for_boundaries = y.copy()
                 y_for_boundaries[seg_mask] = y_seg_repaired
+                # Traçabilitat: geometria de la reparació AUTO (plana, serialitzable)
+                def _f(v):
+                    return float(v) if v is not None else None
+                _coeffs = repair_info.get("coeffs")
+                repair_geometry = {
+                    "method": "parabola_tangent",
+                    "mode": "auto",
+                    "t_max": _f(repair_info.get("t_max")),
+                    "y_max_original": _f(repair_info.get("y_max_original")),
+                    "y_max_theoretical": _f(repair_info.get("y_max_theoretical")),
+                    "coeffs": ([float(c) for c in _coeffs]
+                               if _coeffs is not None else None),
+                    "anchor_left": [_f(repair_info.get("t_anchor_left")),
+                                    _f(repair_info.get("y_anchor_left"))],
+                    "anchor_right": [_f(repair_info.get("t_anchor_right")),
+                                     _f(repair_info.get("y_anchor_right"))],
+                }
 
     # Trobar límits precisos (sobre senyal reparat si calia)
     left_idx, right_idx = find_peak_boundaries(
@@ -2520,7 +2538,13 @@ def detect_main_peak(t, y, min_prominence_pct=5.0, is_bp=None):
         "is_bp": is_bp,
         "baseline_level": baseline_level,
         "fallback": False,
+        # Traçabilitat: com s'han trobat els límits d'integració
+        "boundary_method": "tangent_projection",
+        "boundary_threshold_pct": 5.0,
+        "boundary_on_repaired_signal": bool(irregular_top_repaired),
     }
+    if repair_geometry is not None:
+        result["repair_geometry"] = repair_geometry
 
     # Afegir info d'irregular top si detectat (IRREGULAR_TOP o ROUGH_TOP)
     has_irregular_top = (irregular_top_info is not None

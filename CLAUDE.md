@@ -156,6 +156,17 @@ Mark features as DONE only when code is fully functional end-to-end, not when pl
 - [x] Export: SUMMARY.csv amb metadades i fingerprints — DONE
 - [x] Export: ID sheet reorganitzada 10 seccions + nous camps traçabilitat — DONE
 - [x] Export: UI opcions CSV (checkboxes + separador combo) a ExportPanel — DONE
+- [x] **Traçabilitat per mostra: bloc únic `provenance`** — DONE (2026-10-28)
+  - `samples_grouped[...]["replicas"][rep]["provenance"]`: alignment (shift_direct/uib_min,
+    net_delay, uib_interpolated), baseline (valor+mètode), smoothing (SG 11/3),
+    peak_boundaries (mètode+threshold), repair (direct/uib amb geometria coeffs+àncores,
+    auto i manual), saturation, volume (valor+origen import). Persistit per `summarize_sample`.
+  - `quantify_sample` grava `calibration_id_direct/uib`, `regime_id`, `regime_window` per mostra.
+  - Consumidors: `hpsec_fair` (columnes noves a results_SEC.csv) + `_build_id_sheet` (llegeix
+    provenance + files Calibration_ID/Regime_ID). Canvis additius, 66/66 OK.
+- [x] **FAIR en bloc: `hpsec_fair_batch.py`** — DONE (2026-10-28)
+  - Recorre SEQ ja analitzades (load_analysis_result, sense re-importar) → paquet Frictionless
+    a `<SEQ>/RESULTATS/FAIR/`. `--all`, llista de SEQ, `--into`, `--zip`. Resol data/calibració/règim.
 - [x] **Export FAIR v2: RAW/PROCESSED subcarpetes + DAD full λ + ZIP** — DONE
   - RAW/: DOC_Direct_RAW, DOC_UIB_RAW, DAD 101λ downsampled dt=0.04 min
   - PROCESSED/: DOC_net (shift+baseline+smoothing+repair), 6λ DAD, fraccions, ppm
