@@ -157,7 +157,7 @@ def _results_columns(target_wls):
         ("sample_type", "string", "", "SAMPLE, BLANK, CONTROL or KHP (standard)"),
         ("valid", "boolean", "", "Whether the selected replica passed quality checks"),
         ("conc_ppm_doc", "number", "mg C/L", "DOC concentration from the direct TOC signal"),
-        ("conc_ppm_uib", "number", "mg C/L", "DOC concentration from the UV-persulfate (UIB) signal"),
+        ("conc_ppm_uib", "number", "mg C/L", "Secondary/indicative only: UIB (UV-persulfate) signal quantified with the DOC-Direct calibration. There is no independent UIB calibration, so this is NOT a calibrated result; use conc_ppm_doc as the reported value."),
         ("doc_area_total", "number", "a.u.*min", "Total integrated DOC peak area"),
     ]
     for fr in FRACTIONS:
@@ -451,6 +451,10 @@ FILES
                          concentrations (mg C/L), DOC and UV fraction areas,
                          and the processing recipe (injection, smoothing,
                          baseline, delay, calibration, volume, anomalies).
+                         Reported concentration = conc_ppm_doc (direct TOC
+                         signal). conc_ppm_uib is SECONDARY/INDICATIVE only:
+                         the UIB signal quantified with the DOC-Direct
+                         calibration (there is no independent UIB calibration).
   traces/                One CSV per sample with the time-resolved chromatogram.
                          COLUMN mode: columns are time_min, doc and one column
                          per UV wavelength (a220 ... a362).

@@ -1,0 +1,592 @@
+<!DOCTYPE html>
+<html lang="ca">
+<head>
+<meta charset="utf-8">
+<title>Informe Suite HPSEC</title>
+<style>
+  :root{
+    --ink:#1a1f26; --muted:#5a6572; --rule:#c9d1da; --accent:#1f5c8f;
+    --accent-soft:#eef3f8; --bg:#ffffff; --band:#f6f8fa;
+  }
+  *{box-sizing:border-box;}
+  html{-webkit-print-color-adjust:exact; print-color-adjust:exact;}
+  body{
+    font-family:"Charter","Georgia","Cambria",serif;
+    color:var(--ink); background:var(--bg);
+    margin:0; line-height:1.5; font-size:11pt;
+  }
+  .page{max-width:720px; margin:0 auto; padding:30px 42px 48px;}
+
+  header.masthead{border-bottom:2px solid var(--accent); padding-bottom:14px; margin-bottom:22px;}
+  .kicker{font-family:"Helvetica Neue",Arial,sans-serif; font-size:8.5pt; letter-spacing:.14em;
+    text-transform:uppercase; color:var(--accent); font-weight:700; margin:0 0 6px;}
+  h1{font-size:20pt; line-height:1.15; margin:0 0 6px; font-weight:700; letter-spacing:-.01em;}
+  .sub{font-size:11pt; color:var(--muted); margin:0; font-style:italic;}
+  .meta{font-family:"Helvetica Neue",Arial,sans-serif; font-size:8.5pt; color:var(--muted);
+    margin-top:12px; display:flex; gap:20px; flex-wrap:wrap;}
+
+  h2{font-family:"Helvetica Neue",Arial,sans-serif; font-size:11.5pt; font-weight:700;
+    color:var(--accent); margin:26px 0 8px; letter-spacing:.005em;}
+  h2 .n{color:var(--rule); font-variant-numeric:tabular-nums; margin-right:8px;}
+  h3{font-family:"Helvetica Neue",Arial,sans-serif; font-size:10pt; font-weight:700;
+    color:var(--ink); margin:16px 0 4px;}
+  p{margin:0 0 10px; text-align:justify; hyphens:auto;}
+  .lead{font-size:11.5pt; color:#2a3038;}
+
+  .pipeline{display:flex; gap:6px; margin:12px 0 4px; font-family:"Helvetica Neue",Arial,sans-serif;}
+  .step{flex:1; background:var(--accent-soft); border-top:3px solid var(--accent);
+    padding:8px 9px; font-size:8.5pt;}
+  .step b{display:block; font-size:9.5pt; color:var(--accent); margin-bottom:2px;}
+  .step span{color:var(--muted);}
+
+  .callout{background:var(--band); border-left:3px solid var(--accent); padding:12px 16px;
+    margin:12px 0; font-size:10.5pt;}
+
+  table{width:100%; border-collapse:collapse; margin:10px 0 4px; font-size:9.5pt;}
+  caption{font-family:"Helvetica Neue",Arial,sans-serif; font-size:8.5pt; color:var(--muted);
+    text-align:left; margin-bottom:5px; caption-side:top;}
+  th,td{text-align:left; padding:6px 10px 6px 0; vertical-align:top; border:none;}
+  thead th{border-bottom:1.5px solid var(--ink); font-family:"Helvetica Neue",Arial,sans-serif;
+    font-size:8.5pt; text-transform:uppercase; letter-spacing:.05em;}
+  tbody tr{border-bottom:.75px solid var(--rule);}
+  tbody td:first-child{font-weight:700; white-space:nowrap; padding-right:18px;}
+
+  ul{margin:4px 0 10px; padding-left:18px;}
+  li{margin-bottom:5px;}
+  .term{font-weight:700; color:var(--accent);}
+
+  code,.mod{font-family:"SF Mono","Consolas","Menlo",monospace; font-size:8.8pt;
+    background:var(--accent-soft); color:#124; padding:1px 4px; border-radius:3px;}
+  td code{background:var(--band);}
+  th.num,td.num{text-align:right; white-space:nowrap; font-variant-numeric:tabular-nums; padding-right:14px;}
+  td.num{font-family:"SF Mono","Consolas",monospace; font-size:8.8pt; color:var(--muted);}
+  .fn{font-family:"SF Mono","Consolas","Menlo",monospace; font-size:8.5pt; color:#2a3038;}
+  .repo{background:#11202e; color:#dce7f0; font-family:"SF Mono","Consolas","Menlo",monospace;
+    font-size:8.8pt; padding:12px 16px; border-radius:5px; margin:10px 0; line-height:1.7;}
+  .repo b{color:#7fb2dd; font-weight:400;}
+  .repo .c{color:#6b8299;}
+
+  /* diagrama de l'equip: dos aparells no connectats */
+  .hw{display:flex; align-items:stretch; gap:0; margin:14px 0 6px; font-family:"Helvetica Neue",Arial,sans-serif;}
+  .hw-box{flex:1; border:1.4px solid var(--accent); border-radius:6px; padding:10px 12px; background:var(--accent-soft);}
+  .hw-box .t{font-size:9.5pt; font-weight:700; color:var(--accent); margin-bottom:3px;}
+  .hw-box .d{font-size:8.3pt; color:var(--muted); line-height:1.4;}
+  .hw-box .clk{display:inline-block; margin-top:6px; font-size:7.8pt; font-weight:700;
+    color:#8a5a00; background:#fdf2dc; padding:1px 6px; border-radius:3px;}
+  .hw-gap{flex:0 0 108px; display:flex; flex-direction:column; align-items:center; justify-content:center; padding:0 4px;}
+  .hw-gap .flow{font-size:8pt; color:var(--muted);}
+  .hw-gap .cut{font-size:8pt; font-weight:700; color:#b1402e; text-align:center; line-height:1.3; margin-top:3px;}
+  .steplist{list-style:none; padding:0; margin:8px 0 6px; counter-reset:s;}
+  .steplist li{counter-increment:s; position:relative; padding:4px 0 4px 30px; margin:0;
+    border-bottom:.75px solid var(--rule);}
+  .steplist li:last-child{border-bottom:none;}
+  .steplist li::before{content:counter(s); position:absolute; left:0; top:4px;
+    width:20px; height:20px; border-radius:50%; background:var(--accent); color:#fff;
+    font-family:"Helvetica Neue",Arial,sans-serif; font-size:9pt; font-weight:700;
+    text-align:center; line-height:20px;}
+  .steplist b{color:var(--accent);}
+
+  /* xifres de volum de dades */
+  .stats{display:flex; gap:10px; margin:12px 0 4px;}
+  .stat{flex:1; background:var(--band); border-top:3px solid var(--accent); padding:10px 12px;}
+  .stat .big{font-family:"Helvetica Neue",Arial,sans-serif; font-size:17pt; font-weight:700;
+    color:var(--accent); line-height:1; letter-spacing:-.01em;}
+  .stat .lab{font-family:"Helvetica Neue",Arial,sans-serif; font-size:8pt; color:var(--muted);
+    margin-top:4px; line-height:1.3;}
+
+  /* blocs de fase de treball */
+  .phase{border:1px solid var(--rule); border-radius:6px; padding:14px 16px; margin:12px 0;}
+  .phase.p1{border-left:4px solid var(--accent);}
+  .phase.p2{border-left:4px solid #8a5a00;}
+  .phase .ph-h{font-family:"Helvetica Neue",Arial,sans-serif; font-weight:700; font-size:10.5pt;
+    margin-bottom:2px;}
+  .phase.p1 .ph-h{color:var(--accent);}
+  .phase.p2 .ph-h{color:#8a5a00;}
+  .phase .ph-s{font-family:"Helvetica Neue",Arial,sans-serif; font-size:8.3pt; color:var(--muted);
+    text-transform:uppercase; letter-spacing:.06em; margin-bottom:8px;}
+  .phase ul{margin:0; padding-left:18px;}
+  .phase .mods{font-family:"SF Mono","Consolas",monospace; font-size:8pt; color:var(--muted);
+    margin-top:8px; padding-top:7px; border-top:.75px dotted var(--rule);}
+
+  /* targetes de projecte */
+  .projects{display:flex; gap:10px; margin:12px 0 6px;}
+  .proj{flex:1; border:1px solid var(--rule); border-top:3px solid var(--accent); border-radius:5px;
+    padding:11px 13px;}
+  .proj .pn{font-family:"Helvetica Neue",Arial,sans-serif; font-weight:700; font-size:10.5pt;
+    color:var(--accent); letter-spacing:.01em;}
+  .proj .py{font-family:"Helvetica Neue",Arial,sans-serif; font-size:7.6pt; color:var(--muted);
+    text-transform:uppercase; letter-spacing:.05em; margin-bottom:6px;}
+  .proj .pd{font-size:8.8pt; line-height:1.4; margin-bottom:7px;}
+  .proj .ps{font-size:8pt; color:var(--muted); line-height:1.35; border-top:.75px dotted var(--rule);
+    padding-top:6px;}
+  .proj .ps b{color:var(--ink);}
+
+  /* annex + captures de pantalla */
+  .annex{break-before:page;}
+  figure.shot{margin:14px 0 20px;}
+  figure.shot img{width:100%; border:1px solid var(--rule); border-radius:5px; display:block;}
+  figure.shot figcaption{font-family:"Helvetica Neue",Arial,sans-serif; font-size:8.5pt;
+    color:var(--muted); margin-top:6px; line-height:1.4;}
+
+  footer{margin-top:28px; padding-top:10px; border-top:.75px solid var(--rule);
+    font-family:"Helvetica Neue",Arial,sans-serif; font-size:8pt; color:var(--muted);
+    display:flex; justify-content:space-between;}
+
+  @media print{
+    .page{max-width:none; padding:0 8mm;}
+    h2,h3{break-after:avoid;}
+    table,.callout,.pipeline,.projects,.proj,.stats,.hw,.phase,figure.shot,.repo{break-inside:avoid;}
+    figure.shot img{break-inside:avoid;}
+  }
+  @page{size:A4; margin:16mm 14mm;}
+</style>
+</head>
+<body>
+<div class="page">
+
+  <header class="masthead">
+    <p class="kicker">Informe tècnic · Programari d'anàlisi</p>
+    <h1>Suite HPSEC</h1>
+    <p class="sub">Processament, calibració i quantificació de cromatogrames HPSEC&#8209;DAD&#8209;OCD</p>
+    <div class="meta">
+      <span>Sistema HPLC&#8209;DAD&#8209;TOC</span>
+      <span>Python 3 / PySide6</span>
+      <span>Suite v2.1.0</span>
+      <span>github.com/socmariams&#8209;coder/HPSEC</span>
+      <span>Octubre 2026 · doc v01</span>
+    </div>
+  </header>
+
+  <p class="lead">La Suite HPSEC és un <b>programari científic desenvolupat en Python</b>, amb
+  interfície gràfica pròpia construïda amb PySide (Qt), per al processament de les dades generades per
+  cromatografia d'exclusió per mida amb detecció per xarxa de diodes (<em>diode array</em>) i de
+  carboni orgànic (HPSEC&#8209;DAD&#8209;OCD), aplicada a l'<b>anàlisi de la matèria orgànica dissolta
+  en aigües</b>.</p>
+  <p class="lead">Automatitza el flux analític complet —importació i consolidació de les dades dels
+  detectors, alineació temporal dels senyals, integració i correcció del senyal, calibració i
+  quantificació— i en produeix resultats traçables: les <b>concentracions de carboni orgànic dissolt
+  (DOC) fraccionades per mida molecular</b> i les <b>propietats òptiques (espectrals) de cada
+  fracció</b> obtingudes del DAD, amb el control de qualitat associat.</p>
+
+  <h2><span class="n">1</span>Context i aplicació: per què aquesta tècnica</h2>
+  <p>La Suite dona suport a una línia de recerca del grup <b>LEQUIA</b> (Institut de Medi Ambient,
+  Universitat de Girona) sobre el control dels <b>subproductes de la desinfecció (DBP)</b> a l'aigua
+  potable. Els DBP es formen quan els desinfectants (clor, diòxid de clor, cloramines) reaccionen amb
+  la <b>matèria orgànica natural dissolta (DOM/NOM)</b> de l'aigua; se'n coneixen centenars i alguns
+  —com els trihalometans (THM) i els àcids haloacètics (HAA)— estan regulats per la seva toxicitat.
+  La matèria orgànica n'és el precursor principal.</p>
+  <p>Els indicadors globals habituals (carboni orgànic dissolt total, absorbància UV₂₅₄, SUVA) no
+  informen de la mida ni del caràcter de les molècules i correlacionen feblement amb el potencial de
+  formar DBP. La tècnica <b>HPSEC&#8209;DAD&#8209;OCD</b> resol aquesta limitació: separa la DOM per
+  mida molecular aparent en <b>cinc fraccions</b> (biopolímers, substàncies húmiques, <em>building
+  blocks</em>, i àcids i neutres de baix pes molecular) i, combinant el detector de carboni (OCD) amb
+  el detector òptic multi&#8209;longitud d'ona (DAD), permet quantificar i caracteritzar cada fracció,
+  seguir&#8209;ne l'eliminació al llarg del tren de tractament d'una potabilitzadora (ETAP) i
+  relacionar&#8209;la amb la formació de DBP. És, doncs, la <b>tècnica analítica base</b> de la línia
+  —seguint l'enfocament LC&#8209;OCD&#8209;OND de Huber et al. (2011)— desenvolupada i aplicada a la
+  UdG en el marc de la tesi de M. Valentí&#8209;Quiroga.</p>
+  <p>Aquesta capacitat analítica s'ha desplegat en una sèrie de projectes competitius, en
+  col·laboració amb les principals empreses gestores d'aigua de Catalunya:</p>
+
+  <div class="projects">
+    <div class="proj">
+      <div class="pn">WATSON</div>
+      <div class="py">Pla Nacional «Retos» · des de 2018</div>
+      <div class="pd">Operació resilient de potabilitzadores amb suport a la decisió; <b>primer desplegament</b> del fraccionament HPSEC&#8209;DAD&#8209;DOC i relació amb coagulació, carbó actiu i ultrafiltració.</div>
+      <div class="ps"><b>Socis:</b> ATL (Aigües Ter Llobregat), AGiSST (Girona, Salt i Sarrià de Ter). <b>ETAP:</b> Abrera.</div>
+    </div>
+    <div class="proj">
+      <div class="pn">ShERLOcK</div>
+      <div class="py">Gestió resilient de l'aigua potable</div>
+      <div class="pd">Avalua combinacions d'operacions unitàries per eliminar la NOM minimitzant els DBP; <b>millora la resolució</b> del fraccionament i el lliga a l'especiació de DBP.</div>
+      <div class="ps"><b>Socis:</b> ATL, FISERSA, ACA, Aigües de Manresa, AGiSST. <b>Validació:</b> Abrera, Cardedeu, Figueres, Montfullà.</div>
+    </div>
+    <div class="proj">
+      <div class="pn">MORIARTY</div>
+      <div class="py">Pla Nacional · 2024–2027</div>
+      <div class="pd">Viabilitat de la <b>reutilització potable</b> de l'aigua (PWR); amplia el fraccionament de la DOM a la <b>detecció de nitrogen</b> (precursors de N&#8209;DBP com la NDMA).</div>
+      <div class="ps"><b>Socis:</b> ATL, FISERSA, CATSA (Girona), CCAAIT (Tarragona).</div>
+    </div>
+  </div>
+  <p style="font-family:'Helvetica Neue',Arial,sans-serif; font-size:8.5pt; color:var(--muted); text-align:left; margin-top:2px;">
+  Les dades les genera aquest equip; la Suite és l'eina que les fa utilitzables de forma sistemàtica i
+  a escala, requisit per a l'anàlisi de camp en aquests projectes.</p>
+
+  <h2><span class="n">2</span>La necessitat del programari</h2>
+
+  <h3>El problema de partida: dos aparells, dos rellotges i dos formats</h3>
+  <p>La mostra d'aigua entra per l'HPLC, que la fa passar per una columna que separa les molècules
+  per mida (les grans surten primer, les petites després). A la sortida de la columna hi ha un
+  <b>detector òptic (DAD)</b>, que forma part de l'HPLC i mesura com la mostra absorbeix la llum.
+  Tot seguit, aquest mateix corrent d'eluent continua cap a un <b>segon aparell independent, el
+  detector de carboni (OCD/TOC)</b>, que crema la matèria orgànica i en mesura el carboni. És a dir,
+  la mateixa mostra passa successivament pels dos detectors.</p>
+  <p>El punt clau és aquest: <b>els dos aparells no estan connectats</b>. Cadascun enregistra pel seu
+  compte i això implica dues incompatibilitats alhora. Primer, <b>cada aparell desa les dades en el
+  seu propi format i estructura de fitxer</b>, diferent de l'altre, de manera que no es poden
+  simplement superposar: s'han de llegir, interpretar i reescriure en una estructura comuna. Segon,
+  <b>cadascun va amb el seu propi rellotge</b> i, com que la mostra triga una estona a viatjar del
+  primer detector al segon, el mateix pic apareix en dos moments diferents. Reconciliar tot això no
+  és un simple ajust, sinó un pas de preparació que, a més, <b>es verifica amb patrons interns</b>
+  injectats a cada seqüència (l'estàndard KHP), que confirmen que l'alineació i la resposta són
+  correctes abans de donar cap resultat per bo.</p>
+
+  <div class="hw">
+    <div class="hw-box">
+      <div class="t">HPLC + detector òptic</div>
+      <div class="d">Agilent 1260 Infinity II · injector (400 µL) · dues columnes d'exclusió per mida PL Aquagel&#8209;OH en sèrie · detector de diodes (DAD, 190–600 nm)</div>
+      <div class="clk">⏱ rellotge A</div>
+    </div>
+    <div class="hw-gap">
+      <div class="flow">— la mostra hi passa →</div>
+      <div class="cut">✂ no connectats<br>format i rellotge<br>diferents</div>
+    </div>
+    <div class="hw-box">
+      <div class="t">Detector de carboni (OCD/TOC)</div>
+      <div class="d">Sievers M9 (OCD), connectat a la sortida del DAD · oxida la matèria orgànica i en mesura el carboni (DOC) · adquisició, format de fitxer i rellotge propis</div>
+      <div class="clk">⏱ rellotge B</div>
+    </div>
+  </div>
+  <p style="font-family:'Helvetica Neue',Arial,sans-serif; font-size:8.5pt; color:var(--muted); text-align:left; margin-top:2px;">
+  Figura 1. Cadena de l'equip. La mateixa mostra passa pels dos detectors en sèrie, però cadascun
+  l'enregistra pel seu compte (format i rellotge propis); el programari ha de reconstruir&#8209;ne la
+  correspondència.</p>
+
+  <h3>Què cal fer, en general, abans de poder analitzar</h3>
+  <p>Per això el primer que fa la Suite no és «processar», sinó <b>posar d'acord els dos aparells</b>.
+  Les tasques, en ordre:</p>
+  <ul class="steplist">
+    <li><b>Recollir i llegir</b> les dades dels dos instruments, cadascun en el seu format propi (els fitxers del detector òptic i els del detector de carboni), juntament amb el volum injectat de cada mostra.</li>
+    <li><b>Aparellar</b> cada injecció amb les seves rèpliques i identificar què és (patró de calibratge KHP, control o mostra real).</li>
+    <li><b>Alinear</b> els dos senyals en el temps: es calcula el desfasament (<em>delay</em>) perquè un mateix moment de l'anàlisi coincideixi en tots dos aparells. <b>No és una correcció a cegues</b>: el desfasament es mesura i es <b>verifica amb el patró intern KHP</b> de cada seqüència.</li>
+    <li><b>Consolidar</b> les dues fonts, ja amb formats harmonitzats i temps alineats, en un únic full de treball (MasterFile) amb les dades en brut i netejades de línia de base.</li>
+    <li><b>Processar el senyal</b>: només ara es poden integrar els pics, corregir anomalies, aplicar la calibració i obtenir la concentració.</li>
+  </ul>
+  <p>Fer tot això manualment amb les eines habituals (fulls de càlcul com Excel, copiant i alineant a
+  mà les dades dels dos detectors) és <b>tediós i subjecte a errades, i limita la capacitat
+  d'interpretació i de processament</b>. Automatitzar&#8209;ho <b>multiplica la capacitat d'anàlisi</b>
+  —permet tractar moltes més mostres amb el mateix esforç— i fa que cada resultat sigui homogeni,
+  reproduïble i auditable. La Suite ho encapsula en un flux de cinc passos amb control de qualitat i
+  traçabilitat, de manera que s'aplica el mateix criteri a cada mostra i cada resultat queda
+  documentat.</p>
+
+  <h3>Per què un desenvolupament a mida</h3>
+  <p><b>No existeix cap solució comercial que doni resposta a aquestes necessitats.</b> El programari
+  que acompanya els instruments tracta cada detector de manera aïllada i no reconcilia dos aparells
+  amb formats de dades i rellotges independents; tampoc cobreix el fraccionament per pes molecular, la
+  calibració multi&#8209;règim ni la correcció d'anomalies pròpies d'aquesta tècnica. Per això la Suite
+  s'ha hagut de desenvolupar <b>a mida</b>, integrant tot el procés —de les dades en brut dels dos
+  detectors fins al resultat quantificat i traçable— en una sola eina.</p>
+
+  <div class="pipeline">
+    <div class="step"><b>1 · Importar</b><span>Recollir, aparellar, alinear i consolidar les dades</span></div>
+    <div class="step"><b>2 · Verificar</b><span>Control dels patrons KHP i avisos de qualitat</span></div>
+    <div class="step"><b>3 · Analitzar</b><span>Integració de pics, SNR i detecció d'anomalies</span></div>
+    <div class="step"><b>4 · Quantificar</b><span>Aplicació de la calibració → ppm per fracció</span></div>
+    <div class="step"><b>5 · Exportar</b><span>Resultats i dataset traçable</span></div>
+  </div>
+  <p style="font-family:'Helvetica Neue',Arial,sans-serif; font-size:8.5pt; color:var(--muted); text-align:left; margin-top:4px;">
+  Figura 2. Flux de processament de la Suite en cinc passos.</p>
+
+  <h3>Les dades que genera cada mostra</h3>
+  <p>Cada mostra d'aigua s'analitza com a mínim <b>per duplicat</b> (dues injeccions o més). Cada
+  injecció genera uns <b>5.625 punts de dades</b> —els senyals del detector de carboni (DOC directe i
+  UIB) i del detector òptic (DAD), registrats al llarg d'un cromatograma d'uns <b>78 minuts</b>—, de
+  manera que una sola mostra, comptant el duplicat, en produeix unes <b>11.250</b>. Així, una mostra no
+  dona un únic valor, sinó un conjunt de dades ric i repetitiu que la Suite ha de llegir, alinear i
+  processar.</p>
+  <div class="stats">
+    <div class="stat"><div class="big">≥ 2</div><div class="lab">injeccions per mostra (duplicat mínim)</div></div>
+    <div class="stat"><div class="big">~78 min</div><div class="lab">de cromatograma per injecció</div></div>
+    <div class="stat"><div class="big">5.625</div><div class="lab">punts de dades per anàlisi (DOC, UIB i DAD)</div></div>
+    <div class="stat"><div class="big">11.250</div><div class="lab">punts per mostra, comptant el duplicat</div></div>
+  </div>
+  <p style="font-family:'Helvetica Neue',Arial,sans-serif; font-size:8.5pt; color:var(--muted); text-align:left; margin-top:2px;">
+  Figura 3. Dades que genera cada mostra d'aigua analitzada.</p>
+
+  <h2><span class="n">3</span>Els algoritmes de calibració</h2>
+  <p>La calibració és el que converteix una àrea de pic (senyal) en una concentració de carboni
+  (ppm). El seu paper dins la Suite és garantir que aquesta conversió sigui correcta, estable en
+  el temps i específica per a cada condició de mesura.</p>
+
+  <h3>Què fan</h3>
+  <ul>
+    <li><b>Model de calibració per àmbit.</b> Cada recta de calibració cobreix un únic senyal i
+    sensibilitat de detector, de manera que una àrea sempre es converteix amb el factor de resposta
+    (RF màssic) i l'ordenada a l'origen que li corresponen, i no es barregen règims de mesura
+    diferents.</li>
+    <li><b>Ajust automàtic a partir dels patrons KHP.</b> La recta s'obté per regressió de l'historial
+    de patrons d'hidrogenoftalat de potassi (KHP), amb càlcul per rèplica i descart automàtic de
+    punts anòmals, de forma que la calibració reflecteix l'estat real de l'instrument.</li>
+    <li><b>Control de qualitat continu.</b> Cada patró KHP es compara amb la recta vigent (gràfics
+    de desviació tipus Levey&#8209;Jennings), cosa que fa visible la deriva del detector abans que
+    afecti els resultats.</li>
+    <li><b>Gestió de règims instrumentals.</b> Un canvi rellevant de l'instrument (detector o
+    columna) obre una calibració nova i independent, amb una frontera temporal que separa les dades
+    noves de les antigues sense contaminar l'historial.</li>
+    <li><b>Recalibració retroactiva.</b> Quan la calibració canvia, els resultats ja processats es
+    poden requantificar amb la recta correcta, i es detecta automàticament quan un resultat ha
+    quedat obsolet respecte a la calibració activa.</li>
+  </ul>
+
+  <table>
+    <caption>Taula 1. Problema instrumental que resol cada mecanisme de calibració.</caption>
+    <thead><tr><th>Mecanisme</th><th>Problema que resol</th></tr></thead>
+    <tbody>
+      <tr><td>Recta per àmbit</td><td>Senyals i sensibilitats conviuen en una seqüència sense una conversió única vàlida per a tots</td></tr>
+      <tr><td>Ajust des de KHP</td><td>El factor de resposta real no és constant ni conegut a priori</td></tr>
+      <tr><td>QC Levey&#8209;Jennings</td><td>La resposta del detector deriva lentament i cal detectar&#8209;ho a temps</td></tr>
+      <tr><td>Règims instrumentals</td><td>Un canvi de maquinari invalida la calibració anterior</td></tr>
+      <tr><td>Requantificació</td><td>Resultats antics queden desfasats quan es refà la calibració</td></tr>
+    </tbody>
+  </table>
+
+  <h2><span class="n">4</span>Els algoritmes de correcció d'anomalies</h2>
+  <p>Els senyals reals rarament són nets. Abans de quantificar, la Suite detecta i, quan és possible,
+  corregeix els defectes que falsejarien l'àrea del pic i, per tant, la concentració. El seu paper
+  és assegurar que només s'integra senyal fiable i que les mostres no fiables queden marcades.</p>
+
+  <h3>Què fan</h3>
+  <ul>
+    <li><b>Detecció de saturació.</b> Identifica els pics que superen el rang del detector (clipping),
+    on l'àrea mesurada subestima la concentració real.</li>
+    <li><b>Reparació de pics deformats.</b> Reconstrueix per ajust parabòlic els cims que es desvien
+    de la forma bigaussiana esperada —truncats o amb el cim irregular/bilobulat—, recuperant una àrea
+    representativa en lloc de descartar la mesura.</li>
+    <li><b>Relació senyal&#8209;soroll (SNR).</b> Avalua la qualitat de cada pic respecte al soroll de
+    base, que condiciona si el senyal és quantificable.</li>
+    <li><b>Correcció del desfasament temporal (delay).</b> Alinea el detector de carboni, situat
+    aigües avall, amb el detector òptic inline, fixant el delay mesurat pel patró KHP de cada
+    seqüència perquè les fraccions de pes molecular quedin ben delimitades.</li>
+    <li><b>Selecció robusta de rèplica.</b> Quan una rèplica té anomalies no reparables, el sistema
+    tria la rèplica vàlida; si cap no ho és, la mostra es marca com a no quantificable.</li>
+    <li><b>Avisos jerarquitzats.</b> Tots els defectes es consoliden en un sistema d'avisos per
+    severitat que etiqueta cada mostra (semàfor) i en condiciona la validesa abans de quantificar.</li>
+  </ul>
+
+  <h3>Com funcionen (resum tècnic)</h3>
+  <p>Els algoritmes no apliquen llindars arbitraris, sinó criteris derivats de la forma coneguda d'un
+  pic cromatogràfic. En resum:</p>
+  <ul>
+    <li><b>Detecció de saturació.</b> Compara l'amplada del <em>plató</em> (punts dins del 98% del
+    màxim) amb l'amplada a mitja alçada (FWHM). Un pic gaussià net té una relació plató/FWHM ≈ 0,17;
+    si supera <b>0,40</b>, el cim és pla i es marca com a saturat. El criteri només depèn de la forma,
+    no de la sensibilitat del detector.</li>
+    <li><b>Detecció del cim irregular.</b> Identifica els pics que es desvien de la forma bigaussiana
+    esperada per una depressió al vèrtex (perfil bilobulat). Analitza només el <b>20% superior</b> del
+    pic i hi busca el patró <em>pic&#8209;vall&#8209;pic</em>: una vall només compta si té un màxim
+    local abans i un després i supera una fondària mínima. Això distingeix una deformació real del
+    detector d'una simple fluctuació del senyal.</li>
+    <li><b>Reparació parabòlica.</b> Traça les tangents als dos flancs del pic i en calcula la
+    intersecció —el vèrtex «teòric» que tindria el pic sense deformar, ajustat per un factor—; després
+    ajusta una paràbola que passa per l'ancoratge esquerre, aquest vèrtex i l'ancoratge dret. El cim
+    deformat se substitueix pel <em>màxim</em> entre el senyal original i la paràbola, i es torna a
+    integrar l'àrea per sobre de la línia de base.</li>
+    <li><b>Alineació temporal.</b> Cada marca de temps del detector de carboni es desplaça pel
+    desfasament net (<span class="fn">hora_HPLC = hora_TOC − net&nbsp;delay</span>) i s'assigna a la
+    injecció HPLC corresponent amb un marge de guarda; el desfasament es mesura i es verifica amb el
+    pic conegut del patró KHP de cada seqüència.</li>
+    <li><b>Forma i soroll.</b> L'ajust <em>bi&#8209;gaussià</em> del pic en dona el R² i l'asimetria
+    (qualitat de forma), mentre que la relació senyal&#8209;soroll i la línia de base calculada per
+    finestres determinen si el senyal és prou net per quantificar&#8209;lo.</li>
+  </ul>
+
+  <div class="callout">
+    <b>Per què totes dues coses dins la mateixa Suite.</b> La correcció d'anomalies i la calibració
+    estan acoblades: els mateixos patrons KHP que calibren l'instrument serveixen per mesurar el
+    delay i per detectar la deriva, i una àrea només es converteix a ppm després d'haver estat
+    depurada d'anomalies. Separar&#8209;les trencaria la traçabilitat entre el senyal en brut i la
+    concentració final.
+  </div>
+
+  <h2><span class="n">5</span>Arquitectura i ubicació al repositori</h2>
+  <p>El programari està escrit en <b>Python 3</b> (interfície gràfica amb PySide6/Qt) i suma unes
+  <b>69.000 línies de codi</b>: ~30.000 al <em>backend</em> científic (els mòduls
+  <span class="mod">hpsec_*.py</span>), ~32.000 a la interfície (<span class="mod">gui/</span>) i la
+  resta en proves i utilitats. El codi font viu en un repositori Git privat a GitHub. L'arquitectura
+  és modular: un punt d'entrada obre la interfície i cada mòdul cobreix una fase o una funció del
+  pipeline; tot el càlcul científic resideix al <em>backend</em>, i la carpeta
+  <span class="mod">gui/</span> només hi posa la interfície al davant.</p>
+
+  <div class="repo">
+    <span class="c"># Repositori</span><br>
+    <b>github.com/socmariams-coder/HPSEC</b><br>
+    <span class="c"># branques: main · audit-robustesa (feina de robustesa i simplificació)</span><br><br>
+    <span class="c"># Execució</span><br>
+    python hpsec_suite_qt.py&nbsp;&nbsp;&nbsp;&nbsp;<span class="c"># GUI — wizard de 5 passos + panells globals</span><br>
+    python test_robustesa_audit.py&nbsp;&nbsp;<span class="c"># bateria de proves de robustesa</span>
+  </div>
+
+  <p>Els mòduls es divideixen en dos grups segons el que aporten. Els <b>mòduls bàsics</b> preparen
+  les dades —recullen, llegeixen els dos formats, aparellen, alineen i consoliden— i són
+  imprescindibles perquè sense ells no hi ha dades sobre les quals treballar. Els <b>mòduls avançats</b>
+  són els que apliquen la ciència: processen el senyal, corregeixen les anomalies, calibren i
+  controlen la qualitat.</p>
+
+  <h3>Mòduls bàsics — preparació de les dades</h3>
+  <table>
+    <caption>Taula 2. Mòduls bàsics: recollir, alinear i consolidar. (línies = codi, sense comptar blancs)</caption>
+    <thead><tr><th>Mòdul</th><th>Rol</th><th class="num">Línies</th><th>Què fa</th></tr></thead>
+    <tbody>
+      <tr><td><code>hpsec_import.py</code></td><td>Importar</td><td class="num">5.373</td><td>Llegeix els fitxers dels dos aparells (cada format), aparella rèpliques, identifica KHP/control/mostra, resta la línia de base i crea el MasterFile</td></tr>
+      <tr><td><code>hpsec_delay.py</code></td><td>Alinear</td><td class="num">341</td><td>Calcula i aplica el <em>net delay</em> HPLC↔TOC (verificat amb el KHP) perquè els dos senyals coincideixin en el temps</td></tr>
+      <tr><td><code>hpsec_consolidate.py</code></td><td>Consolidar</td><td class="num">57</td><td>Utilitats de consolidació dels fitxers d'instrument en una estructura comuna</td></tr>
+      <tr><td><code>hpsec_config.py</code></td><td>Configurar</td><td class="num">462</td><td>Font única de les fraccions de pes molecular i les durades de mostra</td></tr>
+      <tr><td><code>hpsec_samples_db.py</code></td><td>Organitzar</td><td class="num">697</td><td>Registre i cerca de mostres i seqüències</td></tr>
+      <tr><td><code>hpsec_export.py</code></td><td>Exportar</td><td class="num">1.427</td><td>Genera el SUMMARY i escriu els resultats a la carpeta RESULTATS/</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Mòduls avançats — processament del senyal i ciència</h3>
+  <table>
+    <caption>Taula 3. Mòduls avançats: processar, corregir, calibrar i controlar la qualitat. (línies = codi, sense comptar blancs)</caption>
+    <thead><tr><th>Mòdul</th><th>Rol</th><th class="num">Línies</th><th>Què fa</th></tr></thead>
+    <tbody>
+      <tr><td><code>hpsec_analyze.py</code></td><td>Analitzar</td><td class="num">3.246</td><td>Integra els pics, calcula SNR i R², detecta anomalies i selecciona la rèplica vàlida</td></tr>
+      <tr><td><code>hpsec_core.py</code></td><td>Matemàtica de senyal</td><td class="num">2.827</td><td>Ajust bi&#8209;gaussià, línia de base, SNR, detecció de saturació i reparació de pics desviats de la forma bigaussiana</td></tr>
+      <tr><td><code>hpsec_calibrate.py</code></td><td>Calibrar i quantificar</td><td class="num">5.035</td><td>Rectes per àmbit, ajust des de KHP, QC, règims instrumentals i recalibració retroactiva</td></tr>
+      <tr><td><code>hpsec_warnings.py</code></td><td>Qualitat</td><td class="num">745</td><td>Consolidació dels avisos per severitat (semàfor per mostra)</td></tr>
+      <tr><td><code>hpsec_reports.py</code></td><td>Informes</td><td class="num">3.795</td><td>Genera els PDF d'anàlisi i de qualitat</td></tr>
+      <tr><td><code>hpsec_fair.py</code></td><td>Lliurament obert</td><td class="num">494</td><td>Empaqueta un dataset FAIR (Frictionless Data Package) per a anàlisi externa</td></tr>
+    </tbody>
+  </table>
+  <p style="font-family:'Helvetica Neue',Arial,sans-serif; font-size:8.5pt; color:var(--muted); margin-top:2px;">
+  La interfície (<span class="mod">gui/</span>) exposa tots aquests mòduls en panells: el wizard
+  <em>Importar · Verificar · Analitzar · Quantificar · Exportar</em> i els panells globals de
+  calibració, historial KHP, base de mostres i manteniment.</p>
+
+  <h2><span class="n">6</span>Desenvolupament per fases</h2>
+  <p>La feina s'ha construït de manera modular i en dues tandes. Primer es va aixecar i estabilitzar
+  el <b>nucli</b> —tot el que cal per tenir dades fiables i ja processables— i, només sobre aquesta
+  base estable, es va afegir la segona capa d'<b>ampliació</b> amb la calibració fina, la correcció
+  avançada d'anomalies i el control de qualitat. Aquesta separació correspon, a grans trets, als
+  mòduls bàsics i als mòduls avançats descrits abans. La <b>interfície gràfica</b>
+  (<span class="mod">gui/</span>, ~32.000 línies) es desenvolupa de manera transversal a totes dues
+  tandes: a la primera s'aixeca l'estructura bàsica —finestra principal, tauler de seqüències i
+  assistent de passos— i a la segona s'hi afegeixen els panells de calibració, QC i el diàleg de
+  reparació de pics.</p>
+
+  <div class="phase p1">
+    <div class="ph-h">Tanda 1 · Base — el nucli del pipeline</div>
+    <div class="ph-s">Recollir · alinear · consolidar · integrar</div>
+    <ul>
+      <li>Lectura dels dos formats d'instrument, aparellament d'injeccions i identificació (KHP / control / mostra).</li>
+      <li>Alineació temporal HPLC↔TOC (<em>delay</em>) i consolidació de les dues fonts en un MasterFile únic, amb dades en brut i netejades de línia de base.</li>
+      <li>Matemàtica de senyal del nucli: estimació de la línia de base, integració de pics per fracció de pes molecular i relació senyal&#8209;soroll.</li>
+      <li>Quantificació bàsica i exportació dels primers resultats.</li>
+    </ul>
+    <div class="mods">Mòduls: import · delay · consolidate · config · core (nucli) · analyze (integració) · export · gui (finestra principal, tauler, assistent)</div>
+  </div>
+
+  <div class="phase p2">
+    <div class="ph-h">Tanda 2 · Ampliació — calibració, correcció i qualitat</div>
+    <div class="ph-s">Sobre el nucli estable</div>
+    <ul>
+      <li>Motor de calibració: rectes independents per àmbit, ajust automàtic des de l'historial de patrons KHP i control de qualitat continu (Levey&#8209;Jennings).</li>
+      <li>Gestió de règims instrumentals i recalibració retroactiva dels resultats ja processats.</li>
+      <li>Correcció avançada d'anomalies: detecció de saturació, reparació de pics desviats de la forma bigaussiana (truncats o amb cim irregular) i selecció robusta de rèplica.</li>
+      <li>Sistema d'avisos per severitat, informes PDF i dataset obert FAIR per a anàlisi externa.</li>
+      <li>Auditoria de robustesa i simplificació del pipeline (retirada del que no és tronc).</li>
+    </ul>
+    <div class="mods">Mòduls: calibrate · core (saturació i reparació) · analyze (anomalies) · warnings · reports · fair · gui (panells de calibració, QC i diàleg de reparació)</div>
+  </div>
+
+  <h2><span class="n">7</span>On es treballen la calibració i la correcció d'anomalies</h2>
+  <p>Els dos nuclis algorítmics de l'informe estan localitzats en mòduls concrets. Aquesta és la
+  correspondència entre cada funció i el fitxer on es treballa.</p>
+
+  <h3>Calibració — <span class="mod">hpsec_calibrate.py</span> (motor, ~5.900 línies)</h3>
+  <ul>
+    <li><span class="fn">add_calibration()</span> / <span class="fn">_sanitize_regression_data()</span> — construcció de la recta per regressió a partir dels patrons KHP.</li>
+    <li><span class="fn">get_rf_mass_cal()</span>, <span class="fn">get_calibration_intercept()</span>, <span class="fn">quantify_with_global_calibration()</span> — conversió d'àrea a ppm amb el factor de resposta i l'ordenada de l'àmbit corresponent.</li>
+    <li><span class="fn">validate_khp_qc()</span>, <span class="fn">register_qc_result()</span> — control de qualitat continu de cada patró KHP contra la recta vigent.</li>
+    <li><span class="fn">get_regimes()</span>, <span class="fn">start_new_regime()</span>, <span class="fn">resolve_regime_on_calibration()</span>, <span class="fn">filter_history_by_regime()</span> — gestió de règims instrumentals i de la seva frontera temporal.</li>
+    <li><span class="fn">compute_calibration_fingerprint()</span>, <span class="fn">requantify_analysis_json()</span>, <span class="fn">invalidate_quantification_json()</span> — detecció de calibració obsoleta i recalibració retroactiva.</li>
+  </ul>
+
+  <h3>Correcció d'anomalies — <span class="mod">hpsec_core.py</span> (matemàtica, ~3.500 línies)</h3>
+  <ul>
+    <li><span class="fn">detect_peak_clipping()</span> — detecció de saturació del detector (pic truncat).</li>
+    <li><span class="fn">detect_irregular_top()</span> — detecció de cims deformats (desviació de la forma bigaussiana per vèrtex bilobulat).</li>
+    <li><span class="fn">fit_parabola()</span> → <span class="fn">repair_with_parabola()</span> → <span class="fn">recompute_area_with_repair()</span> — reconstrucció parabòlica del cim i recàlcul de l'àrea reparada.</li>
+    <li><span class="fn">calc_snr()</span> / <span class="fn">calc_snr_complete()</span>, <span class="fn">baseline_stats_windowed()</span>, <span class="fn">get_baseline_value()</span> — relació senyal&#8209;soroll i línia de base.</li>
+  </ul>
+  <p>L'orquestració d'aquestes correccions sobre cada mostra es fa a <span class="mod">hpsec_analyze.py</span>
+  (<span class="fn">_asample_detect_peak_and_repairs()</span>, <span class="fn">repair_irregular_top_in_replica()</span>,
+  <span class="fn">compare_replicas()</span>, <span class="fn">recommend_replica()</span>). L'alineació temporal
+  entre detectors viu a <span class="mod">hpsec_delay.py</span> (<span class="fn">update_masterfile_delay()</span>,
+  <span class="fn">estimate_delay_impact()</span>) i la consolidació d'avisos a
+  <span class="mod">hpsec_warnings.py</span>. A la interfície, la reparació es controla des d'un únic
+  diàleg (<span class="mod">gui/widgets/analyze_panel</span>), reutilitzat a tot arreu.</p>
+
+  <h2><span class="n">8</span>Flux de dades: on van a parar els resultats</h2>
+  <p>Cada fase deixa un artefacte persistent, de manera que el camí del senyal en brut fins a la
+  concentració final queda sempre traçat en disc.</p>
+  <table>
+    <caption>Taula 4. Artefactes de dades i el mòdul que els produeix o consumeix.</caption>
+    <thead><tr><th>Artefacte</th><th>Qui l'escriu / llegeix</th><th>Contingut</th></tr></thead>
+    <tbody>
+      <tr><td><code>MasterFile_*.xlsx</code></td><td>escriu <span class="mod">import</span></td><td>Dades consolidades d'una seqüència (un per seqüència)</td></tr>
+      <tr><td><code>Calibration_Reference.json</code></td><td>escriu <span class="mod">calibrate</span>, llegeix <span class="mod">analyze</span></td><td>Calibració activa: RF màssic, ordenada, llindars, règims</td></tr>
+      <tr><td><code>REGISTRY/</code></td><td><span class="mod">samples_db</span> / <span class="mod">calibrate</span></td><td>Registre de seqüències i historial de patrons KHP</td></tr>
+      <tr><td><code>RESULTATS/</code></td><td>escriu <span class="mod">export</span></td><td>SUMMARY, <code>metadata.json</code>, <code>PER_SAMPLE/</code> i PDF per seqüència</td></tr>
+      <tr><td><code>datapackage.json</code></td><td>escriu <span class="mod">fair</span></td><td>Dataset obert FAIR per a anàlisi externa, amb traçabilitat de règim</td></tr>
+    </tbody>
+  </table>
+
+  <h2><span class="n">9</span>Resultat: traçabilitat i reproduïbilitat</h2>
+  <p>El conjunt entrega, per a cada seqüència, els perfils de DOC quantificats per fracció
+  (biopolímers, substàncies húmiques, building blocks, zona de sal i baix pes molecular) acompanyats
+  de la calibració aplicada, dels avisos de qualitat i d'un paquet de dades traçable per a anàlisi
+  externa. Tot el programari està sota control de versions i es valida amb una bateria de proves de
+  robustesa pròpia, de manera que cada resultat és reproduïble i auditable.</p>
+
+  <div class="annex">
+  <h2><span class="n">A</span>Annex · La interfície d'usuari</h2>
+  <p>La Suite s'opera des d'una única finestra organitzada en pestanyes. La pestanya principal,
+  <b>▶ Processar</b>, conté el <b>tauler de seqüències</b> —la llista de totes les anàlisis amb el seu
+  estat a cada pas— i l'<b>assistent de cinc passos</b> (Importar · Verificar · Analitzar ·
+  Quantificar · Exportar). Les pestanyes globals donen accés transversal a <b>Mostres</b> (base de
+  dades de mostres), <b>QC/KHP</b> (històric de calibracions i control de qualitat), <b>Calibració
+  Global</b>, <b>Manteniment</b>, <b>Configuració</b> (llindars de qualitat i definició de fraccions)
+  i <b>Exportar</b>.</p>
+
+  <figure class="shot">
+    <img src="annex_img/annex_dashboard.png" alt="Tauler de seqüències de la Suite HPSEC">
+    <figcaption>Figura A1. Tauler de seqüències (pestanya «Processar»): cada fila és una anàlisi amb
+    l'estat de cada pas del flux (Importar · Verificar · Analitzar · Quantificar · Exportar), el nombre
+    de mostres i controls i els avisos; a dalt, els filtres per tipus, mode i estat.</figcaption>
+  </figure>
+
+  <figure class="shot">
+    <img src="annex_img/annex_verificar.png" alt="Pas Verificar amb la calibració i el control KHP">
+    <figcaption>Figura A2. Pas «Verificar»: recta de calibració vigent per a cada senyal de carboni
+    (Direct i UIB), amb els punts del patró KHP i la desviació del KHP de la seqüència respecte a la
+    recta —el control de qualitat de la calibració— i, a sota, els cromatogrames del KHP alineats.</figcaption>
+  </figure>
+
+  <figure class="shot">
+    <img src="annex_img/annex_analitzar.png" alt="Pas Analitzar amb reparació de pics">
+    <figcaption>Figura A3. Pas «Analitzar»: taula de qualitat de cada mostra (✓ correcte, ⚠ avís,
+    ✗ error) amb la selecció de rèplica per a DOC i DAD, i el cromatograma amb les dues rèpliques
+    (R1/R2) i el senyal del DAD a 254 nm superposats. El botó «Reparar pic» obre la reconstrucció
+    parabòlica del cim deformat; les bandes verticals delimiten les fraccions de pes molecular.</figcaption>
+  </figure>
+
+  </div>
+
+  <p style="font-family:'Helvetica Neue',Arial,sans-serif; font-size:8pt; color:var(--muted); line-height:1.5; margin-top:22px; border-top:.75px solid var(--rule); padding-top:10px;">
+  <b>Mètode de referència:</b> Huber, S. A.; Balz, A.; Abert, M.; Pronk, W. (2011).
+  <em>Characterisation of aquatic humic and non-humic matter with size-exclusion chromatography –
+  organic carbon detection – organic nitrogen detection (LC-OCD-OND)</em>. Water Research 45(2),
+  879–885. · Aplicació a la caracterització de la DOM en aigües potables desenvolupada a la UdG
+  (tesi de M. Valentí-Quiroga, dir. M. J. Martín; grup LEQUIA).</p>
+
+  <footer>
+    <span>Suite HPSEC — Informe tècnic · grup LEQUIA (UdG)</span>
+    <span>v01 · Octubre 2026</span>
+  </footer>
+
+</div>
+</body>
+</html>

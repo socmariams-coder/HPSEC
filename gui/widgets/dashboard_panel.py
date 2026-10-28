@@ -33,6 +33,11 @@ from hpsec_config import get_config, get_data_folders
 # NOTA: hpsec_import, hpsec_calibrate, hpsec_analyze, hpsec_reports
 # s'importen lazy dins les funcions run_*() per accelerar l'arrencada.
 
+# Paleta per a règims instrumentals (blocs de comparabilitat). Tons suaus que
+# NO xoquen amb el blau de les SEQ_CAL ni amb els colors d'estat. S'assignen per
+# ordre d'inici del règim; es reciclen si hi ha més règims que colors.
+REGIME_PALETTE = ["#eaf4ea", "#fdf0e3", "#efeaf7", "#fdeaea", "#eaf0f7", "#f5f3e1"]
+
 # Contrasenya per operacions batch i reset
 BATCH_PASSWORD = "LEQUIA"
 
@@ -568,6 +573,35 @@ class DashboardPanel(QWidget):
 
         layout.addWidget(self.table)
 
+        # Llegenda de règims instrumentals (només visible si n'hi ha de definits)
+        self.lbl_regime_legend = QLabel()
+        self.lbl_regime_legend.setTextFormat(Qt.RichText)
+        self.lbl_regime_legend.setWordWrap(True)
+        self.lbl_regime_legend.setStyleSheet("font-size:11px; color:#555; padding:3px 4px;")
+        self.lbl_regime_legend.setVisible(False)
+        layout.addWidget(self.lbl_regime_legend)
+
+    def _update_regime_legend(self):
+        """Mostra la llegenda de colors de règim (o la amaga si no n'hi ha)."""
+        if not hasattr(self, "lbl_regime_legend"):
+            return
+        regimes = getattr(self, "_regimes_sorted", [])
+        if not regimes:
+            self.lbl_regime_legend.setVisible(False)
+            return
+        chips = []
+        for rg in regimes:
+            col = self._regime_color.get(rg["regime_id"])
+            hexcol = col.name() if col else "#eeeeee"
+            end = rg.get("end_date") or "obert"
+            chips.append(
+                f"<span style='background:{hexcol}; padding:1px 7px; "
+                f"border:1px solid #bbb; border-radius:3px;'>&nbsp;</span> "
+                f"{rg['regime_id']} ({rg.get('start_date')} → {end})")
+        self.lbl_regime_legend.setText(
+            "<b>Règims:</b> &nbsp; " + " &nbsp;&nbsp;&nbsp; ".join(chips))
+        self.lbl_regime_legend.setVisible(True)
+
     def refresh_sequences(self):
         cfg = get_config()
         cfg.reload()
@@ -689,11 +723,52 @@ class DashboardPanel(QWidget):
 
         return "\n".join(parts)
 
+    @staticmethod
+    def _seq_date_iso(seq):
+        """Data de la SEQ en ISO (YYYY-MM-DD), accepti el format que accepti seq_date."""
+        s = (getattr(seq, "seq_date", "") or "").strip()
+        if not s or s == "-":
+            return ""
+        if re.match(r"\d{4}-\d{2}-\d{2}", s):
+            return s[:10]
+        try:
+            d, m, y = s.split("/")
+            y = int(y)
+            y = 2000 + y if y < 100 else y
+            return f"{y:04d}-{int(m):02d}-{int(d):02d}"
+        except Exception:
+            return ""
+
+    def _seq_regime(self, seq):
+        """Règim (dict) que conté la data de la SEQ, o None. Usa l'índex cachejat."""
+        iso = self._seq_date_iso(seq)
+        if not iso:
+            return None
+        for rg in getattr(self, "_regimes_sorted", []):
+            start = rg.get("start_date", "")
+            end = rg.get("end_date")
+            if start <= iso and (end is None or iso <= end):
+                return rg
+        return None
+
     def _update_table(self):
         # Bloquejar signals i sorting mentre actualitzem
         self.table.blockSignals(True)
         self.table.setSortingEnabled(False)
         self.table.setRowCount(0)
+
+        # Índex de règims instrumentals (color per bloc de comparabilitat).
+        self._regimes_sorted = []
+        self._regime_color = {}
+        try:
+            from hpsec_calibrate import get_regimes
+            self._regimes_sorted = get_regimes()
+            for i, rg in enumerate(self._regimes_sorted):
+                self._regime_color[rg["regime_id"]] = QColor(
+                    REGIME_PALETTE[i % len(REGIME_PALETTE)])
+        except Exception:
+            pass
+        self._update_regime_legend()
 
         for seq in self.filtered_sequences:
             row = self.table.rowCount()
@@ -705,11 +780,17 @@ class DashboardPanel(QWidget):
             is_cal = getattr(seq, "is_cal", False)
             cal_bg = QColor(COLOR_CAL_BG) if is_cal else None
 
-            # Col CHECK: checkbox
+            # Règim instrumental de la SEQ (per la franja de color a l'esquerra).
+            regime = self._seq_regime(seq)
+            regime_bg = self._regime_color.get(regime["regime_id"]) if regime else None
+
+            # Col CHECK: checkbox + franja de color del règim (si n'hi ha).
             item_check = QTableWidgetItem()
             item_check.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
             item_check.setCheckState(Qt.Unchecked)
-            if cal_bg:
+            if regime_bg:
+                item_check.setBackground(regime_bg)
+            elif cal_bg:
                 item_check.setBackground(cal_bg)
             self.table.setItem(row, COL_CHECK, item_check)
 
@@ -729,8 +810,13 @@ class DashboardPanel(QWidget):
                 font.setBold(True)
                 item_name.setFont(font)
                 item_name.setBackground(cal_bg)
-            # Tooltip enriquit: Tipus + Mode + siblings
-            item_name.setToolTip(self._build_name_tooltip(seq))
+            # Tooltip enriquit: Tipus + Mode + siblings (+ règim si n'hi ha)
+            tip = self._build_name_tooltip(seq)
+            if regime:
+                end = regime.get("end_date") or "obert"
+                tip += (f"\nRègim: {regime['regime_id']} "
+                        f"({regime.get('start_date')} → {end})")
+            item_name.setToolTip(tip)
             self.table.setItem(row, COL_NAME, item_name)
 
             # Col DATE: Data (amb valor ordenable)

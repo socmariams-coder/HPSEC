@@ -4,7 +4,168 @@ Historial detallat de decisions i troballes per sessió. Separat de
 CLAUDE.md perquè el context de sessió no carregui ~700 línies de diari;
 consultar quan es necessiti el context històric d'un tema concret.
 
-> Last updated: 2026-09-08
+> Last updated: 2026-10-28
+
+### FIX visor: crash PR + regressió de mostres (2026-10-28)
+
+**Símptoma inicial:** el visor petava en algunes seqüències amb `TypeError:
+dict.get() takes no keyword arguments`. La 290_SEQ anava bé.
+
+**Causa real (2 capes):**
+- El motor `analyze_sequence(config=None)` usa `DEFAULT_PROCESS_CONFIG`, un **dict pla**
+  (és el que passa TAMBÉ la Suite: `AnalyzeWorker` no passa config). El camí principal
+  (`detect_main_peak` via `config.get("peak_min_prominence_pct", 5.0)`) depèn de la
+  semàntica de **dict pla** (default posicional).
+- `_should_skip_quantification()` (L2456), en canvi, feia
+  `config.get("sample_types", config_key, default={})` — semàntica de **ConfigManager**
+  (`get(*claus, default=)`). Amb un dict pla això peta (`dict.get()` no accepta kwargs).
+  Només s'arriba a aquesta línia per a mostres **PR (patró-referència)**, per això les
+  seqüències sense PR no petaven. **És una incompatibilitat latent de la Suite també.**
+
+**Camí fals (corregit):** un primer intent va fer que el visor passés un `ConfigManager`
+real. Això va fer desaparèixer el crash PR PERÒ va trencar `detect_main_peak` per a TOTES
+les mostres (el `ConfigManager.get("clau", 5.0)` interpreta el 5.0 com a 2a clau →
+retorna None → `None / 100.0`). Efecte: la 303 només mostrava NaOH (control, anàlisi
+light); totes les mostres reals petaven silenciosament. DESCARTAT.
+
+**Fix definitiu:**
+1. `hpsec_viewer_build.py`: tornar a `A.analyze_sequence(imp, {}, do_quantify=False)`
+   (config=None → dict pla, EXACTAMENT com la Suite).
+2. `hpsec_analyze.py` `_should_skip_quantification()`: tolerar **tots dos** tipus —
+   `isinstance(config, dict)` → `config.get("sample_types", {})`; si no (ConfigManager)
+   → `config.get("sample_types", default={})`. Arregla el bug PR latent de la Suite.
+
+**Verificat:** 303_SEQ ara mostra 15 traces (MQ/KHP2/MQ1/LQ1437/LQ1472/LQ1473/NaOH1/MQ2);
+`_should_skip` amb dict pla + PR no peta; `test_robustesa_audit.py` 66/66 OK.
+
+**⚠️ Recompilar l'.exe (Downloads\HPSEC_Visor) amb aquest codi — la versió zipada
+intermèdia portava el camí fals del ConfigManager.**
+
+### Visor lite de cromatogrames — HTML des del MasterFile (2026-10-28)
+
+**Objectiu de la usuària:** «una versió lite del programa que permeti veure els
+cromatogrames i poca cosa més.» Precisions successives: (1) ha de **partir del
+MasterFile cru** i fer la feina mínima — **segmentar el DOC, alinear-lo amb el DAD i
+dibuixar 254 + DOC** (no llegir sortides ja processades); (2) millor **en HTML**, estil
+ponència ATL (fraccions ombrejades, estètica depurada); (3) sense complicar: **només
+visualitzar, passant de mostra a mostra amb facilitat.**
+
+**Rumb escollit = HTML.** Dos fitxers nous a l'arrel del repo:
+
+- **`hpsec_viewer_build.py`** (generador, Python): per cada SEQ fa
+  `import_sequence` → `ensure_data_loaded` → `analyze_sequence(..., do_quantify=False)`
+  (reaprofita el motor de la Suite; NO calibra, NO quantifica) i n'extreu per mostra·rèplica:
+  `t_doc`/`y_doc_net` (DOC alineat i net), `a254` (DAD 254 interpolat sobre l'eix del DOC),
+  `y_doc_uib_net` (UIB), `peak_info.t_max`, tipus de mostra. Downsample a ≤1200 punts,
+  arrodonit. Fraccions des de `hpsec_config` (BioP 12–18.65 · HS 18.65–23 · BB 23–29 ·
+  SB 29–32 · LMW 32–78.65). Escup **un HTML autocontingut** (dades JSON incrustades + JS
+  propi amb render a `<canvas>`, SENSE CDN ni dependències → s'obre fent doble clic, offline).
+  Ús: `python hpsec_viewer_build.py 290_SEQ 293_SEQ_CAL 306_SEQ_CAL --out ruta.html`
+  (sense args → llista les SEQ disponibles).
+
+- **Entregable generat:** `C:\Users\maria\Downloads\hpsec_view.html` (290 + 293_SEQ_CAL +
+  306_SEQ_CAL, 51 traces, ~1,4 MB). Selector seqüència + mostra, ◀▶ i fletxes ←→ per passar,
+  checkboxes DOC/254/UIB/Normalitza/Fraccions, hover amb lectura t·DOC·254, marca t_max,
+  tema clar/fosc. **Verificat a Chrome** (via localhost; file:// bloquejat per l'extensió):
+  render net, sense errors de consola; KHP1 306 → pic DOC a 21,80 min dins HS, DOC+254 alineats.
+
+**Llançador per a tècnics (2026-10-28):** `hpsec_visor.pyw` (finestra tkinter, sense
+terminal) + `HPSEC_Visor.bat` (doble clic; prova pythonw→pyw→py→python). Botons «Tria
+seqüència (carpeta)» i «Tria MasterFile (.xlsx)» → `build_one()` processa en un thread i
+desa `<SEQ>_cromatogrames.html` **a la mateixa carpeta** de la seq, i l'obre. `build_one()`
+afegida a `hpsec_viewer_build.py` (accepta carpeta o .xlsx → carpeta pare). Verificat el
+flux sencer amb finestra amagada (290_SEQ). ⚠️ El llançador **NO és standalone**: necessita
+el codi de la Suite al costat (reaprofita import+analyze). Standalone de debò (sense Python
+ni Suite) = empaquetar amb PyInstaller.
+
+**Standalone `.exe` (2026-10-28):** els PC dels tècnics NO tenen ni Python ni Suite → cal
+un sol fitxer. Fet amb **PyInstaller 6.22.3** (instal·lat). Entrada `hpsec_visor_main.py`
+(imports del motor a dalt + mode ocult `--build <carpeta|xlsx>` per smoke-test congelat;
+GUI a `hpsec_visor_gui.py`, importable — el `.pyw` ara n'és només un shim). Config
+empaquetada: `--add-data hpsec_config.json;.` (ConfigManager la troba a `_MEIPASS`;
+a més `FRACTION_FALLBACK` a `hpsec_viewer_build.get_fractions()` per si no hi fos).
+`--onefile --noconsole`. **Entregable: `C:\Users\maria\Downloads\HPSEC_Visor.exe`** (~105 MB).
+Verificat congelat: `--build 290_SEQ` → HTML amb fraccions correctes (12/18.65/23/29/32/78.65);
+i la GUI arrenca (procés viu 10 s, Tk OK). ⚠️ L'exe **congela el motor + la config actuals**:
+si es canvia el pipeline o `hpsec_config.json`, cal **recompilar**
+(`python -m PyInstaller ... hpsec_visor_main.py`). Onefile = arrencada lenta (desempaqueta
+a temp cada cop); és el preu de «un sol fitxer».
+
+**`hpsec_viewer.py`** (visor PySide6 previ, del primer malentès): llegia sortides JA
+processades (fonts RESULTATS/traces, `calibration_result.json`, CSV crus), NO el MasterFile,
+i per tant no feia segmentació/alineació. Es manté al repo però **el rumb viu és l'HTML**.
+(Nota binding: si es toca, cal `QT_API=pyside6` i importar PySide6 ABANS del backend
+`backend_qtagg` de matplotlib; si no, peta amb `QToolBar ... unexpected type QWidget`.)
+
+### Tancament de dades Dades3: estat de calibració + exports uniformes (2026-10-27)
+
+**Objectiu de la usuària:** deixar el programa en estat de tancament amb les dades
+processades; dubte principal = l'estat de la **calibració**.
+
+**Estat de calibració aclarit (Dades3/REGISTRY/Calibration_Reference.json):**
+- **Una sola recta activa: DOC Direct, 26/06/2026** (`CAL_20260626_092621_DIRECT`), feta de
+  SEQ_CAL 293 (COLUMN) + 292 (BP). COLUMN rf 793,9 / intercept 28,88 / r² 0,9998 / 6 punts;
+  BP rf 682,6 / intercept 4,26 / r² 0,9979 / 6 punts. Oberta. Fingerprint `6cff6045f4fde36f`.
+- **No hi ha recta UIB.** Quan es quantifica en UIB el programa cau enrere a la recta DIRECT
+  (via el camp antic `active_calibration_id`): `rf_mass_cal_uib_used`=793,9, `intercept_uib`=28,88.
+  Per tant `conc_ppm_uib` NO és una quantificació UIB calibrada. **Decisió usuària: UIB = senyal
+  secundari only.** Aplicat: etiquetat explícit a l'export FAIR (schema `conc_ppm_uib` + README):
+  "Secondary/indicative only … no independent UIB calibration; use conc_ppm_doc". (hpsec_fair.py)
+- **Cap règim definit** en aquest conjunt (`regimes` absent) → bloc únic implícit. Els canvis
+  instrumentals (×8 TOC, columna nova) NO hi són marcats. Pendent de decidir si aquelles dades
+  són en aquest Dades3 (si no, deixar bloc únic).
+- **Sense recalibració des de juny:** 305 (07/07) i 306 (13/07) són al QC/historial però no han
+  generat recta nova; 306 té els punts 0,25 i 0,5 ppm invàlids (escapada de finestra, documentat).
+
+**Fet aquest tancament:**
+1. **Vestigi eliminat:** 2a entrada `CAL_…_DIRECT_BP` (inactiva, `valid_to` 25/06 incoherent,
+   params bp duplicats del DIRECT actiu). Fingerprint actiu INALTERAT → 5 SEQ segueixen vàlides.
+2. **290 requantificada:** NO tenia fingerprint; estava sobre una recta ANTERIOR. Requantificada
+   amb la recta de referència → números corregits (~7-9% més baixos): LQ0208 4,34→4,03,
+   LQ0303 2,94→2,70, LQ0304 2,53→2,31. (Backups .bak_20261027 del JSON i del Calibration_Reference.)
+3. **Exports uniformes a les 5 SEQ processades** (290, 298, 299_BP, 300_BP, 303): estaven en
+   estats barrejats (290 només Excels vells; 298 buida; 303 FAIR+Excels vells; 299/300 FAIR net).
+   Ara totes = **model vigent FAIR+PDF** (results_SEC.csv + traces/ + datapackage.json + README + PDF),
+   números sobre la recta activa, UIB etiquetat secundari. Excels/SUMMARY/metadata del model vell
+   **moguts** (no esborrats) a `<SEQ>/_ARXIU_xlsx_model_vell/`.
+
+**Cautela:** `net_delay_min`=None al datapackage de totes (els manifests apunten al MasterFile de
+l'ordinador del lab `C:/Users/Lequia/…`, ruta absoluta que no resol en local; el fallback per
+basename no s'activa amb ruta absoluta). El delay ja està aplicat a les dades processades; només
+falta com a metadada. Si es vol omplir, llegir-lo del MasterFile local.
+
+**Verificació:** fingerprint actiu `6cff6045f4fde36f` sense canvi; suite 66/66; results_SEC.csv de
+la 290 porta 4,0288/2,7028/2,3088; les 5 datapackage.json amb etiqueta UIB "Secondary".
+
+### Règims marcats + color al dashboard — TROBALLA CRÍTICA (2026-10-27)
+
+**Decisió usuària:** marcar règim als canvis de senyal i mostrar-los en color diferent.
+
+**Canvi de senyal localitzat a les dades (rf_mass del KHP, DOC direct):** nivell estable
+**~700–880** (gen–mar) → salta a **>3000 (×4–×20)** a partir del maig. És el guany del detector
+TOC (comú COLUMN+BP) + columna nova (inestabilitat COLUMN). El full de manteniment NO registra
+l'esdeveniment (només conceptes/hores) → frontera **data-driven**: 1a SEQ al nou nivell = 299_SEQ_BP
+(14/05). Entre la 298 (03/03, última al nivell vell) i la 299 no hi ha cap SEQ, així que la data
+exacta dins d'aquest buit no canvia quines SEQ cauen a cada bloc.
+
+**Règims creats** (Calibration_Reference.json; backup `.bak_regims_20261027`):
+- `REG_20260129` (bloc inicial): 2026-01-29 → 2026-05-13, source manual. Conté 290, 298 + les
+  SEQ_CAL 292/293 → **és el règim de la recta activa** (estampat `regime_id` a la cal).
+- `REG_20260514` (canvi de senyal): 2026-05-14 → obert, source cal_break. Conté 299, 300, 303,
+  304/305/306.
+
+**⚠️ CONSEQÜÈNCIA (el motiu real pel qual calia marcar-ho):** la recta activa (DOC Direct 26/06,
+rf 793,9) és del **bloc inicial**. 299/300/303 són del **bloc nou** i s'han quantificat amb aquesta
+recta d'un altre règim → **ppm INVÀLIDS (~×8 inflats)**. Confirmat: 303 LQ1473 àrea 11006 → 34,57 ppm
+(aigua: hauria de ser ~2-5); 303 KHP2 àrea 8384 → 26,3 (hauria de ser ~1,2). **NO hi ha recta vàlida
+del règim nou** (304/305/306 eren els intents; 306 inestable, punts baixos fora de finestra). Per
+tant 299/300/303 NO es poden tancar fins que hi hagi calibració del règim nou — decisió de la usuària.
+Només **290 i 298 (bloc inicial)** estan quantificades amb la recta del seu règim → vàlides.
+
+**Color al dashboard** (gui/widgets/dashboard_panel.py): `REGIME_PALETTE` (tons suaus), franja de
+color a la cel·la del check per règim (independent del blau CAL), règim al tooltip del nom, i
+llegenda `_update_regime_legend()` sota la taula (visible només si hi ha règims). Verd=bloc inicial,
+ambre=canvi de senyal. Prova offscreen OK (290/292/293/298=verd; 299/300/303/305=ambre), suite 66/66.
 
 ### Simplificació — Tall 2: extreure la consolidació COLUMN↔BP (2026-09-08)
 

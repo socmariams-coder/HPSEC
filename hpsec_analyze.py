@@ -2453,7 +2453,15 @@ def _should_skip_quantification(sample_name, config=None, sample_type=None):
     if config is None:
         config = get_config()
 
-    pr_config = config.get("sample_types", config_key, default={})
+    # config pot arribar com a dict pla (DEFAULT_PROCESS_CONFIG, via
+    # analyze_sequence) o com a ConfigManager (get_config()). Les seves .get()
+    # tenen signatures incompatibles: dict.get(clau, default_posicional) vs
+    # ConfigManager.get(*claus, default=...). Normalitzem segons el tipus.
+    if isinstance(config, dict):
+        sample_types = config.get("sample_types", {}) or {}
+    else:
+        sample_types = config.get("sample_types", default={}) or {}
+    pr_config = sample_types.get(config_key, {}) if isinstance(sample_types, dict) else {}
     # Per defecte quantificar; només skip si explícitament quantify=false
     return pr_config.get("quantify", True) is False
 
