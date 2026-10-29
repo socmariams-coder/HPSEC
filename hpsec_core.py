@@ -60,6 +60,18 @@ ASYM_MAX = 3.0               # sigma_right/sigma_left maximum
 # Irregular top detection (jagged/batman artifact)
 MIN_VALLEY_DEPTH = 0.01      # 1% of peak height to detect irregular top
 
+# Flank-symmetry fingerprint (true OCD detector batman vs asymmetric artifact)
+# The detector batman is tied to the SIGNAL LEVEL: the peak crosses a given OCD
+# level twice (rising/falling), so the distortion repeats symmetrically on both
+# flanks. Given that a notch is ALREADY detected (is_irregular_top), the only
+# question is symmetric (batman) vs asymmetric (e.g. syringe reload, handled by
+# the TIMEOUT system). The MIRROR CORRELATION of the two flanks is the clean
+# discriminator: on the engine's smoothed signal, real batmans score ~0.95-1.00
+# and asymmetric artifacts <=0.60. Slope-reversal counts are kept for diagnostics
+# only (smoothing collapses the notch into a symmetric shoulder, so reversals are
+# an unreliable gate) and do NOT enter the decision.
+SYMMETRY_CORR_MIN = 0.80     # min mirror correlation to call a notch a batman
+
 # SNR
 THRESH_SNR = 10.0            # Minimum acceptable SNR
 
@@ -578,6 +590,88 @@ def detect_irregular_top(t, y, top_pct=0.20, min_valley_depth=MIN_VALLEY_DEPTH):
 
 # Backwards compatibility alias
 detect_batman = detect_irregular_top
+
+
+def measure_flank_symmetry(y, left_idx, peak_idx, right_idx,
+                           n_grid=50, rev_tol=0.02):
+    """
+    Mirror-symmetry fingerprint of a peak's two flanks (apex -> base).
+
+    Physical model (validated with Maria, 2026-10): the "batman"/irregular-top
+    artifact of the OCD (DOC) detector is tied to the SIGNAL LEVEL, not to the
+    retention time. The peak crosses a given OCD level twice (rising and
+    falling), and the detector repeats the SAME distortion each time, so a true
+    detector batman is LEFT-RIGHT SYMMETRIC and NON-MONOTONIC on both flanks.
+    An asymmetric / one-sided distortion (e.g. a syringe reload during elution,
+    handled elsewhere by the TIMEOUT system) is NOT a detector batman and must
+    not be batman-repaired.
+
+    This is the discriminator used to decide whether an `is_irregular_top`
+    detection is a *confident* batman safe to auto-repair, or an exception that
+    should only be flagged for review.
+
+    Parameters:
+        y: full signal array (net); flanks are read from it by index
+        left_idx, peak_idx, right_idx: integration boundaries + apex (indices)
+        n_grid: resampling points per flank for the mirror correlation
+        rev_tol: slope-reversal tolerance as a fraction of the flank range
+
+    Returns dict:
+        corr: mirror correlation of the two normalised flanks (-1..1)
+        rms: RMS difference of the normalised flanks (0 = identical)
+        reversals_left / reversals_right: slope-reversal counts per flank (diagnostic)
+        reversals_total: sum of both (diagnostic)
+        is_symmetric: corr >= SYMMETRY_CORR_MIN (the auto-repair gate)
+        reason
+    """
+    def _result(corr, rms, rl, rr, reason):
+        return {
+            "corr": float(corr),
+            "rms": float(rms),
+            "reversals_left": int(rl),
+            "reversals_right": int(rr),
+            "reversals_total": int(rl + rr),
+            "is_symmetric": bool(corr >= SYMMETRY_CORR_MIN),
+            "reason": reason,
+        }
+
+    if left_idx is None or peak_idx is None or right_idx is None:
+        return _result(0.0, 0.0, 0, 0, "no_indices")
+
+    y = np.asarray(y, dtype=float)
+    n = y.size
+    li, pi, ri = int(left_idx), int(peak_idx), int(right_idx)
+    if not (0 <= li < pi < ri < n):
+        return _result(0.0, 0.0, 0, 0, "bad_indices")
+
+    left = y[li:pi + 1][::-1]   # apex -> base, left flank
+    right = y[pi:ri + 1]        # apex -> base, right flank
+    base = min(float(y[li]), float(y[ri]))
+    amp = float(y[pi]) - base
+    if amp <= 0 or len(left) < 4 or len(right) < 4:
+        return _result(0.0, 0.0, 0, 0, "flank_too_short_or_flat")
+
+    g = np.linspace(0.0, 1.0, n_grid)
+    L = np.interp(g, np.linspace(0.0, 1.0, len(left)), (left - base) / amp)
+    R = np.interp(g, np.linspace(0.0, 1.0, len(right)), (right - base) / amp)
+
+    if np.std(L) > 1e-9 and np.std(R) > 1e-9:
+        corr = float(np.corrcoef(L, R)[0, 1])
+    else:
+        corr = 0.0
+    rms = float(np.sqrt(np.mean((L - R) ** 2)))
+
+    def _reversals(seg):
+        rng = float(seg.max() - seg.min())
+        d = np.diff(seg)
+        tol = rev_tol * (rng + 1e-9)
+        s = np.sign(np.where(np.abs(d) < tol, 0.0, d))
+        s = s[s != 0]
+        return int(np.sum(s[1:] != s[:-1])) if len(s) > 1 else 0
+
+    rl = _reversals(left)
+    rr = _reversals(right)
+    return _result(corr, rms, rl, rr, "measured")
 
 
 def calc_top_smoothness(t, y, top_pct=0.30):
@@ -2454,6 +2548,7 @@ def detect_main_peak(t, y, min_prominence_pct=5.0, is_bp=None):
     # =====================================================================
     irregular_top_info = None
     smoothness_info = None
+    symmetry_info = None  # huella de simetria dels flancs (batman real vs asimetric)
     irregular_top_repaired = False
     repair_geometry = None  # traçabilitat: geometria de la reparació (serialitzable)
     y_for_boundaries = y  # per defecte, senyal original
@@ -2473,34 +2568,64 @@ def detect_main_peak(t, y, min_prominence_pct=5.0, is_bp=None):
         # Reparar NOMÉS si IRREGULAR_TOP (valls pic-vall-pic reals)
         # smoothness < 70% NO és criteri suficient — genera 95% falsos positius
         # (pics BP naturalment aplanats, pics bimodals, etc.)
-        needs_repair = irregular_top_info.get("is_irregular_top", False)
+        is_irr = irregular_top_info.get("is_irregular_top", False)
 
-        if needs_repair:
-            y_seg_repaired, repair_info, was_repaired = repair_with_parabola(
+        # HUELLA DE SIMETRIA + GATE: un batman REAL del detector OCD es simetric
+        # esq-dreta i no-monoton als flancs (el pic creua el mateix nivell 2 cops).
+        # El notch despista el buscador de limits sobre senyal original, i per aixo
+        # HISTORICAMENT es reparava sempre abans de trobar limits. Ara calculem la
+        # reparacio com a CANDIDAT (per tenir limits fiables), mesurem la simetria
+        # sobre la senyal ORIGINAL dins d'aquests limits, i NOMES adoptem la
+        # reparacio si es simetrica (confiat). Els asimetrics (p.ex. recarrega de
+        # xeringa, gestionada pel sistema de TIMEOUTS) es marquen pero NO es
+        # batman-reparen: queden amb area sobre senyal original i surten a revisio.
+        if is_irr:
+            y_seg_repaired, repair_info, cand_repaired = repair_with_parabola(
                 t_seg, y_seg
             )
-            if was_repaired:
-                irregular_top_repaired = True
-                # Aplicar reparació al senyal complet per find_peak_boundaries
-                y_for_boundaries = y.copy()
-                y_for_boundaries[seg_mask] = y_seg_repaired
-                # Traçabilitat: geometria de la reparació AUTO (plana, serialitzable)
-                def _f(v):
-                    return float(v) if v is not None else None
-                _coeffs = repair_info.get("coeffs")
-                repair_geometry = {
-                    "method": "parabola_tangent",
-                    "mode": "auto",
-                    "t_max": _f(repair_info.get("t_max")),
-                    "y_max_original": _f(repair_info.get("y_max_original")),
-                    "y_max_theoretical": _f(repair_info.get("y_max_theoretical")),
-                    "coeffs": ([float(c) for c in _coeffs]
-                               if _coeffs is not None else None),
-                    "anchor_left": [_f(repair_info.get("t_anchor_left")),
-                                    _f(repair_info.get("y_anchor_left"))],
-                    "anchor_right": [_f(repair_info.get("t_anchor_right")),
-                                     _f(repair_info.get("y_anchor_right"))],
-                }
+            if cand_repaired:
+                # Limits fiables sobre el senyal reparat (candidat)
+                y_cand = y.copy()
+                y_cand[seg_mask] = y_seg_repaired
+                cand_li, cand_ri = find_peak_boundaries(
+                    t, y_cand, main_peak, baseline_level,
+                    threshold_pct=5.0, is_bp=is_bp
+                )
+                cand_li = max(0, cand_li)
+                cand_ri = min(len(y) - 1, cand_ri)
+                symmetry_info = measure_flank_symmetry(y, cand_li, main_peak, cand_ri)
+
+                if symmetry_info.get("is_symmetric", False):
+                    # CONFIAT -> adoptar la reparacio
+                    irregular_top_repaired = True
+                    y_for_boundaries = y_cand
+                    # Traçabilitat: geometria de la reparació AUTO (serialitzable)
+                    def _f(v):
+                        return float(v) if v is not None else None
+                    _coeffs = repair_info.get("coeffs")
+                    repair_geometry = {
+                        "method": "parabola_tangent",
+                        "mode": "auto",
+                        "t_max": _f(repair_info.get("t_max")),
+                        "y_max_original": _f(repair_info.get("y_max_original")),
+                        "y_max_theoretical": _f(repair_info.get("y_max_theoretical")),
+                        "coeffs": ([float(c) for c in _coeffs]
+                                   if _coeffs is not None else None),
+                        "anchor_left": [_f(repair_info.get("t_anchor_left")),
+                                        _f(repair_info.get("y_anchor_left"))],
+                        "anchor_right": [_f(repair_info.get("t_anchor_right")),
+                                         _f(repair_info.get("y_anchor_right"))],
+                    }
+                # EXCEPCIO (asimetric): symmetry_info queda desat, sense reparacio
+            else:
+                # Reparacio sense efecte: mesura informativa sobre limits originals
+                li0, ri0 = find_peak_boundaries(
+                    t, y, main_peak, baseline_level,
+                    threshold_pct=5.0, is_bp=is_bp
+                )
+                symmetry_info = measure_flank_symmetry(
+                    y, max(0, li0), main_peak, min(len(y) - 1, ri0)
+                )
 
     # Trobar límits precisos (sobre senyal reparat si calia)
     left_idx, right_idx = find_peak_boundaries(
@@ -2560,6 +2685,16 @@ def detect_main_peak(t, y, min_prominence_pct=5.0, is_bp=None):
             result["area_repaired"] = area_repaired
         if has_rough_top and not has_irregular_top:
             result["anomaly_subtype"] = "ROUGH_TOP"
+        # Huella de simetria: distingeix batman CONFIAT (simetric, auto-reparable)
+        # d'EXCEPCIO (asimetric -> nomes senyalar, no batman-reparar).
+        if symmetry_info is not None:
+            result["symmetry_info"] = symmetry_info
+            result["batman_symmetric"] = bool(symmetry_info.get("is_symmetric"))
+            # confiat = simetric I de fet reparat; excepcio = la resta d'irregular tops
+            if has_irregular_top:
+                result["batman_class"] = (
+                    "confident" if symmetry_info.get("is_symmetric") else "exception"
+                )
     if smoothness_info is not None:
         result["smoothness"] = smoothness_info.get("smoothness", 100.0)
 

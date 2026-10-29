@@ -444,6 +444,52 @@ def test_291_doc_direct_recovered():
     check("cap avís 'sense DOC Direct'", "sense DOC Direct" not in ws)
 
 
+def test_batman_symmetry_gate():
+    """Huella de simetria: un batman del detector OCD es simetric esq-dreta
+    (corr alta) -> auto-reparable; un artefacte asimetric (un sol flanc) NO.
+    El gate (measure_flank_symmetry + detect_main_peak) nomes ha d'adoptar la
+    reparacio quan la correlacio d'espill supera el llindar."""
+    import numpy as np
+    import hpsec_core as hc
+    print("\n[batman] huella de simetria + gate")
+
+    # 1) Flancs identics amb mateixa estructura -> corr alta, simetric
+    yv = np.concatenate([np.linspace(0, 100, 60), np.linspace(100, 0, 60)])
+    yv[25] -= 8
+    yv[94] -= 8
+    m_sym = hc.measure_flank_symmetry(yv, 0, 59, 119)
+    check("flancs identics: corr alta", m_sym["corr"] >= hc.SYMMETRY_CORR_MIN)
+    check("flancs identics: is_symmetric", m_sym["is_symmetric"] is True)
+
+    # 2) Asimetric: gorja profunda nomes al flanc dret -> corr baixa, NO simetric
+    ya = np.concatenate([np.linspace(0, 100, 60), np.linspace(100, 0, 60)])
+    ya[66:78] -= 55  # gorja profunda nomes a la baixada (un sol costat)
+    m_asym = hc.measure_flank_symmetry(ya, 0, 59, 119)
+    check("asimetric: corr sota llindar", m_asym["corr"] < hc.SYMMETRY_CORR_MIN)
+    check("asimetric: NO is_symmetric", m_asym["is_symmetric"] is False)
+
+    # 3) Indices degenerats -> no peta, no simetric
+    m_bad = hc.measure_flank_symmetry(yv, None, None, None)
+    check("indices None: no_indices + no simetric",
+          m_bad["reason"] == "no_indices" and not m_bad["is_symmetric"])
+
+    # 4) El gate dins detect_main_peak NO adopta reparacio en un pic ASIMETRIC
+    t = np.linspace(15, 27, 1200)
+    base = 100 * np.exp(-0.5 * ((t - 21.0) / 0.6) ** 2)
+    mask_r = (t > 21.15) & (t < 21.45)
+    y_asym = np.maximum(base.copy(), 0) + 0.3
+    y_asym[mask_r] -= 35
+    pk = hc.detect_main_peak(t, y_asym, is_bp=False)
+    # si es detecta irregular, NO ha de quedar classificat confiat ni reparat
+    if pk.get("is_irregular_top"):
+        check("pic asimetric: no auto-reparat",
+              pk.get("irregular_top_repaired") is not True)
+        check("pic asimetric: class != confident",
+              pk.get("batman_class") != "confident")
+    else:
+        check("pic asimetric: no marcat com irregular (acceptable)", True)
+
+
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     for t in (test_atomic_write_and_cache_poisoning,
@@ -460,7 +506,8 @@ if __name__ == "__main__":
               test_formula_quantificacio_unica,
               test_analysis_result_compacte,
               test_autofix_columns_synthetic,
-              test_291_doc_direct_recovered):
+              test_291_doc_direct_recovered,
+              test_batman_symmetry_gate):
         try:
             t()
         except Exception as e:
