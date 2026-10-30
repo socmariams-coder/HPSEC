@@ -3274,6 +3274,19 @@ def analyze_sequence(imported_data, calibration_data=None, config=None,
 
     result["success"] = len(result["errors"]) == 0
 
+    # =========================================================================
+    # ALINEACIO DE RETENCIO (ancorada al KHP) — nomes metadada, no destructiu
+    # =========================================================================
+    # Calcula delta_t = t_khp_ref - t_khp_obs(seq) i el desa a
+    # provenance.retention_align (seq + mostres). NO toca els arrays de temps:
+    # el desplaçament s'aplica en derivar (FAIR/plots) via apply_shift. BP
+    # queda exclos automaticament.
+    try:
+        from hpsec_retention import annotate_sequence as _annotate_retention
+        _annotate_retention(result)
+    except Exception as e:
+        logger.warning("Alineacio de retencio: no aplicada (%s)", e)
+
     # Generar avisos estructurats (nou sistema)
     result["warnings_structured"] = _generate_analysis_warnings(result)
     # warning_level: prioritzar anomalies (blocker/warning) sobre warnings genèrics
@@ -3632,6 +3645,9 @@ def save_analysis_result(analysis_data, output_path=None):
         # Quan True, l'usuari ha d'anar al pas Quantificar per aplicar la recta.
         "quantification_pending": analysis_data.get("quantification_pending", True),
         "summary": analysis_data.get("summary", {}),
+        # Alineacio de retencio KHP (resum de seq); el detall per mostra viatja a
+        # provenance.retention_align.
+        "retention_align": analysis_data.get("retention_align", {}),
         "samples": [],
         # Mostres agrupades per nom (per GUI)
         "samples_grouped": {},
@@ -3784,6 +3800,32 @@ def save_analysis_result(analysis_data, output_path=None):
                     grouped_entry["timeout_composability"] = tc
 
             result["samples_grouped"][sample_name] = grouped_entry
+
+    # --- Preservar anotacions manuals (P1) ---------------------------------
+    # 'warnings_structured' el regenera analyze_sequence i és autoritatiu, però
+    # no era al dict de sortida → es perdia a cada desat. El persistim.
+    if analysis_data.get("warnings_structured") is not None:
+        result["warnings_structured"] = analysis_data.get("warnings_structured")
+    # Notes i revisions d'avisos NO són del pipeline: les escriu el wizard
+    # directament al JSON (user_notes / warnings_confirmed / warnings_reviews).
+    # En reconstruir el dict es perdien a cada re-anàlisi o reparació. Les
+    # arrosseguem des del dict en memòria si hi són, i si no des del fitxer
+    # existent. Best-effort: si el fitxer previ no es pot llegir, no es toca
+    # res (mateix comportament que abans → cap regressió).
+    _ANNOTATION_KEYS = ("user_notes", "warnings_confirmed",
+                        "warnings_confirmed_by", "warnings_reviews")
+    for _k in _ANNOTATION_KEYS:
+        if analysis_data.get(_k) is not None:
+            result[_k] = analysis_data.get(_k)
+    try:
+        if os.path.exists(output_path):
+            with open(output_path, "r", encoding="utf-8") as _f:
+                _prev = json.load(_f)
+            for _k in _ANNOTATION_KEYS:
+                if _k not in result and _prev.get(_k) is not None:
+                    result[_k] = _prev[_k]
+    except Exception as _e:
+        logger.warning("No s'han pogut preservar anotacions prèvies: %s", _e)
 
     # Guardar (ATÒMIC; encoder NumpyEncoder únic per a aquest fitxer — abans
     # Quantificar el reescrivia amb un encoder diferent). Sense indentació:

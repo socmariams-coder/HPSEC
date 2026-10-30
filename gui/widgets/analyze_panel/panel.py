@@ -1639,6 +1639,14 @@ class AnalyzePanel(QWidget):
                 self._show_review(sample_name)
             except Exception as e:
                 logger.warning("Error refresh review panel: %s", e)
+        # P2: persistir la selecci\u00f3 immediatament. Abans el canvi nom\u00e9s vivia en
+        # mem\u00f2ria i es perdia si l'usuari no disparava cap altre desat (p.ex.
+        # una reparaci\u00f3). _save_current_analysis desa l'estat i, si hi havia
+        # quantificaci\u00f3, la recalcula en background per la nova r\u00e8plica.
+        try:
+            self._save_current_analysis()
+        except Exception as e:
+            logger.warning("Error persistint selecci\u00f3 de r\u00e8plica: %s", e)
 
     def _fill_sample_row(self, table, row, name, sample_data,
                          doc_rep, dad_rep, comparison, status_color=None):

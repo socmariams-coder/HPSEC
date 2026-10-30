@@ -6,16 +6,18 @@ Panel d'exportació de resultats amb principis FAIR.
 
 Contingut:
 - Resum pre-exportació: comptadors (N mostres, M excloses, K avisos)
-- Opcions exportació: checkboxes (Excels individuals, SUMMARY, PDF report)
-- Secció FAIR (placeholder): metadades traçabilitat
-- Botó "Generar Resultats" + barra progrés
+- Lliurament: dataset FAIR (results_SEC.csv + traces/ + datapackage.json +
+  README), sempre; opcionalment informe PDF i empaquetat ZIP. El datapackage
+  substitueix els antics Excels/SUMMARY/metadata.json (per això ja no hi ha
+  checkboxes de contingut: no prometem fitxers que no s'escriuen).
+- Secció FAIR: metadades de traçabilitat (fingerprints, calibració)
+- Destí: carpeta externa (SharePoint/OneDrive/local) o ZIP
 - Escriu review_result.json per al dashboard
 """
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QFrame, QScrollArea, QMessageBox, QProgressBar,
-    QComboBox,
     QGroupBox, QCheckBox, QGridLayout, QFileDialog, QLineEdit,
 )
 from PySide6.QtCore import Qt, Signal, QThread
@@ -29,8 +31,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 from hpsec_export import (
-    export_sequence, generate_summary_excel, generate_summary_csv,
-    write_metadata_json, create_export_zip,
+    create_export_zip,
     DEFAULT_EXPORT_CONFIG,
 )
 from gui.widgets.styles import (
@@ -47,9 +48,7 @@ class GenerateWorker(QThread):
 
     def __init__(self, samples_grouped, seq_path, calibration_data, mode, config,
                  generate_pdf=False,
-                 export_raw=False, export_processed=False,
-                 csv_summary=False, csv_separator=";",
-                 export_zip=False, export_metadata=True,
+                 export_zip=False,
                  custom_output_dir=None):
         super().__init__()
         self.samples_grouped = samples_grouped
@@ -58,12 +57,7 @@ class GenerateWorker(QThread):
         self.mode = mode
         self.config = config
         self.generate_pdf = generate_pdf
-        self.export_raw = export_raw
-        self.export_processed = export_processed
-        self.csv_summary = csv_summary
-        self.csv_separator = csv_separator
         self.export_zip = export_zip
-        self.export_metadata = export_metadata
         self.custom_output_dir = custom_output_dir
 
     def run(self):
@@ -269,72 +263,28 @@ class ExportPanel(QWidget):
         content_label.setStyleSheet("font-weight: bold; font-size: 10px; color: #5D6D7E; margin-top: 2px;")
         export_layout.addWidget(content_label)
 
-        # Row 1: Excels + SUMMARY
-        row1 = QHBoxLayout()
-        self.exp_excel_check = QCheckBox("Excels individuals")
-        self.exp_excel_check.setChecked(True)
-        self.exp_excel_check.setToolTip("Excel per mostra: ID + DOC + DAD + RESULTS")
-        row1.addWidget(self.exp_excel_check)
-        self.exp_summary_check = QCheckBox("SUMMARY.xlsx")
-        self.exp_summary_check.setChecked(True)
-        self.exp_summary_check.setToolTip("Taula resum amb una fila per mostra")
-        row1.addWidget(self.exp_summary_check)
-        row1.addStretch()
-        export_layout.addLayout(row1)
-
-        # Row 2: RAW + PROCESSED
-        row2 = QHBoxLayout()
-        self.exp_raw_check = QCheckBox("RAW (DOC + DAD 101\u03bb)")
-        self.exp_raw_check.setChecked(False)
-        self.exp_raw_check.setToolTip(
-            "CSV amb senyals crus DOC (Direct+UIB)\n"
-            "i DAD complet (101 \u03bb, downsampled dt=0.04 min).\n"
-            "BP: espectre DAD a t_max amb totes les \u03bb."
+        # El lliurament és SEMPRE el dataset FAIR (open data). Els Excels/SUMMARY/
+        # metadata.json separats es van substituir pel datapackage.json (manifest
+        # + diccionari + provenança), per tant aquí no hi ha opcions de contingut:
+        # només si s'hi afegeix l'informe PDF. (Abans hi havia checkboxes
+        # —Excels, SUMMARY, RAW, PROCESSED, CSV, metadata— que NO generaven res;
+        # eliminades perquè la UI no prometi fitxers que no s'escriuen.)
+        fair_desc = QLabel(
+            "Sempre: <b>dataset FAIR</b> — results_SEC.csv + traces/ + "
+            "datapackage.json + README."
         )
-        row2.addWidget(self.exp_raw_check)
-        self.exp_processed_check = QCheckBox("PROCESSED (DOC + DAD 6\u03bb)")
-        self.exp_processed_check.setChecked(False)
-        self.exp_processed_check.setToolTip(
-            "CSV amb senyals processats: DOC net + DAD 6\u03bb,\n"
-            "fraccions integrades i concentracions ppm.\n"
-            "BP: cromatograma DOC+DAD (sense fraccions)."
-        )
-        row2.addWidget(self.exp_processed_check)
-        row2.addStretch()
-        export_layout.addLayout(row2)
+        fair_desc.setTextFormat(Qt.RichText)
+        fair_desc.setWordWrap(True)
+        fair_desc.setStyleSheet("color: #5D6D7E; font-size: 11px;")
+        export_layout.addWidget(fair_desc)
 
-        # Row 3: CSV summary + PDF + metadata
-        row3 = QHBoxLayout()
-        self.exp_csv_summary_check = QCheckBox("CSV SUMMARY")
-        self.exp_csv_summary_check.setChecked(False)
-        self.exp_csv_summary_check.setToolTip("SUMMARY.csv amb metadades i fingerprints")
-        row3.addWidget(self.exp_csv_summary_check)
-        self.exp_pdf_check = QCheckBox("Informe PDF")
+        pdf_row = QHBoxLayout()
+        self.exp_pdf_check = QCheckBox("Afegir informe PDF")
         self.exp_pdf_check.setChecked(False)
         self.exp_pdf_check.setToolTip("REPORT_Analysis amb cromatogrames i estadístiques")
-        row3.addWidget(self.exp_pdf_check)
-        self.exp_metadata_check = QCheckBox("metadata.json")
-        self.exp_metadata_check.setChecked(True)
-        self.exp_metadata_check.setToolTip("Fitxer FAIR amb fingerprints, llista mostres, calibració")
-        row3.addWidget(self.exp_metadata_check)
-        row3.addStretch()
-        export_layout.addLayout(row3)
-
-        # Separador CSV
-        sep_row = QHBoxLayout()
-        sep_row.addWidget(QLabel("Separador CSV:"))
-        self.csv_separator_combo = QComboBox()
-        self.csv_separator_combo.addItem("; Punt i coma", ";")
-        self.csv_separator_combo.addItem(", Coma", ",")
-        self.csv_separator_combo.addItem("TAB Tabulador", "\t")
-        self.csv_separator_combo.setToolTip(
-            "Separador pels CSV. Punt i coma recomanat per Excel EU.\n"
-            "Decimals sempre amb punt (.)"
-        )
-        self.csv_separator_combo.setMaximumWidth(180)
-        sep_row.addWidget(self.csv_separator_combo)
-        sep_row.addStretch()
-        export_layout.addLayout(sep_row)
+        pdf_row.addWidget(self.exp_pdf_check)
+        pdf_row.addStretch()
+        export_layout.addLayout(pdf_row)
 
         # --- Separador visual ---
         exp_sep = QFrame()
@@ -604,26 +554,18 @@ class ExportPanel(QWidget):
         except Exception:
             pass
 
-        # CSV separator info
-        csv_sep = self.csv_separator_combo.currentData()
-        any_csv = (self.exp_raw_check.isChecked() or self.exp_processed_check.isChecked()
-                   or self.exp_csv_summary_check.isChecked())
-        if any_csv:
-            sep_name = {";": "punt i coma", ",": "coma", "\t": "tabulador"}.get(csv_sep, csv_sep)
-            parts.append(f"Separador CSV: <code>{sep_name}</code>")
-            parts.append("Decimals: <code>.</code> (punt) &nbsp;&middot;&nbsp; "
-                         "Dates: <code>ISO 8601</code>")
+        # Format dels CSV del dataset FAIR (sempre; no depèn de cap opció)
+        parts.append("Decimals: <code>.</code> (punt) &nbsp;&middot;&nbsp; "
+                     "Dates: <code>ISO 8601</code> &nbsp;&middot;&nbsp; "
+                     "Encoding CSV: <code>UTF-8</code>")
 
-        # FAIR output summary
-        outputs = []
-        if self.exp_raw_check.isChecked():
-            outputs.append("RAW (DOC cru + DAD 101λ)")
-        if self.exp_processed_check.isChecked():
-            outputs.append("PROCESSED (DOC net + fraccions)")
+        # Lliurament: dataset FAIR sempre; PDF i ZIP segons opcions
+        outputs = ["dataset FAIR"]
+        if self.exp_pdf_check.isChecked():
+            outputs.append("PDF")
         if self.dest_zip_radio.isChecked():
             outputs.append("ZIP")
-        if outputs:
-            parts.append("FAIR: " + " + ".join(outputs))
+        parts.append("Lliurament: " + " + ".join(outputs))
 
         self.fair_info.setText("<br>".join(parts))
 
@@ -639,7 +581,7 @@ class ExportPanel(QWidget):
             return
         dest = f"{seq_path}/RESULTATS"
         self.paths_label.setText(
-            f"Tot (Excels + SUMMARY + CSV) \u2192 {dest}/"
+            f"Dataset FAIR + PDF \u2192 {dest}/"
         )
 
     def _browse_dest_folder(self):
@@ -673,7 +615,7 @@ class ExportPanel(QWidget):
         self._run_generate(silent=True)
 
     def _run_generate(self, silent=False):
-        """Auto-genera Excels + SUMMARY + metadata.json a SEQ/RESULTATS/ (lliurament)."""
+        """Auto-genera el dataset FAIR + PDF a SEQ/RESULTATS/ (lliurament)."""
         processed_data = self.main_window.processed_data
         if not processed_data:
             if not silent:
@@ -727,17 +669,12 @@ class ExportPanel(QWidget):
         if self.worker is not None:
             self.worker.wait()
 
-        # Auto-generation: Excels + SUMMARY + metadata.json + PDF (grafics+informe,
-        # per veure-ho sense obrir la Suite)
+        # Auto-generació: dataset FAIR + PDF (gràfics + informe, per veure-ho
+        # sense obrir la Suite). El dataset FAIR es genera sempre.
         self.worker = GenerateWorker(
             samples_grouped, seq_path, calibration_data, method, None,
             generate_pdf=True,
-            export_raw=False,
-            export_processed=False,
-            csv_summary=False,
-            csv_separator=";",
             export_zip=False,
-            export_metadata=True,
             custom_output_dir=None,
         )
         self.worker.progress.connect(self._on_progress)
@@ -898,7 +835,6 @@ class ExportPanel(QWidget):
         seq_path = self.main_window.seq_path or processed_data.get("seq_path", "")
         method = processed_data.get("method", "COLUMN")
         calibration_data = self.main_window.calibration_data
-        csv_sep = self.csv_separator_combo.currentData() or ";"
 
         self.export_btn.setEnabled(False)
         self.export_progress.setVisible(True)
@@ -912,12 +848,7 @@ class ExportPanel(QWidget):
         self._export_worker = GenerateWorker(
             samples_grouped, seq_path, calibration_data, method, None,
             generate_pdf=self.exp_pdf_check.isChecked(),
-            export_raw=self.exp_raw_check.isChecked(),
-            export_processed=self.exp_processed_check.isChecked(),
-            csv_summary=self.exp_csv_summary_check.isChecked(),
-            csv_separator=csv_sep,
             export_zip=False,  # handled manually below
-            export_metadata=self.exp_metadata_check.isChecked(),
             custom_output_dir=custom_dir,
         )
         self._export_worker.progress.connect(self._on_export_progress)
@@ -934,8 +865,8 @@ class ExportPanel(QWidget):
             self._export_worker.wait()
 
         errors = results.get("errors", [])
-        excel_result = results.get("excel_files", {})
-        n_exported = excel_result.get("n_exported", 0) if excel_result else 0
+        fair = results.get("fair", {}) or {}
+        n_samples = fair.get("n_samples", 0)
 
         # ZIP packaging (if requested)
         if self._export_zip_path and self._export_temp_dir:
@@ -950,27 +881,17 @@ class ExportPanel(QWidget):
         self.export_btn.setEnabled(True)
         self.export_progress.setVisible(False)
 
-        # Status summary
+        # Status summary — el lliurament real és el dataset FAIR + PDF/ZIP opcional
         extras = []
-        n_raw = results.get("n_raw", 0)
-        n_proc = results.get("n_processed", 0)
-        if n_raw:
-            extras.append(f"{n_raw} RAW")
-        if n_proc:
-            extras.append(f"{n_proc} PROC")
-        if results.get("csv_summary"):
-            extras.append("CSV")
         if results.get("pdf_report"):
             extras.append("PDF")
-        if results.get("metadata"):
-            extras.append("meta")
         if self._export_zip_path:
             extras.append("ZIP")
         extras_str = (" + " + " + ".join(extras)) if extras else ""
 
         if errors:
             self.export_status_label.setText(
-                f"\u26a0 {n_exported} fitxers{extras_str} — {len(errors)} error(s)")
+                f"\u26a0 Dataset FAIR ({n_samples} mostres){extras_str} — {len(errors)} error(s)")
             self.export_status_label.setStyleSheet(
                 f"color: {COLOR_WARNING}; font-size: 11px;")
             QMessageBox.warning(self, "Avisos",
@@ -978,7 +899,7 @@ class ExportPanel(QWidget):
         else:
             dest_name = self._export_zip_path or self.dest_path_edit.text()
             self.export_status_label.setText(
-                f"\u2714 {n_exported} Excels{extras_str} exportats a {Path(dest_name).name}")
+                f"\u2714 Dataset FAIR ({n_samples} mostres){extras_str} exportat a {Path(dest_name).name}")
             self.export_status_label.setStyleSheet(
                 f"color: {COLOR_SUCCESS}; font-size: 11px;")
 
@@ -1065,14 +986,7 @@ class ExportPanel(QWidget):
         self._auto_generated = False
         self._populated_seq = ""
         # Export addicional
-        self.exp_excel_check.setChecked(True)
-        self.exp_summary_check.setChecked(True)
         self.exp_pdf_check.setChecked(False)
-        self.exp_raw_check.setChecked(False)
-        self.exp_processed_check.setChecked(False)
-        self.exp_csv_summary_check.setChecked(False)
-        self.exp_metadata_check.setChecked(True)
-        self.csv_separator_combo.setCurrentIndex(0)
         self.dest_folder_radio.setChecked(False)
         self.dest_zip_radio.setChecked(False)
         self.dest_path_edit.clear()

@@ -136,6 +136,8 @@ def _provenance(sample, config, net_delay_min):
     rep_u = repair.get("uib") or {}
     bd = base.get("direct") or {}
     _nd = align.get("net_delay_min")
+    ret = prov.get("retention_align") or {}
+    _ret_applied = bool(ret.get("applied"))
     return {
         "injection_index": rep.get("injection_index"),
         "doc_replica": sel.get("doc"),
@@ -143,6 +145,11 @@ def _provenance(sample, config, net_delay_min):
         # Alineació temporal (abans no quedava registrada enlloc)
         "shift_direct_min": _num(align.get("shift_direct_min"), 4),
         "shift_uib_min": _num(align.get("shift_uib_min"), 4),
+        # Alineació de retenció entre seqüències (ancorada al KHP a 254 nm): el
+        # temps de les traces ja ve desplaçat per aquest delta; aquí es documenta.
+        "retention_shift_min": _num(ret.get("delta_t"), 4) if _ret_applied else 0,
+        "retention_khp_obs_min": _num(ret.get("t_khp_obs"), 3) if _ret_applied else None,
+        "retention_khp_ref_min": _num(ret.get("t_khp_ref"), 3) if _ret_applied else None,
         "net_delay_min": _num(_nd if _nd is not None else net_delay_min, 3),
         "smoothing_method": smooth.get("method") or "Savitzky-Golay",
         "smoothing_window": smooth.get("window") or chrom.get("smoothing_window"),
@@ -202,6 +209,9 @@ def _results_columns(target_wls):
         ("dad_replica", "string", "", "Selected DAD (UV) replica"),
         ("shift_direct_min", "number", "min", "Time-shift applied to the DOC-Direct signal during alignment"),
         ("shift_uib_min", "number", "min", "Time-shift applied to the DOC-UIB signal during alignment"),
+        ("retention_shift_min", "number", "min", "KHP-anchored retention shift added to the trace time axis so all sequences share a common KHP position across the column lifetime (COLUMN only; 0 if not applied)"),
+        ("retention_khp_obs_min", "number", "min", "Observed KHP apex (254 nm) in this sequence before alignment"),
+        ("retention_khp_ref_min", "number", "min", "Reference KHP apex (254 nm) all sequences are aligned to"),
         ("net_delay_min", "number", "min", "Applied HPLC-to-TOC time offset"),
         ("smoothing_method", "string", "", "Signal smoothing method"),
         ("smoothing_window", "integer", "points", "Savitzky-Golay window length"),
@@ -341,8 +351,16 @@ def _write_trace(path, sample_name, sample, mode, target_wls, seq_path):
     if t_doc is None or y_doc is None:
         return []
     t_doc = np.asarray(t_doc, dtype=float)
+    # Alineacio de retencio (ancorada al KHP): si la seq te desplaçament aplicat,
+    # el temps EXPORTAT s'alinea (t + delta_t) perque tots els cromatogrames de
+    # la vida de la columna quedin a la mateixa posicio. La interpolacio DAD es
+    # fa sobre el t_doc CRU; nomes es desplaça l'etiqueta de temps (desplaçament
+    # rigid). delta_t i la referencia queden documentats a results_SEC/datapackage.
+    _ra = (rep.get("provenance") or {}).get("retention_align") or {}
+    _dt = float(_ra.get("delta_t") or 0.0) if _ra.get("applied") else 0.0
+    t_out = (t_doc + _dt) if _dt else t_doc
     header = ["time_min", "doc"]
-    data = [t_doc, np.asarray(y_doc, dtype=float)]
+    data = [t_out, np.asarray(y_doc, dtype=float)]
     wl_out = []
     if ex:
         t_dad, wls = ex

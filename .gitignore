@@ -140,3 +140,6 @@ Dades3/**/*_backup_*
 
 # Binary artifacts without extension
 Dades3/**/[0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F]
+
+# Processat per lots de l historic (resultats generats, regenerables)
+/RESULTATS_HISTORIC/
