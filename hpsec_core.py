@@ -71,6 +71,13 @@ MIN_VALLEY_DEPTH = 0.01      # 1% of peak height to detect irregular top
 # only (smoothing collapses the notch into a symmetric shoulder, so reversals are
 # an unreliable gate) and do NOT enter the decision.
 SYMMETRY_CORR_MIN = 0.80     # min mirror correlation to call a notch a batman
+# Second gate: even a symmetric batman is only AUTO-repaired when the repair is a
+# modest notch-fill. The tangent parabola can overshoot on broad/bimodal/shoulder
+# peaks, inventing a tall dome (area +50-100%). Filling a real detector notch adds
+# little area (~5-8% median, <=~15% in clear cases); a large gain means it is not a
+# notch. Above this the batman is NOT auto-applied: it goes to review (reversible),
+# where the proposed repair is shown and the person decides.
+MAX_REPAIR_AREA_GAIN = 0.15  # max area increase (fraction) to auto-apply a batman repair
 
 # SNR
 THRESH_SNR = 10.0            # Minimum acceptable SNR
@@ -2595,8 +2602,22 @@ def detect_main_peak(t, y, min_prominence_pct=5.0, is_bp=None):
                 cand_ri = min(len(y) - 1, cand_ri)
                 symmetry_info = measure_flank_symmetry(y, cand_li, main_peak, cand_ri)
 
-                if symmetry_info.get("is_symmetric", False):
-                    # CONFIAT -> adoptar la reparacio
+                # Segona porta: magnitud de la correcció (increment d'àrea). El
+                # tangent-parabola pot sobre-reparar pics amples/bimodals inventant
+                # una cúpula; només auto-apliquem si el guany és moderat.
+                if cand_ri > cand_li:
+                    _ao = float(trapezoid(y[cand_li:cand_ri + 1],
+                                          t[cand_li:cand_ri + 1]))
+                    _ar = float(trapezoid(y_cand[cand_li:cand_ri + 1],
+                                          t[cand_li:cand_ri + 1]))
+                    area_gain = (_ar / _ao - 1.0) if _ao > 0 else 0.0
+                else:
+                    area_gain = 0.0
+                symmetry_info["area_gain"] = float(area_gain)
+
+                if symmetry_info.get("is_symmetric", False) and \
+                        area_gain <= MAX_REPAIR_AREA_GAIN:
+                    # CONFIAT (simètric + correcció moderada) -> adoptar la reparacio
                     irregular_top_repaired = True
                     y_for_boundaries = y_cand
                     # Traçabilitat: geometria de la reparació AUTO (serialitzable)
@@ -2616,7 +2637,12 @@ def detect_main_peak(t, y, min_prominence_pct=5.0, is_bp=None):
                         "anchor_right": [_f(repair_info.get("t_anchor_right")),
                                          _f(repair_info.get("y_anchor_right"))],
                     }
-                # EXCEPCIO (asimetric): symmetry_info queda desat, sense reparacio
+                elif symmetry_info.get("is_symmetric", False):
+                    # Simètric però correcció massa gran -> a REVISIÓ, no auto-aplicat
+                    symmetry_info["reason_not_adopted"] = "large_area_gain"
+                else:
+                    # Asimètric (p.ex. recàrrega) -> a REVISIÓ, no batman-reparat
+                    symmetry_info["reason_not_adopted"] = "asymmetric"
             else:
                 # Reparacio sense efecte: mesura informativa sobre limits originals
                 li0, ri0 = find_peak_boundaries(
@@ -2635,19 +2661,26 @@ def detect_main_peak(t, y, min_prominence_pct=5.0, is_bp=None):
     left_idx = max(0, left_idx)
     right_idx = min(len(y) - 1, right_idx)
 
-    # Calcular àrea sobre senyal ORIGINAL (no reparat) amb els límits correctes
-    # La reparació serveix per trobar els límits, l'àrea és sobre dades originals
+    # Àrea sobre senyal ORIGINAL amb els límits correctes.
     if right_idx > left_idx:
-        area = float(trapezoid(y[left_idx:right_idx + 1], t[left_idx:right_idx + 1]))
+        area_on_original = float(trapezoid(
+            y[left_idx:right_idx + 1], t[left_idx:right_idx + 1]
+        ))
     else:
-        area = 0.0
+        area_on_original = 0.0
 
-    # Si reparat, calcular també àrea sobre senyal reparat (per calibració)
-    area_repaired = None
+    # Si s'ha ADOPTAT la reparació (batman CONFIAT = simètric), àrea sobre senyal
+    # reparat. L'àrea REPORTADA passa a ser la reparada: la correcció del detector
+    # OCD arriba a l'àrea quantificada (i per tant als ppm). L'original es conserva
+    # sempre com area_original per poder REVERTIR. Els irregular tops asimètrics NO
+    # s'adopten (irregular_top_repaired=False) → area queda sobre senyal original.
+    area_on_repaired = None
     if irregular_top_repaired and right_idx > left_idx:
-        area_repaired = float(trapezoid(
+        area_on_repaired = float(trapezoid(
             y_for_boundaries[left_idx:right_idx + 1], t[left_idx:right_idx + 1]
         ))
+
+    area = area_on_repaired if area_on_repaired is not None else area_on_original
 
     result = {
         "valid": True,
@@ -2680,9 +2713,11 @@ def detect_main_peak(t, y, min_prominence_pct=5.0, is_bp=None):
         result["is_irregular_top"] = True
         result["irregular_top_repaired"] = irregular_top_repaired
         result["irregular_top_info"] = irregular_top_info
-        if area_repaired is not None:
-            result["area_original"] = area
-            result["area_repaired"] = area_repaired
+        if area_on_repaired is not None:
+            # area reportada = reparada; original conservat per revertir
+            result["area_original"] = area_on_original
+            result["area_repaired"] = area_on_repaired
+            result["area_is_repaired"] = True
         if has_rough_top and not has_irregular_top:
             result["anomaly_subtype"] = "ROUGH_TOP"
         # Huella de simetria: distingeix batman CONFIAT (simetric, auto-reparable)
@@ -2690,10 +2725,12 @@ def detect_main_peak(t, y, min_prominence_pct=5.0, is_bp=None):
         if symmetry_info is not None:
             result["symmetry_info"] = symmetry_info
             result["batman_symmetric"] = bool(symmetry_info.get("is_symmetric"))
-            # confiat = simetric I de fet reparat; excepcio = la resta d'irregular tops
+            # confiat = de fet auto-reparat (simètric + correcció moderada);
+            # excepció = a revisió (asimètric o correcció massa gran). El motiu
+            # concret viatja a symmetry_info["reason_not_adopted"].
             if has_irregular_top:
                 result["batman_class"] = (
-                    "confident" if symmetry_info.get("is_symmetric") else "exception"
+                    "confident" if irregular_top_repaired else "exception"
                 )
     if smoothness_info is not None:
         result["smoothness"] = smoothness_info.get("smoothness", 100.0)
