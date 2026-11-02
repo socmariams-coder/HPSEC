@@ -243,7 +243,7 @@ class KHPDetailDialog(QDialog):
 
         lines = []
         lines.append(f"Àrea: {area:>9.2f}        Pic alçada: {peak_info.get('height', 0):>7.1f} ppb")
-        lines.append(f"t_max: {peak_info.get('t_max', 0):>8.3f} min   FWHM: {khp.get('fwhm_doc', 0):>6.3f} min   Asym: {khp.get('symmetry', 1.0):.3f}")
+        lines.append(f"t_max: {peak_info.get('t_max', 0):>8.3f} min   FWHM: {khp.get('fwhm_doc', 0):>6.3f} min   Sym(FWHM): {khp.get('symmetry', 1.0):.3f}")
         lines.append(f"Bigauss: status={bg.get('status', '?'):<8} R²={bg.get('r2', 0):.4f}  asym={bg.get('asymmetry', 1.0):.2f}")
         lines.append(f"SNR: {khp.get('snr', 0):.1f}    Shift vs 254: {khp.get('shift_sec', 0):+.1f} s")
 

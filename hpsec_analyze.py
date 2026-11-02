@@ -1755,6 +1755,11 @@ def _asample_detect_peak_and_repairs(sig, sample_data, config, result,
             _log_detection_issue(seq_name, sample_name, "irregular_top", "direct", irr_info)
         else:
             result["irregular_top_direct"] = False
+            # Cim rugós (soroll al cim, SENSE vall): NO és doble pic. Avís informatiu,
+            # no bloquejant — en mostres DOM pot ser heterogeneïtat real.
+            if peak_info.get("is_rough_top", False):
+                result["anomalies"].append(create_anomaly("ROUGH_TOP_DIRECT"))
+                result["rough_top_direct"] = True
 
     # Detectar cim irregular UIB (si DUAL) — auto-repair consistent amb Direct
     if is_dual and y_doc_uib_net is not None and len(y_doc_uib_net) > 0:
@@ -1947,7 +1952,10 @@ def _asample_peak_metrics(sig, config, result, peak_info, y_smooth):
                     fit_right = min(len(t_doc) - 1, peak_idx + n_fallback)
 
                 bigauss_result = fit_bigaussian(t_doc, y_smooth, peak_idx, fit_left, fit_right)
-                if bigauss_result.get("valid"):
+                # fit_bigaussian retorna "status" (no "valid"); l'absència d'"error"
+                # indica ajust reeixit. Abans es mirava "valid" (inexistent) -> el
+                # bigaussià de mostra NO s'omplia mai (camp mort a l'export).
+                if not bigauss_result.get("error"):
                     result["bigaussian_doc"] = {
                         "r2": bigauss_result.get("r2", 0),
                         "amplitude": bigauss_result.get("amplitude", 0),
@@ -2013,7 +2021,7 @@ def _asample_peak_metrics(sig, config, result, peak_info, y_smooth):
                         # Bi-Gaussian fit DAD 254 (BP mode)
                         try:
                             bigauss_254 = fit_bigaussian(t_dad, y_254_smooth, peak_idx_254, left_idx_254, right_idx_254)
-                            if bigauss_254.get("valid"):
+                            if not bigauss_254.get("error"):
                                 result["bigaussian_254"] = {
                                     "r2": bigauss_254.get("r2", 0),
                                     "asymmetry": bigauss_254.get("asymmetry", 1),
@@ -3154,7 +3162,9 @@ def analyze_sequence(imported_data, calibration_data=None, config=None,
                         else:
                             new_anomalies.append(a)
                     rep["anomalies"] = new_anomalies
-                    rep["is_irregular_top"] = False
+                    # El camp real al result de la mostra és irregular_top_direct
+                    # (el posa l'anàlisi, no is_irregular_top). Netejar el correcte.
+                    rep["irregular_top_direct"] = False
                     rep["irregular_top_false_positive"] = True
                 # Recalcular repairable (ja no cal)
                 sample_group["repairable"] = False

@@ -4,7 +4,37 @@ Historial detallat de decisions i troballes per sessió. Separat de
 CLAUDE.md perquè el context de sessió no carregui ~700 línies de diari;
 consultar quan es necessiti el context històric d'un tema concret.
 
-> Last updated: 2026-10-28
+> Last updated: 2026-11-02
+
+### Depuració forma del cim: batman vs ROUGH_TOP + bugs (2026-11-02)
+
+**Objectiu de la usuària:** treure missatges contradictoris; KHP i mostra no
+s'han de tractar igual a la força (la DOM dona asimetries REALS i informatives
+als HS — no són defectes). Necessita operativitat, no features noves.
+
+**Fet (quirúrgic, reversible, no destructiu):**
+- `is_irregular_top` estava SOBRECARREGAT: batman (valls) OR rough (smoothness<70)
+  OR reparat → un cim rugós disparava el BLOQUEJANT "Doble pic detectat" (fals) i
+  feia que el MATEIX KHP sortís batman a l'anàlisi però net a calibració. Separat:
+  `is_irregular_top`=batman NOMÉS (valls o reparat); nou `is_rough_top` per rugós
+  sense vall (hpsec_core.py:2707+). batman_class només per batman real.
+- Nova anomalia `ROUGH_TOP_DIRECT` (INFO, no bloquejant, no reparable) a
+  hpsec_warnings.py; l'anàlisi la emet per cim rugós (hpsec_analyze.py:~1757).
+  Rough ja NO és "doble pic" ni bloquejant → dashboard sense falsos triangles.
+- Bug corregit: bigaussià de mostra mirava `.get("valid")` (fit retorna `status`)
+  → mai s'omplia (camp mort a l'export en BP). Ara `not .get("error")`
+  (hpsec_analyze.py:1950/2016). Verificat que pobla en BP (148_SEQ_BP).
+- Bug corregit: reconciliació cross-replica escrivia `rep["is_irregular_top"]`
+  (clau fantasma) en lloc de `rep["irregular_top_direct"]` (hpsec_analyze.py:~3157).
+- Etiqueta: khp_detail_dialog.py:246 deia "Asym:" sobre la simetria FWHM (ratio
+  d'amplada) just sobre el "asym" bigaussià → "Sym(FWHM):" per no confondre.
+
+**Verificat:** suite 72/72; motor real: 305 KHP rugós→ROUGH_TOP info (no bloquejant),
+118 KHP/EP batman real→IRREGULAR_TOP_DIRECT + confident (igual), 236 reconciliació OK.
+TRES "simetries" identificades i diferenciades: espill (`symmetry_info.corr`, batman),
+FWHM (`symmetry_doc`/`symmetry`, amplada), bigaussià (`asymmetry`, forma gaussiana).
+PENDENT (no fet, decisió usuària): asimetria com a descriptor DOM visible (ara aparcat);
+substituir "ambdues rèpliques" per la simetria com a jutge (memòria #batman_firma).
 
 ### Traçabilitat completa per mostra (bloc `provenance`) + FAIR en bloc (2026-10-28)
 

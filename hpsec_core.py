@@ -2704,12 +2704,20 @@ def detect_main_peak(t, y, min_prominence_pct=5.0, is_bp=None):
     if repair_geometry is not None:
         result["repair_geometry"] = repair_geometry
 
-    # Afegir info d'irregular top si detectat (IRREGULAR_TOP o ROUGH_TOP)
+    # Forma del cim: DUES anomalies DIFERENTS, mai barrejades sota el mateix flag.
+    #  - BATMAN (is_irregular_top): valls reals pic-vall-pic (doble pic / orelles).
+    #    Artefacte del detector; simètric; auto-reparable.
+    #  - ROUGH_TOP (is_rough_top): cim rugós/soroll SENSE vall. NO és doble pic
+    #    (en mostres DOM pot ser heterogeneïtat real, no un defecte).
+    # Abans tot anava sota is_irregular_top i un cim rugós disparava el bloquejant
+    # "doble pic" (fals) i feia que KHP i mostra es contradiguessin. Ara separats.
     has_irregular_top = (irregular_top_info is not None
                          and irregular_top_info.get("is_irregular_top", False))
     has_rough_top = (smoothness_info is not None
                      and smoothness_info.get("smoothness", 100.0) < 70.0)
-    if has_irregular_top or has_rough_top or irregular_top_repaired:
+    is_batman = bool(has_irregular_top or irregular_top_repaired)
+
+    if is_batman:
         result["is_irregular_top"] = True
         result["irregular_top_repaired"] = irregular_top_repaired
         result["irregular_top_info"] = irregular_top_info
@@ -2718,8 +2726,6 @@ def detect_main_peak(t, y, min_prominence_pct=5.0, is_bp=None):
             result["area_original"] = area_on_original
             result["area_repaired"] = area_on_repaired
             result["area_is_repaired"] = True
-        if has_rough_top and not has_irregular_top:
-            result["anomaly_subtype"] = "ROUGH_TOP"
         # Huella de simetria: distingeix batman CONFIAT (simetric, auto-reparable)
         # d'EXCEPCIO (asimetric -> nomes senyalar, no batman-reparar).
         if symmetry_info is not None:
@@ -2728,10 +2734,15 @@ def detect_main_peak(t, y, min_prominence_pct=5.0, is_bp=None):
             # confiat = de fet auto-reparat (simètric + correcció moderada);
             # excepció = a revisió (asimètric o correcció massa gran). El motiu
             # concret viatja a symmetry_info["reason_not_adopted"].
-            if has_irregular_top:
-                result["batman_class"] = (
-                    "confident" if irregular_top_repaired else "exception"
-                )
+            result["batman_class"] = (
+                "confident" if irregular_top_repaired else "exception"
+            )
+    else:
+        result["is_irregular_top"] = False
+        if has_rough_top:
+            # Cim rugós sense vall: NO és batman. Informatiu, no bloquejant.
+            result["is_rough_top"] = True
+            result["anomaly_subtype"] = "ROUGH_TOP"
     if smoothness_info is not None:
         result["smoothness"] = smoothness_info.get("smoothness", 100.0)
 

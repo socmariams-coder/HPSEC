@@ -260,6 +260,16 @@ ANOMALY_CATALOG = {
         "invalidates": False,
         "action": "Revisar reparació paràbola al detall",
     },
+    "ROUGH_TOP_DIRECT": {  # cim rugós SENSE vall — NO és doble pic
+        "severity": WarningLevel.INFO,
+        "label": "Cim rugós Direct",
+        "icon": "~",
+        "description": "Cim rugós al senyal DOC Direct (soroll al cim, NO és doble pic)",
+        "stage": "analyze",
+        "repairable": False,
+        "invalidates": False,
+        "action": "Informatiu; en mostres DOM pot ser heterogeneïtat real",
+    },
     "NO_PEAK": {
         "severity": WarningLevel.BLOCKER,
         "label": "Sense pic",
