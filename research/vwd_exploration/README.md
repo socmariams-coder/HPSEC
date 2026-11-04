@@ -45,22 +45,22 @@ pulsació de flux / bombolles / índex de refracció i pressió = base periòdic
 `vwd_representa.py`: per mostra, 2 files (220 i 254 nm) amb DAD (amunt) vs VWD (avall)
 en mAU reals + DOC de referència. Sortides a `out_<SEQ>/matched/`.
 
-## Correlació amb el cicle de reactiu del DOC (`vwd_correla_reactiu.py`)
-Hipòtesi (usuària): l'equip de DOC injecta OXIDANT (persulfat) + ÀCID amb bomba
-cíclica → cada cicle afegeix reactiu que absorbeix UV (persulfat fort a 220, feble a
-254) i canvia l'índex de refracció. Resultats 307/308 — **ho SUPORTEN**:
-- **Període ~2,3–2,4 min**, reproduïble entre 307 (2,45) i 308 (2,36).
-- **220 i 254 EN FASE** (lag ≈ 0) → mateixa font; **220 ≫ 254** en magnitud (coherent
-  amb un reactiu UV-actiu tipus persulfat).
-- **Present en blancs de milliQ** (no és química de mostra).
-- **Fase-lock baix (0,12–0,33)**: en promitjar injeccions, la part inicial (lligada a
-  la injecció) es conserva però l'oscil·lació de ~2,3 min **s'esborra** → font periòdica
-  **lliure, NO sincronitzada amb la injecció** = bomba de dosificació de reactiu que va
-  contínua i cada injecció enganxa en una fase diferent.
-- (També hi ha una deriva lenta ~9,5 min = el gran sot d'índex de refracció.)
+## Correlació amb el reactiu del DOC — hipòtesi REFUTADA per la dosi real
+Hipòtesi inicial: l'oscil·lació VWD = cicle d'injecció d'oxidant/àcid. `vwd_correla_reactiu.py`
+donava un senyal periòdic (~2,3 min, 220 i 254 en fase, present en blancs, fase-lock baix)
+que SEMBLAVA suportar-ho. **Però amb la dosi REAL llegida del full de DOC, NO lliga.**
 
-**Per tancar la correlació cal una dada de l'instrument**: el **període del cicle de la
-bomba de reactiu** del DOC. Si és ~2,3–2,4 min (o una relació simple), queda confirmat.
-Com que és lliure respecte la injecció i SNR≈1, NO es pot treure fiablement per software
-(ni per promig de rèpliques) → fix d'instrumentació (esmorteïdor de pulsos / mescla /
-posició de la cel·la / dosificació més suau).
+Dosi real (full `2-TOC`, Sievers M9e; cols Acid/Oxidizer Flow Rate + timestamps):
+- **Cabal CONSTANT**: àcid 5 µL/min, oxidant 2 µL/min (setpoints, no modulats).
+- **Recàrrega de xeringa**: 6 cops en tota la seq, **cada ~77 min** (~74 s d'aturada).
+  És l'únic esdeveniment periòdic del reactiu (quadra amb buidar una xeringa a 5 µL/min).
+
+**Conclusió:** la recàrrega (~77 min) NO pot generar l'oscil·lació VWD, que té diversos
+cicles DINS de cada injecció (~15 min). L'oscil·lació NO és la dosificació de reactiu.
+El ~2,3 min del FFT era una mesura poc robusta sobre finestra curta amb components
+barrejats (deriva lenta + ripple); no coincideix amb cap cicle real del reactiu.
+
+**Obert:** l'oscil·lació s'introdueix ENTRE el DAD (net) i el VWD → dins/després del
+TOC o el nou tram. Candidats (NO confirmats per dades, per a la tècnica): ripple de
+lliurament de la xeringa doble, bombolles de l'oxidació UV, cicle tèrmic/mesura del M9.
+Sincronització disponible per a correlació fina: `0-INFO` (Hora HPLC / Hora TOC / flush).
