@@ -44,3 +44,23 @@ pulsació de flux / bombolles / índex de refracció i pressió = base periòdic
 
 `vwd_representa.py`: per mostra, 2 files (220 i 254 nm) amb DAD (amunt) vs VWD (avall)
 en mAU reals + DOC de referència. Sortides a `out_<SEQ>/matched/`.
+
+## Correlació amb el cicle de reactiu del DOC (`vwd_correla_reactiu.py`)
+Hipòtesi (usuària): l'equip de DOC injecta OXIDANT (persulfat) + ÀCID amb bomba
+cíclica → cada cicle afegeix reactiu que absorbeix UV (persulfat fort a 220, feble a
+254) i canvia l'índex de refracció. Resultats 307/308 — **ho SUPORTEN**:
+- **Període ~2,3–2,4 min**, reproduïble entre 307 (2,45) i 308 (2,36).
+- **220 i 254 EN FASE** (lag ≈ 0) → mateixa font; **220 ≫ 254** en magnitud (coherent
+  amb un reactiu UV-actiu tipus persulfat).
+- **Present en blancs de milliQ** (no és química de mostra).
+- **Fase-lock baix (0,12–0,33)**: en promitjar injeccions, la part inicial (lligada a
+  la injecció) es conserva però l'oscil·lació de ~2,3 min **s'esborra** → font periòdica
+  **lliure, NO sincronitzada amb la injecció** = bomba de dosificació de reactiu que va
+  contínua i cada injecció enganxa en una fase diferent.
+- (També hi ha una deriva lenta ~9,5 min = el gran sot d'índex de refracció.)
+
+**Per tancar la correlació cal una dada de l'instrument**: el **període del cicle de la
+bomba de reactiu** del DOC. Si és ~2,3–2,4 min (o una relació simple), queda confirmat.
+Com que és lliure respecte la injecció i SNR≈1, NO es pot treure fiablement per software
+(ni per promig de rèpliques) → fix d'instrumentació (esmorteïdor de pulsos / mescla /
+posició de la cel·la / dosificació més suau).
