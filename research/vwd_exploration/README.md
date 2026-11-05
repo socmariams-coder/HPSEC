@@ -16,6 +16,14 @@ Sortides a `out_<SEQ>/` (regenerables, fora de git):
 `<mostra>_overlay.png` (3 panells: superposició normalitzada · magnitud real VWD ·
 raó espectral VWD1A/VWD1B), `_SUMMARY_<SEQ>.csv`, `_PANORAMA_<SEQ>.png`.
 
+## Informe complet (document amb gràfiques)
+`make_informe.py` genera `informe_vwd_307_308_v1.html` (autocontingut, figures
+incrustades). Per obtenir el PDF: `make_informe.py` + Chrome headless `--print-to-pdf`
+(workflow premium HTML→Chrome PDF). El document recull objecte/context, mètode, resultats
+(oscil·lació de base ~2,25 min, SNR finestra/base ≈1, VWD1B viu ~100× menor, localització
+a la cel·la VWD per λ aparellada, cap retenció estable), la refutació de la hipòtesi del
+reactiu i el diagnòstic + següents passos. El PDF és regenerable (no es versiona a git).
+
 ## Troballes 307/308 (03-11-2026) — primera passada
 El VWD, tal com està connectat (aigües avall del DOC), **NO dona senyal d'analit
 utilitzable** en aquestes dues seqüències:
