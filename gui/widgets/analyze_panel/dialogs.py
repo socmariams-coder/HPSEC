@@ -712,6 +712,21 @@ class SampleDetailDialog(QDialog):
             c = "#27AE60" if r2_dad >= 0.99 else ("#F39C12" if r2_dad >= 0.95 else "#E74C3C")
             parts.append(f"<span style='color:{c}'>R²_DAD: {r2_dad:.4f}</span>")
 
+        # Bigaussiana DOC (ajust de forma del pic): R², asimetria, qualitat.
+        # Es mostra sempre que el backend l'hagi calculada (mostres COLUMN i BP).
+        big = doc_rep.get("bigaussian_doc") or {}
+        big_r2 = big.get("r2", 0) or 0
+        if big_r2 > 0:
+            qual = big.get("quality", "")
+            c = {"VALID": "#27AE60", "CHECK": "#F39C12",
+                 "INVALID": "#E74C3C"}.get(qual, "#555")
+            asym = big.get("asymmetry")
+            asym_txt = (f", asim {asym:.2f}"
+                        if isinstance(asym, (int, float)) and asym > 0 else "")
+            qual_txt = f" ({qual})" if qual else ""
+            parts.append(
+                f"<span style='color:{c}'>Bigauss R²: {big_r2:.3f}{asym_txt}{qual_txt}</span>")
+
         # Injection indices
         inj_parts = []
         for rk, rd in sorted(replicas.items()):

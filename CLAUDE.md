@@ -66,7 +66,11 @@ Mark features as DONE only when code is fully functional end-to-end, not when pl
   sense camps a SUMMARY/FAIR/PDF. `hpsec_humic.py` + `humic_lda_model.json` mòguts a
   `research/humic_exploration/`. Recuperable de l'historial de git. Motiu: simplificació
   del pipeline (l'anàlisi espectral viu com a exploració, no com a lliurable).
-- [ ] Analyze panel: mostrar bigaussian (R², asym, quality) per BP — PENDING
+- [x] Analyze panel: mostrar bigaussian (R², asym, quality) — DONE (2026-11-26)
+  - `_build_quality_section` (dialogs.py) afegeix "Bigauss R²: … , asim … (VALID/CHECK/INVALID)"
+    amb color per qualitat, al costat de SNR/R²_DOC/R²_DAD. Es mostra sempre que
+    `bigaussian_doc` existeixi (COLUMN i BP; el backend ja la pobla des del fix 2026-11-02).
+  - Verificat amb fum GUI offscreen (apareix amb dades, absent sense; SNR intacte).
 - [ ] Analyze panel: mostrar timeouts amb icones/tooltip — PENDING
 - [x] Analyze backend: UIB timeout estimation from DOC Direct pattern — DONE (estimate_timeout_for_uib + _estimate_uib_timeouts_from_sequence)
 - [ ] Analyze backend: detecció deriva baseline DAD per replica selection — PENDING (TODO a hpsec_analyze.py L1210)

@@ -6,6 +6,22 @@ consultar quan es necessiti el context històric d'un tema concret.
 
 > Last updated: 2026-11-26
 
+### Bigaussiana visible al detall d'Analitzar (2026-11-26)
+
+**Objectiu:** mostrar a la pantalla d'Analitzar l'ajust bigaussià del pic (R²,
+asimetria, qualitat) que el backend ja calcula però que no es veia enlloc.
+
+**Fet:**
+- `_build_quality_section` (gui/widgets/analyze_panel/dialogs.py) hi afegeix un bloc
+  "Bigauss R²: … , asim … (VALID/CHECK/INVALID)", color per qualitat (verd/taronja/vermell),
+  al costat de SNR / R²_DOC / R²_DAD. Mateix patró d'HTML `parts`.
+- Es mostra **sempre que `doc_rep['bigaussian_doc']` existeixi** (COLUMN i BP; el backend
+  ja la pobla des del fix de 02/11). Si no hi és, no apareix res (graceful).
+- Font de dades: `result['bigaussian_doc']` (r2, asymmetry, quality) a hpsec_analyze.py
+  fase 5 (~1959), al mateix dict que `snr_info`.
+- Verificat amb **fum GUI offscreen** (construint `_build_quality_section` amb/ sense dades).
+  Sense test a la bateria (és GUI); cal eyeball visual de la usuària.
+
 ### Número de SEQ als noms de fitxer de resultats (2026-11-26)
 
 **Objectiu usuària:** que resultats de seqüències diferents puguin conviure a la
