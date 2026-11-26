@@ -86,6 +86,33 @@ def test_volume_assumed_anomaly():
 
 
 # ---------------------------------------------------------------------------
+def test_volum_default_per_mode():
+    """#volum: quan el MasterFile no té volum, la importació NO deixa buit —
+    aplica el valor per defecte segons el mode (COLUMN 400 / BP 100; 256-274 → 100),
+    el marca com a 'default' i avisa amb un sol missatge 'Volum no trobat'."""
+    print("\n[volum] Volum no trobat -> valor per defecte segons mode")
+    import pandas as pd
+    import hpsec_import as hi
+    df = pd.DataFrame({"Line#": [1, 2], "Inj#": [1, 1],
+                       "Sample Name": ["AIGUA1", "AIGUA2"]})
+    md = {"hplc_seq": df, "info": {}}
+
+    inj, w, _ = hi.parse_injections_from_masterfile(md, None, is_bp=False,
+                                                    seq_path=r"X:\275_SEQ")
+    check("COLUMN: volum per defecte 400", all(i["inj_volume"] == 400 for i in inj))
+    check("marcat com a 'default'", all(i["inj_volume_source"] == "default" for i in inj))
+    check("avís 'Volum no trobat'", any("Volum no trobat" in x for x in w))
+
+    inj_bp, _, _ = hi.parse_injections_from_masterfile(md, None, is_bp=True,
+                                                       seq_path=r"X:\310_SEQ_BP")
+    check("BP: volum per defecte 100", all(i["inj_volume"] == 100 for i in inj_bp))
+
+    inj_old, _, _ = hi.parse_injections_from_masterfile(md, None, is_bp=False,
+                                                        seq_path=r"X:\260_SEQ")
+    check("COLUMN antiga (256-274): volum 100", all(i["inj_volume"] == 100 for i in inj_old))
+
+
+# ---------------------------------------------------------------------------
 def test_khp_alignment_checks():
     """#15/A: la comprovació d'alineació del KHP avisa si els pics són massa
     amples (degradació) o si el shift DOC↔254 és inconsistent (pic mal detectat)."""
@@ -495,6 +522,7 @@ if __name__ == "__main__":
     for t in (test_atomic_write_and_cache_poisoning,
               test_load_manifest_corrupt,
               test_volume_assumed_anomaly,
+              test_volum_default_per_mode,
               test_khp_alignment_checks,
               test_khp_measured_delay_recorded,
               test_no_np_trapz_in_production,

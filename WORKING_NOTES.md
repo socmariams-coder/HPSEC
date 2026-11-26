@@ -6,6 +6,29 @@ consultar quan es necessiti el context històric d'un tema concret.
 
 > Last updated: 2026-11-26
 
+### Volum no trobat → valor per defecte segons mode + avís (2026-11-26)
+
+**Objectiu usuària:** quan el volum d'injecció no es troba a les dades, que el
+programa **no s'encalli ni suposi en silenci**: una sola pregunta/missatge a
+l'inici del processament ("Volum no trobat") i un valor per defecte segons el
+mode. **COLUMN 400 µL / BP 100 µL** (256-274 → 100). **Igual per a tot, KHP inclòs.**
+
+**Fet:**
+- `parse_injections_from_masterfile` ara rep `is_bp` i `seq_path` (el cridador a
+  `import_sequence` els passa: el mode ja està detectat en aquell punt).
+- Quan una injecció no té volum (ni capçalera 'Volume', ni 0-INFO, ni columna
+  index-13), s'omple amb `get_injection_volume(seq_path, is_bp)` (reaprofitat de
+  hpsec_calibrate; ja feia 400/100/100-old), es marca `inj_volume_source='default'`
+  i s'insereix UN avís "Volum no trobat: … valor per defecte X µL (MODE)". L'avís
+  surt a la barra via la conversió de warnings a `_generate_import_warnings` (IMP_NOTICE).
+- **Bug latent corregit:** el bloc vell cridava `warnings_structured` (no definida en
+  aquesta funció; es defineix a una altra a la 2363) → NameError just quan faltava
+  volum. Ara substituït per l'ompliment + l'avís pla.
+- Capa de seguretat independent intacta: `quantify_sample` encara marca
+  `volume_source='assumed'` + `ANA_VOLUME_ASSUMED` si mai li arriba un volum None.
+- Test nou `test_volum_default_per_mode` (COLUMN 400, BP 100, 256-274 → 100, font
+  'default', avís). Suite **77/77**.
+
 ### Decisió de rumb: tancar la versió actual; VWD = versió NOVA posterior (2026-11-26)
 
 **Decisió de la usuària (IMPORTANT):** primer **tancar aquesta versió** de la Suite

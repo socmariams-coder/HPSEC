@@ -1801,7 +1801,7 @@ def check_sequence_files(seq_path, used_uib_files=None, used_dad_files=None):
 # FUNCIÓ PRINCIPAL: import_sequence() v2
 # =============================================================================
 
-def parse_injections_from_masterfile(master_data, config=None):
+def parse_injections_from_masterfile(master_data, config=None, is_bp=False, seq_path=None):
     """
     Parseja les injeccions del MasterFile (fulla 1-HPLC-SEQ).
 
@@ -2225,33 +2225,26 @@ def parse_injections_from_masterfile(master_data, config=None):
         })
 
     # Validar: volums d'injecció
+    # Quan una injecció no té volum (ni capçalera 'Volume', ni 0-INFO, ni columna
+    # index-13), NO es deixa buit — encallaria el processament. S'aplica el valor
+    # per defecte segons el mode (COLUMN 400 / BP 100 µL; SEQ 256-274 → 100), es
+    # marca com a 'default' per a la traçabilitat, i s'avisa a l'usuari amb un sol
+    # missatge a l'inici del processament.
     inj_without_volume = [inj for inj in injections if inj.get("inj_volume") is None]
     if inj_without_volume:
         n_missing = len(inj_without_volume)
         n_total = len(injections)
-        if n_missing == n_total:
-            warnings.insert(0,
-                f"VOLUM DESCONEGUT: Cap injeccio te volum assignat. "
-                f"No s'ha trobat capçalera 'Volume', ni 0-INFO, ni columna index-13 valida. "
-                f"Cal assignar volums al MasterFile.")
-            from hpsec_warnings import create_anomaly
-            warnings_structured.insert(0, create_anomaly(
-                "IMP_NO_DATA",
-                details={"field": "injection_volume", "n_missing": n_missing, "n_total": n_total},
-                override_label="VOLUM DESCONEGUT — cap injeccio te volum"))
-        else:
-            lines_missing = [str(inj.get("line_num", "?")) for inj in inj_without_volume[:5]]
-            lines_str = ", ".join(lines_missing)
-            if n_missing > 5:
-                lines_str += f"... (+{n_missing - 5})"
-            warnings.insert(0,
-                f"VOLUM PARCIAL: {n_missing}/{n_total} injeccions sense volum (lines: {lines_str}). "
-                f"Revisar MasterFile.")
-            from hpsec_warnings import create_anomaly
-            warnings_structured.insert(0, create_anomaly(
-                "IMP_INCOMPLETE",
-                details={"field": "injection_volume", "n_missing": n_missing, "n_total": n_total},
-                override_label=f"VOLUM PARCIAL — {n_missing}/{n_total} injeccions sense volum"))
+        from hpsec_calibrate import get_injection_volume
+        default_vol = get_injection_volume(seq_path, is_bp)
+        for inj in inj_without_volume:
+            inj["inj_volume"] = default_vol
+            inj["inj_volume_source"] = "default"
+        mode_txt = "BP" if is_bp else "COLUMN"
+        abast = ("Cap injecció tenia" if n_missing == n_total
+                 else f"{n_missing}/{n_total} injeccions sense")
+        warnings.insert(0,
+            f"Volum no trobat: {abast} volum al MasterFile. "
+            f"S'ha aplicat el valor per defecte {default_vol:g} µL ({mode_txt}).")
 
     # Validar: comparar total de files amb Line# vs injeccions processades
     if total_rows_with_line > len(injections):
@@ -4168,7 +4161,10 @@ def import_sequence(seq_path, config=None, progress_callback=None):
         report_progress(20, "Parsejant injeccions del MasterFile...")
 
         # 3. Parsejar injeccions del MasterFile (FONT DE VERITAT)
-        injections, parse_warnings, master_line_count = parse_injections_from_masterfile(result["master_data"], config)
+        injections, parse_warnings, master_line_count = parse_injections_from_masterfile(
+            result["master_data"], config,
+            is_bp=(result.get("method", "").upper() == "BP"),
+            seq_path=seq_path)
         result["injections"] = injections
         result["master_line_count"] = master_line_count  # Total línies al MasterFile (Line#)
         result["warnings"].extend(parse_warnings)

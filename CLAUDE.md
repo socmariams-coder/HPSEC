@@ -199,10 +199,16 @@ Mark features as DONE only when code is fully functional end-to-end, not when pl
   - WarningReviewDialog eliminat (la barra mostra tot directament)
   - _update_validation() simplificada (usa warnings_structured directament)
   - get_max_warning_level() suporta severity (nou) i level (antic) keys
-- [ ] **Import: GUI pregunta volum quan no trobat al v11** — PENDING (IMPORTANT)
-  - Quan `inj_volume_source='default'` o `inj_volume=None`, diàleg confirmació a l'usuari
-  - Validació creuada col13 vs 0-INFO quan ambdós existeixen i discrepan
-  - Icona/tooltip a calibració si volum és estimat (no del manifest)
+- [x] **Import: volum no trobat → valor per defecte per mode + avís** — DONE (2026-11-26)
+  - `parse_injections_from_masterfile(..., is_bp, seq_path)`: quan cap font té volum,
+    aplica el per defecte via `get_injection_volume` (COLUMN 400 / BP 100 / SEQ 256-274 → 100),
+    marca `inj_volume_source='default'` i emet UN sol avís "Volum no trobat…" a l'inici del
+    processament. **Igual per a tot, KHP inclòs** (decisió usuària 2026-11-26).
+  - Bug latent corregit: el camí vell cridava `warnings_structured` (inexistent en aquella
+    funció → NameError) quan faltava volum; ara el bloc és net.
+  - Validació creuada col13 vs 0-INFO ja existent (avís "VOLUM DISCREPANT").
+  - Test: `test_volum_default_per_mode` (suite 77/77).
+  - Opcional no demanat: icona/tooltip a calibració quan el volum és estimat.
 - [x] Memory optimization: DAD filter 6λ, TOC release, cal cache, df cleanup (~112 MB/SEQ) — DONE (f7d03d4)
 - [ ] Architecture refactor: unify detection functions in hpsec_core.py — PENDING
 - [x] Integration: derivative-based peak boundaries (Agilent tangent projection) — DONE (find_peak_boundaries in hpsec_core.py)
