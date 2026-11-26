@@ -120,8 +120,15 @@ Mark features as DONE only when code is fully functional end-to-end, not when pl
 - [x] Cleanup: codi mort eliminat (~500 línies) — DONE (2026-07-17)
   - `validate_khp_for_alignment` (calibrate, 272 l., 0 usos) + `_realign_bp_by_dad254`
     (import, 229 l., 0 usos) + import mort quantify_with_global_calibration a analyze
-- [ ] Export: número de SEQ als noms de fitxer de RESULTATS ({sample}_{SEQ}_HPSEC_C.xlsx,
-  {SEQ}_SUMMARY.xlsx) per evitar col·lisions en carpetes compartides — PENDING
+- [x] Export: número de SEQ als noms de fitxer de RESULTATS — DONE (2026-11-26)
+  - `_sample_filename_base(sample, mode, seq_tag)` + `_seq_tag(seq_path)` (número inicial de
+    la carpeta, ex. '309'): els Excels per mostra i els CSV RAW/PROCESSED surten com
+    `{sample}_{SEQ}_HPSEC_{C|B}` (el sufix C/B distingeix COLUMN/BP d'un mateix número).
+    `seq_tag` enfilat des de `export_sequence` (té seq_path) i als `write_csv_raw/processed`.
+  - Sense seq_tag → nom clàssic `{sample}_HPSEC_{C|B}` (compatibilitat).
+  - El `{SEQ}_SUMMARY.xlsx` de l'apunt original NO aplica: `generate_summary_excel/csv` són
+    codi mort (sense cridadors); el resum viu és el paquet FAIR (carpeta per SEQ, no col·lisiona).
+  - Test: `test_nom_fitxer_amb_seq`. Suite 81/81.
 - [x] Export FAIR: regime_id + fronteres de règim a fulla ID, metadata.json i
   datapackage.json — DONE (2026-09-07)
   - Font única: `hpsec_calibrate.get_regime_traceability(seq_date)` (per data

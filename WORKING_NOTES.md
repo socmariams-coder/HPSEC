@@ -6,6 +6,25 @@ consultar quan es necessiti el context històric d'un tema concret.
 
 > Last updated: 2026-11-26
 
+### Número de SEQ als noms de fitxer de resultats (2026-11-26)
+
+**Objectiu usuària:** que resultats de seqüències diferents puguin conviure a la
+mateixa carpeta compartida sense sobreescriure's, i saber de quina SEQ és cada fitxer.
+
+**Fet:**
+- `_sample_filename_base(sample, mode, seq_tag=None)`: si hi ha `seq_tag`, el nom és
+  `{sample}_{SEQ}_HPSEC_{C|B}`; sense, el clàssic `{sample}_HPSEC_{C|B}` (compatibilitat).
+- Nou `_seq_tag(seq_path)`: número inicial de la carpeta (ex. `309_SEQ_BP` → `309`).
+  El sufix de mode C/B ja distingeix COLUMN de BP d'un mateix número → amb el número n'hi ha prou.
+- `export_sequence` calcula `seq_tag = _seq_tag(seq_path)` un cop i l'enfila als Excels
+  (light + regular) i als `write_csv_raw` / `write_csv_processed` (signatures ampliades amb
+  `seq_tag`). Camí viu: samples_db_panel → export_sequence.
+- **SUMMARY NO aplica:** `generate_summary_excel/csv` són codi mort (cap cridador; al
+  `__all__` però ningú els crida). El resum viu és el paquet FAIR, que ja viu en carpeta
+  per SEQ (`RESULTATS/`), així que no col·lisiona. L'apunt original parlava de `{SEQ}_SUMMARY.xlsx`
+  d'un flux que ja no existeix.
+- Test nou `test_nom_fitxer_amb_seq`. Suite **81/81**.
+
 ### Volum no trobat → valor per defecte segons mode + avís (2026-11-26)
 
 **Objectiu usuària:** quan el volum d'injecció no es troba a les dades, que el

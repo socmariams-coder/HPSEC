@@ -48,10 +48,29 @@ def _make_unique_filename(base_name, ext, used_filenames):
         n += 1
 
 
-def _sample_filename_base(sample_name, mode):
-    """Retorna el nom base del fitxer: {sample}_HPSEC_{C|B}."""
+def _sample_filename_base(sample_name, mode, seq_tag=None):
+    """Retorna el nom base del fitxer: {sample}_{SEQ}_HPSEC_{C|B}.
+
+    Si es coneix la SEQ (seq_tag), s'hi inclou perquè resultats de seqüències
+    diferents no es trepitgin quan acaben a la mateixa carpeta.
+    """
     mode_suffix = "C" if mode.upper() == "COLUMN" else "B"
+    if seq_tag:
+        return f"{sample_name}_{seq_tag}_HPSEC_{mode_suffix}"
     return f"{sample_name}_HPSEC_{mode_suffix}"
+
+
+def _seq_tag(seq_path):
+    """Etiqueta curta de la SEQ per als noms de fitxer: el número de SEQ si es pot
+    deduir de la carpeta (ex. '309'); si no, el nom de la carpeta. None si no
+    hi ha seq_path. El sufix de mode (C/B) ja distingeix COLUMN de BP d'un mateix
+    número, així que n'hi ha prou amb el número."""
+    if not seq_path:
+        return None
+    import re
+    name = os.path.basename(str(seq_path).rstrip("/\\"))
+    m = re.match(r"(\d+)", name)
+    return m.group(1) if m else (name or None)
 
 
 def _get_max_severity(anomalies):
@@ -734,6 +753,9 @@ def export_sequence(
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
+    # Etiqueta de SEQ per als noms de fitxer (evita col·lisions en carpetes compartides)
+    seq_tag = _seq_tag(seq_path)
+
     results = {
         "success": True,
         "n_exported": 0,
@@ -769,7 +791,7 @@ def export_sequence(
                 doc_data = replicas.get(doc_replica, {})
 
                 sample_type = sample_info.get("sample_type", "BLANK")
-                base = _sample_filename_base(sample_name, mode)
+                base = _sample_filename_base(sample_name, mode, seq_tag)
                 filename = _make_unique_filename(base, ".xlsx", used_filenames)
                 filepath = output_path / filename
 
@@ -784,7 +806,7 @@ def export_sequence(
                 if export_raw:
                     try:
                         rf = write_csv_raw(raw_dir, sample_name, doc_data,
-                                           mode, csv_separator, used_raw)
+                                           mode, csv_separator, used_raw, seq_tag)
                         results["raw_files"].extend(rf)
                     except Exception as e_csv:
                         logger.warning(f"CSV RAW light {sample_name}: {e_csv}")
@@ -793,7 +815,7 @@ def export_sequence(
                 if export_processed:
                     try:
                         pf = write_csv_processed(proc_dir, sample_name, doc_data,
-                                                 mode, config, csv_separator, used_proc)
+                                                 mode, config, csv_separator, used_proc, seq_tag)
                         results["processed_files"].extend(pf)
                     except Exception as e_csv:
                         logger.warning(f"CSV PROC light {sample_name}: {e_csv}")
@@ -837,7 +859,7 @@ def export_sequence(
                 export_data["quantification"] = sample_info["quantification"]
 
             # Nom del fitxer (sense rèplica al nom — la rèplica consta al full ID)
-            base = _sample_filename_base(sample_name, mode)
+            base = _sample_filename_base(sample_name, mode, seq_tag)
             filename = _make_unique_filename(base, ".xlsx", used_filenames)
 
             filepath = output_path / filename
@@ -856,7 +878,7 @@ def export_sequence(
             if export_raw:
                 try:
                     rf = write_csv_raw(raw_dir, sample_name, export_data,
-                                       mode, csv_separator, used_raw)
+                                       mode, csv_separator, used_raw, seq_tag)
                     results["raw_files"].extend(rf)
                 except Exception as e_csv:
                     logger.warning(f"CSV RAW {sample_name}: {e_csv}")
@@ -865,7 +887,7 @@ def export_sequence(
             if export_processed:
                 try:
                     pf = write_csv_processed(proc_dir, sample_name, export_data,
-                                             mode, config, csv_separator, used_proc)
+                                             mode, config, csv_separator, used_proc, seq_tag)
                     results["processed_files"].extend(pf)
                 except Exception as e_csv:
                     logger.warning(f"CSV PROC {sample_name}: {e_csv}")
@@ -1109,6 +1131,7 @@ def write_csv_raw(
     mode: str = "COLUMN",
     separator: str = ";",
     used_filenames: set = None,
+    seq_tag: str = None,
 ):
     """
     Exporta dades RAW (sense processar) per una mostra a subcarpeta RAW/.
@@ -1135,7 +1158,7 @@ def write_csv_raw(
     raw_path = Path(out_dir)
     raw_path.mkdir(parents=True, exist_ok=True)
     files_created = []
-    base = _sample_filename_base(sample_name, mode)
+    base = _sample_filename_base(sample_name, mode, seq_tag)
 
     # --- DOC RAW ---
     t_doc = sample_data.get("t_doc")
@@ -1291,6 +1314,7 @@ def write_csv_processed(
     config: dict = None,
     separator: str = ";",
     used_filenames: set = None,
+    seq_tag: str = None,
 ):
     """
     Exporta dades PROCESSED per una mostra a subcarpeta PROCESSED/.
@@ -1319,7 +1343,7 @@ def write_csv_processed(
     proc_path = Path(out_dir)
     proc_path.mkdir(parents=True, exist_ok=True)
     files_created = []
-    base = _sample_filename_base(sample_name, mode)
+    base = _sample_filename_base(sample_name, mode, seq_tag)
 
     t_doc = sample_data.get("t_doc")
     if t_doc is None:

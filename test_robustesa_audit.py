@@ -113,6 +113,22 @@ def test_volum_default_per_mode():
 
 
 # ---------------------------------------------------------------------------
+def test_nom_fitxer_amb_seq():
+    """#export: els noms de fitxer de resultats inclouen el número de SEQ per
+    evitar col·lisions quan resultats de SEQ diferents van a la mateixa carpeta
+    (el sufix C/B distingeix COLUMN de BP d'un mateix número)."""
+    print("\n[export] Número de SEQ al nom dels fitxers")
+    import hpsec_export as e
+    check("_seq_tag treu el número de la carpeta", e._seq_tag(r"X:\309_SEQ_BP") == "309")
+    check("COLUMN -> {sample}_{seq}_HPSEC_C",
+          e._sample_filename_base("AIGUA1", "COLUMN", "309") == "AIGUA1_309_HPSEC_C")
+    check("BP -> {sample}_{seq}_HPSEC_B",
+          e._sample_filename_base("AIGUA1", "BP", "309") == "AIGUA1_309_HPSEC_B")
+    check("sense seq -> nom clàssic (compatibilitat)",
+          e._sample_filename_base("AIGUA1", "COLUMN", None) == "AIGUA1_HPSEC_C")
+
+
+# ---------------------------------------------------------------------------
 def test_khp_alignment_checks():
     """#15/A: la comprovació d'alineació del KHP avisa si els pics són massa
     amples (degradació) o si el shift DOC↔254 és inconsistent (pic mal detectat)."""
@@ -523,6 +539,7 @@ if __name__ == "__main__":
               test_load_manifest_corrupt,
               test_volume_assumed_anomaly,
               test_volum_default_per_mode,
+              test_nom_fitxer_amb_seq,
               test_khp_alignment_checks,
               test_khp_measured_delay_recorded,
               test_no_np_trapz_in_production,
