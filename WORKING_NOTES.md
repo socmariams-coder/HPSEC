@@ -4,7 +4,25 @@ Historial detallat de decisions i troballes per sessió. Separat de
 CLAUDE.md perquè el context de sessió no carregui ~700 línies de diari;
 consultar quan es necessiti el context històric d'un tema concret.
 
-> Last updated: 2026-11-02
+> Last updated: 2026-11-26
+
+### Decisió de rumb: tancar la versió actual; VWD = versió NOVA posterior (2026-11-26)
+
+**Decisió de la usuària (IMPORTANT):** primer **tancar aquesta versió** de la Suite
+(amb els detectors ACTUALS: DAD + DOC) i deixar-la com a **baseline estable i
+congelada**. El detector addicional **VWD** NO entra ara: es farà en una **versió
+NOVA posterior**, en branca a part, perquè la versió actual quedi preservada i
+intacta. El VWD segueix a `research/vwd_exploration/` (fora de la Suite) fins llavors.
+
+- Quan es faci la versió VWD, el **primer pas** serà **detectar si una seqüència té
+  dades de VWD** (fitxers `*VWD1A*`/`*VWD1B*.CSV` a `<SEQ>/CSV/`; indexació ja feta a
+  `research/vwd_exploration/vwd_vs_actual.py:build_vwd_index`).
+- Abast de "tancar" = **congelar tal com està** (opció A). Pendents del detector
+  actual (p. ex. *Import: preguntar volum per GUI* — PENDING IMPORTANT al CLAUDE.md)
+  queden com a limitacions conegudes, no bloquegen el tancament, llevat que la
+  usuària digui el contrari.
+- Pla de tancament: passar `test_robustesa_audit.py`, i si va bé, deixar-ho net a
+  `main` + etiquetar la versió (p. ex. `v2.1.0 — detector DAD+DOC`).
 
 ### Depuració forma del cim: batman vs ROUGH_TOP + bugs (2026-11-02)
 
