@@ -6,6 +6,21 @@ consultar quan es necessiti el context històric d'un tema concret.
 
 > Last updated: 2026-11-26
 
+### Icona de timeout a la taula d'Analitzar (2026-11-26)
+
+**Objectiu:** que es vegi a cop d'ull quines mostres tenen timeouts de TOC, sense
+haver d'obrir el detall. Abans el nombre de timeouts només sortia com a text pla al
+tooltip del nom.
+
+**Fet:**
+- `_fill_sample_row` (gui/widgets/analyze_panel/panel.py): rellotge `⏱` enganxat al nom
+  de la fila quan `doc_rep['timeout_info']['n_timeouts'] > 0`. Pren el color d'estat de la
+  fila (un QTableWidgetItem té un sol color).
+- Tooltip enriquit: `⏱ Timeouts TOC: N (SEVERITAT) — zones: …` + línia d'avís
+  `⚠ un timeout cau dins el pic` quan `doc_rep['timeout_in_peak']`.
+- Verificat amb **fum GUI offscreen** (fila amb timeout → rellotge + tooltip; fila sense →
+  net). Sense test a la bateria (és GUI). Bateria 81/81.
+
 ### Bigaussiana visible al detall d'Analitzar (2026-11-26)
 
 **Objectiu:** mostrar a la pantalla d'Analitzar l'ajust bigaussià del pic (R²,

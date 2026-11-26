@@ -71,7 +71,7 @@ Mark features as DONE only when code is fully functional end-to-end, not when pl
     amb color per qualitat, al costat de SNR/R²_DOC/R²_DAD. Es mostra sempre que
     `bigaussian_doc` existeixi (COLUMN i BP; el backend ja la pobla des del fix 2026-11-02).
   - Verificat amb fum GUI offscreen (apareix amb dades, absent sense; SNR intacte).
-- [ ] Analyze panel: mostrar timeouts amb icones/tooltip — PENDING
+- [x] Analyze panel: mostrar timeouts amb icones/tooltip — DONE (rellotge ⏱ al nom de la fila quan n_timeouts>0 + tooltip amb nombre/severitat/zones i avís si cau dins el pic; _fill_sample_row)
 - [x] Analyze backend: UIB timeout estimation from DOC Direct pattern — DONE (estimate_timeout_for_uib + _estimate_uib_timeouts_from_sequence)
 - [ ] Analyze backend: detecció deriva baseline DAD per replica selection — PENDING (TODO a hpsec_analyze.py L1210)
 - [x] Calibration: flux renovació calibració global (UI panel + regression) — DONE (GlobalCalibrationPanel → consulta-only)

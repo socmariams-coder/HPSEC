@@ -1661,12 +1661,17 @@ class AnalyzePanel(QWidget):
 
         # Col 0: semàfor d'estat + nom (amb tooltip resum). El semàfor fa visible
         # la qualitat a la taula (abans només al tooltip / panell dret).
+        # El rellotge ⏱ s'afegeix quan la mostra té timeouts de TOC, perquè es
+        # vegin a cop d'ull sense haver d'obrir el detall ni llegir el tooltip.
+        ti = doc_rep.get("timeout_info") or {}
+        n_to = ti.get("n_timeouts", 0)
         _icon = "✓"
         if status_color == COLOR_ERROR:
             _icon = "✘"
         elif status_color == COLOR_WARNING:
             _icon = "⚠"
-        name_item = QTableWidgetItem(f"{_icon}  {name}")
+        _to_glyph = "  ⏱" if n_to else ""
+        name_item = QTableWidgetItem(f"{_icon}  {name}{_to_glyph}")
         name_item.setFont(QFont("Segoe UI", 10))
         if status_color is not None:
             name_item.setForeground(QBrush(QColor(status_color)))
@@ -1679,9 +1684,14 @@ class AnalyzePanel(QWidget):
             tip_parts.append(f"r² DOC = {r2_doc:.3f}")
         if doc_rep.get("uib_saturated"):
             tip_parts.append("⚠ UIB saturat")
-        n_to = (doc_rep.get("timeout_info") or {}).get("n_timeouts", 0)
         if n_to:
-            tip_parts.append(f"timeouts: {n_to}")
+            sev = ti.get("severity", "")
+            zones = ti.get("zones") or []
+            sev_txt = f" ({sev})" if sev else ""
+            zone_txt = f" — zones: {', '.join(zones)}" if zones else ""
+            tip_parts.append(f"⏱ Timeouts TOC: {n_to}{sev_txt}{zone_txt}")
+            if doc_rep.get("timeout_in_peak"):
+                tip_parts.append("   ⚠ un timeout cau dins el pic")
         anomalies = doc_rep.get("anomalies", [])
         if has_anomaly(anomalies, "IRREGULAR_TOP_DIRECT") or has_anomaly(anomalies, "IRREGULAR_TOP_UIB"):
             tip_parts.append("⚠ cim irregular")
